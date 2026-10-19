@@ -183,6 +183,7 @@ pub const METHODS: &[Method] = &[
                        ("instructions", "string", "how to say it (CustomVoice), or the voice to make up (VoiceDesign, Breeze TTS 2: write it in the language of the text); with a cloned voice (ref_audio or a saved voice) the direction of its tone, emotion, pace (Breeze TTS 2: voice direction - picked for you when model is not given)", false),
                        ("ref_audio", "string", "a recording of the voice to clone: WAV as base64 or a data: URL, or upload:<name> (audio.upload, any format it takes) - the Base model", false),
                        ("ref_text", "string", "what the recording says: the closer, in-context clone (Breeze TTS 2: required, the exact transcript)", false),
+                       ("speakers", r#"{"type": "array", "maxItems": 4, "items": {"type": "string"}}"#, "several speakers (VibeVoice: input a script of \"Speaker N: words\" lines): each speaker's voice, Speaker 1's first - a saved voice's name, a recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL) or upload:<name>; a model that takes them is picked when model is not given", false),
                        ("continue_from", r#"{"type": "string", "maxLength": 200}"#, "carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice's sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped", false),
                        ("seconds", "number", "the most to make", false), ("seed", "integer", "", false),
                        ("cfg", "number", "guidance with instructions (Breeze TTS 2: 4 by default for design and direction; 1 turns it off)", false),
@@ -620,8 +621,10 @@ impl Home {
         }
         let voice = s(b, "voice");
         let cloned = !s(b, "ref_audio").is_empty() || !s(b, "continue_from").is_empty() || (!voice.is_empty() && self.voices().get(&voice).is_some());
-        // a clone with an instruction: a model that directs a cloned voice (Breeze TTS 2)
-        let need = if cloned && !s(b, "instructions").is_empty() {
+        // several speakers' recordings (a "Speaker N:" script): a model that takes them (VibeVoice)
+        let need = if b["speakers"].as_array().is_some_and(|a| !a.is_empty()) {
+            "speakers"
+        } else if cloned && !s(b, "instructions").is_empty() {
             "direction"
         } else if cloned {
             "clone"
@@ -1252,7 +1255,7 @@ impl Home {
             "image.generate" => ("image", &[("image", false), ("init_image", false)]),
             "image.edit" => ("image", &[("images", true), ("image", false)]),
             "image.ocr" => ("image", &[("images", true)]),
-            "audio.speak" => ("audio", &[("ref_audio", false)]),
+            "audio.speak" => ("audio", &[("ref_audio", false), ("speakers", true)]),
             "audio.transcribe" => ("audio", &[("audio", false)]),
             "audio.voices.add" => ("audio", &[("sample", false)]),
             "model3d.generate" => ("model3d", &[("image", false), ("images", true)]),
@@ -1461,7 +1464,8 @@ impl Home {
                 // speech with a voice or a recording and no model of ours named: the speech model for it
                 let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
                 let has = |k: &str| body[k].as_str().is_some_and(|v| !v.is_empty());
-                let id = if kind == "audio" && named.is_none() && (has("voice") || has("ref_audio")) {
+                let many = body["speakers"].as_array().is_some_and(|a| !a.is_empty());
+                let id = if kind == "audio" && named.is_none() && (has("voice") || has("ref_audio") || many) {
                     self.speech_model(&body, &all)?
                 } else {
                     self.pick(kind, &json!({"model": named}), &all)?

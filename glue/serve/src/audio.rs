@@ -479,6 +479,23 @@ impl AudioServer {
             }
             None => None,
         };
+        // several speakers (a script of "Speaker N:" lines): a saved voice's name or a recording (base64 WAV or a data
+        // URL) each, Speaker 1's first
+        let mut speakers = Vec::new();
+        for (i, v) in b["speakers"].as_array().into_iter().flatten().enumerate() {
+            let s = v.as_str().or_else(|| v["ref_audio"].as_str()).or_else(|| v["voice"].as_str()).filter(|x| !x.trim().is_empty())
+                .ok_or_else(|| bad(format!("speakers[{i}]: a saved voice's name or a recording")))?;
+            let saved = self.voices().and_then(|l| l.get(s).map(|_| l.reference(s)));
+            let r = match saved {
+                Some(r) => r.map_err(bad)?,
+                None => {
+                    let wav = http::unbase64(s).map_err(|e| bad(format!("speakers[{i}]: not a saved voice, nor a recording ({e})")))?;
+                    let (samples, rate) = nextcuda_audio::decode_audio(&wav).map_err(|e| bad(format!("speakers[{i}]: {e}")))?;
+                    nextcuda_audio::Reference { samples, rate, text: v["ref_text"].as_str().map(str::to_string) }
+                }
+            };
+            speakers.push(r);
+        }
         // one request at a time
         self.waiting.fetch_add(1, Ordering::Relaxed);
         let engine = self.engine.lock().unwrap_or_else(|p| p.into_inner());
@@ -512,6 +529,7 @@ impl AudioServer {
             language: text(&["language"]),
             instructions: instructions.clone(),
             reference,
+            speakers,
         };
         let carried = text(&["continue_from"]);
         // carrying on: a voice that is not a saved one (a built-in voice of the chunk before) is in that chunk already
