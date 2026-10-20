@@ -28,3 +28,20 @@ Structure tags on lines of their own - `[Verse]`, `[Pre-Chorus]`, `[Chorus]`, `[
 | `normalize` | the peak to -1 dB (on) |
 
 `steps` (8) can go up to 20; turbo is guidance-distilled, so `cfg` is not used.
+
+## The planner
+
+A song from words alone first goes through the 5 Hz planner LM (as the platform's `use_lm`): it writes the BPM, key,
+time signature and a fuller caption (the ones you give are kept), then the song's audio codes, five a second; the
+song is made in their shape. `planner: false` (option `planner 0`) skips it: faster, less structured.
+
+## From a recording (`audio`: base64, a data: URL or `upload:<name>`)
+
+| `task` | what | its fields |
+|---|---|---|
+| `cover` | the recording performed anew: `instructions` its new sound, `input` its words | `cover_strength` (0.5: the share of the steps that follow the recording), `cover_noise` |
+| `repaint` | `repaint_start` to `repaint_end` (seconds) made again, the rest kept; an end past the recording extends it | `repaint_mode` (balanced, conservative, aggressive), `repaint_strength` (0.5) |
+| `edit` | new words (`input`) sung over the same recording | `source_lyrics` (the words it sings now), `edit_n_min` / `edit_n_max` (0 / 1) |
+| `lego` | (acestep-1.5-base) a track - the vocals - made over an instrumental, to be mixed back | `track` (vocals), `steps` (50), `cfg` (7) |
+
+The song is as long as the recording (a repaint: to its end).

@@ -354,6 +354,13 @@ def main():
         repaint_strength=0.5,
         chunk_mask_mode="explicit" if task == "repaint" else "auto",
     )
+    if task == "lego":
+        # the platform's lego_request: the vocals track over the whole recording, base's 50 steps and real guidance
+        params = GenerationParams(task_type="lego", instruction="Generate the VOCALS track based on the audio context:", src_audio=args.src,
+                                  caption=args.caption[:512], lyrics=lyrics[:4096] if lyrics else "[Verse]", instrumental=False,
+                                  vocal_language=args.language, bpm=args.bpm or None, keyscale=args.key, timesignature=args.timesig, duration=-1.0,
+                                  inference_steps=args.steps, guidance_scale=7.0, shift=args.shift, infer_method="ode", thinking=False,
+                                  repainting_start=0.0, repainting_end=-1.0)
     if task == "edit":
         # the platform's _edit_params: the same caption on both sides, the old words the source's
         import soundfile as sf

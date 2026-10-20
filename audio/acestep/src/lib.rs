@@ -95,11 +95,14 @@ fn role(files: &ModelFiles, r: &str) -> Result<PathBuf> {
     files.get(r).cloned().ok_or_else(|| Error(format!("{ARCH}: no {r} file")))
 }
 
-/// The checkpoint's directory as downloaded (ACE-Step/Ace-Step1.5): its files by role
+/// The checkpoint's directory as downloaded (ACE-Step/Ace-Step1.5): its files by role - the DiT the turbo's, or the
+/// one NS_ACE_CHECKPOINT names (acestep-v15-base beside it)
 pub fn files_in(dir: &Path) -> Result<ModelFiles> {
     let mut f = ModelFiles::new();
-    for (r, name) in [("dit", "acestep-v15-turbo/model.safetensors"), ("dit_config", "acestep-v15-turbo/config.json"),
-                      ("silence", "acestep-v15-turbo/silence_latent.pt"), ("text_encoder", "Qwen3-Embedding-0.6B/model.safetensors"),
+    let ck = std::env::var("NS_ACE_CHECKPOINT").unwrap_or_else(|_| "acestep-v15-turbo".into());
+    let (dit, cfg, sil) = (format!("{ck}/model.safetensors"), format!("{ck}/config.json"), format!("{ck}/silence_latent.pt"));
+    for (r, name) in [("dit", dit.as_str()), ("dit_config", cfg.as_str()),
+                      ("silence", sil.as_str()), ("text_encoder", "Qwen3-Embedding-0.6B/model.safetensors"),
                       ("text_config", "Qwen3-Embedding-0.6B/config.json"), ("tokenizer", "Qwen3-Embedding-0.6B/tokenizer.json"),
                       ("vae", "vae/diffusion_pytorch_model.safetensors"), ("vae_config", "vae/config.json"),
                       ("lm", "acestep-5Hz-lm-1.7B/model.safetensors"), ("lm_config", "acestep-5Hz-lm-1.7B/config.json"),

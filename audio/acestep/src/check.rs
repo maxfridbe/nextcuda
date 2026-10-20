@@ -100,6 +100,9 @@ pub fn request(dir: &Path) -> Result<AudioRequest> {
     let mut source = None;
     if task != "text2music" {
         extra.insert("task".into(), task.into());
+        if task == "lego" {
+            extra.insert("track".into(), "vocals".into());
+        }
         extra.insert("cover-strength".into(), a["cover_strength"].as_f64().unwrap_or(0.5).to_string());
         extra.insert("repaint-start".into(), a["repaint_start"].as_f64().unwrap_or(0.0).to_string());
         extra.insert("repaint-end".into(), a["repaint_end"].as_f64().unwrap_or(-1.0).to_string());
