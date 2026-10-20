@@ -266,6 +266,30 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
                  &f32s(dir, &format!("step_{i}_v.npy"))?, &mut worst);
         }
     }
+    if on("guided") && !e.dit.cfg.turbo {
+        // the base model's guided step from each of the reference's states: APG's momentum carried as in its loop
+        let (plan, enc) = plan_of(e, dir, &song)?;
+        let c = e.dit.cfg.hidden;
+        let null: Vec<f32> = (0..enc.len() / c).flat_map(|_| e.dit.null_cond.iter().copied()).collect();
+        let (cc, cn) = (e.dit.cond(&e.ops, &mut s, &enc)?, e.dit.cond(&e.ops, &mut s, &null)?);
+        let ts = crate::sample::schedule_base(song.steps, song.shift);
+        let mut m = crate::sample::Momentum::default();
+        for i in 0..ts.len() - 1 {
+            let (a, b) = (dir.join(format!("step_{i}_x.npy")), dir.join(format!("step_{}_x.npy", i + 1)));
+            if !a.is_file() || !b.is_file() {
+                break;
+            }
+            let x = f32s(dir, &format!("step_{i}_x.npy"))?;
+            let vc = e.dit.velocity(&e.ops, &mut s, &x, &plan.ctx, ts[i], &cc)?;
+            let vu = e.dit.velocity(&e.ops, &mut s, &x, &plan.ctx, ts[i], &cn)?;
+            let v = crate::sample::apg(&vc, &vu, song.guidance, &mut m);
+            let next: Vec<f32> = x.iter().zip(&v).map(|(a, b)| a - b * (ts[i] - ts[i + 1])).collect();
+            let want = f32s(dir, &format!("step_{}_x.npy", i + 1))?;
+            let step: Vec<f32> = next.iter().zip(&x).map(|(a, b)| a - b).collect();
+            let wstep: Vec<f32> = want.iter().zip(&x).map(|(a, b)| a - b).collect();
+            line(log, &format!("guided step {i} (the step's change)"), &step, &wstep, &mut worst);
+        }
+    }
     if on("sample") {
         let t0 = Instant::now();
         let mut t = Trace::default();
