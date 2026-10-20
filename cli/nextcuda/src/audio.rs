@@ -12,6 +12,7 @@ const USAGE: &str = "nextcuda audio gen \"<description>\" [--lyrics TEXT | --lyr
                    [--cfg X] [--seed N] [--set NAME=VALUE]... [--opt-NAME VALUE]... [--out FILE|DIR] [--gpu N]
 nextcuda audio gen \"<text to say>\" --model qwen3-tts-... [--voice NAME] [--language L] [--instructions TEXT]
                    [--ref-audio FILE.wav [--ref-text TEXT]] [--cfg X] [--seconds N] [--seed N] [--out FILE|DIR]   (speech)
+                   [--speaker FILE]...   (several speakers: a script of \"Speaker N:\" lines, Speaker 1's recording first; vibevoice)
 nextcuda audio serve [MODEL] [--port 8087] [--host 127.0.0.1] [--gpu N] [--set NAME=VALUE]... [--wfe] [--out DIR] [--cors ORIGIN]
 nextcuda audio start [serve's options] [--slot N]   (in the background; slot N: another server beside the first) | ps | logs [-f] | stop  [--slot N]
 nextcuda audio voice list                                   the saved voices (spoken by name: --voice NAME, \"voice\": NAME)
@@ -28,7 +29,21 @@ nextcuda audio engines | selftest [--gpu N]";
 /// The audio engines this program has (audio/<arch>)
 pub fn engines() -> Vec<nextcuda_audio::AudioKind> {
     vec![nextcuda_audio_minimaxmusic3::kind(), nextcuda_audio_breezetts2::kind(), nextcuda_audio_qwen3tts::kind(), nextcuda_audio_voxcpm2::kind(),
-         nextcuda_audio_whisper::kind(), nextcuda_audio_acestep::kind()]
+         nextcuda_audio_whisper::kind(), nextcuda_audio_vibevoice::kind(), nextcuda_audio_acestep::kind()]
+}
+
+/// Every `--speaker FILE` (a recording a speaker, Speaker 1 first: a multi-speaker script's voices)
+fn speakers(args: &[String]) -> Result<Vec<nextcuda_audio::Reference>, String> {
+    let mut out = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        if a == "--speaker" {
+            let f = args.get(i + 1).ok_or("--speaker FILE")?;
+            let b = std::fs::read(f).map_err(|e| format!("{f}: {e}"))?;
+            let (samples, rate) = nextcuda_audio::decode_audio(&b).map_err(|e| format!("{f}: {e}"))?;
+            out.push(nextcuda_audio::Reference { samples, rate, text: None });
+        }
+    }
+    Ok(out)
 }
 
 fn opt<'a>(args: &'a [String], k: &str) -> Option<&'a str> {
@@ -41,7 +56,10 @@ fn model(cfg: &Config, args: &[String]) -> Result<(Value, ModelFiles), String> {
     if let Some(d) = opt(args, "--dir") {
         let dir = Path::new(d);
         let whisper = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"whisper\""));
-        let (arch, files) = if whisper {
+        let vibevoice = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"vibevoice\""));
+        let (arch, files) = if vibevoice {
+            (nextcuda_audio_vibevoice::ARCH, nextcuda_audio_vibevoice::files_in(dir).map_err(|e| e.0)?)
+        } else if whisper {
             (nextcuda_audio_whisper::ARCH, nextcuda_audio_whisper::files_in(dir).map_err(|e| e.0)?)
         } else if dir.join("acestep-v15-turbo").is_dir() {
             (nextcuda_audio_acestep::ARCH, nextcuda_audio_acestep::files_in(dir).map_err(|e| e.0)?)
@@ -172,11 +190,13 @@ fn gen(cfg: &Config, args: &[String]) -> Result<(), String> {
         language: opt(args, "--language").map(str::to_string),
         instructions: opt(args, "--instructions").map(str::to_string),
         reference,
+        speakers: speakers(args)?,
     };
     let t0 = std::time::Instant::now();
     // frames a second of sound: speech 12.5, songs 25
     let fps = match e.arch() {
         "voxcpm2" => 6.25,
+        "vibevoice" => 7.5,
         _ if e.speech().is_some() => 12.5,
         _ => 25.0,
     };
@@ -315,6 +335,10 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         let stages: Vec<&str> = opt(args, "--stages").unwrap_or("prompt,prefill,patches,vae").split(',').collect();
         let e = nextcuda_audio_voxcpm2::VoxCpm2::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
         nextcuda_audio_voxcpm2::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
+    } else if m["arch"] == nextcuda_audio_vibevoice::ARCH {
+        let stages: Vec<&str> = opt(args, "--stages").unwrap_or("prompt,voice,prefill,head,decode,semantic,frames").split(',').collect();
+        let e = nextcuda_audio_vibevoice::VibeVoice::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
+        nextcuda_audio_vibevoice::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
     } else if m["arch"] == nextcuda_audio_whisper::ARCH {
         let stages: Vec<&str> = opt(args, "--stages").unwrap_or("mel,encoder,logits,transcribe").split(',').collect();
         let e = nextcuda_audio_whisper::Whisper::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;

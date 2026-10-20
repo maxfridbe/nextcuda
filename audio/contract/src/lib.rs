@@ -36,6 +36,9 @@ pub struct AudioRequest {
     pub instructions: Option<String>,
     /// speech: a recording whose voice to speak in (a clone)
     pub reference: Option<Reference>,
+    /// speech for several speakers (a script of "Speaker N:" lines, an engine that takes it): each speaker's
+    /// recording, Speaker 1's first; empty: `reference` is the one speaker's
+    pub speakers: Vec<Reference>,
 }
 
 /// A recording to clone a voice from: mono samples, their rate, and what is said in it (a transcript makes a

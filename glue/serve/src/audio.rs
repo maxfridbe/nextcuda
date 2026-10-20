@@ -479,6 +479,23 @@ impl AudioServer {
             }
             None => None,
         };
+        // several speakers (a script of "Speaker N:" lines): a saved voice's name or a recording (base64 WAV or a data
+        // URL) each, Speaker 1's first
+        let mut speakers = Vec::new();
+        for (i, v) in b["speakers"].as_array().into_iter().flatten().enumerate() {
+            let s = v.as_str().or_else(|| v["ref_audio"].as_str()).or_else(|| v["voice"].as_str()).filter(|x| !x.trim().is_empty())
+                .ok_or_else(|| bad(format!("speakers[{i}]: a saved voice's name or a recording")))?;
+            let saved = self.voices().and_then(|l| l.get(s).map(|_| l.reference(s)));
+            let r = match saved {
+                Some(r) => r.map_err(bad)?,
+                None => {
+                    let wav = http::unbase64(s).map_err(|e| bad(format!("speakers[{i}]: not a saved voice, nor a recording ({e})")))?;
+                    let (samples, rate) = nextcuda_audio::decode_audio(&wav).map_err(|e| bad(format!("speakers[{i}]: {e}")))?;
+                    nextcuda_audio::Reference { samples, rate, text: v["ref_text"].as_str().map(str::to_string) }
+                }
+            };
+            speakers.push(r);
+        }
         // one request at a time
         self.waiting.fetch_add(1, Ordering::Relaxed);
         let engine = self.engine.lock().unwrap_or_else(|p| p.into_inner());
@@ -512,6 +529,7 @@ impl AudioServer {
             language: text(&["language"]),
             instructions: instructions.clone(),
             reference,
+            speakers,
         };
         let carried = text(&["continue_from"]);
         // carrying on: a voice that is not a saved one (a built-in voice of the chunk before) is in that chunk already
@@ -657,6 +675,19 @@ pub fn own_vram_mb() -> u64 {
 /// A text as it is to be said: math and code symbols as words (a model reads "Q·K^T / √d_k" as noise - a voice
 /// looped on one such line), markdown's marks out, dashes and brackets as pauses
 pub fn speakable(text: &str) -> String {
+    // a script of "Speaker N:" lines (VibeVoice): each line its own, the breaks kept - joined, the speakers'
+    // lines read as one (the model said "Speaker" aloud)
+    let speaker_line = |l: &str| {
+        let l = l.trim_start().to_ascii_lowercase();
+        l.strip_prefix("speaker").is_some_and(|r| r.starts_with(char::is_whitespace) && r.trim_start().starts_with(|c: char| c.is_ascii_digit()))
+    };
+    if text.lines().any(speaker_line) {
+        return text.lines().map(speakable_line).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+    }
+    speakable_line(text)
+}
+
+fn speakable_line(text: &str) -> String {
     let c: Vec<char> = text.chars().collect();
     let word = |ch: char| ch.is_alphanumeric();
     let mut out = String::with_capacity(text.len() + 16);
@@ -737,6 +768,9 @@ mod tests {
         assert_eq!(s("**Bold** and `code` - done"), "Bold and code, done");
         assert_eq!(s("TCP/IP, 3-4 heads, snake_case"), "TCP slash IP, 3-4 heads, snake sub case");
         assert_eq!(s("Plain words stay plain."), "Plain words stay plain.");
+        // a speakers' script keeps its lines
+        assert_eq!(s("Speaker 1: a = b\n\nSpeaker 2: *yes*"), "Speaker 1: a equals b\nSpeaker 2: yes");
+        assert_eq!(s("one\ntwo"), "one two", "plain text is one line, as before");
     }
 
     use super::{gpu_failed, own_vram_mb, range};

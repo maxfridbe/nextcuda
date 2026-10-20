@@ -154,6 +154,10 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
             if speech("direction") {
                 c.push("voice_direction");
             }
+            // several speakers, a recording each (a script of "Speaker N:" lines: VibeVoice)
+            if speech("speakers") {
+                c.push("multi_speaker");
+            }
             // vocal events inline in the text ("(laugh)", "[笑]")
             if speech("events") {
                 c.push("vocal_events");
