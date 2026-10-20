@@ -19,6 +19,7 @@ nextcuda-image-unlimitedocr.workspace = true
 nextcuda-image-olmocr2.workspace = true
 nextcuda-image-mingimage.workspace = true
 nextcuda-image-upscale.workspace = true
+nextcuda-image-starvector.workspace = true
 nextcuda-video.workspace = true
 nextcuda-video-h3.workspace = true
 nextcuda-audio.workspace = true

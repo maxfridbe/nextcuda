@@ -35,6 +35,12 @@ const UPSCALED: &str = r#"{"type": "object", "properties": {"created": {"type": 
     "noise": {"type": "integer", "nullable": true}, "frames": {"type": "integer", "description": "video.upscale: frames made"}, "fps": {"type": "string"}}}},
   "run": {"type": "object", "properties": {"seconds": {"type": "number"}, "tiles": {"type": "integer"}, "frames": {"type": "integer"}, "wh": {"type": "number", "nullable": true}}}}}"#;
 
+/// image.vectorize's answer
+const VECTORIZED: &str = r#"{"type": "object", "properties": {"created": {"type": "integer"},
+  "data": {"type": "array", "items": {"type": "object", "properties": {"svg": {"type": "string", "description": "the SVG as the model wrote it (from <svg)"},
+    "closed": {"type": "boolean", "description": "</svg> ended it (false: max_length stopped it, an element maybe half written)"}, "tokens": {"type": "integer"}}}},
+  "run": {"type": "object", "properties": {"seconds": {"type": "number"}, "prompt_seconds": {"type": "number"}, "tokens": {"type": "integer"}, "tok_s": {"type": "number"}, "wh": {"type": "number", "nullable": true}}}}}"#;
+
 const PICTURES: &str = r#"{"type": "object", "properties": {"created": {"type": "integer"},
   "data": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string", "description": "response_format url (the default here): GET it with the token"},
     "b64_json": {"type": "string", "description": "response_format b64_json: the PNG"}, "revised_prompt": {"type": "string"}, "seed": {"type": "integer"},
@@ -276,6 +282,8 @@ pub fn result(method: &str) -> Option<String> {
         "llm.models" => r#"{"type": "object", "properties": {"models": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "gpus": {"type": "array", "items": {"type": "integer"}}, "loaded": {"type": "boolean"}}}}}}"#.into(),
         "image.generate" | "image.edit" => format!(r#"{{"oneOf": [{{"allOf": [{PICTURES}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the pictures, and the job"}},
   {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (image.status {{label}} for the rest)"}}]}}"#),
+        "image.vectorize" => format!(r#"{{"oneOf": [{{"allOf": [{VECTORIZED}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the SVG, and the job"}},
+  {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (image.status {{label}} for the rest)"}}]}}"#),
         "image.upscale" | "video.upscale" => format!(r#"{{"oneOf": [{{"allOf": [{UPSCALED}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the upscaled picture or clip, and the job"}},
   {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (image.status {{label}} for the rest)"}}]}}"#),
         "model3d.generate" | "model3d.rig" => format!(r#"{{"oneOf": [{{"allOf": [{}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the mesh, and the job"}},
@@ -413,7 +421,7 @@ pub fn errors(method: &str) -> &'static [(u16, &'static str, &'static str)] {
         "system.models.pull" => &[(404, "not_found", "no model card of that id"), (409, "conflict", "it is downloaded already"),
                                   (503, "no_room", "no models folder has the room for it (with 1% of the drive, at least 4 GiB, kept free)")],
         "system.models.pull.cancel" => &[(409, "conflict", "no download of that model is under way")],
-        "image.generate" | "image.edit" | "image.ocr" | "image.upscale" | "video.upscale" | "audio.generate" | "audio.speak" | "audio.transcribe"
+        "image.generate" | "image.edit" | "image.ocr" | "image.upscale" | "image.vectorize" | "video.upscale" | "audio.generate" | "audio.speak" | "audio.transcribe"
         | "audio.voices.design" | "model3d.generate" | "model3d.rig" =>
             &[(400, "invalid_params", "a value refused, when the job is submitted (wait false too): steps a few-step model does not run, a size, a sampler, a picture that does not decode, a voice or language the speech model does not have, a priority outside -9..9 ..."),
               (404, "not_found", "no such model; a continue_from or upload:<name> that is not here (error.field names which)"), (409, "conflict", "the model is disabled, or none that can do it is enabled (never retry as is)"),
@@ -466,7 +474,7 @@ Every error has retryable: true for no_room, maintenance, unavailable, timeout a
 pub const LABELS: &str = "Video labels: \"<series> NN/MM: text\" (\"Harbour 03/12: the lamp\"). NN orders video.timeline (the edit order); \
 the series (the text before NN) is where the anchors prev / prev_cam / first / first_cam look, and the project when the request names none. \
 video.cancel, video.queue.move and video.queue.remove name clips by label.\n\n\
-Jobs: image.generate, image.edit, image.upscale, video.upscale (in the image queue), audio.generate, audio.speak and audio.transcribe run as jobs here - the call can drop and the job goes on; \
+Jobs: image.generate, image.edit, image.upscale, image.vectorize, video.upscale (in the image queue), audio.generate, audio.speak and audio.transcribe run as jobs here - the call can drop and the job goes on; \
 label one (else its id is its label), read it with <kind>.status {label} (stage and waiting_for say what it waits for), list them with <kind>.jobs, \
 stop it with <kind>.cancel {label}; wait: false answers at once. A kind makes as many jobs at once as it has servers (one a card); the rest wait \
 in a queue as video's: priority, held, project and batch on submit, <kind>.queue.list / move / pause / resume. \

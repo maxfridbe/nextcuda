@@ -19,12 +19,15 @@ nextcuda image check <dump dir> [--model ID|FILE.gguf] [--stages te,dit,steps,va
 nextcuda image bench [--models ID,...] [--sizes WxH,...] [--steps N] [--runs N] [--gpu N] [--out DIR] [--note TEXT]
 nextcuda image upscale PICTURE [--model real-esrgan|waifu2x | --dir NCNN_DIR] [--variant V] [--scale N] [--noise N] [--tile N] [--out FILE] [--gpu N]
 nextcuda image upscale-check PICTURE REFERENCE.png [upscale's options]   (against realesrgan- / waifu2x-ncnn-vulkan's output: PSNR, worst pixel)
+nextcuda image vectorize PICTURE [--model starvector-1b-im2svg | --dir CHECKPOINT_DIR] [--max-length N] [--beams N] [--greedy] [--top-p P] [--seed S] [--out FILE.svg] [--gpu N]
+nextcuda image vectorize PICTURE --check REFERENCE_DIR [--stages pixels,encoder,prefill,logits,greedy] [--dir ...]   (against reference/starvector/ref.py's dumps)
 nextcuda image engines | selftest [--gpu N]";
 
 /// The image engines this program has (image/<arch>)
 pub fn engines() -> Vec<nextcuda_image::ImageKind> {
     vec![nextcuda_image_qwenimage21::kind(), nextcuda_image_qwenimage21::kind_2512(), nextcuda_image_unlimitedocr::kind(), nextcuda_image_paddleocrvl::kind(),
-         nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind(), nextcuda_image_upscale::kind()]
+         nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind(), nextcuda_image_upscale::kind(),
+         nextcuda_image_starvector::kind()]
 }
 
 /// `--gpu 0` or `--gpu 0,1` (an engine that splits over two cards takes the second too: olmOCR 2's vision tower)
@@ -417,6 +420,60 @@ fn upscale_cmd(cfg: &Config, args: &[String], check: bool) -> Result<(), String>
     Ok(())
 }
 
+/// `image vectorize`: StarVector in this process (`--check DIR`: its stages against the reference's dumps)
+fn vectorize_cmd(cfg: &Config, args: &[String]) -> Result<(), String> {
+    let mut pos = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--greedy" {
+            continue;
+        }
+        if a.starts_with("--") {
+            it.next();
+        } else {
+            pos.push(a.clone());
+        }
+    }
+    let input = pos.first().ok_or(USAGE)?;
+    nextcuda_core::use_kind("image");
+    let files = match opt(args, "--dir") {
+        Some(d) => nextcuda_image_starvector::files_in(Path::new(d)).map_err(|e| e.0)?,
+        None => model(cfg, Some(opt(args, "--model").unwrap_or("starvector-1b-im2svg")))?.1,
+    };
+    let gs = gpus(args)?;
+    let mut log = |s: String| eprintln!("{s}");
+    let e = nextcuda_image_starvector::StarVector::load(&files, &gs[0], &mut log).map_err(|e| e.0)?;
+    if let Some(d) = opt(args, "--check") {
+        let stages: Vec<&str> = opt(args, "--stages").unwrap_or("pixels,encoder,prefill,logits,greedy").split(',').collect();
+        let worst = nextcuda_image_starvector::check::run(&e, Path::new(d), Path::new(input), &stages, &mut log).map_err(|e| e.0)?;
+        println!("worst relative error {worst:.2e}");
+        return Ok(());
+    }
+    let pic = nextcuda_image::Picture::decode(&std::fs::read(input).map_err(|e| format!("{input}: {e}"))?)?;
+    let greedy = args.iter().any(|a| a == "--greedy");
+    let req = nextcuda_image::VectorizeRequest {
+        picture: pic,
+        max_length: opt(args, "--max-length").and_then(|v| v.parse().ok()).unwrap_or(0),
+        beams: if greedy { Some(1) } else { opt(args, "--beams").and_then(|v| v.parse().ok()) },
+        sample: if greedy { Some(false) } else { None },
+        top_p: opt(args, "--top-p").and_then(|v| v.parse().ok()),
+        seed: opt(args, "--seed").and_then(|v| v.parse().ok()).unwrap_or(0),
+        ..Default::default()
+    };
+    use nextcuda_image::ImageEngine;
+    let out = e.vectorize(&req, &mut |_| Ok(())).map_err(|e| e.0)?;
+    eprintln!("{} tokens in {:.2} s after {:.2} s for the picture and prompt ({:.1} tokens/s){} on {}", out.tokens, out.seconds, out.prompt_seconds,
+              out.tokens as f64 / out.seconds.max(1e-9), if out.closed { ", ended by </svg>" } else { ", stopped at the length limit" }, gs[0].name);
+    match opt(args, "--out") {
+        Some(o) => {
+            std::fs::write(o, &out.svg).map_err(|e| format!("{o}: {e}"))?;
+            eprintln!("saved {o}");
+        }
+        None => println!("{}", out.svg),
+    }
+    Ok(())
+}
+
 fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
     let dir = Path::new(args.first().ok_or(USAGE)?);
     nextcuda_core::use_kind("image");
@@ -635,6 +692,7 @@ pub fn cmd(cfg: &Config, args: &[String], selftest: impl Fn(&[String]) -> Result
         Some("check") => check(cfg, rest),
         Some("upscale") => upscale_cmd(cfg, rest, false),
         Some("upscale-check") => upscale_cmd(cfg, rest, true),
+        Some("vectorize") => vectorize_cmd(cfg, rest),
         Some("bench") => crate::imagebench::run(cfg, rest),
         Some("ocr") => ocr(cfg, rest),
         Some("serve") => serve(cfg, rest),
