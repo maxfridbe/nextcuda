@@ -210,6 +210,8 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 | image | `qwen-image-2512-q4km` | Qwen-Image 2512 Q4_K_M with Qwen2.5-VL 7B and the Lightning 4-step LoRA | 17.7 GiB | served |
 | image | `qwen-image-2.1-q6k` | Qwen-Image 2.1 with a Q6_K transformer | 12.0 GiB | download |
 | image | `ming-image-0.1-design` | Ming-Image-0.1-Design: UI, posters, infographics - text spelled right; over both cards | 16.3 GiB | served |
+| upscale | `real-esrgan` | Real-ESRGAN: x4plus, x4plus-anime, animevideov3 2x / 3x / 4x (image.upscale, video.upscale) | 45 MB | served |
+| upscale | `waifu2x` | waifu2x: cunet, upconv_7 anime / photo, denoise -1 to 3, 1x to 32x | 34 MB | served |
 | OCR | `unlimited-ocr-q8` | Unlimited-OCR Q8_0: pages to Markdown | 3.7 GiB | served |
 | OCR | `unlimited-ocr-q4` | Unlimited-OCR Q4_K_M | 2.6 GiB | served |
 | OCR | `paddleocr-vl-1.6` | PaddleOCR-VL 1.6: pages, tables, formulas, charts, seals | 1.7 GiB | served |
@@ -417,6 +419,21 @@ the text encoder on the 3060, every weight resident in its GGUF's type.
 - **Transparency:** RGBA is decoded, but with these GGUF files the model's alpha comes back opaque (as through
   ComfyUI on the same files); the official phrase is put before the prompt when RGBA is asked.
 
+## Upscaling: Real-ESRGAN and waifu2x
+
+`image.upscale` and `video.upscale` (every frame, the sound copied; an MP4 back): the graphs and weights
+realesrgan-ncnn-vulkan and waifu2x-ncnn-vulkan ship, run in Rust and CUDA (`image/upscale`, `kernels/image/upscale`)
+- an ncnn graph runner over the shared strided convolutions, a transposed convolution as the convolution of its
+dilated input with the flipped kernel - and every choice the two programs make: Real-ESRGAN's tiles of 200 with 10
+mirrored pixels around, waifu2x's of 400 with 7, 18 or 28 repeated ones (its far side rounded up for cunet), the
+alpha bicubic, waifu2x's 2x model run again for 4x and up.
+
+- **Checked** (2026-10-19) against the programs' own output on the same pictures (`nextcuda image upscale-check`):
+  every variant and denoise level, 58-66 dB on a photograph (worst pixel 1-4 of 255), 63-69 dB on an RGBA logo.
+- **Speed** (RTX 5070): a 720p frame doubled by animevideov3 in 0.31 s (a 5 s clip, 124 frames, in 10.4 s through
+  video.upscale), waifu2x cunet 0.49 s; x4plus 512 -> 2048 in 3.4-3.8 s. **Memory**: 0.3 GB (animevideov3) to 0.9 GB
+  (x4plus, cunet) at the default tiles.
+
 ## What runs where
 
 | kind | engines | on the two cards |
@@ -428,8 +445,9 @@ the text encoder on the 3060, every weight resident in its GGUF's type.
 | video | `minimax-h3` (the native daemon, `--span`) and the video studio (scenes, plans, a film's clips joined) | the denoiser over both cards, nothing streamed: a clip in ~62 s from the SSD |
 | 3D | TRELLIS.2, Hunyuan3D-2mini, UniRig, RigNet, AnimateAnyMesh | one card each |
 | listening | `whisper` (large-v3-turbo) | one card |
+| upscale | `realesrgan`, `waifu2x` (their ncnn graphs) | one card |
 
-Not here yet: ACE-Step, HunyuanImage 2.1, the video upscalers; the bigger cards' forms above. The answers' `nextsycl` result key keeps
+Not here yet: ACE-Step, HunyuanImage 2.1; the bigger cards' forms above. The answers' `nextsycl` result key keeps
 its name (the platform reads it).
 
 ## Clocking it

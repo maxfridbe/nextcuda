@@ -362,11 +362,9 @@ fn upscale_cmd(cfg: &Config, args: &[String], check: bool) -> Result<(), String>
         None => model(cfg, Some(opt(args, "--model").unwrap_or("real-esrgan")))?.1,
     };
     let gs = gpus(args)?;
-    let free0 = gs[0].memory().map_err(|e| e.0)?.1.unwrap_or(0);
     let mut log = |s: String| eprintln!("{s}");
     let t0 = std::time::Instant::now();
     let e = nextcuda_image_upscale::Upscaler::load(&files, &gs, &mut log).map_err(|e| e.0)?;
-    let mut low = gs[0].memory().map_err(|e| e.0)?.1.unwrap_or(0);
     eprintln!("loaded in {:.2} s", t0.elapsed().as_secs_f64());
     let pic = nextcuda_image::Picture::decode(&std::fs::read(input).map_err(|e| format!("{input}: {e}"))?)?;
     let req = nextcuda_image::UpscaleRequest {
@@ -381,13 +379,10 @@ fn upscale_cmd(cfg: &Config, args: &[String], check: bool) -> Result<(), String>
     let mut out = None;
     for r in 0..runs {
         let (p, info) = e.upscale(&req, &mut |_| Ok(())).map_err(|e| e.0)?;
-        // what this process holds: free before the load less the least free since (another program's use counts
-        // only if it changed meanwhile)
-        low = low.min(gs[0].memory().map_err(|e| e.0)?.1.unwrap_or(0));
-        eprintln!("run {}: {} {}x{} -> {}x{} ({}x{}, {} tiles of {}) in {:.3} s; this process holds {} MiB on {}",
+        // (memory: nvidia-smi's per-process figure; the card's free memory moves with every other program on it)
+        eprintln!("run {}: {} {}x{} -> {}x{} ({}x{}, {} tiles of {}) in {:.3} s on {}",
                   r + 1, info.variant, req.picture.width, req.picture.height, p.width, p.height, info.scale,
-                  info.noise.map(|n| format!(" denoise {n}")).unwrap_or_default(), info.tiles, info.tile, info.seconds,
-                  free0.saturating_sub(low) >> 20, gs[0].name);
+                  info.noise.map(|n| format!(" denoise {n}")).unwrap_or_default(), info.tiles, info.tile, info.seconds, gs[0].name);
         out = Some(p);
     }
     let p = out.unwrap();

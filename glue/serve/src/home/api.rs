@@ -763,7 +763,8 @@ impl Home {
     /// A studio method (video.*, but upload and the guide): the studio's answer as it gave it - its status and error
     /// code (busy, not_running ...) - with the files it names as URLs through here
     fn studio_rpc(&self, name: &str, b: &Value, host: &str) -> Option<(u16, Value)> {
-        let method = name.strip_prefix("video.").filter(|m| !matches!(*m, "upload" | "describePromptGuideMD"))?;
+        // video.upscale is the image servers' (an upscaler's job), not the studio's
+        let method = name.strip_prefix("video.").filter(|m| !matches!(*m, "upload" | "describePromptGuideMD" | "upscale"))?;
         let all = self.models();
         let envelope = |st: u16, m: String| (st, json!({"ok": false, "error": rpc_error(name, st, None, &m)}));
         if let Err((st, m)) = self.checked(name, b, &all) {
