@@ -70,6 +70,7 @@ def main():
     ap.add_argument("--cover-strength", type=float, default=0.5)
     ap.add_argument("--repaint-start", type=float, default=0.0)
     ap.add_argument("--repaint-end", type=float, default=-1.0)
+    ap.add_argument("--source-lyrics-file", default="", help="edit: the words the source sings now")
     ap.add_argument("--vae-mean", action="store_true", help="the source's VAE posterior's mean, not a sample (the port's vae-sample 0: exact)")
     ap.add_argument("--checkpoint", default="acestep-v15-turbo")
     ap.add_argument("--max-steps-saved", type=int, default=99)
@@ -302,6 +303,29 @@ def main():
 
     # -- the request, as the platform's engine builds it -----------------------------------------------------------
     task = args.task
+    if task == "edit":
+        # flow-edit: each step's forward noise, and the loop's result
+        import acestep.models.common.flow_edit as fe
+
+        orig_draw = fe.draw_fwd_noise
+        draws = {"n": 0}
+
+        def draw(*a, **kw):
+            r = orig_draw(*a, **kw)
+            save(f"edit_noise_{draws['n']}.npy", r[0])
+            draws["n"] += 1
+            return r
+
+        fe.draw_fwd_noise = draw
+        orig_fe = model.flowedit_generate_audio
+
+        def fe_gen(**kw):
+            save("src.npy", kw["src_latents"][0])
+            out = orig_fe(**kw)
+            save("latents.npy", out["target_latents"][0])
+            return out
+
+        model.flowedit_generate_audio = fe_gen
     a2a = task in ("cover", "repaint")
     instrumental = not lyrics.strip()
     params = GenerationParams(
@@ -330,9 +354,16 @@ def main():
         repaint_strength=0.5,
         chunk_mask_mode="explicit" if task == "repaint" else "auto",
     )
-    if not args.thinking:
-        # the platform's engine: an uninitialised LLMHandler, which generate_music skips
-        pass
+    if task == "edit":
+        # the platform's _edit_params: the same caption on both sides, the old words the source's
+        import soundfile as sf
+
+        before = open(args.source_lyrics_file).read().strip()
+        params = GenerationParams(task_type="text2music", src_audio=args.src, flow_edit_morph=True, caption=args.caption[:512],
+                                  flow_edit_source_caption=args.caption[:512], lyrics=lyrics[:4096], flow_edit_source_lyrics=before[:4096],
+                                  flow_edit_n_min=0.0, flow_edit_n_max=1.0, flow_edit_n_avg=1, duration=float(sf.info(args.src).duration),
+                                  instrumental=False, vocal_language=args.language, inference_steps=args.steps, guidance_scale=7.0,
+                                  shift=args.shift, infer_method="ode", thinking=False)
     config = GenerationConfig(batch_size=1, use_random_seed=False, seeds=[args.seed % 2**31], audio_format="flac")
     jdump("request.json", {"args": vars(args), "params": params.to_dict()})
     import tempfile

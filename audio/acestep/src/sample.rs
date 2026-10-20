@@ -105,6 +105,57 @@ pub fn repaint_blend(x: &mut [f32], clean: &[f32], mask: &[bool], cf: usize) {
     }
 }
 
+/// APG's momentum (MomentumBuffer, -0.75): the running average of the guidance differences
+pub struct Momentum {
+    avg: Option<Vec<f32>>,
+}
+
+impl Default for Momentum {
+    fn default() -> Momentum {
+        Momentum { avg: None }
+    }
+}
+
+/// apg_forward (eta 0, norm threshold 2.5) over latents [frames, 64] with dims=[1] - the frames: each channel's
+/// difference (its momentum's running average) clipped to norm 2.5 over the frames, its part along the conditional
+/// prediction (that channel's, over the frames) taken out in double, scaled by g - 1 onto the conditional
+pub fn apg(cond: &[f32], uncond: &[f32], g: f32, m: &mut Momentum) -> Vec<f32> {
+    let mut diff: Vec<f32> = cond.iter().zip(uncond).map(|(c, u)| c - u).collect();
+    if let Some(a) = &m.avg {
+        for (d, r) in diff.iter_mut().zip(a) {
+            *d += -0.75 * r;
+        }
+    }
+    m.avg = Some(diff.clone());
+    let frames = cond.len() / LATENT;
+    let mut out = cond.to_vec();
+    for c in 0..LATENT {
+        let col = |v: &[f32], f: usize| v[f * LATENT + c] as f64;
+        let dn = (0..frames).map(|f| col(&diff, f).powi(2)).sum::<f64>().sqrt() as f32;
+        let sc = (2.5f32 / dn).min(1.0);
+        let pn = (0..frames).map(|f| col(cond, f).powi(2)).sum::<f64>().sqrt().max(1e-12);
+        // F.normalize's eps 1e-12; the clipped difference's projection on the unit conditional column
+        let dot: f64 = (0..frames).map(|f| (diff[f * LATENT + c] * sc) as f64 * col(cond, f) / pn).sum();
+        for f in 0..frames {
+            let d = (diff[f * LATENT + c] * sc) as f64;
+            let par = dot * col(cond, f) / pn;
+            out[f * LATENT + c] = cond[f * LATENT + c] + (g - 1.0) * (d - par) as f32;
+        }
+    }
+    out
+}
+
+/// The base model's schedule: linspace(1, 0, n + 1) shifted (its final 0 kept)
+pub fn schedule_base(steps: usize, shift: f32) -> Vec<f32> {
+    let n = steps.max(1);
+    (0..=n)
+        .map(|i| {
+            let t = (1.0 - i as f64 / n as f64) as f32;
+            if shift != 1.0 { shift * t / (1.0 + (shift - 1.0) * t) } else { t }
+        })
+        .collect()
+}
+
 /// A seeded standard normal draw (xorshift64* and Box-Muller): the starting noise (the reference's torch generator is
 /// not reproduced - a check feeds its noise instead)
 pub struct Rng(u64);
@@ -185,6 +236,22 @@ mod tests {
         repaint_blend(&mut y, &clean, &mask, 1);
         // one frame of fade each side: linspace(0, 1, 3)[1:-1] = 0.5
         assert_eq!((y[0], y[LATENT], y[2 * LATENT], y[4 * LATENT]), (1.0, 3.0, 5.0, 3.0));
+    }
+
+    #[test]
+    fn apg_takes_out_the_part_along_the_prediction() {
+        // one channel's difference along the conditional prediction is dropped, its orthogonal part scaled by g - 1
+        let frames = 2;
+        let mut cond = vec![0f32; frames * LATENT];
+        let mut unc = vec![0f32; frames * LATENT];
+        cond[0] = 1.0;
+        unc[0] = 0.5;
+        unc[LATENT] = -0.5;
+        let out = apg(&cond, &unc, 3.0, &mut Momentum::default());
+        // diff (0.5, 0.5): parallel (0.5, 0), orthogonal (0, 0.5): out = cond + 2 (0, 0.5)
+        assert!((out[0] - 1.0).abs() < 1e-6 && (out[LATENT] - 1.0).abs() < 1e-6, "{} {}", out[0], out[LATENT]);
+        let s = schedule_base(4, 1.0);
+        assert_eq!(s, vec![1.0, 0.75, 0.5, 0.25, 0.0]);
     }
 
     #[test]

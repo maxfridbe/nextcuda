@@ -59,7 +59,12 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "key", env: "", value: "\"C major\"", help: "the key and scale (\"A minor\", \"F# major\")", at: At::Request },
     EngineOption { name: "time-signature", env: "", value: "4", help: "beats a bar (2, 3, 4, 6)", at: At::Request },
     EngineOption { name: "language", env: "", value: "en", help: "the lyrics' language (a code: en, zh, ja ...; unknown: none said)", at: At::Request },
-    EngineOption { name: "task", env: "", value: "text2music|cover|repaint", help: "what the song is made from: the words alone, or the request's recording performed anew (cover) or a span of it made again (repaint; an end past it extends it)", at: At::Request },
+    EngineOption { name: "task", env: "", value: "text2music|cover|repaint|edit", help: "what the song is made from: the words alone, or the request's recording performed anew (cover), a span of it made again (repaint; an end past it extends it) or its words changed (edit: source-lyrics the words it sings now)", at: At::Request },
+    EngineOption { name: "track", env: "", value: "vocals", help: "lego (the base checkpoint): the track made in the recording's context (vocals, drums, bass, guitar ...)", at: At::Request },
+    EngineOption { name: "source-lyrics", env: "", value: "TEXT", help: "edit: the words the recording sings now (the request's lyrics are the new ones)", at: At::Request },
+    EngineOption { name: "edit-n-min", env: "", value: "0", help: "edit: where in the schedule the edit starts (0 to 0.9; later: a lighter touch)", at: At::Request },
+    EngineOption { name: "edit-n-max", env: "", value: "1", help: "edit: where it ends (past it the new words alone finish the flow)", at: At::Request },
+    EngineOption { name: "edit-n-avg", env: "", value: "1", help: "edit: draws averaged each step (1 to 4)", at: At::Request },
     EngineOption { name: "cover-strength", env: "", value: "0.5", help: "cover / repaint: the share of the steps on the recording's context (audio_cover_strength; the rest on the plain one)", at: At::Request },
     EngineOption { name: "cover-noise", env: "", value: "0", help: "cover: the flow started that close to the recording (cover_noise_strength; 0: from noise)", at: At::Request },
     EngineOption { name: "repaint-start", env: "", value: "0", help: "repaint: the span's start, seconds into the recording (before 0: silence put before it)", at: At::Request },
@@ -117,6 +122,12 @@ pub enum Task {
     Cover,
     /// a span of the source made again (an end past the source: the song extended to it)
     Repaint,
+    /// the source's words changed (flow-edit: the velocity under the new words less that under the old integrated
+    /// from the source itself; text2music's silence context on both sides)
+    Edit,
+    /// a track made in the context of the source (the base checkpoint's: the platform's vocalize - the vocals over an
+    /// instrumental, mixed back by the platform)
+    Lego,
 }
 
 impl Task {
@@ -125,7 +136,8 @@ impl Task {
             "" | "text2music" => Task::Text2Music,
             "cover" => Task::Cover,
             "repaint" | "extend" => Task::Repaint,
-            "edit" | "lego" => return Err(Error(format!("task {s}: not in this build yet (text2music, cover, repaint)"))),
+            "edit" => Task::Edit,
+            "lego" => Task::Lego,
             t => return Err(Error(format!("task {t}: text2music, cover, repaint (extend), edit or lego"))),
         })
     }
@@ -167,6 +179,8 @@ pub fn round_even(x: f64) -> i64 {
 #[derive(Clone, Debug)]
 pub struct Song {
     pub task: Task,
+    /// classifier-free guidance through APG (the base model; turbo is distilled: 1)
+    pub guidance: f32,
     pub caption: String,
     pub lyrics: String,
     pub language: String,
@@ -195,6 +209,9 @@ pub struct Song {
     pub codes: Option<Vec<u32>>,
     /// the VAE decode's window (latent frames); None: the reference's choice for the memory free
     pub decode_chunk: Option<usize>,
+    /// an edit: the words the source sings now, and the edit's window of the schedule (n_min, n_max) and draws a step
+    pub source_lyrics: Option<String>,
+    pub edit: (f64, f64, usize),
 }
 
 /// What the stages made (the check reads them)
@@ -308,6 +325,9 @@ impl AceStep {
         };
         let flag = |n: &str, env: &str, d: bool| self.opt(req, n, env).map_or(d, |v| !matches!(v.trim(), "0" | "false" | "off" | "no"));
         let task = Task::parse(&self.opt(req, "task", "").unwrap_or_default())?;
+        if task == Task::Lego && self.dit.cfg.turbo {
+            return Err(Error("task lego: the base checkpoint's (acestep-1.5-base); this is the turbo".into()));
+        }
         let bpm = num("bpm", "")?.filter(|b| *b > 0.0).map(|b| b as u32);
         let lyrics = req.lyrics.clone().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).unwrap_or_else(|| "[Instrumental]".into());
         let mut caption: String = req.prompt.trim().chars().take(512).collect();
@@ -331,7 +351,9 @@ impl AceStep {
                     return Err(Error(format!("audio: {dur:.0} s, past the longest song ({MAX_SECONDS} s)")));
                 }
                 // the platform's engine: no description, the source's sound kept
-                if caption.is_empty() {
+                if caption.is_empty() && task == Task::Edit {
+                    caption = "the same song, same singer, same arrangement and production".into();
+                } else if caption.is_empty() {
                     caption = if task == Task::Cover {
                         "a faithful cover of the source recording, keeping its style, instrumentation, tempo and mood".into()
                     } else {
@@ -372,8 +394,8 @@ impl AceStep {
         // text2music's is 1 (generate_music neutralizes it) - unless the planner's codes make it a cover, where the
         // platform's 0.5 stands
         let planned = task == Task::Text2Music && self.planner.is_some() && flag("planner", "", true);
-        let strength = if task == Task::Text2Music && !planned { 1.0 } else { num("cover-strength", "")?.unwrap_or(0.5).clamp(0.0, 1.0) };
-        let cover_noise = if task == Task::Text2Music { 0.0 } else { num("cover-noise", "")?.unwrap_or(0.0).clamp(0.0, 1.0) };
+        let strength = if (task == Task::Text2Music && !planned) || task == Task::Edit || task == Task::Lego { 1.0 } else { num("cover-strength", "")?.unwrap_or(0.5).clamp(0.0, 1.0) };
+        let cover_noise = if matches!(task, Task::Text2Music | Task::Edit | Task::Lego) { 0.0 } else { num("cover-noise", "")?.unwrap_or(0.0).clamp(0.0, 1.0) };
         Ok(Song {
             task,
             caption,
@@ -382,11 +404,16 @@ impl AceStep {
             metas: Metas { bpm, timesignature: self.opt(req, "time-signature", ""), keyscale: self.opt(req, "key", ""), duration: Some(seconds) },
             // create_target_wavs: round(seconds, 1) of samples, a frame each 1920
             frames: ((seconds * 10.0).round() / 10.0 * RATE as f64) as usize / vae::HOP,
-            steps: req.steps.unwrap_or(8) as usize,
+            steps: req.steps.unwrap_or(if self.dit.cfg.turbo { 8 } else { 50 }) as usize,
+            guidance: if self.dit.cfg.turbo { 1.0 } else { req.cfg.unwrap_or(7.0) },
             shift: num("shift", "NS_ACE_SHIFT")?.unwrap_or(3.0) as f32,
             dcw: flag("dcw", "NS_ACE_DCW", self.dit.cfg.turbo),
             seed: req.seed,
-            instruction: instruction("text2music", None),
+            instruction: match task {
+                // the platform's LEGO_VOCALS (instruction passed as is): the track named, upper case
+                Task::Lego => instruction("lego", Some(&self.opt(req, "track", "").unwrap_or_else(|| "vocals".into()).to_uppercase())),
+                _ => instruction("text2music", None),
+            },
             source,
             cover_strength: strength,
             cover_noise,
@@ -395,6 +422,16 @@ impl AceStep {
             planner: task == Task::Text2Music && self.planner.is_some() && flag("planner", "", true),
             codes: None,
             decode_chunk: num("decode-chunk", "NS_ACE_DECODE_CHUNK")?.filter(|c| *c >= 16.0).map(|c| c as usize),
+            source_lyrics: match task {
+                Task::Edit => Some(self.opt(req, "source-lyrics", "").map(|l| l.trim().chars().take(4096).collect::<String>()).filter(|l| !l.is_empty())
+                    .ok_or_else(|| Error("task edit: source-lyrics (the words the recording sings now)".into()))?),
+                _ => None,
+            },
+            edit: {
+                let lo = num("edit-n-min", "")?.unwrap_or(0.0).clamp(0.0, 1.0);
+                let hi = num("edit-n-max", "")?.unwrap_or(1.0).clamp(lo, 1.0);
+                (lo, hi, num("edit-n-avg", "")?.unwrap_or(1.0).max(1.0) as usize)
+            },
         })
     }
 
@@ -454,8 +491,10 @@ impl AceStep {
         match song.task {
             // the planner's codes through the detokenizer: the source and its hints at once (precomputed_lm_hints)
             Task::Text2Music if song.codes.is_some() => src = target.clone().unwrap_or_default(),
-            Task::Text2Music => {}
-            Task::Cover => src = target.clone().unwrap_or_default(),
+            Task::Text2Music | Task::Edit => {}
+            // the repaint over the whole source that lego is: the source kept, every frame in the mask (no injection, no
+            // blend, no splice)
+            Task::Cover | Task::Lego => src = target.clone().unwrap_or_default(),
             Task::Repaint => {
                 let r = song.repaint.as_ref().ok_or_else(|| Error("repaint: no span".into()))?;
                 let fr = |sec: f64| ((sec * RATE as f64) / vae::HOP as f64).floor() as i64;
@@ -514,6 +553,9 @@ impl AceStep {
             x = noise.iter().zip(src).map(|(n, c)| t * n + (1.0 - t) * c).collect();
             ts = ts[i..].to_vec();
         }
+        if !self.dit.cfg.turbo {
+            return self.sample_base(s, song, plan, enc, noise, trace, progress);
+        }
         let n = ts.len();
         let cover_steps = (n as f64 * plan.strength) as usize;
         let inject = plan.repaint.as_ref().map_or(0, |r| round_even(r.2 * n as f64).max(0) as usize);
@@ -556,6 +598,131 @@ impl AceStep {
         }
         progress(n as u32, n as u32)?;
         Ok(x)
+    }
+
+    /// The base model's loop (modeling_acestep_v15_base.py generate_audio): Euler over linspace(1, 0, n + 1) shifted,
+    /// guidance above 1 through APG against the null condition (null_condition_emb on every row of the conditions), DCW
+    /// only when asked (off for base), a repaint's injection and blend as the turbo's
+    #[allow(clippy::too_many_arguments)]
+    fn sample_base(&self, s: &mut Scratch, song: &Song, plan: &Plan, enc: &[f32], noise: Vec<f32>, trace: &mut Trace,
+                   progress: &mut dyn FnMut(u32, u32) -> Result<()>) -> Result<Vec<f32>> {
+        let mut ts = sample::schedule_base(song.steps, song.shift);
+        let mut x = noise.clone();
+        if let Some((src, cn)) = &plan.start {
+            let level = 1.0 - cn;
+            let (i, t) = ts[..ts.len() - 1].iter().enumerate().fold((0, ts[0]), |b, (i, t)| if ((*t as f64) - level).abs() < ((b.1 as f64) - level).abs() { (i, *t) } else { b });
+            x = noise.iter().zip(src).map(|(n, c)| t * n + (1.0 - t) * c).collect();
+            ts = ts[i..].to_vec();
+        }
+        let n = ts.len() - 1;
+        let cover_steps = (n as f64 * plan.strength) as usize;
+        let inject = plan.repaint.as_ref().map_or(0, |r| round_even(r.2 * n as f64).max(0) as usize);
+        let c = self.dit.cfg.hidden;
+        let null_of = |e: &[f32]| -> Vec<f32> { (0..e.len() / c).flat_map(|_| self.dit.null_cond.iter().copied()).collect() };
+        let cfg = song.guidance > 1.0;
+        let mut cond = self.dit.cond(&self.ops, s, enc)?;
+        let mut null = if cfg { Some(self.dit.cond(&self.ops, s, &null_of(enc))?) } else { None };
+        let mut ctx = &plan.ctx;
+        let mut momentum = sample::Momentum::default();
+        let mut switched = false;
+        for i in 0..n {
+            progress(i as u32, n as u32)?;
+            let (t, tp) = (ts[i], ts[i + 1]);
+            if i >= cover_steps && !switched {
+                switched = true;
+                if let Some((e, cx)) = &plan.nc {
+                    cond = self.dit.cond(&self.ops, s, e)?;
+                    if cfg {
+                        null = Some(self.dit.cond(&self.ops, s, &null_of(e))?);
+                    }
+                    ctx = cx;
+                }
+            }
+            let vc = self.dit.velocity(&self.ops, s, &x, ctx, t, &cond)?;
+            let v = match &null {
+                Some(nc) => {
+                    let vu = self.dit.velocity(&self.ops, s, &x, ctx, t, nc)?;
+                    sample::apg(&vc, &vu, song.guidance, &mut momentum)
+                }
+                None => vc,
+            };
+            let y = denoised(&x, &v, t);
+            euler(&mut x, &v, t - tp);
+            if song.dcw {
+                let (lo, hi) = dcw_strengths(t, 0.05, 0.02);
+                dcw_double(&mut x, &y, lo, hi);
+            }
+            if let Some((mask, clean, _, _)) = &plan.repaint {
+                if i < inject {
+                    repaint_inject(&mut x, clean, mask, tp, &noise);
+                }
+            }
+            trace.velocities.push(v);
+        }
+        if let Some((mask, clean, _, cf)) = &plan.repaint {
+            if *cf > 0 {
+                repaint_blend(&mut x, clean, mask, *cf);
+            }
+        }
+        progress(n as u32, n as u32)?;
+        Ok(x)
+    }
+
+    /// Flow-edit (models/common/flow_edit.py, the turbo's: no guidance, no DCW): from the source latents, each step of
+    /// the window [int(n n_min), int(n n_max)) moves the edit by dt (V_tar - V_src) at x_src renoised by a fresh draw
+    /// (zt_tar = edit + zt_src - x_src), averaged over `n_avg` draws; past the window the target alone Euler-steps on
+    /// from edit + xt_src - x_src. `src_enc` / `tar_enc`: the conditions under the old and the new words
+    #[allow(clippy::too_many_arguments)]
+    pub fn flow_edit(&self, s: &mut Scratch, song: &Song, plan: &Plan, src_enc: &[f32], tar_enc: &[f32], x_src: &[f32],
+                     noise_of: &mut dyn FnMut(usize) -> Result<Vec<f32>>, progress: &mut dyn FnMut(u32, u32) -> Result<()>) -> Result<Vec<f32>> {
+        let n = song.steps.clamp(1, 20);
+        let mut ts = schedule(n, song.shift);
+        ts.push(0.0);
+        let (lo, hi, avg) = song.edit;
+        let (n_min, n_max) = ((n as f64 * lo) as usize, (n as f64 * hi) as usize);
+        let cs = self.dit.cond(&self.ops, s, src_enc)?;
+        let ct = self.dit.cond(&self.ops, s, tar_enc)?;
+        let mut edit = x_src.to_vec();
+        let mut xt_tar: Option<Vec<f32>> = None;
+        for i in 0..n {
+            progress(i as u32, n as u32)?;
+            if i < n_min {
+                continue;
+            }
+            let (t, tp) = (ts[i], ts[i + 1]);
+            let dt = tp - t;
+            if i < n_max {
+                let mut sum = vec![0f32; edit.len()];
+                for _ in 0..avg {
+                    let noise = noise_of(edit.len())?;
+                    let zs: Vec<f32> = x_src.iter().zip(&noise).map(|(x, z)| (1.0 - t) * x + t * z).collect();
+                    let zt: Vec<f32> = edit.iter().zip(&zs).zip(x_src).map(|((e, z), x)| e + z - x).collect();
+                    let vs = self.dit.velocity(&self.ops, s, &zs, &plan.ctx, t, &cs)?;
+                    let vt = self.dit.velocity(&self.ops, s, &zt, &plan.ctx, t, &ct)?;
+                    for (k, a) in sum.iter_mut().enumerate() {
+                        *a += vt[k] - vs[k];
+                    }
+                }
+                for (e, d) in edit.iter_mut().zip(&sum) {
+                    *e += dt * d / avg as f32;
+                }
+            } else {
+                let mut x = match xt_tar.take() {
+                    Some(x) => x,
+                    None => {
+                        let noise = noise_of(edit.len())?;
+                        edit.iter().zip(x_src).zip(&noise).map(|((e, x), z)| e + ((1.0 - t) * x + t * z) - x).collect()
+                    }
+                };
+                let v = self.dit.velocity(&self.ops, s, &x, &plan.ctx, t, &ct)?;
+                for (a, b) in x.iter_mut().zip(&v) {
+                    *a += dt * b;
+                }
+                xt_tar = Some(x);
+            }
+        }
+        progress(n as u32, n as u32)?;
+        Ok(xt_tar.unwrap_or(edit))
     }
 
     /// A song's latents to its sound: the VAE (a peak over 1 brought to 1), a repaint's source spliced back outside its
@@ -676,7 +843,11 @@ impl AudioEngine for AceStep {
     }
 
     fn defaults(&self) -> Defaults {
-        Defaults { seconds: 30.0, max_seconds: MAX_SECONDS, steps: 8, cfg: 1.0, rate: RATE }
+        if self.dit.cfg.turbo {
+            Defaults { seconds: 30.0, max_seconds: MAX_SECONDS, steps: 8, cfg: 1.0, rate: RATE }
+        } else {
+            Defaults { seconds: 30.0, max_seconds: MAX_SECONDS, steps: 50, cfg: 7.0, rate: RATE }
+        }
     }
 
     fn lyrics(&self) -> bool {
@@ -725,9 +896,22 @@ impl AudioEngine for AceStep {
             None
         };
         progress(Step { phase: "prompt", at: 1, of: 1, seconds: el() })?;
+        let src_enc = match &song.source_lyrics {
+            Some(l) => Some(self.conditions_as(&mut s, &Song { lyrics: l.clone(), ..song.clone() }, &song.instruction, &mut Trace::default())?),
+            None => None,
+        };
         let plan = self.plan(&mut s, &song, target, nc, &mut trace)?;
-        let noise = Rng::new(song.seed).normals(plan.frames * LATENT);
-        let lat = self.sample(&mut s, &song, &plan, &enc, noise, &mut trace, &mut |a, b| progress(Step { phase: "flow", at: a, of: b, seconds: el() }))?;
+        let lat = match &src_enc {
+            Some(se) => {
+                let x_src = trace.target.clone();
+                let mut rng = Rng::new(song.seed);
+                self.flow_edit(&mut s, &song, &plan, se, &enc, &x_src, &mut |n| Ok(rng.normals(n)), &mut |a, b| progress(Step { phase: "flow", at: a, of: b, seconds: el() }))?
+            }
+            None => {
+                let noise = Rng::new(song.seed).normals(plan.frames * LATENT);
+                self.sample(&mut s, &song, &plan, &enc, noise, &mut trace, &mut |a, b| progress(Step { phase: "flow", at: a, of: b, seconds: el() }))?
+            }
+        };
         s.clear();
         let out = self.sound(&mut s, &song, &lat, plan.out_frames, normalize, &mut |a, b| progress(Step { phase: "decode", at: a, of: b, seconds: el() }));
         s.clear();

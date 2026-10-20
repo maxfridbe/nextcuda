@@ -103,6 +103,10 @@ pub fn request(dir: &Path) -> Result<AudioRequest> {
         extra.insert("cover-strength".into(), a["cover_strength"].as_f64().unwrap_or(0.5).to_string());
         extra.insert("repaint-start".into(), a["repaint_start"].as_f64().unwrap_or(0.0).to_string());
         extra.insert("repaint-end".into(), a["repaint_end"].as_f64().unwrap_or(-1.0).to_string());
+        if task == "edit" {
+            let f = a["source_lyrics_file"].as_str().unwrap_or("");
+            extra.insert("source-lyrics".into(), std::fs::read_to_string(f).map_err(|e| Error(format!("{f}: {e}")))?.trim().to_string());
+        }
         let f = a["src"].as_str().unwrap_or("");
         let b = std::fs::read(f).map_err(|e| Error(format!("the reference's source {f}: {e}")))?;
         source = Some(nextcuda_audio::read_audio(&b).map_err(|e| Error(format!("{f}: {e}")))?);
@@ -241,6 +245,7 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
             Some((enc, _)) => Some(e.dit.cond(&e.ops, &mut s, enc)?),
             None => None,
         };
+        let edit_tar = if song.task == Task::Edit { Some(e.dit.cond(&e.ops, &mut s, &f32s(dir, "enc_1.npy")?)?) } else { None };
         for (i, st) in steps.as_array().into_iter().flatten().enumerate() {
             let x = dir.join(format!("step_{i}_x.npy"));
             if !x.is_file() {
@@ -248,6 +253,8 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
             }
             let (c, ctx) = match (&cond_nc, &plan.nc) {
                 (Some(c), Some((_, ctx))) if i >= switch => (c, ctx),
+                // an edit's calls: the source's (old words), then the target's, each step
+                _ if song.task == Task::Edit && i % 2 == 1 => (edit_tar.as_ref().unwrap_or(&cond), &plan.ctx),
                 _ => (&cond, &plan.ctx),
             };
             let t0 = Instant::now();
@@ -260,7 +267,15 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
         let t0 = Instant::now();
         let mut t = Trace::default();
         let (plan, enc) = plan_of(e, dir, &song)?;
-        let lat = e.sample(&mut s, &song, &plan, &enc, f32s(dir, "noise.npy")?, &mut t, &mut |_, _| Ok(()))?;
+        let lat = if song.task == Task::Edit {
+            let mut k = 0;
+            e.flow_edit(&mut s, &song, &plan, &enc, &f32s(dir, "enc_1.npy")?, &f32s(dir, "src.npy")?, &mut |_| {
+                k += 1;
+                f32s(dir, &format!("edit_noise_{}.npy", k - 1))
+            }, &mut |_, _| Ok(()))?
+        } else {
+            e.sample(&mut s, &song, &plan, &enc, f32s(dir, "noise.npy")?, &mut t, &mut |_, _| Ok(()))?
+        };
         line(log, &format!("sample ({:.2} s)", t0.elapsed().as_secs_f64()), &lat, &f32s(dir, "latents.npy")?, &mut worst);
     }
     if on("vae") {
@@ -306,13 +321,25 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
         let plan = e.plan(&mut s, &song, target, nc, &mut t)?;
         if let Ok(want) = f32s(dir, "src.npy") {
             if song.task != Task::Text2Music || song.codes.is_some() {
-                let src: Vec<f32> = (0..plan.frames).flat_map(|f| plan.ctx[f * 2 * LATENT..f * 2 * LATENT + LATENT].to_vec()).collect();
+                let src: Vec<f32> = if song.task == Task::Edit { t.target.clone() } else {
+                    (0..plan.frames).flat_map(|f| plan.ctx[f * 2 * LATENT..f * 2 * LATENT + LATENT].to_vec()).collect()
+                };
                 let what = if song.task == Task::Cover { "song: the cover's hints" } else { "song: the source latents" };
                 let want = if song.task == Task::Cover { f32s(dir, "ctx.npy")?.chunks(2 * LATENT).flat_map(|c| c[..LATENT].to_vec()).collect() } else { want };
                 line(log, what, &src, &want, &mut worst);
             }
         }
-        let lat = e.sample(&mut s, &song, &plan, &enc, f32s(dir, "noise.npy")?, &mut t, &mut |_, _| Ok(()))?;
+        let lat = if song.task == Task::Edit {
+            let old = crate::Song { lyrics: song.source_lyrics.clone().unwrap_or_default(), ..song.clone() };
+            let se = e.conditions_as(&mut s, &old, &song.instruction, &mut Trace::default())?;
+            let mut k = 0;
+            e.flow_edit(&mut s, &song, &plan, &se, &enc, &t.target.clone(), &mut |_| {
+                k += 1;
+                f32s(dir, &format!("edit_noise_{}.npy", k - 1))
+            }, &mut |_, _| Ok(()))?
+        } else {
+            e.sample(&mut s, &song, &plan, &enc, f32s(dir, "noise.npy")?, &mut t, &mut |_, _| Ok(()))?
+        };
         line(log, "song: the latents", &lat, &f32s(dir, "latents.npy")?, &mut worst);
         let a = e.sound(&mut s, &song, &lat, plan.out_frames, true, &mut |_, _| Ok(()))?;
         let n = a.samples.len() / 2;
