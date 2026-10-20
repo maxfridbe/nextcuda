@@ -70,11 +70,14 @@ def main():
     ap.add_argument("--cover-strength", type=float, default=0.5)
     ap.add_argument("--repaint-start", type=float, default=0.0)
     ap.add_argument("--repaint-end", type=float, default=-1.0)
+    ap.add_argument("--vae-mean", action="store_true", help="the source's VAE posterior's mean, not a sample (the port's vae-sample 0: exact)")
     ap.add_argument("--checkpoint", default="acestep-v15-turbo")
     ap.add_argument("--max-steps-saved", type=int, default=99)
     ap.add_argument("--platform-engine", default=os.path.expanduser("~/creative-platform/current/python"),
                     help="where cp_worker lives (for ace_compat)")
     args = ap.parse_args()
+    if args.src:
+        args.src = os.path.abspath(os.path.expanduser(args.src))
     OUT = os.path.expanduser(args.out)
     os.makedirs(OUT, exist_ok=True)
     # stripped, as the platform's engine strips them
@@ -90,6 +93,10 @@ def main():
 
     ace_compat.apply()
     torch.manual_seed(0)
+    if args.vae_mean:
+        from diffusers.models.autoencoders.autoencoder_oobleck import OobleckDiagonalGaussianDistribution
+
+        OobleckDiagonalGaussianDistribution.sample = lambda self, generator=None: self.mean
     from acestep.handler import AceStepHandler
     from acestep.inference import GenerationConfig, GenerationParams, generate_music
     from acestep.llm_inference import LLMHandler

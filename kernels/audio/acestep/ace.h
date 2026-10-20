@@ -17,6 +17,11 @@ typedef struct ns_gpu ns_gpu;
 int ns_audio_ace_attn_window(ns_gpu* g, const void* q, int64_t qs, const void* k, const void* v, int64_t kvs, int64_t S, int64_t Hq, int64_t Hkv,
                              int64_t w, float scale, void* out, int64_t os);
 
+/* The same attention over sequences of `seg` rows side by side: row i reads the keys of rows [seg (i / seg), seg (i / seg)
+ * + seg) alone (an attention pooler's or detokenizer's patches, each a sequence of its own). */
+int ns_audio_ace_attn_segments(ns_gpu* g, const void* q, int64_t qs, const void* k, const void* v, int64_t kvs, int64_t S, int64_t Hq, int64_t Hkv,
+                               int64_t seg, float scale, void* out, int64_t os);
+
 /* Oobleck's snake, in place allowed: out[c, t] = x[c, t] + inv_beta[c] * sin(alpha[c] x[c, t])^2 for x float32 [C, L]
  * (alpha = exp of the checkpoint's, inv_beta = 1 / (exp(beta) + 1e-9): made once at load) */
 int ns_audio_ace_snake(ns_gpu* g, const float* x, int64_t C, int64_t L, const float* alpha, const float* inv_beta, float* out);

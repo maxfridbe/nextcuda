@@ -32,9 +32,10 @@ __device__ inline float warp_sum(float v) {
 
 unsigned blocks(int64_t n, int t = 256) { return (unsigned) ((n + t - 1) / t); }
 
-// a warp a query row, each lane 4 of the head's 128 features; online softmax over the window's keys
+// a warp a query row, each lane 4 of the head's 128 features; online softmax over the window's keys - or, seg > 0,
+// over the keys of the row's own segment (rows [seg i/seg, seg i/seg + seg): sequences of seg rows side by side)
 __global__ void attn_window_k(const uint16_t* q, int64_t qs, const uint16_t* k, const uint16_t* v, int64_t kvs, int64_t S, int64_t Hq, int64_t Hkv,
-                              int64_t w, float scale, uint16_t* out, int64_t os) {
+                              int64_t w, int64_t seg, float scale, uint16_t* out, int64_t os) {
     const int lane = threadIdx.x & (WARP - 1), warp = threadIdx.x / WARP;
     const int64_t i = (int64_t) blockIdx.x * ROWS + warp, h = blockIdx.y;
     if (i >= S) return;
@@ -43,8 +44,12 @@ __global__ void attn_window_k(const uint16_t* q, int64_t qs, const uint16_t* k, 
     float qv[4];
 #pragma unroll
     for (int d = 0; d < 4; ++d) qv[d] = bf(qp[d]) * scale;
-    const int64_t j0 = w < 0 ? 0 : (i - w > 0 ? i - w : 0);
-    const int64_t j1 = w < 0 ? S - 1 : (i + w < S - 1 ? i + w : S - 1);
+    int64_t j0 = w < 0 ? 0 : (i - w > 0 ? i - w : 0);
+    int64_t j1 = w < 0 ? S - 1 : (i + w < S - 1 ? i + w : S - 1);
+    if (seg > 0) {
+        j0 = i / seg * seg;
+        j1 = j0 + seg - 1 < S - 1 ? j0 + seg - 1 : S - 1;
+    }
     float m = -INFINITY, l = 0.0f, o[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     for (int64_t j = j0; j <= j1; ++j) {
         const uint16_t* kp = k + j * kvs + hk * HD + lane * 4;
@@ -86,7 +91,21 @@ int ns_audio_ace_attn_window(ns_gpu* g, const void* q, int64_t qs, const void* k
     if (qs % 4 || kvs % 4 || os % 4) return ns_fail("ns_audio_ace_attn_window: row strides must be multiples of 4 values");
     NS_CU(cudaSetDevice(g->dev));
     const dim3 grid((unsigned) ((S + ROWS - 1) / ROWS), (unsigned) Hq);
-    attn_window_k<<<grid, ROWS * WARP, 0, g->q>>>((const uint16_t*) q, qs, (const uint16_t*) k, (const uint16_t*) v, kvs, S, Hq, Hkv, w, scale,
+    attn_window_k<<<grid, ROWS * WARP, 0, g->q>>>((const uint16_t*) q, qs, (const uint16_t*) k, (const uint16_t*) v, kvs, S, Hq, Hkv, w, 0, scale,
+                                                 (uint16_t*) out, os);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_ace_attn_segments(ns_gpu* g, const void* q, int64_t qs, const void* k, const void* v, int64_t kvs, int64_t S, int64_t Hq, int64_t Hkv,
+                               int64_t seg, float scale, void* out, int64_t os) {
+    if (S <= 0) return 0;
+    if (seg <= 0) return ns_fail("ns_audio_ace_attn_segments: a segment of at least one row");
+    if (Hkv <= 0 || Hq % Hkv) return ns_fail("ns_audio_ace_attn_segments: query heads are not a multiple of the key heads");
+    if (qs % 4 || kvs % 4 || os % 4) return ns_fail("ns_audio_ace_attn_segments: row strides must be multiples of 4 values");
+    NS_CU(cudaSetDevice(g->dev));
+    const dim3 grid((unsigned) ((S + ROWS - 1) / ROWS), (unsigned) Hq);
+    attn_window_k<<<grid, ROWS * WARP, 0, g->q>>>((const uint16_t*) q, qs, (const uint16_t*) k, (const uint16_t*) v, kvs, S, Hq, Hkv, -1, seg, scale,
                                                  (uint16_t*) out, os);
     NS_LAUNCH_CHECK();
     return 0;

@@ -6,7 +6,10 @@
 //!   te        text.json's caption ids              -> te_out.npy [L, 1024]; lyric_emb.npy (the lyrics' embeddings)
 //!   enc       te_out, lyric_emb, refer.npy         -> enc.npy [lyrics + 1 + caption, 2048] (the packed conditions)
 //!   velocity  step_<i>_x, ctx.npy, steps.json, enc -> step_<i>_v.npy (every step, each from the reference's x)
-//!   sample    noise.npy, enc.npy                   -> latents.npy (the whole flow from the reference's noise)
+//!   encode    vae_enc_in.npy (a task's source)      -> vae_enc_out.npy (the first window's posterior mean)
+//!   hints     src.npy (a cover's source latents)    -> ctx.npy's first 64 channels (the codes and back)
+//!   sample    noise.npy, enc.npy                   -> latents.npy (the whole flow from the reference's noise; a cover's
+//!             or repaint's plan from its ctx / enc_1 / ctx_1 / repaint_mask / clean_src)
 //!   vae       vae_in.npy                           -> wav_raw.npy [2, S] (the first window)
 //!   vaefull   latents.npy                          -> audio.npy (every window, the peak)
 //!   song      request.json, noise.npy              -> audio.npy (all of it: the texts, the flow, the decode, the peak)
@@ -20,7 +23,7 @@ use serde_json::Value;
 
 use crate::nn::Scratch;
 use crate::sample::LATENT;
-use crate::{AceStep, Trace};
+use crate::{AceStep, Plan, Task, Trace};
 
 /// A little-endian .npy of float32, int32 or int64 (C order): (shape, values as f64)
 pub fn read_npy(path: &Path) -> Result<(Vec<usize>, Vec<f64>)> {
@@ -72,7 +75,7 @@ fn json(dir: &Path, name: &str) -> Result<Value> {
     std::fs::read(dir.join(name)).ok().and_then(|b| serde_json::from_slice(&b).ok()).ok_or_else(|| Error(format!("{}: no {name}", dir.display())))
 }
 
-/// The reference's request as this engine's
+/// The reference's request as this engine's (its source read from the file it names)
 pub fn request(dir: &Path) -> Result<AudioRequest> {
     let r = json(dir, "request.json")?;
     let a = &r["args"];
@@ -90,8 +93,58 @@ pub fn request(dir: &Path) -> Result<AudioRequest> {
         }
     }
     extra.insert("shift".into(), a["shift"].as_f64().unwrap_or(3.0).to_string());
+    let task = a["task"].as_str().unwrap_or("text2music");
+    let mut source = None;
+    if task != "text2music" {
+        extra.insert("task".into(), task.into());
+        extra.insert("cover-strength".into(), a["cover_strength"].as_f64().unwrap_or(0.5).to_string());
+        extra.insert("repaint-start".into(), a["repaint_start"].as_f64().unwrap_or(0.0).to_string());
+        extra.insert("repaint-end".into(), a["repaint_end"].as_f64().unwrap_or(-1.0).to_string());
+        let f = a["src"].as_str().unwrap_or("");
+        let b = std::fs::read(f).map_err(|e| Error(format!("the reference's source {f}: {e}")))?;
+        source = Some(nextcuda_audio::read_audio(&b).map_err(|e| Error(format!("{f}: {e}")))?);
+    }
+    if a["vae_mean"].as_bool() == Some(true) {
+        extra.insert("vae-sample".into(), "0".into());
+    }
     Ok(AudioRequest { prompt: a["caption"].as_str().unwrap_or("").into(), lyrics, seconds: a["duration"].as_f64().map(|d| d as f32),
-                      steps: a["steps"].as_u64().map(|s| s as u32), seed: a["seed"].as_u64().unwrap_or(0), extra, ..Default::default() })
+                      steps: a["steps"].as_u64().map(|s| s as u32), seed: a["seed"].as_u64().unwrap_or(0), extra, source, ..Default::default() })
+}
+
+/// [C, N] channel-major to [N, C] frames-major
+fn frames_major(shape: &[usize], v: &[f64]) -> Vec<f32> {
+    let (c, n) = (shape[0], shape[1]);
+    let mut out = vec![0f32; c * n];
+    for ch in 0..c {
+        for f in 0..n {
+            out[f * c + ch] = v[ch * n + f] as f32;
+        }
+    }
+    out
+}
+
+/// The reference's plan for its song: its context(s), its conditions' switch, its repaint mask
+fn plan_of(e: &AceStep, dir: &Path, song: &crate::Song) -> Result<(Plan, Vec<f32>)> {
+    let ctx = f32s(dir, "ctx.npy")?;
+    let frames = ctx.len() / (2 * LATENT);
+    // prepare_condition runs for the service, then in generate_audio (the cover's), then the non-cover branch's: the
+    // last of them is the switch's when the strength is under 1
+    let last = (1..8).take_while(|i| dir.join(format!("ctx_{i}.npy")).is_file()).last();
+    let nc = match last {
+        Some(i) if song.cover_strength < 1.0 && i >= 2 => Some((f32s(dir, &format!("enc_{i}.npy"))?, f32s(dir, &format!("ctx_{i}.npy"))?)),
+        _ => None,
+    };
+    let repaint = match (&song.repaint, dir.join("repaint_mask.npy").is_file()) {
+        (Some(r), true) => {
+            let mask = f32s(dir, "repaint_mask.npy")?.iter().map(|x| *x > 0.5).collect();
+            let (ratio, cf, _) = r.config();
+            Some((mask, f32s(dir, "clean_src.npy")?, ratio, cf))
+        }
+        _ => None,
+    };
+    let start = if song.cover_noise > 0.0 { Some((f32s(dir, "src.npy")?, song.cover_noise)) } else { None };
+    let _ = e;
+    Ok((Plan { frames, out_frames: frames, ctx, nc, strength: song.cover_strength, start, repaint }, f32s(dir, "enc.npy")?))
 }
 
 fn line(log: &mut dyn FnMut(String), what: &str, got: &[f32], want: &[f32], worst: &mut f64) {
@@ -143,16 +196,45 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
         line(log, "enc (conditions)", &got, &enc_ref, &mut worst);
     }
     let steps = json(dir, "steps.json")?;
-    if on("velocity") {
-        let cond = e.dit.cond(&e.ops, &mut s, &enc_ref)?;
+    if on("encode") && dir.join("vae_enc_in.npy").is_file() {
+        let (shape, w) = read_npy(&dir.join("vae_enc_in.npy"))?;
+        let wav: Vec<f32> = w.iter().map(|x| *x as f32).collect();
+        let t0 = Instant::now();
+        let got = e.vae.encode_mean(&e.ops, &mut s, &wav)?;
+        let (ws, want) = read_npy(&dir.join("vae_enc_out.npy"))?;
+        line(log, &format!("encode ({} s of source, {:.2} s)", shape[1] / 48_000, t0.elapsed().as_secs_f64()), &got, &frames_major(&ws, &want), &mut worst);
+    }
+    if on("hints") && song.task == Task::Cover {
+        let src = f32s(dir, "src.npy")?;
+        let t = src.len() / LATENT;
+        let t0 = Instant::now();
+        let (codes, q) = e.dit.codes.tokenize(&e.ops, &mut s, &src, &e.dit.silence)?;
+        let mut hints = e.dit.codes.detokenize(&e.ops, &mut s, &q)?;
+        hints.truncate(t * LATENT);
         let ctx = f32s(dir, "ctx.npy")?;
+        let want: Vec<f32> = (0..t).flat_map(|f| ctx[f * 2 * LATENT..f * 2 * LATENT + LATENT].to_vec()).collect();
+        line(log, &format!("hints ({} codes, {:.2} s)", codes.len(), t0.elapsed().as_secs_f64()), &hints, &want, &mut worst);
+    }
+    if on("velocity") {
+        let (plan, _) = plan_of(e, dir, &song)?;
+        let n = steps.as_array().map_or(0, |a| a.len());
+        let switch = (n as f64 * plan.strength) as usize;
+        let cond = e.dit.cond(&e.ops, &mut s, &enc_ref)?;
+        let cond_nc = match &plan.nc {
+            Some((enc, _)) => Some(e.dit.cond(&e.ops, &mut s, enc)?),
+            None => None,
+        };
         for (i, st) in steps.as_array().into_iter().flatten().enumerate() {
             let x = dir.join(format!("step_{i}_x.npy"));
             if !x.is_file() {
                 break;
             }
+            let (c, ctx) = match (&cond_nc, &plan.nc) {
+                (Some(c), Some((_, ctx))) if i >= switch => (c, ctx),
+                _ => (&cond, &plan.ctx),
+            };
             let t0 = Instant::now();
-            let got = e.dit.velocity(&e.ops, &mut s, &f32s(dir, &format!("step_{i}_x.npy"))?, &ctx, st["t"].as_f64().unwrap_or(0.0) as f32, &cond)?;
+            let got = e.dit.velocity(&e.ops, &mut s, &f32s(dir, &format!("step_{i}_x.npy"))?, ctx, st["t"].as_f64().unwrap_or(0.0) as f32, c)?;
             line(log, &format!("velocity {i} (t {:.3}, {:.2} s)", st["t"].as_f64().unwrap_or(0.0), t0.elapsed().as_secs_f64()), &got,
                  &f32s(dir, &format!("step_{i}_v.npy"))?, &mut worst);
         }
@@ -160,7 +242,8 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
     if on("sample") {
         let t0 = Instant::now();
         let mut t = Trace::default();
-        let lat = e.sample(&mut s, &song, &enc_ref, f32s(dir, "noise.npy")?, &mut t, &mut |_, _| Ok(()))?;
+        let (plan, enc) = plan_of(e, dir, &song)?;
+        let lat = e.sample(&mut s, &song, &plan, &enc, f32s(dir, "noise.npy")?, &mut t, &mut |_, _| Ok(()))?;
         line(log, &format!("sample ({:.2} s)", t0.elapsed().as_secs_f64()), &lat, &f32s(dir, "latents.npy")?, &mut worst);
     }
     if on("vae") {
@@ -179,7 +262,8 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
     if on("vaefull") {
         // the reference's latents through the tiled decode and the peak: its audio
         let t0 = Instant::now();
-        let a = e.sound(&mut s, &f32s(dir, "latents.npy")?, true, &mut |_, _| Ok(()))?;
+        let lat = f32s(dir, "latents.npy")?;
+        let a = e.sound(&mut s, &song, &lat, lat.len() / LATENT, true, &mut |_, _| Ok(()))?;
         let n = a.samples.len() / 2;
         let mut cm = vec![0f32; a.samples.len()];
         for i in 0..n {
@@ -191,9 +275,24 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
     if on("song") {
         let t0 = Instant::now();
         let mut t = Trace::default();
+        let target = match &song.source {
+            Some(w) => Some(e.target(&mut s, &song, w, &mut |_, _| Ok(()))?),
+            None => None,
+        };
         let enc = e.conditions(&mut s, &song, &mut t)?;
-        let lat = e.sample(&mut s, &song, &enc, f32s(dir, "noise.npy")?, &mut t, &mut |_, _| Ok(()))?;
-        let a = e.sound(&mut s, &lat, true, &mut |_, _| Ok(()))?;
+        let nc = if song.cover_strength < 1.0 { Some(enc.clone()) } else { None };
+        let plan = e.plan(&mut s, &song, target, nc, &mut t)?;
+        if let Ok(want) = f32s(dir, "src.npy") {
+            if song.task != Task::Text2Music {
+                let src: Vec<f32> = (0..plan.frames).flat_map(|f| plan.ctx[f * 2 * LATENT..f * 2 * LATENT + LATENT].to_vec()).collect();
+                let what = if song.task == Task::Cover { "song: the cover's hints" } else { "song: the source latents" };
+                let want = if song.task == Task::Cover { f32s(dir, "ctx.npy")?.chunks(2 * LATENT).flat_map(|c| c[..LATENT].to_vec()).collect() } else { want };
+                line(log, what, &src, &want, &mut worst);
+            }
+        }
+        let lat = e.sample(&mut s, &song, &plan, &enc, f32s(dir, "noise.npy")?, &mut t, &mut |_, _| Ok(()))?;
+        line(log, "song: the latents", &lat, &f32s(dir, "latents.npy")?, &mut worst);
+        let a = e.sound(&mut s, &song, &lat, plan.out_frames, true, &mut |_, _| Ok(()))?;
         let n = a.samples.len() / 2;
         let mut cm = vec![0f32; a.samples.len()];
         for i in 0..n {

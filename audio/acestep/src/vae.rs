@@ -21,6 +21,9 @@ pub const CHUNK: usize = 256;
 pub const OVERLAP: usize = 64;
 /// samples a latent frame (2 x 4 x 4 x 6 x 10)
 pub const HOP: usize = 1920;
+/// the reference's encode windows (samples): 30 s, 2 s of overlap each side (a card of more than 8 GB: 15 s on less)
+pub const ENC_CHUNK: usize = 48_000 * 30;
+pub const ENC_OVERLAP: usize = 48_000 * 2;
 pub const RATE: u32 = 48_000;
 
 struct Conv {
@@ -231,9 +234,9 @@ impl Vae {
         Ok(out)
     }
 
-    /// Stereo [2, n] (channel-major, 48 kHz) to the latents' means [n / 1920, 64] (frames-major): the encoder, in one
-    /// pass (a cover's or a repaint's source)
-    pub fn encode(&self, ops: &Ops, s: &mut Scratch, wav: &[f32]) -> Result<Vec<f32>> {
+    /// One window of stereo [2, n] (channel-major, 48 kHz) through the encoder: (mean, scale) [n / 1920, 64] each,
+    /// frames-major (the posterior's std is softplus(scale) + 1e-4)
+    fn encode_window(&self, ops: &Ops, s: &mut Scratch, wav: &[f32]) -> Result<(Vec<f32>, Vec<f32>)> {
         let (Some(c1), Some(sn), Some(c2)) = (&self.e_conv1, &self.e_snake, &self.e_conv2) else {
             return Err(Error("the VAE was loaded without its encoder".into()));
         };
@@ -255,15 +258,78 @@ impl Vae {
         Self::snake(ops, sn, x, l, a)?;
         let lo = Self::conv(ops, c2, a, l, 1, 1, 1, b)?;
         let name = if b == bufs[0] { "v0" } else if b == bufs[1] { "v1" } else { "v2" };
-        // [128, lo]: the mean is the first 64 channels
+        // [128, lo]: the mean, then the scale
         let both = read_f32(s.buf(name), c2.co * lo)?;
-        let mut z = vec![0f32; lo * LATENT];
+        let (mut mean, mut scale) = (vec![0f32; lo * LATENT], vec![0f32; lo * LATENT]);
         for f in 0..lo {
             for c in 0..LATENT {
-                z[f * LATENT + c] = both[c * lo + f];
+                mean[f * LATENT + c] = both[c * lo + f];
+                scale[f * LATENT + c] = both[(LATENT + c) * lo + f];
             }
         }
-        Ok(z)
+        Ok((mean, scale))
+    }
+
+    /// The means alone of one window (the check's: the reference dumps its first window's)
+    pub fn encode_mean(&self, ops: &Ops, s: &mut Scratch, wav: &[f32]) -> Result<Vec<f32>> {
+        Ok(self.encode_window(ops, s, wav)?.0)
+    }
+
+    /// Stereo [2, n] (channel-major, 48 kHz) to latents [n / 1920, 64] (frames-major), as the handler's tiled_encode:
+    /// windows of 30 s (2 s of overlap each side discarded, cores of 26 s), each its posterior's sample (mean + std
+    /// noise, from `noise`) - or its mean when `noise` is None
+    pub fn encode(&self, ops: &Ops, s: &mut Scratch, wav: &[f32], mut noise: Option<&mut dyn FnMut() -> f32>,
+                  progress: &mut dyn FnMut(usize, usize) -> Result<()>) -> Result<Vec<f32>> {
+        let n = wav.len() / 2;
+        let mut draw = |mean: Vec<f32>, scale: Vec<f32>| -> Vec<f32> {
+            match noise.as_mut() {
+                Some(r) => mean.iter().zip(&scale).map(|(m, sc)| {
+                    // softplus as torch's (x past 20: x itself)
+                    let std = if *sc > 20.0 { *sc } else { sc.exp().ln_1p() } + 1e-4;
+                    m + std * r()
+                }).collect(),
+                None => mean,
+            }
+        };
+        let window = |a: usize, b: usize| -> Vec<f32> {
+            let mut w = Vec::with_capacity(2 * (b - a));
+            w.extend_from_slice(&wav[a..b]);
+            w.extend_from_slice(&wav[n + a..n + b]);
+            w
+        };
+        if n <= ENC_CHUNK {
+            progress(0, 1)?;
+            let (m, sc) = self.encode_window(ops, s, wav)?;
+            progress(1, 1)?;
+            return Ok(draw(m, sc));
+        }
+        // _tiled_encode_offload_cpu: the latent rate from the first window, cores written in turn
+        let stride = ENC_CHUNK - 2 * ENC_OVERLAP;
+        let steps = n.div_ceil(stride);
+        let mut out = Vec::new();
+        let mut df = HOP as f64;
+        for i in 0..steps {
+            progress(i, steps)?;
+            let core0 = i * stride;
+            let core1 = (core0 + stride).min(n);
+            let w0 = core0.saturating_sub(ENC_OVERLAP);
+            let w1 = (core1 + ENC_OVERLAP).min(n);
+            let (m, sc) = self.encode_window(ops, s, &window(w0, w1))?;
+            let z = draw(m, sc);
+            let len = z.len() / LATENT;
+            if i == 0 {
+                df = (w1 - w0) as f64 / len as f64;
+            }
+            let trim0 = ((core0 - w0) as f64 / df).round() as usize;
+            let trim1 = ((w1 - core1) as f64 / df).round() as usize;
+            let end = if trim1 > 0 { len.saturating_sub(trim1) } else { len };
+            out.extend_from_slice(&z[trim0.min(end) * LATENT..end * LATENT]);
+        }
+        progress(steps, steps)?;
+        // the reference's buffer holds round(n / df) frames: the cores past it are cut
+        let total = (n as f64 / df).round() as usize;
+        out.truncate(total.min(out.len() / LATENT) * LATENT);
+        Ok(out)
     }
 }
 

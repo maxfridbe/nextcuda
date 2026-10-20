@@ -13,6 +13,8 @@ const USAGE: &str = "nextcuda audio gen \"<description>\" [--lyrics TEXT | --lyr
 nextcuda audio gen \"<text to say>\" --model qwen3-tts-... [--voice NAME] [--language L] [--instructions TEXT]
                    [--ref-audio FILE.wav [--ref-text TEXT]] [--cfg X] [--seconds N] [--seed N] [--out FILE|DIR]   (speech)
                    [--speaker FILE]...   (several speakers: a script of \"Speaker N:\" lines, Speaker 1's recording first; vibevoice)
+nextcuda audio gen \"<description>\" --model acestep-1.5 --source FILE --opt-task cover | repaint | edit | lego [--opt-repaint-start S]
+                   [--opt-repaint-end S] [--opt-cover-strength X] [--opt-source-lyrics TEXT] ...   (a song made from a recording)
 nextcuda audio serve [MODEL] [--port 8087] [--host 127.0.0.1] [--gpu N] [--set NAME=VALUE]... [--wfe] [--out DIR] [--cors ORIGIN]
 nextcuda audio start [serve's options] [--slot N]   (in the background; slot N: another server beside the first) | ps | logs [-f] | stop  [--slot N]
 nextcuda audio voice list                                   the saved voices (spoken by name: --voice NAME, \"voice\": NAME)
@@ -191,7 +193,14 @@ fn gen(cfg: &Config, args: &[String]) -> Result<(), String> {
         instructions: opt(args, "--instructions").map(str::to_string),
         reference,
         speakers: speakers(args)?,
+        source: match opt(args, "--source") {
+            Some(f) => Some(nextcuda_audio::read_audio(&std::fs::read(f).map_err(|e| format!("{f}: {e}"))?).map_err(|e| format!("{f}: {e}"))?),
+            None => None,
+        },
     };
+    if req.source.is_some() && !e.sources() {
+        return Err(format!("--source: {} makes no song from a recording (acestep does: --opt-task cover | repaint | edit)", e.arch()));
+    }
     let t0 = std::time::Instant::now();
     // frames a second of sound: speech 12.5, songs 25
     let fps = match e.arch() {

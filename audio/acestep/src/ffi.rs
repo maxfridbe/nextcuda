@@ -13,6 +13,7 @@ type P = *const c_void;
 #[allow(clippy::type_complexity)]
 pub struct Api {
     pub attn_window: unsafe extern "C" fn(G, P, i64, P, P, i64, i64, i64, i64, i64, f32, M, i64) -> c_int,
+    pub attn_segments: unsafe extern "C" fn(G, P, i64, P, P, i64, i64, i64, i64, i64, f32, M, i64) -> c_int,
     pub snake: unsafe extern "C" fn(G, *const f32, i64, i64, *const f32, *const f32, *mut f32) -> c_int,
     pub transpose: unsafe extern "C" fn(G, *const f32, i64, i64, *mut f32) -> c_int,
 }
@@ -38,7 +39,7 @@ pub fn api() -> nextcuda_core::Result<&'static Api> {
                 }
             }};
         }
-        Ok(Api { attn_window: sym!("ns_audio_ace_attn_window"), snake: sym!("ns_audio_ace_snake"), transpose: sym!("ns_audio_mm3_transpose") })
+        Ok(Api { attn_window: sym!("ns_audio_ace_attn_window"), attn_segments: sym!("ns_audio_ace_attn_segments"), snake: sym!("ns_audio_ace_snake"), transpose: sym!("ns_audio_mm3_transpose") })
     })
     .as_ref()
     .map_err(|e| nextcuda_core::Error(e.clone()))

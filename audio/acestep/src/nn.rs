@@ -179,6 +179,8 @@ pub enum Mask {
     Full,
     /// |i - j| <= w
     Window(usize),
+    /// sequences of this many rows side by side, each its own (bidirectional within)
+    Segments(usize),
 }
 
 /// Qwen3's attention: q, k, v, o, the per-head norms of q and k
@@ -305,6 +307,11 @@ impl Ops {
             Mask::Full if hq == hkv => self.nsd.attention(q, k, v, Dt::BF16, m, hq, HD, hq * HD, out, Dt::BF16),
             Mask::Full => self.window(q, k, v, m, hq, hkv, -1, scale, out),
             Mask::Window(w) => self.window(q, k, v, m, hq, hkv, w as i64, scale, out),
+            Mask::Segments(n) => {
+                // SAFETY: q / k / v / out hold m rows of the heads named.
+                ffi::check(unsafe { (self.k.attn_segments)(self.gpu.raw(), q, (hq * HD) as i64, k, v, (hkv * HD) as i64, m as i64, hq as i64, hkv as i64,
+                                                            n as i64, scale, out, (hq * HD) as i64) }, "attn_segments")
+            }
         }
     }
 

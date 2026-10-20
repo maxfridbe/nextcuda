@@ -14,6 +14,7 @@ use nextcuda_diffusion::kernels::{none, Dt};
 use nextcuda_gguf::safetensors::SafeTensors;
 use serde_json::Value;
 
+use crate::codes::Codes;
 use crate::nn::{at, read_f32, rope_table, Attn, Layer, Lin, Loader, Mask, Mlp, Ops, Scratch, EPS, HD, M, P};
 use crate::sample::LATENT;
 
@@ -131,6 +132,10 @@ pub struct Dit {
     /// the silence latent [frames, 64] (silence_latent.pt): the source of a song made from nothing, the timbre
     /// reference when none is given, the padding of the tokenizer
     pub silence: Vec<f32>,
+    /// the audio codes' tokenizer and detokenizer (a cover's hints, the planner's codes)
+    pub codes: Codes,
+    /// the null condition (classifier-free guidance's unconditional branch: the base model) [hidden]
+    pub null_cond: Vec<f32>,
     pub bytes: u64,
 }
 
@@ -184,10 +189,23 @@ impl Dit {
             proj_out,
             sst_out: l.host("decoder.scale_shift_table")?,
             silence,
+            codes: Codes::load(&l, &cfg)?,
+            null_cond: l.host("null_condition_emb")?,
             bytes: 0,
             cfg,
         };
         Ok(Dit { bytes: l.bytes.get(), ..dit })
+    }
+
+    /// `n` frames of the silence latent from its start (tiled when the song is longer: `_get_silence_latent_slice`)
+    pub fn silence(&self, n: usize) -> Vec<f32> {
+        let have = self.silence.len() / LATENT;
+        let mut v = Vec::with_capacity(n * LATENT);
+        while v.len() < n * LATENT {
+            let k = (n - v.len() / LATENT).min(have);
+            v.extend_from_slice(&self.silence[..k * LATENT]);
+        }
+        v
     }
 
     /// The packed conditions (prepare_condition's encoder_hidden_states): the lyrics through their encoder, the timbre
