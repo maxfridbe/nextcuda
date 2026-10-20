@@ -1,0 +1,11 @@
+[package]
+name = "nextcuda-image-upscale"
+description = "Real-ESRGAN and waifu2x upscalers: their ncnn graphs and weights on CUDA (Rust)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextcuda-core.workspace = true
+nextcuda-image.workspace = true
+nextcuda-diffusion.workspace = true

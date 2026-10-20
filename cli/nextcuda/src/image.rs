@@ -17,12 +17,14 @@ nextcuda image start [serve's options] [--slot N]   (in the background; slot N: 
 nextcuda image ocr PICTURE|PDF... [--one-pass] [--no-columns] [--model ID|FILE.gguf] [--prompt TEXT] [--no-tiles] [--no-figures] [--max N] [--temp T] [--out FILE] [--gpu N] [--dump-views DIR]
 nextcuda image check <dump dir> [--model ID|FILE.gguf] [--stages te,dit,steps,vae] [--lora NAME[:SCALE]]... [--tokens N] [--gpu N]
 nextcuda image bench [--models ID,...] [--sizes WxH,...] [--steps N] [--runs N] [--gpu N] [--out DIR] [--note TEXT]
+nextcuda image upscale PICTURE [--model real-esrgan|waifu2x | --dir NCNN_DIR] [--variant V] [--scale N] [--noise N] [--tile N] [--out FILE] [--gpu N]
+nextcuda image upscale-check PICTURE REFERENCE.png [upscale's options]   (against realesrgan- / waifu2x-ncnn-vulkan's output: PSNR, worst pixel)
 nextcuda image engines | selftest [--gpu N]";
 
 /// The image engines this program has (image/<arch>)
 pub fn engines() -> Vec<nextcuda_image::ImageKind> {
     vec![nextcuda_image_qwenimage21::kind(), nextcuda_image_qwenimage21::kind_2512(), nextcuda_image_unlimitedocr::kind(), nextcuda_image_paddleocrvl::kind(),
-         nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind()]
+         nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind(), nextcuda_image_upscale::kind()]
 }
 
 /// `--gpu 0` or `--gpu 0,1` (an engine that splits over two cards takes the second too: olmOCR 2's vision tower)
@@ -308,6 +310,118 @@ fn pics_size(saved: &[String]) -> (u32, u32) {
     saved.first().and_then(|p| nextcuda_image::Picture::read_png(Path::new(p)).ok()).map_or((0, 0), |p| (p.width, p.height))
 }
 
+/// An ncnn bundle's files by role, as the upscalers' cards name them: a Real-ESRGAN `models/` directory
+/// (`realesrgan-x4plus.param` ...) or waifu2x's directory of `models-*/` (`models-cunet/noise1_scale2.0x_model.param` ...)
+fn ncnn_files(dir: &Path) -> Result<ModelFiles, String> {
+    let mut files = ModelFiles::new();
+    let mut add = |sub: Option<&str>, d: &Path| -> Result<(), String> {
+        for e in std::fs::read_dir(d).map_err(|e| format!("{}: {e}", d.display()))?.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".param") || name.ends_with(".bin") {
+                files.insert(sub.map(|s| format!("{s}/{name}")).unwrap_or(name), p);
+            }
+        }
+        Ok(())
+    };
+    add(None, dir)?;
+    for e in std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if e.path().is_dir() && (n.starts_with("models-") || n == "models") {
+            if n == "models" {
+                add(None, &e.path())?;
+            } else {
+                add(Some(&n), &e.path())?;
+            }
+        }
+    }
+    if files.is_empty() {
+        return Err(format!("{}: no .param / .bin files (a realesrgan models/ directory, or waifu2x's with models-*/)", dir.display()));
+    }
+    Ok(files)
+}
+
+/// `image upscale` and `image upscale-check`: the engine in this process
+fn upscale_cmd(cfg: &Config, args: &[String], check: bool) -> Result<(), String> {
+    let pos: Vec<&String> = {
+        let mut v = Vec::new();
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if a.starts_with("--") {
+                it.next();
+            } else {
+                v.push(a);
+            }
+        }
+        v
+    };
+    let input = pos.first().ok_or(USAGE)?;
+    nextcuda_core::use_kind("image");
+    let files = match opt(args, "--dir") {
+        Some(d) => ncnn_files(Path::new(d))?,
+        None => model(cfg, Some(opt(args, "--model").unwrap_or("real-esrgan")))?.1,
+    };
+    let gs = gpus(args)?;
+    let free0 = gs[0].memory().map_err(|e| e.0)?.1.unwrap_or(0);
+    let mut log = |s: String| eprintln!("{s}");
+    let t0 = std::time::Instant::now();
+    let e = nextcuda_image_upscale::Upscaler::load(&files, &gs, &mut log).map_err(|e| e.0)?;
+    let mut low = gs[0].memory().map_err(|e| e.0)?.1.unwrap_or(0);
+    eprintln!("loaded in {:.2} s", t0.elapsed().as_secs_f64());
+    let pic = nextcuda_image::Picture::decode(&std::fs::read(input).map_err(|e| format!("{input}: {e}"))?)?;
+    let req = nextcuda_image::UpscaleRequest {
+        picture: pic,
+        variant: opt(args, "--variant").map(str::to_string),
+        scale: opt(args, "--scale").and_then(|v| v.parse().ok()),
+        noise: opt(args, "--noise").and_then(|v| v.parse().ok()),
+        tile: opt(args, "--tile").and_then(|v| v.parse().ok()),
+    };
+    use nextcuda_image::ImageEngine;
+    let runs: usize = opt(args, "--runs").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+    let mut out = None;
+    for r in 0..runs {
+        let (p, info) = e.upscale(&req, &mut |_| Ok(())).map_err(|e| e.0)?;
+        // what this process holds: free before the load less the least free since (another program's use counts
+        // only if it changed meanwhile)
+        low = low.min(gs[0].memory().map_err(|e| e.0)?.1.unwrap_or(0));
+        eprintln!("run {}: {} {}x{} -> {}x{} ({}x{}, {} tiles of {}) in {:.3} s; this process holds {} MiB on {}",
+                  r + 1, info.variant, req.picture.width, req.picture.height, p.width, p.height, info.scale,
+                  info.noise.map(|n| format!(" denoise {n}")).unwrap_or_default(), info.tiles, info.tile, info.seconds,
+                  free0.saturating_sub(low) >> 20, gs[0].name);
+        out = Some(p);
+    }
+    let p = out.unwrap();
+    if let Some(o) = opt(args, "--out") {
+        p.write_png(Path::new(o), &[]).map_err(|e| format!("{o}: {e}"))?;
+        eprintln!("saved {o}");
+    }
+    if check {
+        let r = pos.get(1).ok_or("upscale-check PICTURE REFERENCE.png")?;
+        let want = nextcuda_image::Picture::decode(&std::fs::read(r).map_err(|e| format!("{r}: {e}"))?)?;
+        if (want.width, want.height) != (p.width, p.height) {
+            return Err(format!("the reference is {}x{}, ours {}x{}", want.width, want.height, p.width, p.height));
+        }
+        let c = p.channels.min(want.channels) as usize;
+        let (pc, wc) = (p.channels as usize, want.channels as usize);
+        let (mut se, mut worst, mut same, mut near) = (0f64, 0i32, 0usize, 0usize);
+        let n = (p.width * p.height) as usize;
+        for i in 0..n {
+            for ch in 0..c {
+                let d = p.data[i * pc + ch] as i32 - want.data[i * wc + ch] as i32;
+                se += (d * d) as f64;
+                worst = worst.max(d.abs());
+                same += (d == 0) as usize;
+                near += (d.abs() <= 2) as usize;
+            }
+        }
+        let mse = se / (n * c) as f64;
+        let psnr = if mse == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64 * 255.0 / mse).log10() };
+        println!("against {r}: PSNR {psnr:.2} dB, worst {worst}/255, {:.2}% values equal, {:.2}% within 2", 100.0 * same as f64 / (n * c) as f64,
+                 100.0 * near as f64 / (n * c) as f64);
+    }
+    Ok(())
+}
+
 fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
     let dir = Path::new(args.first().ok_or(USAGE)?);
     nextcuda_core::use_kind("image");
@@ -524,6 +638,8 @@ pub fn cmd(cfg: &Config, args: &[String], selftest: impl Fn(&[String]) -> Result
         Some("gen") => gen(cfg, rest),
         Some("edit") => edit(cfg, rest),
         Some("check") => check(cfg, rest),
+        Some("upscale") => upscale_cmd(cfg, rest, false),
+        Some("upscale-check") => upscale_cmd(cfg, rest, true),
         Some("bench") => crate::imagebench::run(cfg, rest),
         Some("ocr") => ocr(cfg, rest),
         Some("serve") => serve(cfg, rest),
