@@ -285,6 +285,7 @@ Qwen-Image 2.1 (`image/qwenimage21`).
 | `NS_HI_*` | - | every NS_HI_ setting in nextcuda.conf is passed to the image server | cli (image serve) |
 | `NS_HI_GUIDANCE` | apg | the HunyuanImage base model's guidance: apg (the pipeline's MIX_mode_0: CFG through step 5, or 38 when the negative quotes text, then adaptive projected guidance) or cfg (plain CFG every step) (--opt-guidance; per request too) | image hunyuanimage21 |
 | `NS_HI_PROFILE` | off | Debug: set: a GPU wait after each named step of the DiT, the totals printed after the picture (slower; shows where the time goes) | image hunyuanimage21 |
+| `NS_UP_DUMP` | unset | Debug: a directory: the upscalers write each layer's output there as raw halves (its blob, layer and shape in the name), and the tile's input - for comparing with a reference layer by layer | image upscale |
 
 ## Video
 

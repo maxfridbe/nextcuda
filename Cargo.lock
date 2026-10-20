@@ -562,6 +562,7 @@ dependencies = [
  "nextcuda-image-paddleocrvl",
  "nextcuda-image-qwenimage21",
  "nextcuda-image-unlimitedocr",
+ "nextcuda-image-upscale",
  "nextcuda-llm",
  "nextcuda-llm-nemotronh",
  "nextcuda-llm-qwen35",
@@ -773,6 +774,15 @@ dependencies = [
  "nextcuda-gguf",
  "nextcuda-image",
  "nextcuda-tok",
+]
+
+[[package]]
+name = "nextcuda-image-upscale"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-image",
 ]
 
 [[package]]
