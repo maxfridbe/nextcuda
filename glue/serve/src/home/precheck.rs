@@ -222,6 +222,16 @@ impl Home {
                 return Err(bad(format!("ref_text: {id} clones from a recording and its exact transcript")));
             }
         }
+        if let Some(sp) = b["speakers"].as_array().filter(|a| !a.is_empty()) {
+            if !can("speakers") {
+                return Err(bad(format!("speakers: {id} speaks one voice - several speakers need a model that takes them (vibevoice-1.5b), or leave model out")));
+            }
+            for (i, v) in sp.iter().enumerate() {
+                if v.as_str().is_none_or(|x| x.trim().is_empty()) {
+                    return Err(bad(format!("speakers[{i}]: a saved voice's name, a recording (base64, a data: URL) or upload:<name>")));
+                }
+            }
+        }
         if let Some(a) = b["ref_audio"].as_str().filter(|a| !a.is_empty()) {
             if !can("clone") {
                 return Err(bad(format!("ref_audio: {id} does not clone a voice")));

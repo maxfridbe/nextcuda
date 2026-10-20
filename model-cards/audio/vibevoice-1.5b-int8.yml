@@ -1,0 +1,23 @@
+# VibeVoice 1.5B, its language model in int8 (less VRAM)
+# model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets
+id: vibevoice-1.5b-int8
+kind: audio
+arch: vibevoice
+title: VibeVoice 1.5B, its language model in int8 (less VRAM)
+about: 'Microsoft''s VibeVoice 1.5B (the bf16 GGUF, as vibevoice-1.5b), its Qwen2.5-1.5B''s matrices int8 with a scale a row'
+gpus: '0'
+vram_gib: 4.4                    # measured on the 5070: 4.3 GiB at its peak (the half one: 5.4)
+speech:
+- clone
+- speakers
+defaults:
+  seconds: 600.0
+  steps: 10
+  cfg: 1.3
+env:
+  NS_VV_INT8: '1'
+files:
+  model: vv-model-bf16
+  config: vv-config
+  tokenizer: vv-tokenizer
+guide: guides/vibevoice.md

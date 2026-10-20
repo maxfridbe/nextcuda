@@ -550,6 +550,7 @@ dependencies = [
  "nextcuda-audio-breezetts2",
  "nextcuda-audio-minimaxmusic3",
  "nextcuda-audio-qwen3tts",
+ "nextcuda-audio-vibevoice",
  "nextcuda-audio-voxcpm2",
  "nextcuda-audio-whisper",
  "nextcuda-core",
@@ -626,6 +627,18 @@ dependencies = [
  "nextcuda-tok",
  "serde_json",
  "unicode-normalization",
+]
+
+[[package]]
+name = "nextcuda-audio-vibevoice"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-audio",
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-tok",
+ "serde_json",
 ]
 
 [[package]]
