@@ -7,7 +7,8 @@
 //!   enc       te_out, lyric_emb, refer.npy         -> enc.npy [lyrics + 1 + caption, 2048] (the packed conditions)
 //!   velocity  step_<i>_x, ctx.npy, steps.json, enc -> step_<i>_v.npy (every step, each from the reference's x)
 //!   sample    noise.npy, enc.npy                   -> latents.npy (the whole flow from the reference's noise)
-//!   vae       vae_in.npy                           -> wav_raw.npy [2, S]
+//!   vae       vae_in.npy                           -> wav_raw.npy [2, S] (the first window)
+//!   vaefull   latents.npy                          -> audio.npy (every window, the peak)
 //!   song      request.json, noise.npy              -> audio.npy (all of it: the texts, the flow, the decode, the peak)
 //! ```
 
@@ -174,6 +175,18 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
         let t0 = Instant::now();
         let wav = e.vae.decode(&e.ops, &mut s, &zf, &mut |_, _| Ok(()))?;
         line(log, &format!("vae ({:.2} s)", t0.elapsed().as_secs_f64()), &wav, &f32s(dir, "wav_raw.npy")?, &mut worst);
+    }
+    if on("vaefull") {
+        // the reference's latents through the tiled decode and the peak: its audio
+        let t0 = Instant::now();
+        let a = e.sound(&mut s, &f32s(dir, "latents.npy")?, true, &mut |_, _| Ok(()))?;
+        let n = a.samples.len() / 2;
+        let mut cm = vec![0f32; a.samples.len()];
+        for i in 0..n {
+            cm[i] = a.samples[2 * i];
+            cm[n + i] = a.samples[2 * i + 1];
+        }
+        line(log, &format!("vae, tiled ({:.2} s)", t0.elapsed().as_secs_f64()), &cm, &f32s(dir, "audio.npy")?, &mut worst);
     }
     if on("song") {
         let t0 = Instant::now();
