@@ -369,6 +369,19 @@ nextcuda audio check <reference dump dir> --model breeze-tts-2        # referenc
   "Q dot K to the T, divided by square root of d sub k"), markdown's marks go, dashes and brackets are pauses
   (`NS_SPEECH_NORMALIZE=0` or `normalize: false` for the text as sent) - one such line had a voice loop for 18 s.
 
+## Conversation: VibeVoice 1.5B
+
+`audio.speak` with `model: vibevoice-1.5b` (or `speakers` and no model): a script of `Speaker N: words` lines in up to
+four voices, each cloned from a recording (`speakers`: saved voices, recordings or uploads; one `ref_audio` / `voice`
+for one speaker). Microsoft's model on the shared kernels (`audio/vibevoice`; no kernel of its own): a Qwen2.5-1.5B,
+a diffusion head (DPM-Solver++, 10 steps, guidance 1.3 against a pass that sees only the turn), the 7.5 Hz acoustic and
+semantic tokenizers streamed a frame at a time - the platform's GGUF.
+
+- **Checked** (2026-10-19) against yvoice's own code in float32 on the same file (`reference/vibevoice/ref.py`): the
+  prompt's tokens identical, the prefill 6.3e-4, the diffusion head 1.7e-4, the decoder 1.3e-4, the whole loop teacher
+  forced 1.3e-4 (cos 1.000000); takes transcribe word for word (the Whisper port).
+- **Speed** (RTX 5070): 12 s of a three-turn dialogue in 2.2 s; 5.4 GiB (`vibevoice-1.5b-int8`: 4.3 GiB).
+
 ## Listening: Whisper large-v3-turbo
 
 `audio.transcribe` (and `/v1/audio/transcriptions`, `nextcuda audio transcribe FILE`): openai's large-v3-turbo on
@@ -410,13 +423,13 @@ the text encoder on the 3060, every weight resident in its GGUF's type.
 |---|---|---|
 | chat | `qwen35` (Qwen3.8: DeltaNet + attention, MTP drafts, vision), `nemotron_h_moe` | Qwen3.8 over both, pipelined; Nemotron on the 5070 |
 | image, OCR | stable-diffusion.cpp's ggml-cuda (Qwen-Image), our Rust + CUDA engines (Qwen-Image 2.1 `rust`, Ming-Image, Unlimited-OCR, PaddleOCR-VL, olmOCR-2) | one card each; olmOCR-2 the decoder on one, the vision tower on the other; Ming-Image the DiT on the 5070, its text encoder on the 3060 |
-| speech | `breeze-tts-2`, `qwen3-tts`, `voxcpm2` | one card each; VoxCPM2 int8 fits beside the chat model |
+| speech | `breeze-tts-2`, `qwen3-tts`, `voxcpm2`, `vibevoice` (several speakers) | one card each; VoxCPM2 int8 fits beside the chat model |
 | songs | `minimax-music3` (int8) | the language model on the 5070, the flow stage and decoder on the 3060 |
 | video | `minimax-h3` (the native daemon, `--span`) and the video studio (scenes, plans, a film's clips joined) | the denoiser over both cards, nothing streamed: a clip in ~62 s from the SSD |
 | 3D | TRELLIS.2, Hunyuan3D-2mini, UniRig, RigNet, AnimateAnyMesh | one card each |
 | listening | `whisper` (large-v3-turbo) | one card |
 
-Not here yet: ACE-Step, VibeVoice, HunyuanImage 2.1, the video upscalers; the bigger cards' forms above. The answers' `nextsycl` result key keeps
+Not here yet: ACE-Step, HunyuanImage 2.1, the video upscalers; the bigger cards' forms above. The answers' `nextsycl` result key keeps
 its name (the platform reads it).
 
 ## Clocking it
