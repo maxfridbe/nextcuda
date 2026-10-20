@@ -123,7 +123,7 @@ impl Rng {
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
-    fn uniform(&mut self) -> f64 {
+    pub fn uniform(&mut self) -> f64 {
         ((self.next() >> 11) as f64 + 0.5) / (1u64 << 53) as f64
     }
 

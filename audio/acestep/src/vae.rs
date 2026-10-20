@@ -16,13 +16,17 @@ use crate::ffi;
 use crate::nn::{f32_bytes, read_f32, Loader, Ops, Scratch, M, P};
 use crate::sample::LATENT;
 
-/// the reference's decode windows (latent frames): a core of 256 - 2 x 64, 64 either side
+/// the reference's decode windows (latent frames): a core of 256 - 2 x 64, 64 either side (its CPU run's and a card
+/// with 12 GB free; `auto_chunk`)
 pub const CHUNK: usize = 256;
 pub const OVERLAP: usize = 64;
 /// samples a latent frame (2 x 4 x 4 x 6 x 10)
 pub const HOP: usize = 1920;
-/// the reference's encode windows (samples): 30 s, 2 s of overlap each side (a card of more than 8 GB: 15 s on less)
+/// the reference's encode windows (samples): 30 s, 2 s of overlap each side, on a card of more than 8 GB; 15 s on one
+/// of less - here too when the 30 s window's activations (3 x 128 channels at the audio rate, 2.2 GB) do not fit beside
+/// what is loaded
 pub const ENC_CHUNK: usize = 48_000 * 30;
+pub const ENC_CHUNK_SMALL: usize = 48_000 * 15;
 pub const ENC_OVERLAP: usize = 48_000 * 2;
 pub const RATE: u32 = 48_000;
 
@@ -201,16 +205,28 @@ impl Vae {
         read_f32(s.buf(name), 2 * l)
     }
 
-    /// The whole song's latents [frames, 64] to stereo [2, frames x 1920] (channel-major), in the reference's windows
-    pub fn decode(&self, ops: &Ops, s: &mut Scratch, z: &[f32], progress: &mut dyn FnMut(usize, usize) -> Result<()>) -> Result<Vec<f32>> {
+    /// The reference's decode window for the memory the card has free (`_get_auto_decode_chunk_size`: 512 frames from
+    /// 24 GB, 384 from 16, 256 from 12, else 128), what this scratch holds counted as free
+    pub fn auto_chunk(ops: &Ops, s: &Scratch) -> usize {
+        let free = ops.gpu.memory().ok().and_then(|m| m.1).map_or(12u64 << 30, |f| f + s.bytes() as u64) as f64 / (1u64 << 30) as f64;
+        if free >= 24.0 { 512 } else if free >= 16.0 { 384 } else if free >= 12.0 { 256 } else { 128 }
+    }
+
+    /// The whole song's latents [frames, 64] to stereo [2, frames x 1920] (channel-major), in the reference's windows of
+    /// `chunk` frames (the overlap of 64 halved until a core is left, as `_tiled_decode_inner`)
+    pub fn decode(&self, ops: &Ops, s: &mut Scratch, z: &[f32], chunk: usize, progress: &mut dyn FnMut(usize, usize) -> Result<()>) -> Result<Vec<f32>> {
         let frames = z.len() / LATENT;
-        if frames <= CHUNK {
+        let mut overlap = OVERLAP;
+        while chunk <= 2 * overlap && overlap > 4 {
+            overlap /= 2;
+        }
+        if frames <= chunk {
             progress(0, 1)?;
             let w = self.decode_window(ops, s, z)?;
             progress(1, 1)?;
             return Ok(w);
         }
-        let stride = CHUNK - 2 * OVERLAP;
+        let stride = chunk - 2 * overlap;
         let steps = frames.div_ceil(stride);
         let total = frames * HOP;
         let mut out = vec![0f32; 2 * total];
@@ -219,8 +235,8 @@ impl Vae {
             progress(i, steps)?;
             let core0 = i * stride;
             let core1 = (core0 + stride).min(frames);
-            let w0 = core0.saturating_sub(OVERLAP);
-            let w1 = (core1 + OVERLAP).min(frames);
+            let w0 = core0.saturating_sub(overlap);
+            let w1 = (core1 + overlap).min(frames);
             let wav = self.decode_window(ops, s, &z[w0 * LATENT..w1 * LATENT])?;
             let wl = wav.len() / 2;
             let (t0, t1) = ((core0 - w0) * HOP, wl - (w1 - core1) * HOP);
@@ -297,14 +313,18 @@ impl Vae {
             w.extend_from_slice(&wav[n + a..n + b]);
             w
         };
-        if n <= ENC_CHUNK {
+        // the window: 30 s unless its buffers do not fit in what the card has free (beside what this scratch holds)
+        let need = |c: usize| 3 * c * 128 * 4 + (512 << 20);
+        let free = ops.gpu.memory().ok().and_then(|m| m.1).map_or(u64::MAX, |f| f + s.bytes() as u64);
+        let chunk = if (free as usize) < need(ENC_CHUNK) { ENC_CHUNK_SMALL } else { ENC_CHUNK };
+        if n <= chunk {
             progress(0, 1)?;
             let (m, sc) = self.encode_window(ops, s, wav)?;
             progress(1, 1)?;
             return Ok(draw(m, sc));
         }
         // _tiled_encode_offload_cpu: the latent rate from the first window, cores written in turn
-        let stride = ENC_CHUNK - 2 * ENC_OVERLAP;
+        let stride = chunk - 2 * ENC_OVERLAP;
         let steps = n.div_ceil(stride);
         let mut out = Vec::new();
         let mut df = HOP as f64;

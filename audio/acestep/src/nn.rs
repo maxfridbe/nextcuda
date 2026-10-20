@@ -262,6 +262,11 @@ impl Scratch {
     pub fn clear(&mut self) {
         self.bufs.clear();
     }
+
+    /// the bytes held
+    pub fn bytes(&self) -> usize {
+        self.bufs.values().map(|b| b.len).sum()
+    }
 }
 
 /// The kernels a model runs on

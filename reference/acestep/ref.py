@@ -174,6 +174,15 @@ def main():
 
     model.prepare_condition = prep
 
+    orig_tokenize = model.tokenize
+
+    def tokenize(*a, **kw):
+        r = orig_tokenize(*a, **kw)
+        save("codes_src.npy", r[1].reshape(-1))
+        return r
+
+    model.tokenize = tokenize
+
     orig_noise = model.prepare_noise
 
     def noise(*a, **kw):
@@ -240,6 +249,56 @@ def main():
             return r
 
         llm.generate_with_stop_condition = lm
+        # each phase: its prompts and their ids, the tokens it sampled, the model's logits and the processed scores of
+        # its first steps (lm_<phase>_logits_<i>.npy [rows, vocab]: cond first; lm_<phase>_scores_<i>.npy)
+        lm_log["phases"] = []
+        cur = {}
+        orig_single = llm._run_pt_single
+
+        def single(**kw):
+            ph = {"phase": kw.get("generation_phase"), "prompt": kw["formatted_prompt"],
+                  "ids": llm.llm_tokenizer(kw["formatted_prompt"])["input_ids"], "tokens": [], "forward": 0, "sample": 0,
+                  "cfg_scale": kw.get("cfg_scale"), "temperature": kw.get("temperature"), "top_p": kw.get("top_p"),
+                  "target_duration": kw.get("target_duration"), "user_metadata": kw.get("user_metadata")}
+            lm_log["phases"].append(ph)
+            cur["p"] = ph
+            out = orig_single(**kw)
+            ph["output"] = out
+            return out
+
+        llm._run_pt_single = single
+        orig_uncond = llm._build_unconditional_prompt
+
+        def uncond(*a, **kw):
+            r = orig_uncond(*a, **kw)
+            cur["p"]["uncond_prompt"] = r
+            cur["p"]["uncond_ids"] = llm.llm_tokenizer(r)["input_ids"]
+            return r
+
+        llm._build_unconditional_prompt = uncond
+        orig_fwd = llm._forward_pass
+
+        def fwd(*a, **kw):
+            out = orig_fwd(*a, **kw)
+            ph = cur["p"]
+            if ph["forward"] < 3:
+                save(f"lm_{ph['phase']}_logits_{ph['forward']}.npy", out.logits[:, -1, :])
+            ph["forward"] += 1
+            return out
+
+        llm._forward_pass = fwd
+        orig_sample = llm._sample_tokens
+
+        def sample(logits, temperature):
+            ph = cur["p"]
+            if ph["sample"] < 3:
+                save(f"lm_{ph['phase']}_scores_{ph['sample']}.npy", logits)
+            ph["sample"] += 1
+            t = orig_sample(logits, temperature)
+            ph["tokens"].append(int(t[0]))
+            return t
+
+        llm._sample_tokens = sample
 
     # -- the request, as the platform's engine builds it -----------------------------------------------------------
     task = args.task

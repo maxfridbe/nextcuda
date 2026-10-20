@@ -12,7 +12,10 @@
 //!             or repaint's plan from its ctx / enc_1 / ctx_1 / repaint_mask / clean_src)
 //!   vae       vae_in.npy                           -> wav_raw.npy [2, S] (the first window)
 //!   vaefull   latents.npy                          -> audio.npy (every window, the peak)
-//!   song      request.json, noise.npy              -> audio.npy (all of it: the texts, the flow, the decode, the peak)
+//!   song      request.json, noise.npy              -> audio.npy (all of it: the texts, the flow, the decode, the peak;
+//!             with the planner, its metadata and codes the reference's)
+//!   lm        lm.json's prompts and tokens          -> the prompts and ids, the logits of each phase's first steps (the
+//!             reference's tokens fed), the constrained decoder replayed over its tokens, the codes' hints (hints.npy)
 //! ```
 
 use std::path::Path;
@@ -104,6 +107,7 @@ pub fn request(dir: &Path) -> Result<AudioRequest> {
         let b = std::fs::read(f).map_err(|e| Error(format!("the reference's source {f}: {e}")))?;
         source = Some(nextcuda_audio::read_audio(&b).map_err(|e| Error(format!("{f}: {e}")))?);
     }
+    extra.insert("planner".into(), (a["thinking"].as_bool() == Some(true)).to_string());
     if a["vae_mean"].as_bool() == Some(true) {
         extra.insert("vae-sample".into(), "0".into());
     }
@@ -159,7 +163,17 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
     let mut worst = 0f64;
     let mut s = Scratch::default();
     let req = request(dir)?;
-    let song = e.song(&req)?;
+    let mut song = e.song(&req)?;
+    // the reference ran on the CPU: its decode windows are 256 frames
+    song.decode_chunk = Some(crate::vae::CHUNK);
+    let mut planned = None;
+    if song.planner {
+        // the reference's plan (its draws are torch's): its metadata and codes
+        let r = json(dir, "lm.json")?;
+        let m: std::collections::HashMap<String, String> = r["result"]["metadata"].as_object().into_iter().flatten()
+            .map(|(k, v)| (k.clone(), v.as_str().map_or_else(|| v.to_string(), str::to_string))).collect();
+        planned = Some(e.apply_plan(&mut song, &m, ref_codes(&r))?);
+    }
     let texts = json(dir, "text.json")?;
     let ids = |i: usize| -> Vec<u32> { texts[i]["ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64().map(|y| y as u32)).collect()).unwrap_or_default() };
     let want_cap = ids(0);
@@ -196,6 +210,9 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
         line(log, "enc (conditions)", &got, &enc_ref, &mut worst);
     }
     let steps = json(dir, "steps.json")?;
+    if on("lm") && dir.join("lm.json").is_file() {
+        lm_stage(e, dir, log, &mut worst)?;
+    }
     if on("encode") && dir.join("vae_enc_in.npy").is_file() {
         let (shape, w) = read_npy(&dir.join("vae_enc_in.npy"))?;
         let wav: Vec<f32> = w.iter().map(|x| *x as f32).collect();
@@ -256,7 +273,7 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
             }
         }
         let t0 = Instant::now();
-        let wav = e.vae.decode(&e.ops, &mut s, &zf, &mut |_, _| Ok(()))?;
+        let wav = e.vae.decode(&e.ops, &mut s, &zf, crate::vae::CHUNK, &mut |_, _| Ok(()))?;
         line(log, &format!("vae ({:.2} s)", t0.elapsed().as_secs_f64()), &wav, &f32s(dir, "wav_raw.npy")?, &mut worst);
     }
     if on("vaefull") {
@@ -277,13 +294,18 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
         let mut t = Trace::default();
         let target = match &song.source {
             Some(w) => Some(e.target(&mut s, &song, w, &mut |_, _| Ok(()))?),
-            None => None,
+            None => planned.clone(),
         };
         let enc = e.conditions(&mut s, &song, &mut t)?;
-        let nc = if song.cover_strength < 1.0 { Some(enc.clone()) } else { None };
+        let nc = if song.cover_strength < 1.0 {
+            let d = crate::text::instruction("text2music", None);
+            Some(if d == song.instruction { enc.clone() } else { e.conditions_as(&mut s, &song, &d, &mut Trace::default())? })
+        } else {
+            None
+        };
         let plan = e.plan(&mut s, &song, target, nc, &mut t)?;
         if let Ok(want) = f32s(dir, "src.npy") {
-            if song.task != Task::Text2Music {
+            if song.task != Task::Text2Music || song.codes.is_some() {
                 let src: Vec<f32> = (0..plan.frames).flat_map(|f| plan.ctx[f * 2 * LATENT..f * 2 * LATENT + LATENT].to_vec()).collect();
                 let what = if song.task == Task::Cover { "song: the cover's hints" } else { "song: the source latents" };
                 let want = if song.task == Task::Cover { f32s(dir, "ctx.npy")?.chunks(2 * LATENT).flat_map(|c| c[..LATENT].to_vec()).collect() } else { want };
@@ -302,4 +324,118 @@ pub fn run(e: &AceStep, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)
         line(log, &format!("song ({:.2} s)", t0.elapsed().as_secs_f64()), &cm, &f32s(dir, "audio.npy")?, &mut worst);
     }
     Ok(worst)
+}
+
+/// The reference planner's codes (lm.json's result)
+fn ref_codes(r: &Value) -> Vec<u32> {
+    let s = r["result"]["audio_codes"].as_str().unwrap_or("");
+    s.split("<|audio_code_").skip(1).filter_map(|x| x.split("|>").next()?.parse::<u32>().ok()).map(|c| c.min(crate::fsm::MAX_AUDIO_CODE)).collect()
+}
+
+/// The planner against the reference's run (lm.json): each phase's prompt and ids, its first logits with the reference's
+/// tokens fed, the constrained decoder over the reference's tokens; the codes' hints
+fn lm_stage(e: &AceStep, dir: &Path, log: &mut dyn FnMut(String), worst: &mut f64) -> Result<()> {
+    use crate::fsm::{Fsm, Phase};
+    use crate::planner::{codes_prompt, cot_prompt, cot_text, parse};
+    let p = e.planner.as_ref().ok_or_else(|| Error("lm: the planner is not loaded (NS_ACE_PLANNER)".into()))?;
+    let r = json(dir, "lm.json")?;
+    let req = json(dir, "request.json")?;
+    let caption = req["params"]["caption"].as_str().unwrap_or("");
+    let lyrics = req["params"]["lyrics"].as_str().unwrap_or("");
+    let mut s = Scratch::default();
+    let mut cot_out = String::new();
+    for ph in r["phases"].as_array().into_iter().flatten() {
+        let phase = ph["phase"].as_str().unwrap_or("");
+        let theirs = ph["prompt"].as_str().unwrap_or("");
+        let ours = match phase {
+            "cot" => cot_prompt(caption, lyrics),
+            _ => codes_prompt(caption, lyrics, &cot_text(&parse(&cot_out)), false, "NO USER INPUT"),
+        };
+        let same = ours == theirs;
+        let at = ours.chars().zip(theirs.chars()).take_while(|(a, b)| a == b).count();
+        log(format!("lm {phase}: the prompt {}", if same { "identical".to_string() } else {
+            format!("DIFFERS at char {at}: ours {:?} theirs {:?}", ours.chars().skip(at).take(40).collect::<String>(), theirs.chars().skip(at).take(40).collect::<String>())
+        }));
+        let ids_of = |k: &str| -> Vec<u32> { ph[k].as_array().into_iter().flatten().filter_map(|x| x.as_u64().map(|v| v as u32)).collect() };
+        let (want, toks) = (ids_of("ids"), ids_of("tokens"));
+        let got = p.tok.encode(theirs);
+        log(format!("lm {phase}: ids {} ({} tokens)", if got == want { "identical" } else { "DIFFER" }, want.len()));
+        // the logits of the first steps, the reference's tokens fed
+        let uncond = ids_of("uncond_ids");
+        let mut sq = p.lm.seq(&p.ops.gpu, want.len() + 8)?;
+        let mut su = p.lm.seq(&p.ops.gpu, uncond.len().max(1) + 8)?;
+        let t0 = Instant::now();
+        let mut lc = p.lm.prefill(&p.ops, &mut s, &mut sq, &want)?;
+        let mut lu = if uncond.is_empty() { Vec::new() } else { p.lm.prefill(&p.ops, &mut s, &mut su, &uncond)? };
+        let pre = t0.elapsed().as_secs_f64();
+        for i in 0..3 {
+            let f = dir.join(format!("lm_{phase}_logits_{i}.npy"));
+            if !f.is_file() {
+                break;
+            }
+            let ref_l = f32s(dir, &format!("lm_{phase}_logits_{i}.npy"))?;
+            let v = p.lm.vocab;
+            let top = |l: &[f32]| l.iter().enumerate().fold((0, f32::NEG_INFINITY), |b, (j, x)| if *x > b.1 { (j, *x) } else { b }).0;
+            line(log, &format!("lm {phase} logits {i} (cond{}, top {} vs {})", if i == 0 { format!(", prefill {pre:.2} s") } else { String::new() }, top(&lc),
+                               top(&ref_l[..v])), &lc, &ref_l[..v], worst);
+            if !lu.is_empty() && ref_l.len() >= 2 * v {
+                line(log, &format!("lm {phase} logits {i} (uncond)"), &lu, &ref_l[v..2 * v], worst);
+            }
+            let Some(t) = toks.get(i).copied() else { break };
+            if lu.is_empty() {
+                let mut seqs = [&mut sq];
+                lc = p.lm.step(&p.ops, &mut s, &mut seqs, &[t])?;
+            } else {
+                let mut seqs = [&mut sq, &mut su];
+                let both = p.lm.step(&p.ops, &mut s, &mut seqs, &[t, t])?;
+                lc = both[..v].to_vec();
+                lu = both[v..].to_vec();
+            }
+        }
+        // the constrained decoder over the reference's tokens: each must be one it allows
+        let user: std::collections::HashMap<&'static str, String> = ph["user_metadata"].as_object().into_iter().flatten()
+            .filter_map(|(k, v)| {
+                let k: &'static str = match k.as_str() { "bpm" => "bpm", "duration" => "duration", "keyscale" => "keyscale", "timesignature" => "timesignature", _ => return None };
+                Some((k, v.as_str().map_or_else(|| v.to_string(), str::to_string)))
+            }).collect();
+        let mut fsm = match phase {
+            "cot" => Fsm::new(&p.tables, &p.tok, Phase::Cot, None, user, true, false, false),
+            _ => Fsm::new(&p.tables, &p.tok, Phase::Codes, ph["target_duration"].as_f64(), Default::default(), false, true, true),
+        };
+        let mut all = want.clone();
+        let mut bad = Vec::new();
+        let mut forced = 0;
+        for (i, t) in toks.iter().enumerate() {
+            // the reference's token the most likely (the decoder's top-1 choices - a language's first token, a caption's
+            // end - then follow it)
+            let mut sc = vec![0f32; p.lm.vocab];
+            sc[*t as usize] = 1.0;
+            fsm.process(&all, &mut sc);
+            let n = sc.iter().filter(|x| x.is_finite()).count();
+            forced += (n == 1) as usize;
+            if !sc[*t as usize].is_finite() {
+                let allowed: Vec<String> = sc.iter().enumerate().filter(|(_, x)| x.is_finite()).take(6).map(|(j, _)| format!("{j} {:?}", p.tok.decode(&[j as u32]))).collect();
+                log(format!("  token {i} {t} {:?} refused in {:?}; allowed ({n}): {}", p.tok.decode(&[*t]), fsm.state, allowed.join(", ")));
+                bad.push(i);
+            }
+            fsm.update(*t);
+            all.push(*t);
+        }
+        log(format!("lm {phase}: the constrained decoder allows {} of the reference's {} tokens ({forced} forced){}", toks.len() - bad.len(), toks.len(),
+                    if bad.is_empty() { String::new() } else { format!(" - refused at {:?}", &bad[..bad.len().min(8)]) }));
+        if phase == "cot" {
+            cot_out = ph["output"].as_str().unwrap_or("").to_string();
+            let m = parse(&cot_out);
+            log(format!("lm cot: parsed {:?}", m));
+        }
+    }
+    if dir.join("hints.npy").is_file() {
+        let codes = ref_codes(&r);
+        let q = e.dit.codes.quantized(&codes);
+        let mut s = Scratch::default();
+        let h = e.dit.codes.detokenize(&e.ops, &mut s, &q)?;
+        let want = f32s(dir, "hints.npy")?;
+        line(log, &format!("lm hints ({} codes)", codes.len()), &h[..want.len().min(h.len())], &want[..want.len().min(h.len())], worst);
+    }
+    Ok(())
 }

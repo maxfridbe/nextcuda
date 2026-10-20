@@ -107,7 +107,10 @@ fn options(m: &Value, args: &[String]) -> Result<nextcuda_audio::LoadOptions, St
     }
     let ks = engines();
     let k = nextcuda_audio::kind_for(&ks, m["arch"].as_str().unwrap_or(""))?;
-    for (var, v) in super::opt_env(k.options, nextcuda_core::At::Load, k.name)? {
+    // the --opt-NAMEs for the load: a request's own (a song's bpm, task ...) are left for the request
+    let request_only = |n: &str| k.options.iter().any(|o| (o.name == n || o.env == n) && o.at == nextcuda_core::At::Request);
+    let load: nextcuda_core::options::Given = super::engine_opts().iter().filter(|(n, _)| !request_only(n)).map(|(a, b)| (a.clone(), b.clone())).collect();
+    for (var, v) in nextcuda_core::options::resolve(&load, k.options, nextcuda_core::At::Load, k.name)? {
         settings.insert(var, v);
     }
     Ok(nextcuda_audio::LoadOptions { settings })
@@ -354,7 +357,7 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         nextcuda_audio_whisper::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
     } else if m["arch"] == nextcuda_audio_acestep::ARCH {
         let stages: Vec<&str> = opt(args, "--stages").unwrap_or("text,te,enc,velocity,sample,vae").split(',').collect();
-        let e = nextcuda_audio_acestep::AceStep::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
+        let e = nextcuda_audio_acestep::AceStep::load(&files, std::slice::from_ref(&g), &options(&m, args)?, &mut log).map_err(|e| e.0)?;
         nextcuda_audio_acestep::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
     } else {
         return Err(format!("check knows {}, {}, {}, {}, {} and {}", nextcuda_audio_minimaxmusic3::ARCH, nextcuda_audio_breezetts2::ARCH, nextcuda_audio_qwen3tts::ARCH,

@@ -16,6 +16,9 @@
 pub mod check;
 pub mod codes;
 pub mod dit;
+pub mod fsm;
+pub mod lm;
+pub mod planner;
 mod ffi;
 pub mod nn;
 pub mod pth;
@@ -34,6 +37,9 @@ use nextcuda_core::Gpu;
 use nextcuda_tok::Tokenizer;
 
 use crate::dit::{Config as DitConfig, Dit};
+use crate::fsm::{LmTok, Tables};
+use crate::lm::Lm;
+use crate::planner::Planner;
 use crate::nn::{Ops, Scratch};
 use crate::qwen3::{Config as TeConfig, Qwen3};
 use crate::sample::{dcw_double, dcw_strengths, denoised, euler, repaint_blend, repaint_inject, schedule, Rng, LATENT};
@@ -41,7 +47,8 @@ use crate::text::{caption_prompt, instruction, lyrics_text, Metas, CAPTION_TOKEN
 use crate::vae::{Vae, RATE};
 
 pub const ARCH: &str = "acestep";
-pub const ROLES: &[&str] = &["dit", "dit_config", "silence", "text_encoder", "text_config", "tokenizer", "vae", "vae_config"];
+pub const ROLES: &[&str] = &["dit", "dit_config", "silence", "text_encoder", "text_config", "tokenizer", "vae", "vae_config", "lm", "lm_config",
+                              "lm_tokenizer"];
 /// latent frames a second
 pub const FPS: f64 = 25.0;
 /// the longest song (the silence latent's 15000 frames: 600 s)
@@ -59,6 +66,8 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "repaint-end", env: "", value: "-1", help: "repaint: the span's end, seconds (-1: the recording's end; past it: the song extended to it)", at: At::Request },
     EngineOption { name: "repaint-mode", env: "", value: "balanced|conservative|aggressive", help: "repaint: how the recording is kept around the span (its injection over the first steps, the edges' crossfades)", at: At::Request },
     EngineOption { name: "repaint-strength", env: "", value: "0.5", help: "repaint, balanced: 0 keeps the most of the recording, 1 the least", at: At::Request },
+    EngineOption { name: "planner", env: "", value: "0|1", help: "text2music: the 5 Hz planner LM writes the metas, the caption and the audio codes first (on, as the platform's use_lm; NS_ACE_PLANNER=0 at load: not loaded)", at: At::Request },
+    EngineOption { name: "decode-chunk", env: "NS_ACE_DECODE_CHUNK", value: "128|256|384|512", help: "the VAE decode's window in latent frames (the reference's for the card's free memory: 256 from 12 GB, 128 below)", at: At::Both },
     EngineOption { name: "vae-sample", env: "NS_ACE_VAE_SAMPLE", value: "0|1", help: "the recording's VAE posterior sampled, as the reference (off: its mean)", at: At::Both },
     EngineOption { name: "shift", env: "NS_ACE_SHIFT", value: "3.0", help: "the schedule's shift (t' = s t / (1 + (s - 1) t); 3: the platform's)", at: At::Both },
     EngineOption { name: "dcw", env: "NS_ACE_DCW", value: "0|1", help: "the wavelet-domain correction of each step (DCW; on, as the reference does for turbo)", at: At::Both },
@@ -71,8 +80,10 @@ pub fn kind() -> AudioKind {
 }
 
 fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<Box<dyn AudioEngine>> {
-    let gpu = gpus.first().ok_or_else(|| Error("no GPU".into()))?;
-    Ok(Box::new(AceStep::load(files, gpu, o, log)?))
+    if gpus.is_empty() {
+        return Err(Error("no GPU".into()));
+    }
+    Ok(Box::new(AceStep::load(files, gpus, o, log)?))
 }
 
 fn role(files: &ModelFiles, r: &str) -> Result<PathBuf> {
@@ -85,7 +96,9 @@ pub fn files_in(dir: &Path) -> Result<ModelFiles> {
     for (r, name) in [("dit", "acestep-v15-turbo/model.safetensors"), ("dit_config", "acestep-v15-turbo/config.json"),
                       ("silence", "acestep-v15-turbo/silence_latent.pt"), ("text_encoder", "Qwen3-Embedding-0.6B/model.safetensors"),
                       ("text_config", "Qwen3-Embedding-0.6B/config.json"), ("tokenizer", "Qwen3-Embedding-0.6B/tokenizer.json"),
-                      ("vae", "vae/diffusion_pytorch_model.safetensors"), ("vae_config", "vae/config.json")] {
+                      ("vae", "vae/diffusion_pytorch_model.safetensors"), ("vae_config", "vae/config.json"),
+                      ("lm", "acestep-5Hz-lm-1.7B/model.safetensors"), ("lm_config", "acestep-5Hz-lm-1.7B/config.json"),
+                      ("lm_tokenizer", "acestep-5Hz-lm-1.7B/tokenizer.json")] {
         let p = dir.join(name);
         if !p.is_file() {
             return Err(Error(format!("{}: no {name} (an ACE-Step 1.5 checkpoint's directory)", dir.display())));
@@ -175,6 +188,13 @@ pub struct Song {
     pub repaint: Option<RepaintSpan>,
     /// the source's VAE posterior sampled (the reference's); off: its mean
     pub vae_sample: bool,
+    /// text2music through the planner LM first (the platform's use_lm): its metas and caption, its audio codes as
+    /// the context (a cover of them)
+    pub planner: bool,
+    /// the planner's codes, once it ran
+    pub codes: Option<Vec<u32>>,
+    /// the VAE decode's window (latent frames); None: the reference's choice for the memory free
+    pub decode_chunk: Option<usize>,
 }
 
 /// What the stages made (the check reads them)
@@ -215,6 +235,8 @@ pub struct AceStep {
     pub dit: Dit,
     pub vae: Vae,
     pub tok: Tokenizer,
+    /// the planner LM (on the second card when there are two), unless NS_ACE_PLANNER=0
+    pub planner: Option<Planner>,
     settings: LoadOptions,
     work: Mutex<Scratch>,
     load_s: f64,
@@ -234,8 +256,9 @@ fn vae_strides(path: &Path) -> Result<Vec<usize>> {
 pub const MIN_FRAMES: usize = 128;
 
 impl AceStep {
-    pub fn load(files: &ModelFiles, gpu: &Arc<Gpu>, o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<AceStep> {
+    pub fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<AceStep> {
         let t0 = Instant::now();
+        let gpu = &gpus[0];
         let ops = Ops::new(gpu)?;
         let tcfg = TeConfig::read(&role(files, "text_config")?)?;
         let te = Qwen3::load(&role(files, "text_encoder")?, tcfg, "", gpu)?;
@@ -256,10 +279,20 @@ impl AceStep {
         let vae = Vae::load(&role(files, "vae")?, &vae_strides(&role(files, "vae_config")?)?, gpu, true)?;
         let tok = Tokenizer::from_hf_json(&role(files, "tokenizer")?).map_err(Error)?;
         let gib = |b: u64| b as f64 / (1u64 << 30) as f64;
+        let planner = if o.setting("NS_ACE_PLANNER").is_some_and(|v| matches!(v.trim(), "0" | "false" | "off")) {
+            None
+        } else {
+            let pg = gpus.get(1).unwrap_or(gpu);
+            let lm = Lm::load(&role(files, "lm")?, TeConfig::read(&role(files, "lm_config")?)?, pg)?;
+            let tok = LmTok::from_hf_json(&role(files, "lm_tokenizer")?).map_err(Error)?;
+            let tables = Tables::new(&tok, lm.vocab).map_err(Error)?;
+            log(format!("acestep: the planner LM ({} layers) {:.2} GiB on {}", lm.cfg.layers, gib(lm.bytes), pg.name));
+            Some(Planner { ops: if Arc::ptr_eq(pg, gpu) { Ops::new(gpu)? } else { Ops::new(pg)? }, lm, tok, tables, settings: Default::default() })
+        };
         log(format!("acestep: the DiT ({} layers, {}) {:.2} GiB, the text encoder {:.2} GiB, the VAE {:.2} GiB on {} - loaded in {:.1} s",
                     dit.cfg.layers, if dit.cfg.turbo { "turbo" } else { "base" }, gib(dit.bytes), gib(te.bytes), gib(vae.bytes), gpu.name,
                     t0.elapsed().as_secs_f64()));
-        Ok(AceStep { ops, te, dit, vae, tok, settings: o.clone(), work: Mutex::new(Scratch::default()), load_s: t0.elapsed().as_secs_f64() })
+        Ok(AceStep { ops, te, dit, vae, tok, planner, settings: o.clone(), work: Mutex::new(Scratch::default()), load_s: t0.elapsed().as_secs_f64() })
     }
 
     /// An option: the request's, else the load's (its settings, the environment)
@@ -336,7 +369,10 @@ impl AceStep {
                 (Some(wav), dur, repaint)
             }
         };
-        let strength = if task == Task::Text2Music { 1.0 } else { num("cover-strength", "")?.unwrap_or(0.5).clamp(0.0, 1.0) };
+        // text2music's is 1 (generate_music neutralizes it) - unless the planner's codes make it a cover, where the
+        // platform's 0.5 stands
+        let planned = task == Task::Text2Music && self.planner.is_some() && flag("planner", "", true);
+        let strength = if task == Task::Text2Music && !planned { 1.0 } else { num("cover-strength", "")?.unwrap_or(0.5).clamp(0.0, 1.0) };
         let cover_noise = if task == Task::Text2Music { 0.0 } else { num("cover-noise", "")?.unwrap_or(0.0).clamp(0.0, 1.0) };
         Ok(Song {
             task,
@@ -356,6 +392,9 @@ impl AceStep {
             cover_noise,
             repaint,
             vae_sample: flag("vae-sample", "NS_ACE_VAE_SAMPLE", true),
+            planner: task == Task::Text2Music && self.planner.is_some() && flag("planner", "", true),
+            codes: None,
+            decode_chunk: num("decode-chunk", "NS_ACE_DECODE_CHUNK")?.filter(|c| *c >= 16.0).map(|c| c as usize),
         })
     }
 
@@ -404,7 +443,7 @@ impl AceStep {
     pub fn plan(&self, s: &mut Scratch, song: &Song, target: Option<Vec<f32>>, nc_enc: Option<Vec<f32>>, trace: &mut Trace) -> Result<Plan> {
         let have = target.as_ref().map_or(song.frames, |t| t.len() / LATENT);
         let t = have.max(MIN_FRAMES);
-        let out_frames = if song.task == Task::Text2Music { song.frames } else { have };
+        let out_frames = if song.task == Task::Text2Music && song.codes.is_none() { song.frames } else { have };
         let tiled = self.dit.silence(t);
         // the source padded to the flow's length with the silence latent's head
         let target = target.map(|mut x| {
@@ -413,6 +452,8 @@ impl AceStep {
         });
         let (mut chunk, mut src, mut repaint) = (vec![1f32; t], tiled.clone(), None);
         match song.task {
+            // the planner's codes through the detokenizer: the source and its hints at once (precomputed_lm_hints)
+            Task::Text2Music if song.codes.is_some() => src = target.clone().unwrap_or_default(),
             Task::Text2Music => {}
             Task::Cover => src = target.clone().unwrap_or_default(),
             Task::Repaint => {
@@ -521,7 +562,8 @@ impl AceStep {
     /// span, then the peak to -1 dB (the reference's normalization); `frames` of it kept
     pub fn sound(&self, s: &mut Scratch, song: &Song, latents: &[f32], frames: usize, normalize: bool,
                  progress: &mut dyn FnMut(u32, u32) -> Result<()>) -> Result<Audio> {
-        let mut wav = self.vae.decode(&self.ops, s, latents, &mut |a, b| progress(a as u32, b as u32))?;
+        let chunk = song.decode_chunk.unwrap_or_else(|| Vae::auto_chunk(&self.ops, s));
+        let mut wav = self.vae.decode(&self.ops, s, latents, chunk, &mut |a, b| progress(a as u32, b as u32))?;
         let n = wav.len() / 2;
         let peak = wav.iter().fold(0f32, |m, x| m.max(x.abs()));
         if peak > 1.0 {
@@ -547,6 +589,52 @@ impl AceStep {
             }
         }
         Ok(Audio { rate: RATE, channels: 2, samples })
+    }
+}
+
+impl AceStep {
+    /// The planner's turn (text2music with use_lm): the user's metas injected, the rest of the metas and the caption
+    /// its own, its audio codes - the song becomes a cover of them (the cover's instruction, the codes' hints as the
+    /// context for the cover strength's share of the steps). The 25 Hz hints returned.
+    pub fn plan_song(&self, song: &mut Song, progress: &mut dyn FnMut(&'static str, u32, u32) -> Result<()>) -> Result<Vec<f32>> {
+        let p = self.planner.as_ref().ok_or_else(|| Error("the planner is not loaded".into()))?;
+        let mut user = std::collections::HashMap::new();
+        if let Some(b) = song.metas.bpm {
+            user.insert("bpm", b.to_string());
+        }
+        if let Some(k) = song.metas.keyscale.clone() {
+            user.insert("keyscale", k);
+        }
+        if let Some(t) = song.metas.timesignature.clone() {
+            user.insert("timesignature", t);
+        }
+        let seconds = song.metas.duration.unwrap_or(30.0);
+        user.insert("duration", (seconds as i64).to_string());
+        let plan = p.plan(&song.caption, &song.lyrics, user, seconds, song.seed, progress)?;
+        self.apply_plan(song, &plan.metadata, plan.codes)
+    }
+
+    /// What the planner wrote applied to the song (its metas, its caption, the cover's instruction): the codes' hints
+    pub fn apply_plan(&self, song: &mut Song, m: &std::collections::HashMap<String, String>, codes: Vec<u32>) -> Result<Vec<f32>> {
+        // _update_metadata_from_lm: the request's values first; the caption the planner's (use_cot_caption)
+        if song.metas.bpm.is_none() {
+            song.metas.bpm = m.get("bpm").and_then(|b| b.trim().parse::<u32>().ok()).filter(|b| *b > 0);
+        }
+        if song.metas.keyscale.is_none() {
+            song.metas.keyscale = m.get("keyscale").filter(|k| k.as_str() != "N/A").cloned();
+        }
+        if song.metas.timesignature.is_none() {
+            song.metas.timesignature = m.get("timesignature").filter(|k| k.as_str() != "N/A").cloned();
+        }
+        if let Some(c) = m.get("caption").filter(|c| !c.is_empty()) {
+            song.caption = c.clone();
+        }
+        song.instruction = instruction("cover", None);
+        let mut s = self.work.lock().unwrap_or_else(|e| e.into_inner());
+        let q = self.dit.codes.quantized(&codes);
+        let hints = self.dit.codes.detokenize(&self.ops, &mut s, &q)?;
+        song.codes = Some(codes);
+        Ok(hints)
     }
 }
 
@@ -609,15 +697,24 @@ impl AudioEngine for AceStep {
 
     fn generate(&self, req: &AudioRequest, progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Audio> {
         let t0 = Instant::now();
-        let song = self.song(req)?;
+        let mut song = self.song(req)?;
+        let el0 = || t0.elapsed().as_secs_f64();
+        let mut planned = None;
+        if song.planner {
+            let p = self.plan_song(&mut song, &mut |ph, a, b| progress(Step { phase: ph, at: a, of: b, seconds: el0() }))?;
+            planned = Some(p);
+        }
         let normalize = self.opt(req, "normalize", "NS_ACE_NORMALIZE").is_none_or(|v| !matches!(v.trim(), "0" | "false" | "off"));
         let mut s = self.work.lock().unwrap_or_else(|p| p.into_inner());
         let mut trace = Trace::default();
         let el = || t0.elapsed().as_secs_f64();
-        let target = match &song.source {
-            Some(wav) => Some(self.target(&mut s, &song, wav, &mut |a, b| progress(Step { phase: "encode", at: a, of: b, seconds: el() }))?),
-            None => None,
+        let target = match (&song.source, &planned) {
+            (Some(wav), _) => Some(self.target(&mut s, &song, wav, &mut |a, b| progress(Step { phase: "encode", at: a, of: b, seconds: el() }))?),
+            (None, Some(hints)) => Some(hints.clone()),
+            (None, None) => None,
         };
+        // each phase's buffers given back before the next (a 12 GB card holds the planner and the DiT beside them)
+        s.clear();
         progress(Step { phase: "prompt", at: 0, of: 1, seconds: el() })?;
         let enc = self.conditions(&mut s, &song, &mut trace)?;
         // the non-cover branch's conditions: the default instruction's (the same as the song's unless it has its own)
@@ -631,6 +728,7 @@ impl AudioEngine for AceStep {
         let plan = self.plan(&mut s, &song, target, nc, &mut trace)?;
         let noise = Rng::new(song.seed).normals(plan.frames * LATENT);
         let lat = self.sample(&mut s, &song, &plan, &enc, noise, &mut trace, &mut |a, b| progress(Step { phase: "flow", at: a, of: b, seconds: el() }))?;
+        s.clear();
         let out = self.sound(&mut s, &song, &lat, plan.out_frames, normalize, &mut |a, b| progress(Step { phase: "decode", at: a, of: b, seconds: el() }));
         s.clear();
         out
