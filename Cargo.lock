@@ -547,6 +547,7 @@ name = "nextcuda"
 version = "0.0.0"
 dependencies = [
  "nextcuda-audio",
+ "nextcuda-audio-acestep",
  "nextcuda-audio-breezetts2",
  "nextcuda-audio-minimaxmusic3",
  "nextcuda-audio-qwen3tts",
@@ -585,6 +586,18 @@ version = "0.0.0"
 dependencies = [
  "nextcuda-core",
  "symphonia",
+]
+
+[[package]]
+name = "nextcuda-audio-acestep"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-audio",
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-tok",
+ "serde_json",
 ]
 
 [[package]]
