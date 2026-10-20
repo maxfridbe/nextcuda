@@ -6,7 +6,7 @@ arch: vibevoice
 title: 'VibeVoice 1.5B (long-form multi-speaker speech: a script of Speaker N: lines, each speaker cloned from a recording)'
 about: 'Microsoft''s VibeVoice 1.5B: a Qwen2.5-1.5B reading the script after the speakers'' recordings, a diffusion head for its 7.5 Hz acoustic latents, the acoustic and semantic tokenizers (24 kHz) - gguf-org''s bf16 GGUF of it, the platform''s file'
 gpus: '0'
-vram_gib: 5.5                   # its memory on the card when it runs (bf16 matrices as half; the token embedding left on disk)
+vram_gib: 5.5                   # measured on the 5070: 5.4 GiB at its peak (bf16 matrices as half; the token embedding left on disk)
 speech:
 - clone
 - speakers

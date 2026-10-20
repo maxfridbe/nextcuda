@@ -368,11 +368,15 @@ impl VibeVoice {
     }
 
     /// A speaker's recording -> its prompt rows [frames, hidden] (host), the encoder's means and the drawn latents
-    pub fn voice_rows(&self, w: &[f32], rng: &mut Rng, forced: Option<&Vec<f32>>) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+    /// `padded`: the length the reference's batch pads every speaker's recording to (the longest one's), with zeros
+    /// behind: a shorter recording's last frame is encoded over them, as there
+    pub fn voice_rows(&self, w: &[f32], padded: usize, rng: &mut Rng, forced: Option<&Vec<f32>>) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
         let (ops, nsd) = (&self.ops, &self.nsd);
         let st = self.acoustic_enc.state(ops)?;
-        let work = self.acoustic_enc.work(ops, w.len(), true)?;
-        let mean = self.acoustic_enc.run(ops, nsd, &st, &work, w, true)?;
+        let mut x = w.to_vec();
+        x.resize(padded.max(w.len()), 0.0);
+        let work = self.acoustic_enc.work(ops, x.len(), true)?;
+        let mean = self.acoustic_enc.run(ops, nsd, &st, &work, &x, true)?;
         drop(work);
         let d = self.acoustic_enc.out_c;
         let frames = w.len().div_ceil(3200);
@@ -412,8 +416,9 @@ impl VibeVoice {
         // the prompt's rows: token embeddings, the speakers' latents through the acoustic connector
         let mut rows = vec![0f32; p.tokens.len() * h];
         let mut voice_rows = Vec::new();
+        let longest = p.voices.iter().map(Vec::len).max().unwrap_or(0);
         for (i, w) in p.voices.iter().enumerate() {
-            let (r, mean, lat) = self.voice_rows(w, &mut rng, forced.voice_lat.as_ref().and_then(|v| v.get(i)))?;
+            let (r, mean, lat) = self.voice_rows(w, longest, &mut rng, forced.voice_lat.as_ref().and_then(|v| v.get(i)))?;
             if let Some(t) = trace.as_deref_mut() {
                 t.voice_means.push(mean);
                 t.voice_lat.push(lat);

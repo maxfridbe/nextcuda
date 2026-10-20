@@ -29,9 +29,7 @@ pub fn read_npy(path: &Path) -> Result<(Vec<usize>, Vec<f64>)> {
     }
     let (hl, at) = if b[6] == 1 { (u16::from_le_bytes([b[8], b[9]]) as usize, 10) } else { (u32::from_le_bytes([b[8], b[9], b[10], b[11]]) as usize, 12) };
     let head = String::from_utf8_lossy(&b[at..at + hl]).to_string();
-    if head.contains("'fortran_order': True") {
-        return Err(Error(format!("{}: Fortran order", path.display())));
-    }
+    let fortran = head.contains("'fortran_order': True");
     let shape: Vec<usize> = head.split("'shape': (").nth(1).and_then(|s| s.split(')').next())
         .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
     let d = &b[at + hl..];
@@ -46,6 +44,15 @@ pub fn read_npy(path: &Path) -> Result<(Vec<usize>, Vec<f64>)> {
     } else {
         return Err(Error(format!("{}: {head}", path.display())));
     };
+    // column-major (a transposed tensor saved as it was): to row-major, 2-D
+    if fortran && shape.len() == 2 {
+        let (r, c) = (shape[0], shape[1]);
+        let t = (0..r * c).map(|i| v[(i % c) * r + i / c]).collect();
+        return Ok((shape, t));
+    }
+    if fortran && shape.len() > 2 {
+        return Err(Error(format!("{}: Fortran order of {} dimensions", path.display(), shape.len())));
+    }
     Ok((shape, v))
 }
 
@@ -127,10 +134,11 @@ pub fn run(e: &VibeVoice, dir: &Path, stages: &[&str], log: &mut dyn FnMut(Strin
     if stages.contains(&"voice") {
         let embeds = want("embeds.npy")?;
         let mut speech_rows = Vec::new();
+        let longest = p.voices.iter().map(Vec::len).max().unwrap_or(0);
         for (i, w) in p.voices.iter().enumerate() {
             let lat = want(&format!("voice_lat_{i}.npy"))?;
             let mut rng = crate::Rng::new(0);
-            let (rws, mean, _) = e.voice_rows(w, &mut rng, Some(&lat))?;
+            let (rws, mean, _) = e.voice_rows(w, longest, &mut rng, Some(&lat))?;
             report(log, &mut worst, &format!("speaker {i}'s encoder means"), &mean, &want(&format!("enc_mean_{i}.npy"))?);
             speech_rows.extend(rws);
         }
@@ -220,7 +228,10 @@ pub fn run(e: &VibeVoice, dir: &Path, stages: &[&str], log: &mut dyn FnMut(Strin
             report(log, &mut worst, "decoder: the first frame", &got_c[..ad.hop], &chunk[..ad.hop]);
         }
         if stages.contains(&"semantic") {
-            report(log, &mut worst, &format!("semantic: {frames} frames"), &got_s, &want("sem.npy")?);
+            let ws = want("sem.npy")?;
+            report(log, &mut worst, &format!("semantic: {frames} frames"), &got_s, &ws);
+            let per: Vec<String> = (0..got_s.len() / 128).map(|f| format!("{:.0e}", compare(&got_s[f * 128..(f + 1) * 128], &ws[f * 128..(f + 1) * 128]).0)).collect();
+            log(format!("{:<28} {}", "semantic: by frame", per.join(" ")));
         }
     }
 
