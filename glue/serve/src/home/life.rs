@@ -184,6 +184,10 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
                     c.push("multi_view");
                 }
                 methods.push("model3d.generate");
+            } else if does("texture") {
+                // a paint-only model: model3d.generate with a mesh (or file) paints it
+                c.push("texture");
+                methods.push("model3d.generate");
             }
             if does("rig") {
                 c.extend(["rig", "skeleton", "skin_weights"]);

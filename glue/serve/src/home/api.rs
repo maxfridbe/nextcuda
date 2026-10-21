@@ -281,10 +281,12 @@ pub const METHODS: &[Method] = &[
              fields: &JOB_ID, example: r#"{"label": "theme-3"}"# },
     Method { kind: "audio", name: "describePromptGuideMD", summary: "How to prompt the model, as Markdown", fields: &[MODEL], example: r#"{"model": "minimax-music3"}"# },
 
-    Method { kind: "model3d", name: "generate", summary: "A mesh from a picture of an object, or several views of it (TRELLIS.2, Hunyuan3D, Pixal3D; the model loads first if it must): its shape and, with texture, PBR textures; the answer links the GLB. A job like image.generate (wait, reentrant_id, status, cancel)",
+    Method { kind: "model3d", name: "generate", summary: "A mesh from a picture of an object, or several views of it (TRELLIS.2, Hunyuan3D, Pixal3D; the model loads first if it must): its shape and, with texture, PBR textures - or, given a mesh (or file), that mesh painted like the picture; the answer links the GLB. A job like image.generate (wait, reentrant_id, status, cancel)",
              fields: &[MODEL_OPT, ("image", "string", "the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (model3d.upload); a transparent background is the object's outline, an opaque one is cut out (remove_background)", false),
                        ("images", r#"{"type": "array", "maxItems": 8, "items": {"oneOf": [{"type": "string"}, {"type": "object", "properties": {"image": {"type": "string"}, "side": {"type": "string", "description": "front, back, left, right, top, bottom, or an azimuth in degrees"}}}]}}"#, "several views of the object (a multi-view model: model3d.info's abilities.views); each a picture or {image, side}", false),
                        ("texture", "boolean", "PBR textures too (base colour, metallic-roughness); default: what the model does (model3d.info)", false),
+                       ("mesh", "string", "a mesh to paint instead of making one (a model that textures: Hunyuan3D 2.1, hunyuan3d-2.1-paint): a GLB or OBJ as base64 or a data: URL; image says how it is painted", false),
+                       ("file", "string", "or a GLB made here to paint (its file name or url), as mesh", false),
                        ("seed", "integer", "", false), ("steps", "integer", "denoising steps of each stage", false), ("cfg", "number", "guidance", false),
                        ("resolution", "integer", "the shape's grid / octree resolution: detail against time and memory", false),
                        ("faces", "integer", "at most this many triangles (decimated to it)", false), ("texture_size", "integer", "the texture's side in texels", false),
@@ -1122,7 +1124,9 @@ impl Home {
             ("model3d", "generate" | "rig") => {
                 // a model that does it: the one named, else the loaded or first enabled one whose card says so (rig: a
                 // rigger or an animator)
-                let want = if m.name == "rig" { "rig" } else { "generate" };
+                // (a mesh given to model3d.generate is painted: a model that textures, the paint-only ones too)
+                let painting = m.name == "generate" && ["mesh", "file"].iter().any(|k| b[*k].as_str().is_some_and(|v| !v.is_empty()));
+                let want = if m.name == "rig" { "rig" } else if painting { "texture" } else { "generate" };
                 let able = |m: &Value| m["does"].as_array().is_none_or(|a| a.iter().any(|x| x == want || (want == "rig" && x == "animate")));
                 let id = match b["model"].as_str().filter(|x| !x.is_empty()) {
                     Some(_) => self.pick("model3d", b, &all)?,
