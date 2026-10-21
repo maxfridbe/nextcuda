@@ -369,6 +369,8 @@ The `model3d` kind (meshes from pictures, rigging, animation) and its engines' s
 | `NS_M3D_HY_CHUNK` | by the decoder's width | points the shape decoder queries at once (--opt-chunk) | model3d hunyuan3d |
 | `NS_M3D_HY_PAINT` | 1 | 0: 2.1 loads without its paint model (no textures; ~6.5 GiB less) even when the paint files are there (--opt-paint) | model3d hunyuan3d |
 | `NS_M3D_HY_PAINT_STEPS` | 15 | the texture's UniPC steps (--opt-paint-steps) | model3d hunyuan3d |
+| `NS_M3D_HY_PAINT_KEEP_MIB` | 3072, or 30 % of the free memory on a smaller card | the paint run's arena for what outlives a block (MiB); past it a run spills to plain allocations | model3d hunyuan3d |
+| `NS_M3D_HY_PAINT_TMP_MIB` | 4096, or 45 % of the free memory on a smaller card | the paint run's arena for a block's temporaries (MiB) | model3d hunyuan3d |
 | `NS_M3D_AAM_PROFILE` | off | Debug: set: AnimateAnyMesh waits for the GPU after each named step of the flow and prints the totals (slower; shows where the time goes) | model3d animateanymesh |
 | `NS_M3D_AAM_TRAJ` | max(512, vertices / 8) | AnimateAnyMesh: the trajectory tokens DyMeshVAE samples (more: finer motion, slower) (--opt-traj; per request too) | model3d animateanymesh |
 | `NS_M3D_UNIRIG_BEAMS` | 15 | UniRig: the skeleton decoder's beams, sampled as UniRig's inference (1: greedy, the same skeleton every time) (--opt-beams; per request too) | model3d unirig |
