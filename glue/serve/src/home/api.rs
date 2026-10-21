@@ -48,6 +48,8 @@ pub const METHODS: &[Method] = &[
     Method { kind: "system", name: "state", summary: "The box: the GPUs (memory by process and vouched for), every model's state, the front ends", fields: &[], example: "{}" },
     Method { kind: "system", name: "busy", summary: "Is anything working: a clip made or waiting to run, a picture, sound or chat answered, a model loading. video.accepts says whether video.generate starts a clip at once (else 409 busy without queue: true)",
              fields: &[], example: "{}" },
+    Method { kind: "system", name: "ping", summary: "Is the control plane here, and does it take work: `available` (it answered), `maintenance` and, when on, `reason` (the notice's words) and `retry_after_s`. Nothing is loaded or started: the cheap call a client makes before sending work and after an error",
+             fields: &[], example: "{}" },
     Method { kind: "system", name: "version", summary: "The release, the API's version, the kinds enabled, the features this build has (names a client can test for) and the methods callable now",
              fields: &[], example: "{}" },
     Method { kind: "system", name: "files.stat", summary: "A file an answer linked: its bytes and SHA-256 (to check a download), mtime, URL",
@@ -438,7 +440,7 @@ const API_VERSION: u32 = 3;
 
 /// What this build does, by names a client can test for (system.version); names are added, never reused
 const FEATURES: &[&str] = &[
-    "system.busy", "system.busy.cards", "system.busy.slots", "system.version", "system.files.stat", "system.files.delete",
+    "system.busy", "system.busy.cards", "system.busy.slots", "system.ping", "system.version", "system.files.stat", "system.files.delete",
     "jobs.image", "jobs.audio", "jobs.cancel.label", "reentrant_id",
     "video.frames", "video.chain", "video.priority", "video.cancel.label", "video.queue.move", "video.queue.remove", "video.engines.inputs",
     "video.negative_prompt.ignored", "image.canvases", "image.cancel", "spec.open",
@@ -946,6 +948,14 @@ impl Home {
         match (m.kind, m.name) {
             ("system", "state") => Ok(self.state()),
             ("system", "busy") => Ok(self.busy(&all)),
+            ("system", "ping") => {
+                let n = self.maintenance().map(|n| super::maint::public(&n));
+                Ok(json!({"available": true, "maintenance": n.is_some(),
+                          "reason": n.as_ref().and_then(|n| n["message"].as_str()).filter(|m| !m.trim().is_empty()).map(str::to_string)
+                                      .or_else(|| n.as_ref().map(|_| "maintenance".to_string())),
+                          "retry_after_s": n.as_ref().and_then(|n| n["retry_after_s"].as_u64()),
+                          "version": crate::VERSION, "api": API_VERSION, "at": now()}))
+            }
             ("system", "version") => {
                 let on = self.kinds_on(&all);
                 let methods: Vec<String> = METHODS.iter().filter(|m| on.contains(&m.kind) && not_ported(m).is_none()).map(|m| format!("{}.{}", m.kind, m.name)).collect();
