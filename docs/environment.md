@@ -599,6 +599,7 @@ Inputs of the checks and unit tests that need files outside the repository (unse
 | `NS_DUMP_RE` | the GLM layer outputs (inp_embd, attn_norm-N, l_out-N, result_output, ...) | Regex of the llama.cpp graph tensor names llama-ns-dump writes | reference/llama-dump (ns-dump.cpp, llama.cpp parity tool) |
 | `NS_MM3_CHECK_STEPS` | 3 | chunks check: flow steps a window | audio minimaxmusic3 (check) |
 | `NS_TEST_H3_TOKENIZER` | test skipped | the H3 tokenizer's directory (vocab.json, merges.txt, tokenizer_config.json) for its reference-match test | video h3 (cargo test) |
+| `NS_TEST_STARVECTOR_TOKENIZER` | test skipped | StarVector's tokenizer.json, for its prompt / stop tokens and decoding test | image starvector (cargo test) |
 | `NS_TEST_WHISPER_CONFIG` | test skipped | whisper-large-v3-turbo's config.json for its sizes' test | audio whisper (cargo test) |
 | `NS_TEST_WHISPER_GENERATION` | test skipped | whisper-large-v3-turbo's generation_config.json (with NS_TEST_WHISPER_TOKENIZER) for the vocabulary, rules and alignment tests | audio whisper (cargo test) |
 | `NS_TEST_WHISPER_REF` | test skipped | a folder of reference/whisper/ref.py dumps (short/, long/, song/): the mel, greedy-rule, alignment and placement tests against openai-whisper | audio whisper (cargo test) |

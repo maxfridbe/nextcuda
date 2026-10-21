@@ -561,6 +561,7 @@ dependencies = [
  "nextcuda-image-olmocr2",
  "nextcuda-image-paddleocrvl",
  "nextcuda-image-qwenimage21",
+ "nextcuda-image-starvector",
  "nextcuda-image-unlimitedocr",
  "nextcuda-image-upscale",
  "nextcuda-llm",
@@ -762,6 +763,18 @@ dependencies = [
  "nextcuda-gguf",
  "nextcuda-image",
  "nextcuda-qwen3vl",
+ "serde_json",
+]
+
+[[package]]
+name = "nextcuda-image-starvector"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-image",
+ "nextcuda-tok",
  "serde_json",
 ]
 

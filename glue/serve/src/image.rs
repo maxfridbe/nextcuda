@@ -307,6 +307,16 @@ impl ImageServer {
                     Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
                 }
             }
+            ("POST", "/v1/images/vectorize") => {
+                let body: Value = match serde_json::from_slice(&req.body) {
+                    Ok(v) => v,
+                    Err(e) => return http::respond_with(&mut s, 400, &err(format!("the body is not JSON: {e}")), &cors),
+                };
+                match self.vectorize(&body) {
+                    Ok(v) => http::respond_with(&mut s, 200, &v, &cors),
+                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
+                }
+            }
             ("POST", "/v1/images/upscale") | ("POST", "/v1/videos/upscale") => {
                 let body: Value = match serde_json::from_slice(&req.body) {
                     Ok(v) => v,
@@ -406,6 +416,7 @@ impl ImageServer {
             "loras": self.loras_known.iter().map(|k| json!({"id": k.id, "title": k.title,
                 "loaded": loaded.iter().find(|l| l.name == k.id).map(|l| l.scale)})).collect::<Vec<_>>(),
             "saves": self.out_dir.is_some(), "wfe": self.wfe.is_some(),
+            "vectorize": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.vectorizes())).unwrap_or(false),
             "upscale": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.upscale_variants())).unwrap_or_default().iter()
                 .map(|v| json!({"variant": v.id, "about": v.about, "scales": v.scales, "noise": v.noise})).collect::<Vec<_>>(),
         })
@@ -539,6 +550,78 @@ impl ImageServer {
                   "prompt_seconds": out.prompt_seconds, "read_tok_s": read_tok_s, "write_seconds": out.seconds, "tok_s": tok_s, "seconds": seconds, "wh": wh}))
     }
 
+    /// POST /v1/images/vectorize: {image (base64 / data URL), max_length, beams, sample, top_p, temperature,
+    /// repetition_penalty, seed} - the picture written as SVG by a vectorizer (StarVector)
+    fn vectorize(&self, b: &Value) -> Result<Value, (u16, String)> {
+        let bad = |m: String| (400u16, m);
+        let raw = b["image"].as_str().filter(|v| !v.is_empty()).ok_or_else(|| bad("image: the picture (base64 or a data: URL) is required".into()))?;
+        let pic = init_picture(raw).map_err(bad)?;
+        let int = |k: &str| -> Result<Option<i64>, (u16, String)> {
+            match &b[k] {
+                Value::Null => Ok(None),
+                v => v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())).map(Some).ok_or_else(|| bad(format!("{k}: a whole number"))),
+            }
+        };
+        let num = |k: &str| -> Result<Option<f32>, (u16, String)> {
+            match &b[k] {
+                Value::Null => Ok(None),
+                v => v.as_f64().map(|x| Some(x as f32)).ok_or_else(|| bad(format!("{k}: a number"))),
+            }
+        };
+        let req = nextcuda_image::VectorizeRequest {
+            picture: pic,
+            max_length: int("max_length")?.map(|v| v.clamp(1, 8192) as u32).unwrap_or(0),
+            beams: int("beams")?.map(|v| v.clamp(1, 64) as u32),
+            sample: b["sample"].as_bool(),
+            top_p: num("top_p")?,
+            temperature: num("temperature")?,
+            repetition_penalty: num("repetition_penalty")?,
+            seed: int("seed")?.map(|v| v as u64).unwrap_or_else(|| now() ^ 0x5f37),
+        };
+        if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty() && *m != self.model) {
+            return Err((404, format!("model {m} is not served here (this server: {})", self.model)));
+        }
+        self.waiting.fetch_add(1, Ordering::Relaxed);
+        let g = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        self.waiting.fetch_sub(1, Ordering::Relaxed);
+        let (engine, _) = match g.as_ref() {
+            None => return Err((503, "the engine is not loaded".into())),
+            Some((e, _)) if !e.vectorizes() => return Err((400, format!("{} does not write pictures as SVG (starvector-1b-im2svg does)", self.model))),
+            Some(x) => x,
+        };
+        let Some(_running) = self.cancel.begin(b["request_id"].as_str()) else {
+            return Err((499, "cancelled".into()));
+        };
+        let j0 = self.tele.joules();
+        let t0 = Instant::now();
+        let p = &self.progress;
+        let what = format!("vectorize {}x{}", req.picture.width, req.picture.height);
+        let mut n = 0u32;
+        let out = engine.vectorize(&req, &mut |_piece| {
+            n += 1;
+            *p.lock().unwrap() = json!({"busy": true, "prompt": what, "at": n, "of": req.max_length.max(n), "phase": "tokens", "seconds": t0.elapsed().as_secs_f64()});
+            if self.cancel.stopping() {
+                return Err(nextcuda_core::Error("cancelled".into()));
+            }
+            Ok(())
+        });
+        *p.lock().unwrap() = json!({"busy": false});
+        let out = out.map_err(|e| (if e.0 == "cancelled" { 499u16 } else { 400 }, e.0))?;
+        let wh = match (j0, self.tele.joules()) {
+            (Some(a), Some(b)) if b >= a => Some((b - a) / 3600.0),
+            _ => None,
+        };
+        let tok_s = out.tokens as f64 / out.seconds.max(1e-9);
+        {
+            let mut h = self.history.lock().unwrap();
+            h.push_front(json!({"kind": "vectorize", "prompt": format!("{} tokens{}", out.tokens, if out.closed { "" } else { ", cut at max_length" }),
+                                "seconds": out.prompt_seconds + out.seconds, "wh": wh, "created": now()}));
+            h.truncate(200);
+        }
+        Ok(json!({"created": now(), "data": [{"svg": out.svg, "closed": out.closed, "tokens": out.tokens}],
+                  "nextsycl": {"seconds": out.prompt_seconds + out.seconds, "prompt_seconds": out.prompt_seconds, "tokens": out.tokens, "tok_s": tok_s, "wh": wh}}))
+    }
+
     /// An upscale request's settings (image.upscale and video.upscale share them)
     fn upscale_req(b: &Value, picture: nextcuda_image::Picture) -> Result<nextcuda_image::UpscaleRequest, (u16, String)> {
         let bad = |m: String| (400u16, m);
@@ -572,7 +655,7 @@ impl ImageServer {
         }
     }
 
-    /// POST /v1/images/upscale: {image (base64 / data URL), variant, scale, noise, tile, response_format}
+    /// POST /v1/images/upscale: {image (base64 / data URL), variant, scale, noise, tile, response_format} (POST /v1/images/vectorize: see `vectorize`)
     fn upscale(&self, b: &Value, base: &str) -> Result<Value, (u16, String)> {
         let bad = |m: String| (400u16, m);
         let raw = b["image"].as_str().filter(|v| !v.is_empty()).ok_or_else(|| bad("image: the picture (base64 or a data: URL) is required".into()))?;
