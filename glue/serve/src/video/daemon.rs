@@ -606,7 +606,7 @@ impl Daemon {
                         _ => None,
                     };
                     gpus.push(json!({
-                        "gpu": sl.gpu, "name": sl.name, "pci": sl.pci, "mem_gib": sl.mem_gib, "shared": sl.shared,
+                        "gpu": sl.gpu, "span": sl.span, "name": sl.name, "pci": sl.pci, "mem_gib": sl.mem_gib, "shared": sl.shared,
                         "engine": sl.engine, "info": sl.info, "denoiser": self.opts.engine_of_path(sl.info.get("model")),
                         "worker": sl.worker_pid.map(|pid| json!({"pid": pid, "rss_gib": rss_gib(pid)})),
                         "busy_pct": busy, "engine_gib": sl.stats["gib_in_use"], "cap_gib": sl.stats["gib_cap"],
