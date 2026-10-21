@@ -87,7 +87,15 @@ impl Model3dEngine for Painter {
             None => 15,
         };
         let size = req.texture_size.unwrap_or(2048).clamp(256, 8192);
-        let mut report = |phase: &'static str, at: u32, of: u32| progress(Step { phase, at, of, seconds: t0.elapsed().as_secs_f64() });
+        let trace = std::env::var("NS_M3D_HY_PAINT_TRACE").is_ok_and(|v| v != "0");
+        let mut report = |phase: &'static str, at: u32, of: u32| {
+            if trace {
+                if let Ok((total, Some(free))) = self.ops.gpu.memory() {
+                    eprintln!("[paint trace] {phase} {at}/{of}: card {:.2} of {:.2} GiB free", free as f64 / (1u64 << 30) as f64, total as f64 / (1u64 << 30) as f64);
+                }
+            }
+            progress(Step { phase, at, of, seconds: t0.elapsed().as_secs_f64() })
+        };
         let given = nextcuda_model3d::finish(mesh.clone(), Some(req.faces.unwrap_or(40_000)));
         let painted = self.paint.paint(&self.ops, &given, &view.image, req.seed, steps, size, None, &mut |ph, a, b| report(ph, a, b))?;
         self.note_memory();

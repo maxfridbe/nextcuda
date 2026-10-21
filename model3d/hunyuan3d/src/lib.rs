@@ -161,7 +161,7 @@ pub fn paint_from(files: &ModelFiles, gpu: &Arc<Gpu>, log: &mut dyn FnMut(String
     };
     let (u, v, d) = (open_any("paint-unet")?, open_any("paint-vae")?, open_any("paint-dino")?);
     paint::Paint::check_files(&u)?;
-    paint::Paint::load(&u, &v, &d, gpu, log)
+    paint::Paint::load(u, &v, d, gpu, log)
 }
 
 impl Hunyuan3d {
