@@ -578,6 +578,7 @@ dependencies = [
  "nextcuda-tok",
  "nextcuda-video",
  "nextcuda-video-h3",
+ "nextcuda-video-ltx2",
  "serde_json",
 ]
 
@@ -956,6 +957,18 @@ dependencies = [
  "nextcuda-video",
  "serde_json",
  "unicode-normalization",
+]
+
+[[package]]
+name = "nextcuda-video-ltx2"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-tok",
+ "nextcuda-video",
+ "serde_json",
 ]
 
 [[package]]
