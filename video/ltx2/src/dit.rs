@@ -208,6 +208,71 @@ impl AdaLn {
     }
 }
 
+/// LTX2_PROFILE=1: each part of a block timed (the card waited for after it), summed per card and part, logged per pass
+static PROFILE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LTX2_PROFILE").is_ok_and(|v| v == "1"));
+static TIMES: std::sync::Mutex<Vec<(String, f64)>> = std::sync::Mutex::new(Vec::new());
+
+fn tick(part: &Part, what: &str, t: &mut std::time::Instant) -> Result<()> {
+    if *PROFILE {
+        part.nsd.wait()?;
+        let k = format!("{}:{what}", part.gpu.index);
+        let dt = t.elapsed().as_secs_f64();
+        let mut v = TIMES.lock().unwrap();
+        match v.iter_mut().find(|e| e.0 == k) {
+            Some(e) => e.1 += dt,
+            None => v.push((k, dt)),
+        }
+        *t = std::time::Instant::now();
+    }
+    Ok(())
+}
+
+/// The profile so far, and cleared
+pub fn take_profile() -> Vec<(String, f64)> {
+    std::mem::take(&mut *TIMES.lock().unwrap())
+}
+
+/// Room each card keeps beside its blocks: the activations of a large clip (1344 x 768, 5 s: about 2.5 GiB)
+const HEADROOM: u64 = 5 << 29;
+
+/// The blocks a card: in proportion to its speed (compute units x clock) - the passes are pipelined over the cards,
+/// so a card's share of the time is its blocks over its speed - each card at most what fits beside HEADROOM, the rest
+/// to the others
+fn auto_split(gpus: &[Arc<Gpu>], per_block: u64) -> Result<Vec<usize>> {
+    let n = gpus.len();
+    let speed: Vec<f64> = gpus.iter().map(|g| nextcuda_core::gpu_units(g.index).map_or(1.0, |(u, c)| if u == 0 { 1.0 } else { u as f64 * c.max(1) as f64 })).collect();
+    let total: f64 = speed.iter().sum();
+    let mut counts: Vec<usize> = speed.iter().map(|s| (BLOCKS as f64 * s / total).round() as usize).collect();
+    let cap: Vec<usize> = gpus.iter().map(|g| {
+        let (t, f) = g.memory().unwrap_or((0, None));
+        let room = (f.unwrap_or(t) as f64 * 0.94) as u64;
+        (room.saturating_sub(HEADROOM) / per_block.max(1)) as usize
+    }).collect();
+    for i in 0..n {
+        counts[i] = counts[i].min(cap[i]);
+    }
+    // what is left (rounding, caps) to the cards with room, fastest first
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|a, b| speed[*b].total_cmp(&speed[*a]));
+    let mut left = BLOCKS as isize - counts.iter().sum::<usize>() as isize;
+    while left > 0 {
+        let Some(&i) = order.iter().find(|i| counts[**i] < cap[**i]) else { break };
+        counts[i] += 1;
+        left -= 1;
+    }
+    while left < 0 {
+        let i = *order.last().unwrap();
+        let i = if counts[i] > 0 { i } else { order[0] };
+        counts[i] -= 1;
+        left += 1;
+    }
+    if counts.iter().sum::<usize>() != BLOCKS {
+        return Err(Error(format!("the DiT's {BLOCKS} blocks do not fit these cards beside {:.1} GiB of activations each (at most {cap:?})",
+                                 HEADROOM as f64 / (1u64 << 30) as f64)));
+    }
+    Ok(counts)
+}
+
 pub struct Dit {
     parts: Vec<Part>,
     patchify: (DevBuf, DevBuf),
@@ -393,13 +458,13 @@ impl Dit {
         let t0 = std::time::Instant::now();
         let f = Gguf::open(path).map_err(ge)?;
         let n = gpus.len().max(1);
-        let counts: Vec<usize> = match split {
-            Some(s) if s.len() == n && s.iter().sum::<usize>() == BLOCKS => s.to_vec(),
-            _ => (0..n).map(|i| BLOCKS / n + usize::from(i < BLOCKS % n)).collect(),
-        };
         let block_bytes = |i: usize| -> u64 {
             let p = format!("transformer_blocks.{i}.");
             f.tensors.iter().filter(|t| t.name.starts_with(&p)).map(|t| t.bytes).sum()
+        };
+        let counts: Vec<usize> = match split {
+            Some(s) if s.len() == n && s.iter().sum::<usize>() == BLOCKS => s.to_vec(),
+            _ => auto_split(gpus, (0..BLOCKS).map(block_bytes).sum::<u64>() / BLOCKS as u64)?,
         };
         let mut parts = Vec::new();
         let mut first = 0;
@@ -578,46 +643,41 @@ impl Dit {
         Ok(())
     }
 
-    /// One forward: velocities video [Tv, 128], audio [La, 128]; `capture`: (block, video, audio) states after those
-    /// blocks
-    pub fn forward(&self, prep: &Prepared, lat: &[f32], aud: &[f32], pass: &Pass, capture: &[usize]) -> Result<(Vec<f32>, Vec<f32>, Vec<(usize, Vec<f32>, Vec<f32>)>)> {
-        let tv = prep.shape.tv();
-        let ta = prep.shape.la;
-        let mut caps = Vec::new();
+    /// The latents through the patchify projections, on the first card
+    fn patchify(&self, prep: &Prepared, lat: &[f32], aud: &[f32]) -> Result<(DevBuf, DevBuf)> {
+        let (tv, ta) = (prep.shape.tv(), prep.shape.la);
         let p0 = &self.parts[0];
-        let mut x = DevBuf::f32(&p0.gpu, tv * VD)?;
-        let mut y = DevBuf::f32(&p0.gpu, ta * AD)?;
-        {
-            let l = DevBuf::from_f32(&p0.gpu, lat)?;
-            let a = DevBuf::from_f32(&p0.gpu, aud)?;
-            p0.nsd.linear(l.ptr(), Dt::F32, tv, CH, self.patchify.0.ptr(), VD, self.patchify.1.ptr(), x.ptr(), Dt::F32)?;
-            p0.nsd.linear(a.ptr(), Dt::F32, ta, CH, self.audio_patchify.0.ptr(), AD, self.audio_patchify.1.ptr(), y.ptr(), Dt::F32)?;
-            p0.nsd.wait()?;
-        }
-        let mut staging = Vec::new();
-        for (pi, part) in self.parts.iter().enumerate() {
-            if pi > 0 {
-                let (nx, ny) = (DevBuf::f32(&part.gpu, tv * VD)?, DevBuf::f32(&part.gpu, ta * AD)?);
-                staging.resize(x.len.max(y.len), 0u8);
-                nx.copy_from_peer(&x, &mut staging)?;
-                ny.copy_from_peer(&y, &mut staging)?;
-                x = nx;
-                y = ny;
+        let x = DevBuf::f32(&p0.gpu, tv * VD)?;
+        let y = DevBuf::f32(&p0.gpu, ta * AD)?;
+        let l = DevBuf::from_f32(&p0.gpu, lat)?;
+        let a = DevBuf::from_f32(&p0.gpu, aud)?;
+        p0.nsd.linear(l.ptr(), Dt::F32, tv, CH, self.patchify.0.ptr(), VD, self.patchify.1.ptr(), x.ptr(), Dt::F32)?;
+        p0.nsd.linear(a.ptr(), Dt::F32, ta, CH, self.audio_patchify.0.ptr(), AD, self.audio_patchify.1.ptr(), y.ptr(), Dt::F32)?;
+        p0.nsd.wait()?;
+        Ok((x, y))
+    }
+
+    /// One card's blocks over x, y (on that card), in place; `capture`: the states after those blocks
+    #[allow(clippy::too_many_arguments)]
+    fn run_part(&self, pi: usize, prep: &Prepared, pass: &Pass, x: &DevBuf, y: &DevBuf, b: &Bufs, capture: &[usize],
+                caps: &mut Vec<(usize, Vec<f32>, Vec<f32>)>) -> Result<()> {
+        let part = &self.parts[pi];
+        let guard = part.mods.lock().unwrap();
+        let (mods, ats, r) = guard.as_ref().ok_or("set_step first")?;
+        for (j, blk) in part.blocks.iter().enumerate() {
+            let bi = part.first + j;
+            self.block(part, pi, prep, blk, &ats[j], mods, *r, b, x, y, pass, bi)?;
+            if capture.contains(&bi) {
+                part.nsd.wait()?;
+                caps.push((bi, x.to_f32()?, y.to_f32()?));
             }
-            let b = Bufs::new(&part.gpu, tv, ta)?;
-            let guard = part.mods.lock().unwrap();
-            let (mods, ats, r) = guard.as_ref().ok_or("set_step first")?;
-            for (j, blk) in part.blocks.iter().enumerate() {
-                let bi = part.first + j;
-                self.block(part, pi, prep, blk, &ats[j], mods, *r, &b, &x, &y, pass, bi)?;
-                if capture.contains(&bi) {
-                    part.nsd.wait()?;
-                    caps.push((bi, x.to_f32()?, y.to_f32()?));
-                }
-            }
-            part.nsd.wait()?;
         }
-        // the output layers
+        part.nsd.wait()
+    }
+
+    /// The output layers on the last card: velocities video [Tv, 128], audio [La, 128]
+    fn output(&self, prep: &Prepared, x: &DevBuf, y: &DevBuf) -> Result<(Vec<f32>, Vec<f32>)> {
+        let (tv, ta) = (prep.shape.tv(), prep.shape.la);
         let pl = self.parts.last().unwrap();
         let (g, nsd) = (&pl.gpu, &pl.nsd);
         let (om, aom) = self.out_mod.lock().unwrap().clone();
@@ -641,7 +701,121 @@ impl Dit {
         let aout = DevBuf::f32(g, ta * CH)?;
         nsd.linear(na.ptr(), Dt::F32, ta, AD, self.audio_proj_out.0.ptr(), CH, self.audio_proj_out.1.ptr(), aout.ptr(), Dt::F32)?;
         nsd.wait()?;
-        Ok((out.to_f32()?, aout.to_f32()?, caps))
+        Ok((out.to_f32()?, aout.to_f32()?))
+    }
+
+    /// One forward: velocities video [Tv, 128], audio [La, 128]; `capture`: (block, video, audio) states after those
+    /// blocks
+    #[allow(clippy::type_complexity)]
+    pub fn forward(&self, prep: &Prepared, lat: &[f32], aud: &[f32], pass: &Pass, capture: &[usize]) -> Result<(Vec<f32>, Vec<f32>, Vec<(usize, Vec<f32>, Vec<f32>)>)> {
+        let (tv, ta) = (prep.shape.tv(), prep.shape.la);
+        let mut caps = Vec::new();
+        let (mut x, mut y) = self.patchify(prep, lat, aud)?;
+        let mut staging = Vec::new();
+        for (pi, part) in self.parts.iter().enumerate() {
+            if pi > 0 {
+                let (nx, ny) = (DevBuf::f32(&part.gpu, tv * VD)?, DevBuf::f32(&part.gpu, ta * AD)?);
+                staging.resize(x.len.max(y.len), 0u8);
+                nx.copy_from_peer(&x, &mut staging)?;
+                ny.copy_from_peer(&y, &mut staging)?;
+                x = nx;
+                y = ny;
+            }
+            let b = Bufs::new(&part.gpu, tv, ta)?;
+            self.run_part(pi, prep, pass, &x, &y, &b, capture, &mut caps)?;
+        }
+        let (v, a) = self.output(prep, &x, &y)?;
+        Ok((v, a, caps))
+    }
+
+    /// Several passes over the same latents, pipelined over the cards: while a card runs its blocks of one pass, the
+    /// next card runs its blocks of the pass before (each card a thread; the states handed on through two slots a
+    /// card, copied between cards through the host). The velocities of each pass, in order.
+    pub fn forward_passes(&self, prep: &Prepared, lat: &[f32], aud: &[f32], passes: &[Pass]) -> Result<Vec<(Vec<f32>, Vec<f32>)>> {
+        let (tv, ta) = (prep.shape.tv(), prep.shape.la);
+        let n = self.parts.len();
+        if n == 1 || passes.len() == 1 {
+            return passes.iter().map(|p| self.forward(prep, lat, aud, p, &[]).map(|(v, a, _)| (v, a))).collect();
+        }
+        use std::sync::mpsc::{channel, Receiver, Sender};
+        // each card's two slots of (x, y)
+        let slots: Vec<Vec<(DevBuf, DevBuf)>> = self.parts.iter().map(|p| {
+            (0..2).map(|_| Ok((DevBuf::f32(&p.gpu, tv * VD)?, DevBuf::f32(&p.gpu, ta * AD)?))).collect::<Result<Vec<_>>>()
+        }).collect::<Result<_>>()?;
+        // card i -> card i + 1: "pass p is in slot s"; and back: "slot s is free"
+        let mut fwd_tx: Vec<Option<Sender<(usize, usize)>>> = Vec::new();
+        let mut fwd_rx: Vec<Option<Receiver<(usize, usize)>>> = vec![None];
+        let mut free_tx: Vec<Option<Sender<usize>>> = vec![None];
+        let mut free_rx: Vec<Option<Receiver<usize>>> = Vec::new();
+        for _ in 0..n - 1 {
+            let (a, b) = channel();
+            fwd_tx.push(Some(a));
+            fwd_rx.push(Some(b));
+            let (c, d) = channel();
+            free_tx.push(Some(c));
+            free_rx.push(Some(d));
+        }
+        fwd_tx.push(None);
+        free_rx.push(None);
+        let results: std::sync::Mutex<Vec<Option<(Vec<f32>, Vec<f32>)>>> = std::sync::Mutex::new(vec![None; passes.len()]);
+        // every card's error: the first that is not a neighbour stopping is the cause
+        let first_err: std::sync::Mutex<Vec<Error>> = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|sc| {
+            for pi in 0..n {
+                let (ftx, frx, rtx, rrx) = (fwd_tx[pi].take(), fwd_rx[pi].take(), free_tx[pi].take(), free_rx[pi].take());
+                let (slots, results, first_err) = (&slots, &results, &first_err);
+                sc.spawn(move || {
+                    let run = || -> Result<()> {
+                        let part = &self.parts[pi];
+                        let b = Bufs::new(&part.gpu, tv, ta)?;
+                        let mut staging = Vec::new();
+                        let mut caps = Vec::new();
+                        let mut free_slots: Vec<usize> = vec![0, 1];
+                        for (p, pass) in passes.iter().enumerate() {
+                            // a free slot of this card (the next card hands them back once it has copied)
+                            let s = match free_slots.pop() {
+                                Some(s) => s,
+                                None => rrx.as_ref().ok_or("no slot")?.recv().map_err(|_| Error("the next card stopped".into()))?,
+                            };
+                            let (x, y) = &slots[pi][s];
+                            if pi == 0 {
+                                let (px, py) = self.patchify(prep, lat, aud)?;
+                                x.copy_within(0, &px, 0, px.len)?;
+                                y.copy_within(0, &py, 0, py.len)?;
+                            } else {
+                                let (q, ps) = frx.as_ref().unwrap().recv().map_err(|_| Error("the card before stopped".into()))?;
+                                if q != p {
+                                    return Err(Error(format!("pipelined passes out of order: {q} for {p}")));
+                                }
+                                let (sx, sy) = &slots[pi - 1][ps];
+                                staging.resize(sx.len.max(sy.len), 0u8);
+                                x.copy_from_peer(sx, &mut staging)?;
+                                y.copy_from_peer(sy, &mut staging)?;
+                                // (the card before may be done with every pass, and gone: nothing to tell it)
+                                let _ = rtx.as_ref().unwrap().send(ps);
+                            }
+                            self.run_part(pi, prep, pass, x, y, &b, &[], &mut caps)?;
+                            if pi + 1 < n {
+                                ftx.as_ref().unwrap().send((p, s)).map_err(|_| Error("the next card stopped".into()))?;
+                            } else {
+                                let r = self.output(prep, x, y)?;
+                                results.lock().unwrap()[p] = Some(r);
+                                free_slots.push(s);
+                            }
+                        }
+                        Ok(())
+                    };
+                    if let Err(e) = run() {
+                        first_err.lock().unwrap().push(Error(format!("card {}: {}", self.parts[pi].gpu.index, e.0)));
+                    }
+                });
+            }
+        });
+        let errs = first_err.into_inner().unwrap();
+        if let Some(e) = errs.iter().find(|e| !e.0.contains(" stopped")).or(errs.first()) {
+            return Err(Error(e.0.clone()));
+        }
+        results.into_inner().unwrap().into_iter().map(|r| r.ok_or_else(|| Error("a pass gave no result".into()))).collect()
     }
 
     /// An attention: q from `hq` [m, qdim] half, k / v from `hkv` [n, kvdim] half, into `out` float32 [m, out]
@@ -703,10 +877,12 @@ impl Dit {
         let vk = |k: usize| fptr(mods, at.v + k * r * VD);
         let ak = |k: usize| fptr(mods, at.a + k * AD);
         let skip = pass.stg && bi == STG_BLOCK;
+        let mut t = std::time::Instant::now();
         // 1. self-attention, video then audio
         nsd.rms_norm_mod(x.ptr(), Dt::F32, tv, VD, none(), EPS, rv.cast(), vk(1).cast(), vk(0).cast(), b.h.ptr(), Dt::F16)?;
         self.attention(part, &blk.attn1, b.h.ptr(), tv, b.h.ptr(), tv, Some((&rope.video, &rope.video)), skip, b)?;
         nsd.gate_add(x.ptr(), Dt::F32, tv, VD, b.o.ptr(), Dt::F32, rv.cast(), vk(2).cast())?;
+        tick(part, "video self", &mut t)?;
         nsd.rms_norm_mod(y.ptr(), Dt::F32, ta, AD, none(), EPS, ra.cast(), ak(1).cast(), ak(0).cast(), b.h.ptr(), Dt::F16)?;
         self.attention(part, &blk.audio_attn1, b.h.ptr(), ta, b.h.ptr(), ta, Some((&rope.audio, &rope.audio)), skip, b)?;
         nsd.gate_add(y.ptr(), Dt::F32, ta, AD, b.o.ptr(), Dt::F32, ra.cast(), ak(2).cast())?;
@@ -716,10 +892,12 @@ impl Dit {
         ffi::mod_rows(g, pass.text.v[pi].fp(), TEXT, VD, fptr(mods, at.pv + VD), fptr(mods, at.pv), 1.0, b.tm.ptr())?;
         self.attention(part, &blk.attn2, b.h.ptr(), tv, b.tm.ptr(), TEXT, None, false, b)?;
         nsd.gate_add(x.ptr(), Dt::F32, tv, VD, b.o.ptr(), Dt::F32, rv.cast(), vk(8).cast())?;
+        tick(part, "video text", &mut t)?;
         nsd.rms_norm_mod(y.ptr(), Dt::F32, ta, AD, none(), EPS, ra.cast(), ak(7).cast(), ak(6).cast(), b.h.ptr(), Dt::F16)?;
         ffi::mod_rows(g, pass.text.a[pi].fp(), TEXT, AD, fptr(mods, at.pa + AD), fptr(mods, at.pa), 1.0, b.tm.ptr())?;
         self.attention(part, &blk.audio_attn2, b.h.ptr(), ta, b.tm.ptr(), TEXT, None, false, b)?;
         nsd.gate_add(y.ptr(), Dt::F32, ta, AD, b.o.ptr(), Dt::F32, ra.cast(), ak(8).cast())?;
+        tick(part, "audio self+text", &mut t)?;
         // 3. audio <-> video, both from the norms before either update
         if !pass.isolate {
             let cv = |k: usize| fptr(mods, at.cv + k * VD);
@@ -736,8 +914,11 @@ impl Dit {
             self.attention(part, &blk.v2a, b.ha2.ptr(), ta, b.hv2.ptr(), tv, Some((&rope.ca_audio, &rope.ca_video)), false, b)?;
             nsd.gate_add(y.ptr(), Dt::F32, ta, AD, b.o.ptr(), Dt::F32, ra.cast(), ca(4).cast())?;
         }
+        tick(part, "a2v v2a", &mut t)?;
         // 4. feed-forwards
         self.ff(part, &blk.ff, x, tv, VD, rv, vk(4), vk(3), vk(5), b)?;
-        self.ff(part, &blk.audio_ff, y, ta, AD, ra, ak(4), ak(3), ak(5), b)
+        tick(part, "video ff", &mut t)?;
+        self.ff(part, &blk.audio_ff, y, ta, AD, ra, ak(4), ak(3), ak(5), b)?;
+        tick(part, "audio ff", &mut t)
     }
 }

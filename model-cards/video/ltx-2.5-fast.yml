@@ -1,0 +1,30 @@
+# LTX-2.5 fast (the distilled DiT Q4_K_M: 8 steps, a preview)
+# model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets
+id: ltx-2.5-fast
+kind: video
+arch: ltx2
+title: 'LTX-2.5 fast (the distilled DiT Q4_K_M: 8 steps, a preview)'
+about: the distilled DiT on its own eight sigmas (the movie maker's fast mode); the rest as ltx-2.5
+gpus: '0,1'
+split: true
+defaults:
+  steps: 8
+  seconds: 5.0
+  size: 640x384
+env:
+  LTX2_FAST: '1'
+files:
+  denoiser: ltx25-denoiser-distilled-q4km
+  denoiser-fast: ltx25-denoiser-distilled-q4km
+  text-encoder: ltx25-te-1
+  text-encoder-2: ltx25-te-2
+  text-encoder-3: ltx25-te-3
+  text-encoder-4: ltx25-te-4
+  text-encoder-5: ltx25-te-5
+  connectors: ltx25-connectors
+  tokenizer: ltx25-tokenizer
+  vae: ltx25-vae
+  audio-vae: ltx25-audio-vae
+  vocoder: ltx25-vocoder
+  upscaler: ltx25-latent-upsampler
+guide: guides/ltx-2.5.md

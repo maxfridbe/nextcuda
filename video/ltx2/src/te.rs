@@ -133,13 +133,22 @@ impl TextEncoder {
     pub fn load(cache: &Path, gpus: &[Arc<Gpu>], log: &mut dyn FnMut(String)) -> Result<TextEncoder> {
         let t0 = std::time::Instant::now();
         let f = Gguf::open(cache).map_err(ge)?;
-        let n = gpus.len().max(1);
-        let per = LAYERS.div_ceil(n);
+        // the layers in proportion to each card's free memory (the DiT holds more of the faster one)
+        let free: Vec<f64> = gpus.iter().map(|g| g.memory().map_or(1.0, |(t, f)| f.unwrap_or(t) as f64)).collect();
+        let tot: f64 = free.iter().sum();
+        let mut bounds = vec![0usize];
+        let mut acc = 0.0;
+        for (i, fr) in free.iter().enumerate() {
+            acc += fr;
+            bounds.push(if i + 1 == gpus.len() { LAYERS } else { ((LAYERS as f64 * acc / tot).round() as usize).min(LAYERS) });
+        }
         let mut parts = Vec::new();
         let mut bytes = 0u64;
         for (pi, gpu) in gpus.iter().enumerate() {
-            let first = pi * per;
-            let last = ((pi + 1) * per).min(LAYERS);
+            let (first, last) = (bounds[pi], bounds[pi + 1]);
+            if first == last {
+                continue;
+            }
             let need: u64 = f.tensors.iter().filter(|t| {
                 t.name.strip_prefix("te.").and_then(|s| s.split('.').next()).and_then(|s| s.parse::<usize>().ok()).is_some_and(|i| (first..last).contains(&i))
             }).map(|t| t.bytes).sum();

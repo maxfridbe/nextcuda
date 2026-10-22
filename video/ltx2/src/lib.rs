@@ -14,6 +14,8 @@ pub mod check;
 pub mod conn;
 pub mod dit;
 pub mod ffi;
+pub mod gen;
+pub mod media;
 pub mod quant;
 pub mod sample;
 pub mod te;
@@ -62,6 +64,8 @@ pub struct Ltx2 {
     tok: Tokenizer,
     load_s: f64,
     lock: Mutex<()>,
+    /// the distilled DiT unless a request says (a `-fast` registry entry: LTX2_FAST=1)
+    pub fast_default: bool,
     /// the resident denoiser (dev or distilled), loaded on first use
     pub dit: Mutex<Option<(bool, dit::Dit)>>,
 }
@@ -85,7 +89,13 @@ impl Ltx2 {
         let text_cache = cache::ensure(&components, threads, q8, log)?;
         let tok_path = files.get("tokenizer").cloned().unwrap_or_else(|| components.join("tokenizer/tokenizer.json"));
         let tok = Tokenizer::from_hf_json(&tok_path).map_err(Error)?;
-        Ok(Ltx2 { files: files.clone(), gpus: gpus.to_vec(), components, text_cache, tok, load_s: t0.elapsed().as_secs_f64(), lock: Mutex::new(()), dit: Mutex::new(None) })
+        Ok(Ltx2 { files: files.clone(), gpus: gpus.to_vec(), components, text_cache, tok, load_s: t0.elapsed().as_secs_f64(), lock: Mutex::new(()), dit: Mutex::new(None),
+                  fast_default: o.setting("LTX2_FAST").is_some_and(|v| v == "1") })
+    }
+
+    /// The card with the most free memory now
+    pub fn freest(&self) -> &Arc<Gpu> {
+        self.gpus.iter().max_by_key(|g| g.memory().map_or(0, |(t, f)| f.unwrap_or(t))).unwrap()
     }
 
     /// A role's file
@@ -109,8 +119,9 @@ impl Ltx2 {
     pub fn connectors(&self, s: &te::States, log: &mut dyn FnMut(String)) -> Result<(Vec<f32>, Vec<f32>)> {
         let t0 = std::time::Instant::now();
         let f = nextcuda_gguf::Gguf::open(&self.text_cache).map_err(|e| Error(e.0))?;
-        let v = conn::Connector::load(&f, "cv", &self.gpus[0])?.run(s)?;
-        let a = conn::Connector::load(&f, "ca", self.gpus.last().unwrap())?.run(s)?;
+        // each on the card with the most free memory then (the resident DiT holds more of the faster one)
+        let v = conn::Connector::load(&f, "cv", self.freest())?.run(s)?;
+        let a = conn::Connector::load(&f, "ca", self.freest())?.run(s)?;
         log(format!("connectors in {:.1} s", t0.elapsed().as_secs_f64()));
         Ok((v, a))
     }
@@ -129,6 +140,17 @@ impl Ltx2 {
         f(&g.as_ref().unwrap().1)
     }
 
+    /// A picture [h, w, 3] in [0, 1] through the video VAE's encoder: its latent frame, normalized and packed [h/32 w/32, 128]
+    pub fn encode_first(&self, px: &[f32], h: usize, w: usize) -> Result<Vec<f32>> {
+        // re-compressed at H.264 CRF 18 as the pipeline does for LTX-2.5 (ltx-pipelines' image conditioning)
+        let px = media::crf_roundtrip(px, w, h, 18)?;
+        let enc = vae::Encoder::load(self.file("vae")?, self.freest())?;
+        let x: Vec<f32> = px.iter().map(|v| v * 2.0 - 1.0).collect();
+        let mut z = enc.encode(&x, 1, h, w)?;
+        enc.normalize(&mut z);
+        Ok(z)
+    }
+
     fn job(&self, spec: &Value, ctl: &mut JobCtl) -> Result<Value> {
         let _g = self.lock.lock().unwrap();
         match spec["kind"].as_str().unwrap_or("") {
@@ -138,6 +160,18 @@ impl Ltx2 {
                 let stages: Vec<&str> = st.split(',').map(str::trim).collect();
                 let worst = check::run(self, &dir, &stages, &mut *ctl.log)?;
                 Ok(json!({"worst_rel": worst}))
+            }
+            "generate" => {
+                let cancel = || ctl.cancel.load(std::sync::atomic::Ordering::Relaxed);
+                let mut prog = ctl.progress.take();
+                let mut p = |stage: &'static str, i: usize, n: usize| {
+                    if stage == "denoise" {
+                        if let Some(f) = prog.as_mut() {
+                            f(i, n);
+                        }
+                    }
+                };
+                gen::generate(self, spec, &mut gen::Ctl { log: &mut *ctl.log, progress: &mut p, cancel: &cancel })
             }
             k => Err(Error(format!("{ARCH}: no job {k}"))),
         }
@@ -165,7 +199,30 @@ impl VideoEngine for Ltx2 {
         self.job(spec, ctl).map_err(ve)
     }
     fn generate(&self, req: &VideoRequest, progress: &mut dyn FnMut(Progress), cancel: &dyn Fn() -> bool) -> nextcuda_video::Result<Clip> {
-        let _ = (req, progress, cancel, Path::new(&self.components), &self.files);
-        Err(nextcuda_video::Error(format!("{ARCH}: generate is not built yet")))
+        let d = self.defaults();
+        let mut spec = json!({
+            "kind": "generate", "prompt": req.prompt, "negative": req.negative.clone().unwrap_or_default(), "out": req.out,
+            "width": req.width.unwrap_or(d.width), "height": req.height.unwrap_or(d.height),
+            "seconds": req.seconds.unwrap_or(d.seconds), "seed": req.seed,
+        });
+        if let Some(s) = req.steps {
+            spec["steps"] = json!(s);
+        }
+        for (k, v) in &req.extra {
+            spec[k] = v.parse::<f64>().map_or_else(|_| json!(v), |n| json!(n));
+        }
+        let t0 = std::time::Instant::now();
+        let mut log = |l: String| eprintln!("{l}");
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let mut steps = |done: usize, total: usize| {
+            if cancel() {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            progress(Progress { stage: "denoise", at: done as u32, of: total as u32, seconds: t0.elapsed().as_secs_f64() });
+        };
+        let v = self.run_job(&spec, &mut JobCtl { log: &mut log, cancel: &flag, progress: Some(&mut steps) })?;
+        let n = |k: &str| v[k].as_u64().unwrap_or(0) as u32;
+        let _ = Path::new(&self.components);
+        Ok(Clip { path: req.out.clone(), width: n("width"), height: n("height"), frames: n("frames"), fps: 24.0, audio: true })
     }
 }

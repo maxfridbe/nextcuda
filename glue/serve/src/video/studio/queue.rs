@@ -255,8 +255,11 @@ fn engine_pairs() -> Vec<(String, String)> {
 }
 
 /// The front end's name for a model id: by its suffix (minimax-h3 -> INT8, -q6k -> Q6_K, -q4km -> Q4_K_M, -q8 -> Q8_0,
-/// -ref2va -> REF2VA)
+/// -ref2va -> REF2VA); LTX-2.5's by name (ltx-2.5 -> LTX-2.5, ltx-2.5-fast -> LTX-2.5-FAST)
 pub fn quant_of(id: &str) -> &'static str {
+    if id.starts_with("ltx") {
+        return if id.ends_with("-fast") { "LTX-2.5-FAST" } else { "LTX-2.5" };
+    }
     match id.rsplit('-').next().unwrap_or("") {
         "q6k" => "Q6_K",
         "q4km" => "Q4_K_M",

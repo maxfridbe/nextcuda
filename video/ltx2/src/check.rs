@@ -233,6 +233,23 @@ pub fn run(m: &Ltx2, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)) -
         let flat: Vec<f32> = wave.concat();
         worst = worst.max(note("audio wave (48 kHz)", &flat, &get("wave")?.1, log));
     }
+    if stages.contains(&"enc") {
+        // the reference's re-compressed picture through our encoder; our re-compression of the source against its
+        let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("meta.json")).map_err(|e| Error(format!("meta.json: {e}")))?)
+            .map_err(|e| Error(format!("meta.json: {e}")))?;
+        let (w, h) = (meta["width"].as_u64().unwrap_or(0) as usize, meta["height"].as_u64().unwrap_or(0) as usize);
+        let pic = get("pic")?.1;
+        let enc = crate::vae::Encoder::load(m.file("vae")?, &m.gpus[0])?;
+        let t0 = std::time::Instant::now();
+        let mut z = enc.encode(&pic.iter().map(|v| v * 2.0 - 1.0).collect::<Vec<_>>(), 1, h, w)?;
+        enc.normalize(&mut z);
+        log(format!("vae encode in {:.2} s", t0.elapsed().as_secs_f64()));
+        worst = worst.max(note("vae encoder latents", &z, &get("latents")?.1, log));
+        if let Some(src) = meta["picture"].as_str() {
+            let ours = crate::media::crf_roundtrip(&crate::media::read_picture(Path::new(src), w, h)?, w, h, 18)?;
+            note("crf 18 picture (ours vs PIL+PyAV)", &ours, &pic, log);
+        }
+    }
     Ok(worst)
 }
 

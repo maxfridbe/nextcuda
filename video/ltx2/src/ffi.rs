@@ -22,6 +22,7 @@ pub struct Api {
     pub d2s: unsafe extern "C" fn(G, P, i64, i64, i64, i64, c_int, c_int, c_int, c_int, M) -> c_int,
     pub conv3d: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, i64, P, i64, i64, *const f32, M) -> c_int,
     pub up2: unsafe extern "C" fn(G, P, i64, i64, i64, M) -> c_int,
+    pub s2d: unsafe extern "C" fn(G, P, i64, i64, i64, i64, c_int, c_int, c_int, c_int, M) -> c_int,
     pub aa_snake: unsafe extern "C" fn(M, *const f32, i64, i64, i64, *const f32, *const f32, *const f32, *const f32, *mut f32) -> c_int,
 }
 
@@ -58,6 +59,7 @@ pub fn api() -> Result<&'static Api> {
             d2s: sym!("ns_video_lx_d2s"),
             conv3d: sym!("nsd_conv3d"),
             up2: sym!("ns_video_lx_up2"),
+            s2d: sym!("ns_video_lx_s2d"),
             aa_snake: sym!("nsd_aa_snake"),
         })
     })
@@ -159,4 +161,11 @@ pub fn aa_snake(ctx: *mut c_void, x: *const f32, b: usize, c: usize, l: usize, l
                 -> Result<()> {
     // SAFETY: the caller's buffers hold the sizes named.
     check(unsafe { (api()?.aa_snake)(ctx, x, b as i64, c as i64, l as i64, la, lb, up, down, out) }, "anti-aliased snake")
+}
+
+/// 3-D space to depth with a group mean (see lx.h)
+#[allow(clippy::too_many_arguments)]
+pub fn s2d(g: &Gpu, x: P, t: usize, h: usize, w: usize, c: usize, s: (usize, usize, usize), groups: usize, out: M) -> Result<()> {
+    // SAFETY: x holds t h w c halves, out t h w c / groups.
+    check(unsafe { (api()?.s2d)(g.raw(), x, t as i64, h as i64, w as i64, c as i64, s.0 as c_int, s.1 as c_int, s.2 as c_int, groups as c_int, out) }, "space to depth")
 }

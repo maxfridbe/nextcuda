@@ -81,8 +81,7 @@ pub fn denoise(d: &Dit, prep: &Prepared, cond: &Text, neg: &Text, lat: &mut [f32
         d.set_step(prep, s * 1000.0)?;
         let mut xv: Vec<Vec<f32>> = Vec::new();
         let mut xa: Vec<Vec<f32>> = Vec::new();
-        for p in &passes {
-            let (v, a, _) = d.forward(prep, lat, aud, p, &[])?;
+        for (v, a) in d.forward_passes(prep, lat, aud, &passes)? {
             xv.push(lat.iter().zip(&v).map(|(x, v)| x - v * s).collect());
             xa.push(aud.iter().zip(&a).map(|(x, v)| x - v * s).collect());
         }
@@ -97,6 +96,10 @@ pub fn denoise(d: &Dit, prep: &Prepared, cond: &Text, neg: &Text, lat: &mut [f32
         for (j, x) in aud.iter_mut().enumerate() {
             let v = (*x - pa[j]) / s;
             *x += (sn - s) * v;
+        }
+        let prof = crate::dit::take_profile();
+        if !prof.is_empty() {
+            eprintln!("profile step {}: {}", i + 1, prof.iter().map(|(k, v)| format!("{k} {v:.2}s")).collect::<Vec<_>>().join(", "));
         }
         (h.progress)(i + 1, steps);
         if let Some(e) = h.each.as_deref_mut() {

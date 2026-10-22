@@ -34,6 +34,10 @@ int ns_video_lx_rms_silu(ns_gpu* g, const void* x, int64_t M, int64_t C, float e
 /* depth to space, channels-last: x half [T, H, W, C * s0 * s1 * s2] (channel c * s0 s1 s2 + i s1 s2 + j s2 + k) ->
  * out [T s0 - drop, H s1, W s2, C] (out[t s0 + i - drop, h s1 + j, w s2 + k, c]; the first `drop` frames dropped) */
 int ns_video_lx_d2s(ns_gpu* g, const void* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int drop, void* out);
+/* space to depth, channels-last, with a group mean (the encoder's down-samplers): x half [T, H, W, C] ->
+ * out [T / s0, H / s1, W / s2, C s0 s1 s2 / G], out[.., j] = mean over g < G of s2d[j G + g], s2d channel
+ * ((c s0 + a) s1 + b) s2 + k = x[t s0 + a, h s1 + b, w s2 + k, c] */
+int ns_video_lx_s2d(ns_gpu* g, const void* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int G, void* out);
 /* nearest x2 of a channels-last plane: x half [H, W, C] -> out [2H, 2W, C] */
 int ns_video_lx_up2(ns_gpu* g, const void* x, int64_t H, int64_t W, int64_t C, void* out);
 

@@ -314,3 +314,125 @@ impl Decoder {
         Ok(out)
     }
 }
+
+// ---- the encoder ---------------------------------------------------------------------------------------------------
+
+struct Down {
+    res: Vec<Res>,
+    conv: Conv,
+    stride: (usize, usize, usize),
+    /// the channels after it
+    out: usize,
+}
+
+/// The video VAE's encoder (causal): frames [F, 32H, 32W, 3] in [-1, 1] -> the latent means [(F - 1) / 8 + 1, H, W, 128]
+///
+/// ```text
+///   patchify 4 x 4 (channel c * 16 + x * 4 + y) -> conv_in 48 -> 128
+///   down 0: 4 resnets 128, space / 2 -> 256      down 1: 6 resnets 256, time / 2 -> 512
+///   down 2: 4 resnets 512, both / 2 -> 1024      down 3: 2 resnets 1024, both / 2 -> 1024;  mid: 2 resnets
+///   rms, silu, conv_out -> 129 (the means, a log-variance)
+///   down-sampler: the first (s_t - 1) frames repeated in front; conv(x) to out / (s_t s_h s_w), space to depth, plus
+///                 x space-to-depth averaged in groups to the out channels
+/// ```
+pub struct Encoder {
+    gpu: Arc<Gpu>,
+    nsd: Nsd,
+    conv_in: Conv,
+    downs: Vec<Down>,
+    mid: Vec<Res>,
+    conv_out: Conv,
+    pub mean: Vec<f32>,
+    pub std: Vec<f32>,
+}
+
+const DOWNS: [(usize, (usize, usize, usize), usize); 4] = [(4, (1, 2, 2), 256), (6, (2, 1, 1), 512), (4, (2, 2, 2), 1024), (2, (2, 2, 2), 1024)];
+
+impl Encoder {
+    pub fn load(path: &std::path::Path, gpu: &Arc<Gpu>) -> Result<Encoder> {
+        let st = SafeTensors::open(path).map_err(ge)?;
+        let mut downs = Vec::new();
+        for (i, (n, stride, out)) in DOWNS.iter().enumerate() {
+            let res = (0..*n).map(|j| Res::load(&st, &format!("encoder.down_blocks.{i}.resnets.{j}"), gpu)).collect::<Result<Vec<_>>>()?;
+            downs.push(Down { res, conv: Conv::load(&st, &format!("encoder.down_blocks.{i}.downsamplers.0.conv.conv"), gpu)?, stride: *stride, out: *out });
+        }
+        Ok(Encoder {
+            conv_in: Conv::load(&st, "encoder.conv_in.conv", gpu)?,
+            mid: (0..2).map(|j| Res::load(&st, &format!("encoder.mid_block.resnets.{j}"), gpu)).collect::<Result<Vec<_>>>()?,
+            conv_out: Conv::load(&st, "encoder.conv_out.conv", gpu)?,
+            mean: st.f32("latents_mean").map_err(ge)?,
+            std: st.f32("latents_std").map_err(ge)?,
+            downs,
+            nsd: Nsd::new(gpu)?,
+            gpu: gpu.clone(),
+        })
+    }
+
+    /// Frames [f, h, w, 3] in [-1, 1] (f = 8k + 1, h and w multiples of 32) -> latent means [(f-1)/8 + 1, h/32, w/32, 128]
+    pub fn encode(&self, px: &[f32], f: usize, h: usize, w: usize) -> Result<Vec<f32>> {
+        let c = Ctx { gpu: &self.gpu, nsd: &self.nsd };
+        let (hp, wp) = (h / 4, w / 4);
+        // patchify: channel c * 16 + x * 4 + y
+        let mut v = vec![0u16; f * hp * wp * 48];
+        for t in 0..f {
+            for yy in 0..hp {
+                for xx in 0..wp {
+                    for col in 0..3 {
+                        for a in 0..4 {
+                            for b in 0..4 {
+                                let p = px[((t * h + yy * 4 + b) * w + xx * 4 + a) * 3 + col];
+                                v[((t * hp + yy) * wp + xx) * 48 + col * 16 + a * 4 + b] = crate::quant::f16_bits(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let x = c.vol(f, hp, wp, 48)?;
+        x.d.write(0, &v.iter().flat_map(|q| q.to_le_bytes()).collect::<Vec<u8>>())?;
+        let mut x = c.conv(&self.conv_in, &x, true)?;
+        for d in &self.downs {
+            for r in &d.res {
+                x = r.run(&c, x, true)?;
+            }
+            let (s0, s1, s2) = d.stride;
+            // the first s0 - 1 frames repeated in front
+            let x2 = if s0 > 1 {
+                let frame = x.h * x.w * x.c * 2;
+                let e = c.vol(x.t + s0 - 1, x.h, x.w, x.c)?;
+                e.d.copy_within(0, &x.d, 0, (s0 - 1) * frame)?;
+                e.d.copy_within((s0 - 1) * frame, &x.d, 0, x.t * frame)?;
+                e
+            } else {
+                x
+            };
+            let k = s0 * s1 * s2;
+            let groups = x2.c * k / d.out;
+            let res = c.vol(x2.t / s0, x2.h / s1, x2.w / s2, d.out)?;
+            ffi::s2d(&self.gpu, x2.d.ptr(), x2.t, x2.h, x2.w, x2.c, d.stride, groups, res.d.ptr())?;
+            let y = c.conv(&d.conv, &x2, true)?;
+            let o = c.vol(y.t / s0, y.h / s1, y.w / s2, d.out)?;
+            ffi::s2d(&self.gpu, y.d.ptr(), y.t, y.h, y.w, y.c, d.stride, 1, o.d.ptr())?;
+            c.add(&o, &res)?;
+            x = o;
+        }
+        for r in &self.mid {
+            x = r.run(&c, x, true)?;
+        }
+        let y = c.conv(&self.conv_out, &c.rms_silu(&x, true)?, true)?;
+        let n = y.t * y.h * y.w * y.c;
+        let tmp = DevBuf::f32(&self.gpu, n)?;
+        ffi::to_float(&self.gpu, y.d.ptr(), tmp.fp(), n, 1.0)?;
+        self.nsd.wait()?;
+        let all = tmp.to_f32()?;
+        // the means: the first 128 of 129 channels
+        Ok(all.chunks_exact(y.c).flat_map(|p| p[..128].iter().copied()).collect())
+    }
+
+    /// The latents normalized as the pipeline's DiT reads them ((z - mean) / std)
+    pub fn normalize(&self, z: &mut [f32]) {
+        for (i, v) in z.iter_mut().enumerate() {
+            *v = (*v - self.mean[i % 128]) / self.std[i % 128];
+        }
+    }
+}
