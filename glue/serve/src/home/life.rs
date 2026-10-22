@@ -132,6 +132,7 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
         }
         "image" if arch.contains("ocr") => (vec!["ocr", "read_pages", "pdf"], vec!["image.ocr"]),
         "image" if arch == "realesrgan" || arch == "waifu2x" => (vec!["upscale", "upscale_video", "tiles"], vec!["image.upscale", "video.upscale"]),
+        "image" if arch == "starvector" => (vec!["vectorize", "svg"], vec!["image.vectorize"]),
         "image" => {
             let mut c = vec!["generate", "edit", "compose", "img2img", "loras"];
             if m["env"]["NS_QI_SIGMAS"].is_string() {
@@ -183,6 +184,10 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
                 if does("views") {
                     c.push("multi_view");
                 }
+                methods.push("model3d.generate");
+            } else if does("texture") {
+                // a paint-only model: model3d.generate with a mesh (or file) paints it
+                c.push("texture");
                 methods.push("model3d.generate");
             }
             if does("rig") {

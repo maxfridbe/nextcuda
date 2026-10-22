@@ -547,6 +547,7 @@ name = "nextcuda"
 version = "0.0.0"
 dependencies = [
  "nextcuda-audio",
+ "nextcuda-audio-acestep",
  "nextcuda-audio-breezetts2",
  "nextcuda-audio-minimaxmusic3",
  "nextcuda-audio-qwen3tts",
@@ -560,6 +561,7 @@ dependencies = [
  "nextcuda-image-olmocr2",
  "nextcuda-image-paddleocrvl",
  "nextcuda-image-qwenimage21",
+ "nextcuda-image-starvector",
  "nextcuda-image-unlimitedocr",
  "nextcuda-image-upscale",
  "nextcuda-llm",
@@ -588,6 +590,18 @@ version = "0.0.0"
 dependencies = [
  "nextcuda-core",
  "symphonia",
+]
+
+[[package]]
+name = "nextcuda-audio-acestep"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-audio",
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-tok",
+ "serde_json",
 ]
 
 [[package]]
@@ -750,6 +764,18 @@ dependencies = [
  "nextcuda-gguf",
  "nextcuda-image",
  "nextcuda-qwen3vl",
+ "serde_json",
+]
+
+[[package]]
+name = "nextcuda-image-starvector"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-image",
+ "nextcuda-tok",
  "serde_json",
 ]
 

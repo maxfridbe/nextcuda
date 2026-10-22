@@ -320,10 +320,17 @@ The video daemon and the studio (`nextsycl video`) and the H3 engine (`video/h3`
 
 ## Audio
 
-MiniMax Music 3 (`NS_MM3_`), Qwen3-TTS (`NS_Q3T_`), VoxCPM2 (`NS_VCP_`), Whisper (`NS_WH_`). A per-request option's variable is only its name: it rides in the request (`"options"`), the engine does not read the environment for it.
+ACE-Step 1.5 (`NS_ACE_`), MiniMax Music 3 (`NS_MM3_`), Qwen3-TTS (`NS_Q3T_`), VoxCPM2 (`NS_VCP_`), Whisper (`NS_WH_`). A per-request option's variable is only its name: it rides in the request (`"options"`), the engine does not read the environment for it.
 
 | Variable | Default | What it does | Read by |
 |---|---|---|---|
+| `NS_ACE_CHECKPOINT` | acestep-v15-turbo | the ACE-Step DiT checkpoint a model directory loads (acestep-v15-base: the base model, for lego) | audio acestep |
+| `NS_ACE_DCW` | the turbo's: 1, the base's: 0 | the wavelet-domain correction of each step (DCW; as the reference: on for turbo) (--opt-dcw) | audio acestep |
+| `NS_ACE_DECODE_CHUNK` | by the card | the VAE decode's window in latent frames, 128-512 (the reference's for the card's free memory: 256 from 12 GB, 128 below) (--opt-decode-chunk) | audio acestep |
+| `NS_ACE_NORMALIZE` | 1 | 0: the song is not brought to a -1 dB peak (--opt-normalize) | audio acestep |
+| `NS_ACE_PLANNER` | on | 0: the 5 Hz planner LM is not loaded (no `planner` requests; less VRAM) | audio acestep |
+| `NS_ACE_SHIFT` | 3.0 | the schedule's shift (t' = s t / (1 + (s - 1) t)) (--opt-shift) | audio acestep |
+| `NS_ACE_VAE_SAMPLE` | 1 | 0: a recording's VAE posterior taken at its mean, not sampled as the reference (--opt-vae-sample) | audio acestep |
 | `NS_AUDIO_OUT` | ~/.local/share/nextsycl/audio | where songs, speech and saved voices are kept | cli (audio), serve |
 | `NS_MM3_*` | - | every NS_MM3_ setting in nextsycl.conf is passed to the audio server | cli (audio serve) |
 | `NS_MM3_DIT_INT8` | 0 | 1: the flow transformer's block matrices in int8 ConvRot (--opt-dit-int8) | audio minimaxmusic3 |
@@ -362,6 +369,9 @@ The `model3d` kind (meshes from pictures, rigging, animation) and its engines' s
 | `NS_M3D_HY_CHUNK` | by the decoder's width | points the shape decoder queries at once (--opt-chunk) | model3d hunyuan3d |
 | `NS_M3D_HY_PAINT` | 1 | 0: 2.1 loads without its paint model (no textures; ~6.5 GiB less) even when the paint files are there (--opt-paint) | model3d hunyuan3d |
 | `NS_M3D_HY_PAINT_STEPS` | 15 | the texture's UniPC steps (--opt-paint-steps) | model3d hunyuan3d |
+| `NS_M3D_HY_PAINT_KEEP_MIB` | 3072, or 42 % of the free memory less 1.2 GiB, at least 1280 | the paint run's arena for what outlives a block (MiB); past it a run spills to plain allocations | model3d hunyuan3d |
+| `NS_M3D_HY_PAINT_TMP_MIB` | 4096, or 58 % of the free memory less 1.2 GiB, at least 1792 | the paint run's arena for a block's temporaries (MiB) | model3d hunyuan3d |
+| `NS_M3D_HY_PAINT_TRACE` | off | Debug: set: the paint-only engine prints the card's free memory at each phase on stderr | model3d hunyuan3d |
 | `NS_M3D_AAM_PROFILE` | off | Debug: set: AnimateAnyMesh waits for the GPU after each named step of the flow and prints the totals (slower; shows where the time goes) | model3d animateanymesh |
 | `NS_M3D_AAM_TRAJ` | max(512, vertices / 8) | AnimateAnyMesh: the trajectory tokens DyMeshVAE samples (more: finer motion, slower) (--opt-traj; per request too) | model3d animateanymesh |
 | `NS_M3D_UNIRIG_BEAMS` | 15 | UniRig: the skeleton decoder's beams, sampled as UniRig's inference (1: greedy, the same skeleton every time) (--opt-beams; per request too) | model3d unirig |
@@ -589,6 +599,7 @@ Inputs of the checks and unit tests that need files outside the repository (unse
 | `NS_DUMP_RE` | the GLM layer outputs (inp_embd, attn_norm-N, l_out-N, result_output, ...) | Regex of the llama.cpp graph tensor names llama-ns-dump writes | reference/llama-dump (ns-dump.cpp, llama.cpp parity tool) |
 | `NS_MM3_CHECK_STEPS` | 3 | chunks check: flow steps a window | audio minimaxmusic3 (check) |
 | `NS_TEST_H3_TOKENIZER` | test skipped | the H3 tokenizer's directory (vocab.json, merges.txt, tokenizer_config.json) for its reference-match test | video h3 (cargo test) |
+| `NS_TEST_STARVECTOR_TOKENIZER` | test skipped | StarVector's tokenizer.json, for its prompt / stop tokens and decoding test | image starvector (cargo test) |
 | `NS_TEST_WHISPER_CONFIG` | test skipped | whisper-large-v3-turbo's config.json for its sizes' test | audio whisper (cargo test) |
 | `NS_TEST_WHISPER_GENERATION` | test skipped | whisper-large-v3-turbo's generation_config.json (with NS_TEST_WHISPER_TOKENIZER) for the vocabulary, rules and alignment tests | audio whisper (cargo test) |
 | `NS_TEST_WHISPER_REF` | test skipped | a folder of reference/whisper/ref.py dumps (short/, long/, song/): the mel, greedy-rule, alignment and placement tests against openai-whisper | audio whisper (cargo test) |

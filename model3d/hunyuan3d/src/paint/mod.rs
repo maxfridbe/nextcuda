@@ -42,20 +42,52 @@ const LAT: usize = SIZE / 8;
 const RENDER: usize = 2048;
 const GUIDANCE: f32 = 3.0;
 const DINO_SIZE: usize = 224;
-/// arena sizes: a pass's kept maps and a block's temporaries
+/// arena sizes: a pass's kept maps and a block's temporaries. What a 24 GB card is given; a smaller card gets what it has free less the spill room
+/// (an arena past its size spills to plain allocations: slower, not wrong), NS_M3D_HY_PAINT_KEEP_MIB
+/// and NS_M3D_HY_PAINT_TMP_MIB set them
 const KEEP: usize = 3 << 30;
 const TMP: usize = 4 << 30;
 
+/// What a run spills to plain allocations beyond its arenas (measured on a 12 GB card: 285 of them, ~1.1 GiB live at once)
+const SPILL_ROOM: usize = 1250 << 20;
+/// The least each arena is given: a run's measured peaks (1.21 and 1.67 GiB) with a little over. Under them the big
+/// temporaries spill, and a card that is full has none to give (a 90 MiB one failed a 12 GB card by a few MiB)
+const KEEP_MIN: usize = 1280 << 20;
+const TMP_MIN: usize = 1792 << 20;
+
+/// (kept, temporaries) in bytes for a card with `free` bytes now: shares 42 : 58 of what is free less the spill room,
+/// at least the measured peaks and at most a 24 GB card's sizes (a 12 GB card's: 1.25 + 1.75 GiB, the run peaking at
+/// 11.7 of its 12.2 GiB)
+fn arena_sizes(free: Option<u64>) -> (usize, usize) {
+    let var = |k: &str| std::env::var(k).ok().and_then(|v| v.trim().parse::<usize>().ok()).map(|m| m << 20);
+    let (mut keep, mut tmp) = (KEEP, TMP);
+    if let Some(f) = free.map(|f| f as usize) {
+        let room = f.saturating_sub(SPILL_ROOM);
+        keep = (room * 42 / 100).clamp(KEEP_MIN, KEEP);
+        tmp = (room * 58 / 100).clamp(TMP_MIN, TMP);
+    }
+    (var("NS_M3D_HY_PAINT_KEEP_MIB").unwrap_or(keep), var("NS_M3D_HY_PAINT_TMP_MIB").unwrap_or(tmp))
+}
+
 pub struct Paint {
     pub unet: Unet,
-    pub dual: Unet,
     pub vae: sdvae::SdVae,
-    pub dino: Dino,
+    /// DINOv2-giant and the reference UNet are needed to condition a run and by nothing after it: loaded from their
+    /// files when a run starts, let go of when its conditions are made (2026-10-21: the one model that moves weights;
+    /// a 12 GB card's 15-step loop ran out of memory with them resident). `staged` is what they take on the card
+    dino: std::sync::Mutex<Option<Dino>>,
+    dual: std::sync::Mutex<Option<Unet>>,
+    unet_file: SafeTensors,
+    dino_file: SafeTensors,
+    gpu: Arc<Gpu>,
+    pub staged: usize,
     proj: Lin,
     proj_norm: (DevBuf, DevBuf),
     /// the learned text embeddings: albedo, metallic-roughness, the reference's [77, 1024] half
     text: [DevBuf; 3],
     pub bytes: usize,
+    /// the last run's arenas: (kept peak, temporaries peak, spills), bytes
+    pub last_arenas: std::sync::Mutex<(usize, usize, usize)>,
 }
 
 /// What a texture run makes along the way (for `check` and for looking at)
@@ -78,35 +110,62 @@ fn half_rows(w: &Weights, name: &str) -> Result<DevBuf> {
 
 impl Paint {
     /// The paint model: its UNet checkpoint (a PyTorch .bin), its VAE (.bin), DINOv2-giant (safetensors)
-    pub fn load(unet: &SafeTensors, vae: &SafeTensors, dino: &SafeTensors, gpu: &Arc<Gpu>, log: &mut dyn FnMut(String)) -> Result<Paint> {
+    pub fn load(unet: SafeTensors, vae: &SafeTensors, dino: SafeTensors, gpu: &Arc<Gpu>, log: &mut dyn FnMut(String)) -> Result<Paint> {
         let t0 = std::time::Instant::now();
-        let uw = Weights::new(unet, "unet.", gpu);
+        let uw = Weights::new(&unet, "unet.", gpu);
         let main = Unet::load(&uw, true)?;
         let text = [half_rows(&uw, "learned_text_clip_albedo")?, half_rows(&uw, "learned_text_clip_mr")?, half_rows(&uw, "learned_text_clip_ref")?];
         let proj = uw.lin("image_proj_model_dino.proj")?;
         let proj_norm = (uw.vec("image_proj_model_dino.norm.weight")?, uw.vec("image_proj_model_dino.norm.bias")?);
-        let dw = Weights::new(unet, "unet_dual.", gpu);
-        let dual = Unet::load(&dw, false)?;
         let vw = Weights::new(vae, "", gpu);
         let vae = sdvae::SdVae::load(&vw)?;
-        let gw = Weights::new(dino, "", gpu);
-        let dino = Dino::load(&gw, DINO_SIZE)?;
-        let bytes = uw.bytes.get() + dw.bytes.get() + vw.bytes.get() + gw.bytes.get();
-        log(format!("paint: loaded in {:.1} s ({:.2} GiB of weights: the 2.5D UNet and its reference UNet, the VAE, DINOv2-giant)",
-                    t0.elapsed().as_secs_f64(), bytes as f64 / (1u64 << 30) as f64));
-        Ok(Paint { unet: main, dual, vae, dino, proj, proj_norm, text, bytes })
+        // what the two take, by loading them once (and letting them go: a run loads them again)
+        let (dw, gw) = (Weights::new(&unet, "unet_dual.", gpu), Weights::new(&dino, "", gpu));
+        let (d, g) = (Unet::load(&dw, false)?, Dino::load(&gw, DINO_SIZE)?);
+        let staged = dw.bytes.get() + gw.bytes.get();
+        drop((d, g));
+        let bytes = uw.bytes.get() + vw.bytes.get();
+        log(format!("paint: loaded in {:.1} s ({:.2} GiB resident: the 2.5D UNet, the VAE; {:.2} GiB more while a run is conditioned: the reference UNet, DINOv2-giant)",
+                    t0.elapsed().as_secs_f64(), bytes as f64 / (1u64 << 30) as f64, staged as f64 / (1u64 << 30) as f64));
+        Ok(Paint { unet: main, vae, dino: None.into(), dual: None.into(), unet_file: unet, dino_file: dino, gpu: gpu.clone(), staged, proj, proj_norm, text, bytes,
+                   last_arenas: Default::default() })
+    }
+
+    /// DINOv2-giant, loaded from its file if it is not on the card now
+    fn with_dino<R>(&self, f: impl FnOnce(&Dino) -> Result<R>) -> Result<R> {
+        let mut g = self.dino.lock().unwrap();
+        if g.is_none() {
+            *g = Some(Dino::load(&Weights::new(&self.dino_file, "", &self.gpu), DINO_SIZE)?);
+        }
+        f(g.as_ref().expect("loaded above"))
+    }
+
+    /// The reference UNet, loaded from its file if it is not on the card now
+    fn with_dual<R>(&self, f: impl FnOnce(&Unet) -> Result<R>) -> Result<R> {
+        let mut g = self.dual.lock().unwrap();
+        if g.is_none() {
+            *g = Some(Unet::load(&Weights::new(&self.unet_file, "unet_dual.", &self.gpu), false)?);
+        }
+        f(g.as_ref().expect("loaded above"))
+    }
+
+    /// DINOv2-giant and the reference UNet off the card (a run's conditions are made)
+    pub fn release_staged(&self) -> Result<()> {
+        self.gpu.sync()?;
+        *self.dino.lock().unwrap() = None;
+        *self.dual.lock().unwrap() = None;
+        self.gpu.sync()
     }
 
     /// DINOv2-giant's last hidden state of the picture (8-bit values [512, 512, 3]): float32 [257, 1536]
     pub fn dino_states(&self, ops: &Ops, picture: &[f32]) -> Result<DevBuf> {
-        self.dino.forward(ops, &dino_pixels(picture))
+        self.with_dino(|d| d.forward(ops, &dino_pixels(picture)))
     }
 
     /// DINOv2-giant's tokens projected (Linear 1536 -> 4 x 1024, LayerNorm): [unconditional (of zeros), the
     /// picture's], [1028, 1024] half each
     pub fn project(&self, ops: &Ops, states: &DevBuf) -> Result<[DevBuf; 2]> {
-        let rows = self.dino.tokens();
-        let c = self.dino.width;
+        let (rows, c) = self.with_dino(|d| Ok((d.tokens(), d.width)))?;
         let sh = DevBuf::new(&ops.gpu, rows * c * 2)?;
         ops.to_half(states.ptr(), sh.ptr(), rows * c)?;
         let zero = DevBuf::new(&ops.gpu, rows * c * 2)?;
@@ -149,6 +208,8 @@ impl Paint {
         let states = self.dino_states(ops, picture)?;
         let pos01: Vec<Vec<f32>> = position.iter().map(|p| p.iter().map(|x| x / 255.0).collect()).collect();
         let cond = self.prepare(ops, mem, &ref_lat, &self.project(ops, &states)?, &pos01)?;
+        drop(states);
+        self.release_staged()?;
         Ok((cond, nlat, plat))
     }
 
@@ -157,9 +218,11 @@ impl Paint {
     pub fn prepare(&self, ops: &Ops, mem: &Mem, ref_lat: &[f32], dino: &[DevBuf; 2], pos01: &[Vec<f32>]) -> Result<Cond> {
         let mut cond = Cond { text: BTreeMap::new(), text_rows: 77, refkv: BTreeMap::new(), dino: BTreeMap::new(), dino_rows: 0, rope: BTreeMap::new(), states: BTreeMap::new() };
         // the reference UNet on the picture's latent at t = 0
-        self.dual.text_kv(ops, &self.text[2..3], 77, &mut cond)?;
-        let x = Map { buf: nn::upload_half(&mem.keep, ref_lat)?, n: 1, h: LAT, w: LAT, c: 4 };
-        self.dual.forward(ops, mem, &x, 0.0, &mut cond, None)?;
+        self.with_dual(|dual| {
+            dual.text_kv(ops, &self.text[2..3], 77, &mut cond)?;
+            let x = Map { buf: nn::upload_half(&mem.keep, ref_lat)?, n: 1, h: LAT, w: LAT, c: 4 };
+            dual.forward(ops, mem, &x, 0.0, &mut cond, None)
+        })?;
         mem.keep.reset();
         // the main UNet's keys: text per material, the reference's, DINO's
         cond.text.clear();
@@ -227,7 +290,8 @@ impl Paint {
     #[allow(clippy::too_many_arguments)]
     pub fn paint(&self, ops: &Ops, mesh: &Mesh, picture: &Texture, seed: u64, steps: usize, tsize: u32, trace: Option<&mut Trace>,
                  progress: &mut dyn FnMut(&'static str, u32, u32) -> Result<()>) -> Result<Mesh> {
-        let mem = Mem::new(&ops.gpu, KEEP, TMP)?;
+        let (keep, tmp) = arena_sizes(ops.gpu.memory().ok().and_then(|(_, free)| free).map(|f| f.saturating_sub(self.staged as u64)));
+        let mem = Mem::new(&ops.gpu, keep, tmp)?;
         progress("views", 0, 1)?;
         let scene = render::Scene::new(mesh);
         let (normal, position) = maps(&scene);
@@ -284,6 +348,8 @@ impl Paint {
         if let Some(t) = trace {
             *t = Trace { normal, position, picture: pic, views };
         }
+        use std::sync::atomic::Ordering::Relaxed;
+        *self.last_arenas.lock().unwrap() = (mem.keep.peak.load(Relaxed), mem.tmp.peak.load(Relaxed), mem.keep.spills.load(Relaxed) + mem.tmp.spills.load(Relaxed));
         Ok(m)
     }
 }

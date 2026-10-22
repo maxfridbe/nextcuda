@@ -40,3 +40,21 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 "${SSH[@]}" 'systemctl --user --no-pager --lines=0 status nextcuda.service | head -4' 2>&1 | quiet
+# the video daemon is a process of its own (setsid, not the service's): a restart of the service leaves it on the old
+# program - on brainiac it ran four days of deploys behind. One whose program was replaced is restarted on the new one,
+# with the model it was started with; not while a clip renders (said, left as it is)
+echo "==> $HOST: video daemon"
+"${SSH[@]}" 'bash -s' <<'EOF' 2>&1 | quiet
+pid=$(pgrep -f "nextcuda video daemon" | head -1)
+if [ -z "$pid" ]; then echo "    not running"; exit 0; fi
+case "$(readlink /proc/$pid/exe)" in *"(deleted)") ;; *) echo "    on the new program already"; exit 0 ;; esac
+sock=$(tr '\0' '\n' < /proc/$pid/cmdline | sed -n '/^--socket$/{n;p}')
+model=$(tr '\0' '\n' < /proc/$pid/cmdline | sed -n '/^--model$/{n;p}')
+if curl -s -m 5 --unix-socket "$sock" http://localhost/engine/status | grep -q '"running":{'; then
+  echo "    a clip is rendering: left on the old program (restart it with: nextcuda video stop; nextcuda video start --model $model)"
+  exit 0
+fi
+cd ~/nextcuda && ./dist/nextcuda video stop >/dev/null 2>&1; ./dist/nextcuda video start ${model:+--model "$model"} >/dev/null 2>&1
+new=$(pgrep -f "nextcuda video daemon" | head -1)
+[ -n "$new" ] && echo "    restarted on the new program ($model, pid $new)" || echo "    did not come back: nextcuda video start --model $model"
+EOF

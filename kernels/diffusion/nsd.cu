@@ -788,7 +788,10 @@ int nsd_conv2d(void* ctx, const void* x, int dt, int64_t N, int64_t H, int64_t W
     const int64_t P = std::max<int64_t>(1, std::min<int64_t>(px, (192ll << 20) / (KK * (int64_t) esz(dt))));
     const size_t wbytes = (size_t) Co * KK * esz(dt);
     char* wr = (char*) scratch(c, 2, wbytes + (size_t) P * KK * esz(dt));
-    if (!wr) return fail("nsd_conv2d: the im2col buffer did not fit in memory");
+    if (!wr) {
+        size_t fr = 0, tot = 0; cudaMemGetInfo(&fr, &tot);
+        return fail("nsd_conv2d: the im2col buffer did not fit in memory (" + std::to_string((wbytes + (size_t) P * KK * esz(dt)) >> 20) + " MiB for " + std::to_string(N) + "x" + std::to_string(H) + "x" + std::to_string(W) + "x" + std::to_string(Ci) + " -> " + std::to_string(Co) + ", k" + std::to_string(k) + "; the card has " + std::to_string(fr >> 20) + " of " + std::to_string(tot >> 20) + " MiB free)");
+    }
     char* col = wr + wbytes;
     reorder_w_k<<<nb(Co * KK), 256, 0, c->s>>>(w, dt, Co, Ci, k, wr);
     LAUNCHED("conv2d weights");

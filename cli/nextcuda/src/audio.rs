@@ -13,6 +13,8 @@ const USAGE: &str = "nextcuda audio gen \"<description>\" [--lyrics TEXT | --lyr
 nextcuda audio gen \"<text to say>\" --model qwen3-tts-... [--voice NAME] [--language L] [--instructions TEXT]
                    [--ref-audio FILE.wav [--ref-text TEXT]] [--cfg X] [--seconds N] [--seed N] [--out FILE|DIR]   (speech)
                    [--speaker FILE]...   (several speakers: a script of \"Speaker N:\" lines, Speaker 1's recording first; vibevoice)
+nextcuda audio gen \"<description>\" --model acestep-1.5 --source FILE --opt-task cover | repaint | edit | lego [--opt-repaint-start S]
+                   [--opt-repaint-end S] [--opt-cover-strength X] [--opt-source-lyrics TEXT] ...   (a song made from a recording)
 nextcuda audio serve [MODEL] [--port 8087] [--host 127.0.0.1] [--gpu N] [--set NAME=VALUE]... [--wfe] [--out DIR] [--cors ORIGIN]
 nextcuda audio start [serve's options] [--slot N]   (in the background; slot N: another server beside the first) | ps | logs [-f] | stop  [--slot N]
 nextcuda audio voice list                                   the saved voices (spoken by name: --voice NAME, \"voice\": NAME)
@@ -23,13 +25,13 @@ nextcuda audio voice design NAME --instructions \"the voice\" [--text \"what the
 nextcuda audio voice rm NAME            (addvoice / clonevoice NAME ... = voice add; designvoice = voice design)
 nextcuda audio transcribe FILE [--model ID | --dir DIR] [--language L] [--translate] [--no-words] [--prompt TEXT] [--opt-NAME VALUE]...
                    [--json] [--gpu N]   (speech to text: a recogniser, whisper-large-v3-turbo; any rate, WAV, MP3, FLAC, Ogg, M4A)
-nextcuda audio check <dump dir> [--model ID | --dir DIR] [--stages ar,dit,voc,chunks | prompt,frames,codec | mel,encoder,logits,transcribe] [--gpu N]
+nextcuda audio check <dump dir> [--model ID | --dir DIR] [--stages ar,dit,voc,chunks | prompt,frames,codec | mel,encoder,logits,transcribe | text,te,enc,velocity,sample,vae,song] [--gpu N]
 nextcuda audio engines | selftest [--gpu N]";
 
 /// The audio engines this program has (audio/<arch>)
 pub fn engines() -> Vec<nextcuda_audio::AudioKind> {
     vec![nextcuda_audio_minimaxmusic3::kind(), nextcuda_audio_breezetts2::kind(), nextcuda_audio_qwen3tts::kind(), nextcuda_audio_voxcpm2::kind(),
-         nextcuda_audio_whisper::kind(), nextcuda_audio_vibevoice::kind()]
+         nextcuda_audio_whisper::kind(), nextcuda_audio_vibevoice::kind(), nextcuda_audio_acestep::kind()]
 }
 
 /// Every `--speaker FILE` (a recording a speaker, Speaker 1 first: a multi-speaker script's voices)
@@ -61,6 +63,8 @@ fn model(cfg: &Config, args: &[String]) -> Result<(Value, ModelFiles), String> {
             (nextcuda_audio_vibevoice::ARCH, nextcuda_audio_vibevoice::files_in(dir).map_err(|e| e.0)?)
         } else if whisper {
             (nextcuda_audio_whisper::ARCH, nextcuda_audio_whisper::files_in(dir).map_err(|e| e.0)?)
+        } else if dir.join("acestep-v15-turbo").is_dir() {
+            (nextcuda_audio_acestep::ARCH, nextcuda_audio_acestep::files_in(dir).map_err(|e| e.0)?)
         } else if let Ok(f) = nextcuda_audio_breezetts2::files_in(dir) {
             (nextcuda_audio_breezetts2::ARCH, f)
         } else if dir.join("audiovae.pth").exists() {
@@ -103,7 +107,10 @@ fn options(m: &Value, args: &[String]) -> Result<nextcuda_audio::LoadOptions, St
     }
     let ks = engines();
     let k = nextcuda_audio::kind_for(&ks, m["arch"].as_str().unwrap_or(""))?;
-    for (var, v) in super::opt_env(k.options, nextcuda_core::At::Load, k.name)? {
+    // the --opt-NAMEs for the load: a request's own (a song's bpm, task ...) are left for the request
+    let request_only = |n: &str| k.options.iter().any(|o| (o.name == n || o.env == n) && o.at == nextcuda_core::At::Request);
+    let load: nextcuda_core::options::Given = super::engine_opts().iter().filter(|(n, _)| !request_only(n)).map(|(a, b)| (a.clone(), b.clone())).collect();
+    for (var, v) in nextcuda_core::options::resolve(&load, k.options, nextcuda_core::At::Load, k.name)? {
         settings.insert(var, v);
     }
     Ok(nextcuda_audio::LoadOptions { settings })
@@ -189,7 +196,14 @@ fn gen(cfg: &Config, args: &[String]) -> Result<(), String> {
         instructions: opt(args, "--instructions").map(str::to_string),
         reference,
         speakers: speakers(args)?,
+        source: match opt(args, "--source") {
+            Some(f) => Some(nextcuda_audio::read_audio(&std::fs::read(f).map_err(|e| format!("{f}: {e}"))?).map_err(|e| format!("{f}: {e}"))?),
+            None => None,
+        },
     };
+    if req.source.is_some() && !e.sources() {
+        return Err(format!("--source: {} makes no song from a recording (acestep does: --opt-task cover | repaint | edit)", e.arch()));
+    }
     let t0 = std::time::Instant::now();
     // frames a second of sound: speech 12.5, songs 25
     let fps = match e.arch() {
@@ -341,9 +355,13 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         let stages: Vec<&str> = opt(args, "--stages").unwrap_or("mel,encoder,logits,transcribe").split(',').collect();
         let e = nextcuda_audio_whisper::Whisper::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
         nextcuda_audio_whisper::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
+    } else if m["arch"] == nextcuda_audio_acestep::ARCH {
+        let stages: Vec<&str> = opt(args, "--stages").unwrap_or("text,te,enc,velocity,sample,vae").split(',').collect();
+        let e = nextcuda_audio_acestep::AceStep::load(&files, std::slice::from_ref(&g), &options(&m, args)?, &mut log).map_err(|e| e.0)?;
+        nextcuda_audio_acestep::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
     } else {
-        return Err(format!("check knows {}, {}, {}, {} and {}", nextcuda_audio_minimaxmusic3::ARCH, nextcuda_audio_breezetts2::ARCH, nextcuda_audio_qwen3tts::ARCH,
-                           nextcuda_audio_voxcpm2::ARCH, nextcuda_audio_whisper::ARCH));
+        return Err(format!("check knows {}, {}, {}, {}, {} and {}", nextcuda_audio_minimaxmusic3::ARCH, nextcuda_audio_breezetts2::ARCH, nextcuda_audio_qwen3tts::ARCH,
+                           nextcuda_audio_voxcpm2::ARCH, nextcuda_audio_whisper::ARCH, nextcuda_audio_acestep::ARCH));
     };
     println!("worst relative error {worst:.2e}");
     Ok(())
