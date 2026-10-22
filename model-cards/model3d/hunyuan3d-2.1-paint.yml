@@ -6,7 +6,8 @@ arch: hunyuan3d-2.1-paint
 title: Hunyuan3D 2.1 paint (PBR textures for a mesh, from a picture)
 about: 'Hunyuan3D 2.1''s paint model without its shape model: the 2.5D multiview UNet (Stable Diffusion 2.1 with material-aware, reference, multiview and DINOv2-giant attentions) draws six views of albedo and metallic-roughness in 15 UniPC steps, baked into a UV atlas. It makes no shape: model3d.generate with a mesh (or file) and a picture paints that mesh. The same files as hunyuan3d-2.1''s paint; a pull of both fetches them once.'
 gpus: '0'
-vram_gib: 0.0                   # measured on the box once it runs
+vram_gib: 10.9                  # the whole 12 GB card: peaks measured 11.39 GiB (5070) and 11.79 GiB (3060) painting a 40K-face
+                                # mesh, its arenas sized from what is free; asked for, the card's other models make way
 does: [texture]
 env: {}
 files:
