@@ -39,6 +39,10 @@ def main():
     vp = VideoProcessor(vae_scale_factor=32)
     x = vp.preprocess(img, height=a.height, width=a.width).to(torch.float32)
     vae = AutoencoderKLLTX2Video.from_pretrained(a.components, subfolder="vae", torch_dtype=torch.float32).eval()
+    # each stage's output (channels-last [T, h, w, C]) for a stage check: enc_conv_in, enc_down<i>, enc_mid, enc_out
+    stages = [("enc_conv_in", vae.encoder.conv_in)] + [(f"enc_down{i}", b) for i, b in enumerate(vae.encoder.down_blocks)] + [("enc_mid", vae.encoder.mid_block), ("enc_out", vae.encoder.conv_out)]
+    for name, mod in stages:
+        mod.register_forward_hook(lambda _m, _i, o, name=name: np.save(os.path.join(a.out, name + ".npy"), o[0].permute(1, 2, 3, 0).contiguous().float().numpy()))
     with torch.no_grad():
         z = vae.encode(x.unsqueeze(2)).latent_dist.mode()
         z = _normalize_latents(z, vae.latents_mean, vae.latents_std)

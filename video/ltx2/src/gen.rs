@@ -152,6 +152,11 @@ pub fn generate(m: &Ltx2, spec: &Value, c: &mut Ctl) -> Result<Value> {
     let denoise_s = t0.elapsed().as_secs_f64();
     (c.log)(format!("ltx2: {nsteps} steps in {denoise_s:.1} s ({:.2} s a step); cards in use {peak:.2?} GiB", denoise_s / nsteps as f64));
 
+    // the final latents, when asked (a check of the decoders; the upscaler's input): raw float32 [Tv, 128], [La, 128]
+    if let Some(p) = spec["save_latents"].as_str() {
+        std::fs::write(format!("{p}.video.f32"), crate::te::as_bytes(&lat)).map_err(|e| Error(format!("{p}: {e}")))?;
+        std::fs::write(format!("{p}.audio.f32"), crate::te::as_bytes(&aud)).map_err(|e| Error(format!("{p}: {e}")))?;
+    }
     // 4. pictures and sound
     let t0 = Instant::now();
     let (f, h, w) = ((frames - 1) / 8 + 1, height / 32, width / 32);

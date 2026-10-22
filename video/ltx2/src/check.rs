@@ -233,6 +233,46 @@ pub fn run(m: &Ltx2, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)) -
         let flat: Vec<f32> = wave.concat();
         worst = worst.max(note("audio wave (48 kHz)", &flat, &get("wave")?.1, log));
     }
+    if stages.contains(&"vae_tiled") {
+        // ref_vae.py's tiled decode of an engine's saved latents, against ours of the same
+        let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("meta.json")).map_err(|e| Error(format!("meta.json: {e}")))?)
+            .map_err(|e| Error(format!("meta.json: {e}")))?;
+        let (w, h, fr) = (meta["width"].as_u64().unwrap_or(0) as usize, meta["height"].as_u64().unwrap_or(0) as usize, meta["frames"].as_u64().unwrap_or(0) as usize);
+        let lat: Vec<f32> = std::fs::read(format!("{}.video.f32", meta["latents"].as_str().unwrap_or(""))).map_err(|e| Error(format!("latents: {e}")))?
+            .chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let dec = crate::vae::Decoder::load(m.file("vae")?, m.freest())?;
+        let t0 = std::time::Instant::now();
+        let px = dec.decode(&lat, (fr - 1) / 8 + 1, h / 32, w / 32, &mut |_, _| {})?;
+        log(format!("vae tiled decode ({w} x {h}, {fr} frames) in {:.1} s", t0.elapsed().as_secs_f64()));
+        worst = worst.max(note("vae tiled frames", &px, &get("video")?.1, log));
+    }
+    if stages.contains(&"ups") {
+        // the shot upscaler stage by stage: ref_ups.py's frames through our tiled encoder, its latents through our
+        // upsampler, its upsampled latents through our tiled decode
+        let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("meta.json")).map_err(|e| Error(format!("meta.json: {e}")))?)
+            .map_err(|e| Error(format!("meta.json: {e}")))?;
+        let (w, h, fr) = (meta["width"].as_u64().unwrap_or(0) as usize, meta["height"].as_u64().unwrap_or(0) as usize, meta["frames"].as_u64().unwrap_or(0) as usize);
+        let lf = (fr - 1) / 8 + 1;
+        let gpu = m.freest().clone();
+        let enc = crate::vae::Encoder::load(m.file("vae")?, &gpu)?;
+        let src: Vec<f32> = get("src")?.1.iter().map(|v| v * 2.0 - 1.0).collect();
+        let t0 = std::time::Instant::now();
+        let z = enc.encode_tiled(&src, fr, h, w, crate::ups::TILE_PX)?;
+        log(format!("ups: tiled encode in {:.1} s", t0.elapsed().as_secs_f64()));
+        worst = worst.max(note("ups encoder (tiled)", &z, &get("enc")?.1, log));
+        drop(enc);
+        let ups = crate::ups::Upsampler::load(m.file("upscaler")?, &gpu)?;
+        let t0 = std::time::Instant::now();
+        let z2 = ups.run(&get("enc")?.1, lf, h / 32, w / 32)?;
+        log(format!("ups: upsampler in {:.1} s", t0.elapsed().as_secs_f64()));
+        worst = worst.max(note("ups latent upsampler", &z2, &get("ups")?.1, log));
+        drop(ups);
+        let dec = crate::vae::Decoder::load(m.file("vae")?, &gpu)?;
+        let t0 = std::time::Instant::now();
+        let px = dec.decode_raw(&get("ups")?.1, lf, 2 * h / 32, 2 * w / 32, (crate::ups::TILE_PX.0 / 32, crate::ups::TILE_PX.1 / 32), &mut |_, _| {})?;
+        log(format!("ups: tiled decode in {:.1} s", t0.elapsed().as_secs_f64()));
+        worst = worst.max(note("ups frames (x2)", &px, &get("video")?.1, log));
+    }
     if stages.contains(&"enc") {
         // the reference's re-compressed picture through our encoder; our re-compression of the source against its
         let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("meta.json")).map_err(|e| Error(format!("meta.json: {e}")))?)
@@ -245,6 +285,15 @@ pub fn run(m: &Ltx2, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)) -
         enc.normalize(&mut z);
         log(format!("vae encode in {:.2} s", t0.elapsed().as_secs_f64()));
         worst = worst.max(note("vae encoder latents", &z, &get("latents")?.1, log));
+        if let Ok(d) = std::env::var("LTX2_DEBUG_ENC") {
+            for name in ["enc_conv_in", "enc_down0", "enc_down1", "enc_down2", "enc_down3", "enc_mid", "enc_out"] {
+                let ours: Vec<f32> = std::fs::read(Path::new(&d).join(format!("{name}.f32"))).unwrap_or_default().chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                if let Ok((_, want)) = get(name) {
+                    note(name, &ours, &want, log);
+                }
+            }
+        }
         if let Some(src) = meta["picture"].as_str() {
             let ours = crate::media::crf_roundtrip(&crate::media::read_picture(Path::new(src), w, h)?, w, h, 18)?;
             note("crf 18 picture (ours vs PIL+PyAV)", &ours, &pic, log);

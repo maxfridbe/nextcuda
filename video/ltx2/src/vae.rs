@@ -36,6 +36,12 @@ pub struct Conv {
 }
 
 impl Conv {
+    pub fn w_ptr(&self) -> *const std::ffi::c_void {
+        self.w.ptr().cast_const()
+    }
+    pub fn b_ptr(&self) -> *const f32 {
+        self.b.fp().cast_const()
+    }
     pub fn load(st: &SafeTensors, p: &str, gpu: &Arc<Gpu>) -> Result<Conv> {
         let t = st.need(&format!("{p}.weight")).map_err(ge)?;
         let (co, ci, k) = (t.shape[0] as usize, t.shape[1] as usize, t.shape[2] as usize);
@@ -67,10 +73,16 @@ impl Ctx<'_> {
 
     /// conv (3^3: time padded with the edge frames when `causal` is false, else with the first frame twice in front)
     pub fn conv(&self, cv: &Conv, x: &Vol, causal: bool) -> Result<Vol> {
+        self.conv_b(cv, x, causal, true)
+    }
+
+    /// conv, its bias added or not (a scaled input's conv adds it after the scale is undone)
+    pub fn conv_b(&self, cv: &Conv, x: &Vol, causal: bool, bias: bool) -> Result<Vol> {
+        let bp = if bias { cv.b.fp().cast_const() } else { std::ptr::null() };
         let frame = x.h * x.w * x.c * 2;
         if cv.k == 1 {
             let o = self.vol(x.t, x.h, x.w, cv.co)?;
-            ffi::conv3d(self.nsd.raw(), x.d.ptr(), (x.t, x.h, x.w), x.c, cv.w.ptr(), cv.co, 1, cv.b.fp(), o.d.ptr())?;
+            ffi::conv3d(self.nsd.raw(), x.d.ptr(), (x.t, x.h, x.w), x.c, cv.w.ptr(), cv.co, 1, bp, o.d.ptr())?;
             return Ok(o);
         }
         // the volume k - 1 frames longer - the edge frames repeated (non-causal: (k-1)/2 each side; causal: all in
@@ -87,7 +99,7 @@ impl Ctx<'_> {
             ext.copy_within(i * frame, &x.d, (x.t - 1) * frame, frame)?;
         }
         let o = DevBuf::new(self.gpu, te * x.h * x.w * cv.co * 2)?;
-        ffi::conv3d(self.nsd.raw(), ext.ptr(), (te, x.h, x.w), x.c, cv.w.ptr(), cv.co, cv.k, cv.b.fp(), o.ptr())?;
+        ffi::conv3d(self.nsd.raw(), ext.ptr(), (te, x.h, x.w), x.c, cv.w.ptr(), cv.co, cv.k, bp, o.ptr())?;
         let of = x.h * x.w * cv.co * 2;
         let out = self.vol(x.t, x.h, x.w, cv.co)?;
         out.d.copy_within(0, &o, pad * of, x.t * of)?;
@@ -106,6 +118,38 @@ impl Ctx<'_> {
     }
 }
 
+/// A float32 channels-last volume (the encoder's residual stream: past half's range in its deep stages)
+pub struct VolF {
+    pub d: DevBuf,
+    pub t: usize,
+    pub h: usize,
+    pub w: usize,
+    pub c: usize,
+}
+
+impl Ctx<'_> {
+    pub fn volf(&self, t: usize, h: usize, w: usize, c: usize) -> Result<VolF> {
+        Ok(VolF { d: DevBuf::f32(self.gpu, t * h * w * c)?, t, h, w, c })
+    }
+    /// conv of a float32 volume: through half at a scale (2^-8), the scale undone in float32, then the bias
+    pub fn conv_f(&self, cv: &Conv, x: &VolF, causal: bool) -> Result<VolF> {
+        let s = 1.0 / 256.0;
+        let n = x.t * x.h * x.w;
+        let xh = self.vol(x.t, x.h, x.w, x.c)?;
+        ffi::to_half_rows(self.gpu, x.d.fp(), n, x.c, x.c, s, xh.d.ptr(), x.c)?;
+        let y = self.conv_b(cv, &xh, causal, false)?;
+        let o = self.volf(y.t, y.h, y.w, y.c)?;
+        ffi::to_float(self.gpu, y.d.ptr(), o.d.fp(), n * y.c, 1.0 / s)?;
+        ffi::add_bias(self.gpu, o.d.fp(), n, y.c, cv.b.fp())?;
+        Ok(o)
+    }
+    pub fn rms_silu_f(&self, x: &VolF) -> Result<Vol> {
+        let o = self.vol(x.t, x.h, x.w, x.c)?;
+        ffi::rms_silu_f32(self.gpu, x.d.fp(), x.t * x.h * x.w, x.c, EPS, true, o.d.ptr())?;
+        Ok(o)
+    }
+}
+
 pub struct Res {
     c1: Conv,
     c2: Conv,
@@ -114,6 +158,13 @@ pub struct Res {
 impl Res {
     fn load(st: &SafeTensors, p: &str, gpu: &Arc<Gpu>) -> Result<Res> {
         Ok(Res { c1: Conv::load(st, &format!("{p}.conv1.conv"), gpu)?, c2: Conv::load(st, &format!("{p}.conv2.conv"), gpu)? })
+    }
+    /// over a float32 residual stream
+    fn run_f(&self, c: &Ctx, x: VolF, causal: bool) -> Result<VolF> {
+        let h = c.conv(&self.c1, &c.rms_silu_f(&x)?, causal)?;
+        let h = c.conv(&self.c2, &c.rms_silu(&h, true)?, causal)?;
+        c.nsd.gate_add(x.d.ptr(), Dt::F32, x.t * x.h * x.w, x.c, h.d.ptr(), Dt::F16, none(), none())?;
+        Ok(x)
     }
     fn run(&self, c: &Ctx, x: Vol, causal: bool) -> Result<Vol> {
         let h = c.conv(&self.c1, &c.rms_silu(&x, true)?, causal)?;
@@ -225,8 +276,15 @@ impl Decoder {
     /// tiled as diffusers' tiled_decode (each tile blended into the ones above and left of it, in place)
     pub fn decode(&self, lat: &[f32], f: usize, h: usize, w: usize, progress: &mut dyn FnMut(usize, usize)) -> Result<Vec<f32>> {
         let z: Vec<f32> = lat.iter().enumerate().map(|(i, v)| v * self.std[i % 128] + self.mean[i % 128]).collect();
-        let tiled = h > TILE || w > TILE;
-        let (tl, ts) = if tiled { (TILE, TILE_STRIDE) } else { (h.max(w), h.max(w)) };
+        self.decode_raw(&z, f, h, w, (TILE, TILE_STRIDE), progress)
+    }
+
+    /// Denormalized latents -> frames in [0, 1], in spatial tiles of `tile` = (size, stride) latents (diffusers'
+    /// tiled_decode; the tiles blended over (size - stride) x 32 pixels)
+    pub fn decode_raw(&self, z: &[f32], f: usize, h: usize, w: usize, tile: (usize, usize), progress: &mut dyn FnMut(usize, usize)) -> Result<Vec<f32>> {
+        let (tile_n, tile_s) = tile;
+        let tiled = h > tile_n || w > tile_n;
+        let (tl, ts) = if tiled { (tile_n, tile_s) } else { (h.max(w), h.max(w)) };
         let fo = 8 * (f - 1) + 1;
         let (ho, wo) = (32 * h, 32 * w);
         let rows: Vec<usize> = (0..h).step_by(ts).collect();
@@ -254,8 +312,8 @@ impl Decoder {
         if !tiled {
             return Ok(tiles.remove(0).remove(0).0.iter().map(|v| (v / 2.0 + 0.5).clamp(0.0, 1.0)).collect());
         }
-        let blend = 32 * (TILE - TILE_STRIDE);
-        let stride = 32 * TILE_STRIDE;
+        let blend = 32 * (tile_n - tile_s);
+        let stride = 32 * tile_s;
         for ri in 0..tiles.len() {
             for ci in 0..tiles[ri].len() {
                 if ri > 0 {
@@ -390,16 +448,30 @@ impl Encoder {
         }
         let x = c.vol(f, hp, wp, 48)?;
         x.d.write(0, &v.iter().flat_map(|q| q.to_le_bytes()).collect::<Vec<u8>>())?;
-        let mut x = c.conv(&self.conv_in, &x, true)?;
-        for d in &self.downs {
+        let x0 = c.conv(&self.conv_in, &x, true)?;
+        // the residual stream in float32 from here (down 3's outputs pass 2e5)
+        let mut x = c.volf(x0.t, x0.h, x0.w, x0.c)?;
+        ffi::to_float(&self.gpu, x0.d.ptr(), x.d.fp(), x0.t * x0.h * x0.w * x0.c, 1.0)?;
+        drop(x0);
+        // LTX2_DEBUG_ENC=DIR: each stage's output as raw float32 (a stage check against ref_enc.py's)
+        let dump = std::env::var("LTX2_DEBUG_ENC").ok();
+        let save = |v: &VolF, name: &str| -> Result<()> {
+            if let Some(d) = &dump {
+                self.nsd.wait()?;
+                std::fs::write(std::path::Path::new(d).join(format!("{name}.f32")), crate::te::as_bytes(&v.d.to_f32()?)).ok();
+            }
+            Ok(())
+        };
+        save(&x, "enc_conv_in")?;
+        for (di, d) in self.downs.iter().enumerate() {
             for r in &d.res {
-                x = r.run(&c, x, true)?;
+                x = r.run_f(&c, x, true)?;
             }
             let (s0, s1, s2) = d.stride;
             // the first s0 - 1 frames repeated in front
             let x2 = if s0 > 1 {
-                let frame = x.h * x.w * x.c * 2;
-                let e = c.vol(x.t + s0 - 1, x.h, x.w, x.c)?;
+                let frame = x.h * x.w * x.c * 4;
+                let e = c.volf(x.t + s0 - 1, x.h, x.w, x.c)?;
                 e.d.copy_within(0, &x.d, 0, (s0 - 1) * frame)?;
                 e.d.copy_within((s0 - 1) * frame, &x.d, 0, x.t * frame)?;
                 e
@@ -408,18 +480,27 @@ impl Encoder {
             };
             let k = s0 * s1 * s2;
             let groups = x2.c * k / d.out;
-            let res = c.vol(x2.t / s0, x2.h / s1, x2.w / s2, d.out)?;
-            ffi::s2d(&self.gpu, x2.d.ptr(), x2.t, x2.h, x2.w, x2.c, d.stride, groups, res.d.ptr())?;
-            let y = c.conv(&d.conv, &x2, true)?;
-            let o = c.vol(y.t / s0, y.h / s1, y.w / s2, d.out)?;
-            ffi::s2d(&self.gpu, y.d.ptr(), y.t, y.h, y.w, y.c, d.stride, 1, o.d.ptr())?;
-            c.add(&o, &res)?;
+            let res = c.volf(x2.t / s0, x2.h / s1, x2.w / s2, d.out)?;
+            ffi::s2d_f32(&self.gpu, x2.d.fp(), x2.t, x2.h, x2.w, x2.c, d.stride, groups, res.d.fp())?;
+            let y = c.conv_f(&d.conv, &x2, true)?;
+            let o = c.volf(y.t / s0, y.h / s1, y.w / s2, d.out)?;
+            ffi::s2d_f32(&self.gpu, y.d.fp(), y.t, y.h, y.w, y.c, d.stride, 1, o.d.fp())?;
+            self.nsd.gate_add(o.d.ptr(), Dt::F32, o.t * o.h * o.w, o.c, res.d.ptr(), Dt::F32, none(), none())?;
             x = o;
+            save(&x, &format!("enc_down{di}"))?;
         }
         for r in &self.mid {
-            x = r.run(&c, x, true)?;
+            x = r.run_f(&c, x, true)?;
         }
-        let y = c.conv(&self.conv_out, &c.rms_silu(&x, true)?, true)?;
+        save(&x, "enc_mid")?;
+        let y = c.conv(&self.conv_out, &c.rms_silu_f(&x)?, true)?;
+        if let Some(d) = &dump {
+            let n = y.t * y.h * y.w * y.c;
+            let tmp = DevBuf::f32(&self.gpu, n)?;
+            ffi::to_float(&self.gpu, y.d.ptr(), tmp.fp(), n, 1.0)?;
+            self.nsd.wait()?;
+            std::fs::write(std::path::Path::new(d).join("enc_out.f32"), crate::te::as_bytes(&tmp.to_f32()?)).ok();
+        }
         let n = y.t * y.h * y.w * y.c;
         let tmp = DevBuf::f32(&self.gpu, n)?;
         ffi::to_float(&self.gpu, y.d.ptr(), tmp.fp(), n, 1.0)?;
@@ -427,6 +508,92 @@ impl Encoder {
         let all = tmp.to_f32()?;
         // the means: the first 128 of 129 channels
         Ok(all.chunks_exact(y.c).flat_map(|p| p[..128].iter().copied()).collect())
+    }
+
+    /// Frames as above, in spatial tiles of `tile` = (size, stride) pixels (diffusers' tiled_encode: the latent tiles
+    /// blended over (size - stride) / 32 latents, in place, each cut to stride / 32)
+    pub fn encode_tiled(&self, px: &[f32], f: usize, h: usize, w: usize, tile: (usize, usize)) -> Result<Vec<f32>> {
+        let (tn, ts) = tile;
+        if h <= tn && w <= tn {
+            return self.encode(px, f, h, w);
+        }
+        let (lf, lh, lw) = ((f - 1) / 8 + 1, h / 32, w / 32);
+        let (ltn, lts) = (tn / 32, ts / 32);
+        let blend = ltn - lts;
+        let rows: Vec<usize> = (0..h).step_by(ts).collect();
+        let cols: Vec<usize> = (0..w).step_by(ts).collect();
+        // (latents [lf, th, tw, 128], th, tw)
+        let mut tiles: Vec<Vec<(Vec<f32>, usize, usize)>> = Vec::new();
+        for &i in &rows {
+            let mut row = Vec::new();
+            for &j in &cols {
+                let (ph, pw) = (tn.min(h - i), tn.min(w - j));
+                let mut sub = vec![0f32; f * ph * pw * 3];
+                for t in 0..f {
+                    for y in 0..ph {
+                        let s = ((t * h + i + y) * w + j) * 3;
+                        let d = (t * ph + y) * pw * 3;
+                        sub[d..d + pw * 3].copy_from_slice(&px[s..s + pw * 3]);
+                    }
+                }
+                row.push((self.encode(&sub, f, ph, pw)?, ph / 32, pw / 32));
+            }
+            tiles.push(row);
+        }
+        for ri in 0..tiles.len() {
+            for ci in 0..tiles[ri].len() {
+                if ri > 0 {
+                    let (a, b) = tiles.split_at_mut(ri);
+                    let (above, cur) = (&a[ri - 1][ci], &mut b[0][ci]);
+                    let e = blend.min(above.1).min(cur.1);
+                    for t in 0..lf {
+                        for y in 0..e {
+                            let k = y as f32 / e as f32;
+                            for x in 0..cur.2.min(above.2) {
+                                for c in 0..128 {
+                                    let av = above.0[((t * above.1 + above.1 - e + y) * above.2 + x) * 128 + c];
+                                    let bi = ((t * cur.1 + y) * cur.2 + x) * 128 + c;
+                                    cur.0[bi] = av * (1.0 - k) + cur.0[bi] * k;
+                                }
+                            }
+                        }
+                    }
+                }
+                if ci > 0 {
+                    let (a, b) = tiles[ri].split_at_mut(ci);
+                    let (left, cur) = (&a[ci - 1], &mut b[0]);
+                    let e = blend.min(left.2).min(cur.2);
+                    for t in 0..lf {
+                        for y in 0..cur.1.min(left.1) {
+                            for x in 0..e {
+                                let k = x as f32 / e as f32;
+                                for c in 0..128 {
+                                    let av = left.0[((t * left.1 + y) * left.2 + left.2 - e + x) * 128 + c];
+                                    let bi = ((t * cur.1 + y) * cur.2 + x) * 128 + c;
+                                    cur.0[bi] = av * (1.0 - k) + cur.0[bi] * k;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = vec![0f32; lf * lh * lw * 128];
+        for (ri, row) in tiles.iter().enumerate() {
+            for (ci, (z, th, tw)) in row.iter().enumerate() {
+                let (y0, x0) = (ri * lts, ci * lts);
+                for t in 0..lf {
+                    for y in 0..lts.min(*th).min(lh.saturating_sub(y0)) {
+                        for x in 0..lts.min(*tw).min(lw.saturating_sub(x0)) {
+                            let s = ((t * th + y) * tw + x) * 128;
+                            let d = ((t * lh + y0 + y) * lw + x0 + x) * 128;
+                            out[d..d + 128].copy_from_slice(&z[s..s + 128]);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The latents normalized as the pipeline's DiT reads them ((z - mean) / std)

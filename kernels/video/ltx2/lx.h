@@ -31,6 +31,10 @@ int ns_video_lx_ln_mod(ns_gpu* g, const float* x, int64_t M, int64_t C, float ep
 /* The video VAE's: out [M, C] half = silu?(x / sqrt(mean(x^2) + eps)) per row (PerChannelRMSNorm, then SiLU when silu) -
  * x half [M, C]; one block a row */
 int ns_video_lx_rms_silu(ns_gpu* g, const void* x, int64_t M, int64_t C, float eps, int silu, void* out);
+/* the same with x float32 (a residual stream past half's range: the encoder's deep stages) */
+int ns_video_lx_rms_silu_f32(ns_gpu* g, const float* x, int64_t M, int64_t C, float eps, int silu, void* out);
+/* x float32 [M, C] += b[c] */
+int ns_video_lx_add_bias(ns_gpu* g, float* x, int64_t M, int64_t C, const float* b);
 /* depth to space, channels-last: x half [T, H, W, C * s0 * s1 * s2] (channel c * s0 s1 s2 + i s1 s2 + j s2 + k) ->
  * out [T s0 - drop, H s1, W s2, C] (out[t s0 + i - drop, h s1 + j, w s2 + k, c]; the first `drop` frames dropped) */
 int ns_video_lx_d2s(ns_gpu* g, const void* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int drop, void* out);
@@ -38,6 +42,13 @@ int ns_video_lx_d2s(ns_gpu* g, const void* x, int64_t T, int64_t H, int64_t W, i
  * out [T / s0, H / s1, W / s2, C s0 s1 s2 / G], out[.., j] = mean over g < G of s2d[j G + g], s2d channel
  * ((c s0 + a) s1 + b) s2 + k = x[t s0 + a, h s1 + b, w s2 + k, c] */
 int ns_video_lx_s2d(ns_gpu* g, const void* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int G, void* out);
+/* the same over float32 */
+int ns_video_lx_s2d_f32(ns_gpu* g, const float* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int G, float* out);
+/* GroupNorm over a whole channels-last volume (torch's GroupNorm on [B, C, T, H, W]: statistics per group over every
+ * voxel): x half [N, C], G groups, affine weight / bias float32 [C], eps; then + res (half [N, C], NULL: none), then SiLU
+ * when silu - the latent upsampler's norms */
+int ns_video_lx_group_norm(ns_gpu* g, const void* x, int64_t N, int64_t C, int64_t G, const float* w, const float* b, float eps, const void* res,
+                           int silu, void* out);
 /* nearest x2 of a channels-last plane: x half [H, W, C] -> out [2H, 2W, C] */
 int ns_video_lx_up2(ns_gpu* g, const void* x, int64_t H, int64_t W, int64_t C, void* out);
 

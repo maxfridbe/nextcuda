@@ -109,17 +109,24 @@ __global__ void ln_mod_k(const float* x, int64_t C, float eps, const int32_t* ro
     }
 }
 
-__global__ void rms_silu_k(const __half* x, int64_t C, float eps, int silu, __half* o) {
+__device__ inline float ld(const __half* p, int64_t i) { return __half2float(p[i]); }
+__device__ inline float ld(const float* p, int64_t i) { return p[i]; }
+__device__ inline void st(__half* p, int64_t i, float v) { p[i] = f2h(v); }
+__device__ inline void st(float* p, int64_t i, float v) { p[i] = v; }
+
+template <typename T>
+__global__ void rms_silu_k(const T* x, int64_t C, float eps, int silu, __half* o) {
     const size_t r = blockIdx.x;
-    const __half* row = x + r * C;
+    const T* row = x + r * C;
+    // the mean square in float32 over values that may pass half's range: divided as it goes
     float s = 0.0f;
     for (int64_t i = threadIdx.x; i < C; i += WG) {
-        const float v = __half2float(row[i]);
-        s += v * v;
+        const float v = ld(row, i);
+        s += v * v / (float) C;
     }
-    const float inv = 1.0f / sqrtf(block_sum(s) / (float) C + eps);
+    const float inv = 1.0f / sqrtf(block_sum(s) + eps);
     for (int64_t i = threadIdx.x; i < C; i += WG) {
-        float v = __half2float(row[i]) * inv;
+        float v = ld(row, i) * inv;
         if (silu) v = v / (1.0f + expf(-v));
         o[r * C + i] = f2h(v);
     }
@@ -146,7 +153,8 @@ __global__ void up2_k(const __half* x, int64_t H, int64_t W, int64_t C, int64_t 
     o[i] = x[((h / 2) * W + w / 2) * C + c];
 }
 
-__global__ void s2d_k(const __half* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int G, int64_t n, __half* o) {
+template <typename T>
+__global__ void s2d_k(const T* x, int64_t T_, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int G, int64_t n, T* o) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     const int64_t Ho = H / s1, Wo = W / s2, Co = C * s0 * s1 * s2 / G;
@@ -161,9 +169,44 @@ __global__ void s2d_k(const __half* x, int64_t T, int64_t H, int64_t W, int64_t 
         const int64_t b = q % s1; q /= s1;
         const int64_t a = q % s0;
         const int64_t c = q / s0;
-        acc += __half2float(x[(((to * s0 + a) * H + ho * s1 + b) * W + wo * s2 + k) * C + c]);
+        acc += ld(x, (((to * s0 + a) * H + ho * s1 + b) * W + wo * s2 + k) * C + c);
     }
-    o[i] = f2h(acc / (float) G);
+    st(o, i, acc / (float) G);
+}
+
+__global__ void add_bias_k(float* x, int64_t C, int64_t n, const float* b) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) x[i] += b[i % C];
+}
+
+// one block a group: its mean and 1 / std over N x (C / G) values (two passes, float32)
+__global__ void gn_stat_k(const __half* x, int64_t N, int64_t C, int64_t cg, float eps, float* stat) {
+    const int64_t g = blockIdx.x;
+    const int64_t n = N * cg;
+    float s = 0.0f;
+    for (int64_t i = threadIdx.x; i < n; i += WG) s += __half2float(x[(i / cg) * C + g * cg + i % cg]);
+    const float mean = block_sum(s) / (float) n;
+    float s2 = 0.0f;
+    for (int64_t i = threadIdx.x; i < n; i += WG) {
+        const float d = __half2float(x[(i / cg) * C + g * cg + i % cg]) - mean;
+        s2 += d * d;
+    }
+    const float var = block_sum(s2) / (float) n;
+    if (threadIdx.x == 0) {
+        stat[g * 2] = mean;
+        stat[g * 2 + 1] = rsqrtf(var + eps);
+    }
+}
+
+__global__ void gn_apply_k(const __half* x, int64_t C, int64_t cg, int64_t n, const float* stat, const float* w, const float* b, const __half* res,
+                           int silu, __half* o) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const int64_t c = i % C, g = c / cg;
+    float v = (__half2float(x[i]) - stat[g * 2]) * stat[g * 2 + 1] * w[c] + b[c];
+    if (res) v += __half2float(res[i]);
+    if (silu) v = v / (1.0f + expf(-v));
+    o[i] = f2h(v);
 }
 
 inline unsigned blocks(int64_t n) { return (unsigned) ((n + 255) / 256); }
@@ -238,6 +281,22 @@ int ns_video_lx_rms_silu(ns_gpu* g, const void* x, int64_t M, int64_t C, float e
     return 0;
 }
 
+int ns_video_lx_rms_silu_f32(ns_gpu* g, const float* x, int64_t M, int64_t C, float eps, int silu, void* out) {
+    if (M == 0) return 0;
+    NS_CU(cudaSetDevice(g->dev));
+    rms_silu_k<<<(unsigned) M, WG, 0, g->q>>>(x, C, eps, silu, (__half*) out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_video_lx_add_bias(ns_gpu* g, float* x, int64_t M, int64_t C, const float* b) {
+    if (M * C == 0) return 0;
+    NS_CU(cudaSetDevice(g->dev));
+    add_bias_k<<<blocks(M * C), 256, 0, g->q>>>(x, C, M * C, b);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
 int ns_video_lx_d2s(ns_gpu* g, const void* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int drop, void* out) {
     const int64_t n = (T * s0 - drop) * H * s1 * W * s2 * C;
     if (n <= 0) return 0;
@@ -253,6 +312,29 @@ int ns_video_lx_s2d(ns_gpu* g, const void* x, int64_t T, int64_t H, int64_t W, i
     NS_CU(cudaSetDevice(g->dev));
     s2d_k<<<blocks(n), 256, 0, g->q>>>((const __half*) x, T, H, W, C, s0, s1, s2, G, n, (__half*) out);
     NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_video_lx_s2d_f32(ns_gpu* g, const float* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int G, float* out) {
+    const int64_t n = (T / s0) * (H / s1) * (W / s2) * (C * s0 * s1 * s2 / G);
+    if (n <= 0) return 0;
+    NS_CU(cudaSetDevice(g->dev));
+    s2d_k<<<blocks(n), 256, 0, g->q>>>(x, T, H, W, C, s0, s1, s2, G, n, out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_video_lx_group_norm(ns_gpu* g, const void* x, int64_t N, int64_t C, int64_t G, const float* w, const float* b, float eps, const void* res,
+                           int silu, void* out) {
+    if (N * C == 0) return 0;
+    if (C % G) return ns_fail("ns_video_lx_group_norm: channels not a multiple of the groups");
+    NS_CU(cudaSetDevice(g->dev));
+    float* stat = nullptr;
+    NS_CU(cudaMallocAsync((void**) &stat, (size_t) G * 2 * sizeof(float), g->q));
+    gn_stat_k<<<(unsigned) G, WG, 0, g->q>>>((const __half*) x, N, C, C / G, eps, stat);
+    gn_apply_k<<<blocks(N * C), 256, 0, g->q>>>((const __half*) x, C, C / G, N * C, stat, w, b, (const __half*) res, silu, (__half*) out);
+    NS_LAUNCH_CHECK();
+    NS_CU(cudaFreeAsync(stat, g->q));
     return 0;
 }
 

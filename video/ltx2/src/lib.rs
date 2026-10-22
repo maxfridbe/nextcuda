@@ -19,6 +19,7 @@ pub mod media;
 pub mod quant;
 pub mod sample;
 pub mod te;
+pub mod ups;
 pub mod vae;
 
 use std::path::{Path, PathBuf};
@@ -173,6 +174,15 @@ impl Ltx2 {
                 };
                 gen::generate(self, spec, &mut gen::Ctl { log: &mut *ctl.log, progress: &mut p, cancel: &cancel })
             }
+            "upscale" => {
+                let mut prog = ctl.progress.take();
+                let mut p = |i: usize, n: usize| {
+                    if let Some(f) = prog.as_mut() {
+                        f(i, n);
+                    }
+                };
+                ups::upscale(self, spec, &mut *ctl.log, &mut p)
+            }
             k => Err(Error(format!("{ARCH}: no job {k}"))),
         }
     }
@@ -193,7 +203,7 @@ impl VideoEngine for Ltx2 {
         OPTIONS
     }
     fn jobs(&self) -> &'static [&'static str] {
-        &["generate", "check"]
+        &["generate", "upscale", "check"]
     }
     fn run_job(&self, spec: &Value, ctl: &mut JobCtl) -> nextcuda_video::Result<Value> {
         self.job(spec, ctl).map_err(ve)

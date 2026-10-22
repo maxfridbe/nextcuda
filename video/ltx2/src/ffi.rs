@@ -23,6 +23,10 @@ pub struct Api {
     pub conv3d: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, i64, P, i64, i64, *const f32, M) -> c_int,
     pub up2: unsafe extern "C" fn(G, P, i64, i64, i64, M) -> c_int,
     pub s2d: unsafe extern "C" fn(G, P, i64, i64, i64, i64, c_int, c_int, c_int, c_int, M) -> c_int,
+    pub s2d_f32: unsafe extern "C" fn(G, *const f32, i64, i64, i64, i64, c_int, c_int, c_int, c_int, *mut f32) -> c_int,
+    pub rms_silu_f32: unsafe extern "C" fn(G, *const f32, i64, i64, f32, c_int, M) -> c_int,
+    pub add_bias: unsafe extern "C" fn(G, *mut f32, i64, i64, *const f32) -> c_int,
+    pub group_norm: unsafe extern "C" fn(G, P, i64, i64, i64, *const f32, *const f32, f32, P, c_int, M) -> c_int,
     pub aa_snake: unsafe extern "C" fn(M, *const f32, i64, i64, i64, *const f32, *const f32, *const f32, *const f32, *mut f32) -> c_int,
 }
 
@@ -60,6 +64,10 @@ pub fn api() -> Result<&'static Api> {
             conv3d: sym!("nsd_conv3d"),
             up2: sym!("ns_video_lx_up2"),
             s2d: sym!("ns_video_lx_s2d"),
+            s2d_f32: sym!("ns_video_lx_s2d_f32"),
+            rms_silu_f32: sym!("ns_video_lx_rms_silu_f32"),
+            add_bias: sym!("ns_video_lx_add_bias"),
+            group_norm: sym!("ns_video_lx_group_norm"),
             aa_snake: sym!("nsd_aa_snake"),
         })
     })
@@ -168,4 +176,30 @@ pub fn aa_snake(ctx: *mut c_void, x: *const f32, b: usize, c: usize, l: usize, l
 pub fn s2d(g: &Gpu, x: P, t: usize, h: usize, w: usize, c: usize, s: (usize, usize, usize), groups: usize, out: M) -> Result<()> {
     // SAFETY: x holds t h w c halves, out t h w c / groups.
     check(unsafe { (api()?.s2d)(g.raw(), x, t as i64, h as i64, w as i64, c as i64, s.0 as c_int, s.1 as c_int, s.2 as c_int, groups as c_int, out) }, "space to depth")
+}
+
+/// s2d over float32
+#[allow(clippy::too_many_arguments)]
+pub fn s2d_f32(g: &Gpu, x: *const f32, t: usize, h: usize, w: usize, c: usize, s: (usize, usize, usize), groups: usize, out: *mut f32) -> Result<()> {
+    // SAFETY: as s2d, float32.
+    check(unsafe { (api()?.s2d_f32)(g.raw(), x, t as i64, h as i64, w as i64, c as i64, s.0 as c_int, s.1 as c_int, s.2 as c_int, groups as c_int, out) }, "space to depth")
+}
+
+/// rms (silu) of float32 rows into half
+pub fn rms_silu_f32(g: &Gpu, x: *const f32, m: usize, c: usize, eps: f32, silu: bool, out: M) -> Result<()> {
+    // SAFETY: m x c values each way.
+    check(unsafe { (api()?.rms_silu_f32)(g.raw(), x, m as i64, c as i64, eps, c_int::from(silu), out) }, "rms (silu)")
+}
+
+/// x float32 [m, c] += b
+pub fn add_bias(g: &Gpu, x: *mut f32, m: usize, c: usize, b: *const f32) -> Result<()> {
+    // SAFETY: m x c floats, c biases.
+    check(unsafe { (api()?.add_bias)(g.raw(), x, m as i64, c as i64, b) }, "bias")
+}
+
+/// GroupNorm over a whole half volume [n, c] (affine), + res, silu
+#[allow(clippy::too_many_arguments)]
+pub fn group_norm(g: &Gpu, x: P, n: usize, c: usize, groups: usize, w: *const f32, b: *const f32, eps: f32, res: P, silu: bool, out: M) -> Result<()> {
+    // SAFETY: n x c halves each way, c floats each table.
+    check(unsafe { (api()?.group_norm)(g.raw(), x, n as i64, c as i64, groups as i64, w, b, eps, res, c_int::from(silu), out) }, "group norm")
 }
