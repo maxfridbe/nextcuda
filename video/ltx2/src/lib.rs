@@ -74,7 +74,9 @@ impl Ltx2 {
         let te_dir = role(files, "text-encoder")?.parent().ok_or("the text encoder's directory")?;
         let components = te_dir.parent().ok_or("the checkpoint's directory")?.to_path_buf();
         let threads = o.setting("LTX2_THREADS").and_then(|v| v.parse().ok()).unwrap_or(8);
-        let text_cache = cache::ensure(&components, threads, log)?;
+        // LTX2_TE_Q8=1: the text encoder in Q8_0 (a check's form; it does not fit beside the DiT)
+        let q8 = o.setting("LTX2_TE_Q8").is_some_and(|v| v == "1");
+        let text_cache = cache::ensure(&components, threads, q8, log)?;
         let tok_path = files.get("tokenizer").cloned().unwrap_or_else(|| components.join("tokenizer/tokenizer.json"));
         let tok = Tokenizer::from_hf_json(&tok_path).map_err(Error)?;
         Ok(Ltx2 { files: files.clone(), gpus: gpus.to_vec(), components, text_cache, tok, load_s: t0.elapsed().as_secs_f64(), lock: Mutex::new(()) })

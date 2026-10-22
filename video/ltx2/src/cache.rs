@@ -22,6 +22,7 @@ use crate::te::{FFN, HIDDEN, LAYERS, STATES};
 
 pub const VERSION: u64 = 1;
 pub const FILE: &str = "nextcuda-text.gguf";
+pub const FILE_Q8: &str = "nextcuda-text-q8.gguf";
 
 fn ge(e: nextcuda_gguf::Error) -> Error {
     Error(e.0)
@@ -100,8 +101,10 @@ fn f32_bytes(v: &[f32]) -> Vec<u8> {
 }
 
 /// The cache for the checkpoint under `components` (text_encoder/, connectors/), made if it is not there
-pub fn ensure(components: &Path, threads: usize, log: &mut dyn FnMut(String)) -> Result<PathBuf> {
-    let path = components.join(FILE);
+/// `q8`: Gemma's matrices in Q8_0 instead (`nextcuda-text-q8.gguf`, 10.7 GiB: the checks' exact form - it does not fit
+/// beside the DiT)
+pub fn ensure(components: &Path, threads: usize, q8: bool, log: &mut dyn FnMut(String)) -> Result<PathBuf> {
+    let path = components.join(if q8 { FILE_Q8 } else { FILE });
     if path.exists() {
         if let Ok(g) = Gguf::open(&path) {
             if g.meta("nextcuda.ltx2.text_version").and_then(Value::as_u64) == Some(VERSION) {
@@ -110,11 +113,11 @@ pub fn ensure(components: &Path, threads: usize, log: &mut dyn FnMut(String)) ->
         }
         log(format!("{}: another version, rebuilt", path.display()));
     }
-    build(components, &path, threads, log)?;
+    build(components, &path, threads, q8, log)?;
     Ok(path)
 }
 
-fn build(components: &Path, path: &Path, threads: usize, log: &mut dyn FnMut(String)) -> Result<()> {
+fn build(components: &Path, path: &Path, threads: usize, q8: bool, log: &mut dyn FnMut(String)) -> Result<()> {
     let t0 = std::time::Instant::now();
     log(format!("quantizing the text encoder and connectors into {} (once)", path.display()));
     let te = std::sync::Arc::new(Shards::open(&components.join("text_encoder"))?);
@@ -143,7 +146,7 @@ fn build(components: &Path, path: &Path, threads: usize, log: &mut dyn FnMut(Str
             Ok(f32_bytes(&v.iter().map(|x| x * scale).collect::<Vec<_>>()))
         }) });
     }
-    let q4 = GType::Q4K;
+    let q4 = if q8 { GType::Q8_0 } else { GType::Q4K };
     let p = "model.language_model.";
     {
         let s = te.clone();

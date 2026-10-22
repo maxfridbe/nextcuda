@@ -119,6 +119,12 @@ pub fn run(m: &Ltx2, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)) -
             }
         }
         note("te all states", &s.v, &want, log);
+        if stages.contains(&"full") {
+            // the text stage end to end: our states through our connectors
+            let (video, audio) = m.connectors(&s, log)?;
+            worst = worst.max(note("te+conn video", &video, &get("video_emb")?.1, log));
+            worst = worst.max(note("te+conn audio", &audio, &get("audio_emb")?.1, log));
+        }
     }
     if stages.contains(&"conn") {
         let (_, hs) = get("hs_all_f16")?;
