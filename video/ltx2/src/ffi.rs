@@ -18,6 +18,9 @@ pub struct Api {
     pub head_gate: unsafe extern "C" fn(G, M, i64, i64, i64, *const f32) -> c_int,
     pub mod_rows: unsafe extern "C" fn(G, *const f32, i64, i64, *const f32, *const f32, f32, M) -> c_int,
     pub ln_mod: unsafe extern "C" fn(G, *const f32, i64, i64, f32, *const i32, *const f32, *const f32, *mut f32) -> c_int,
+    pub rms_silu: unsafe extern "C" fn(G, P, i64, i64, f32, c_int, M) -> c_int,
+    pub d2s: unsafe extern "C" fn(G, P, i64, i64, i64, i64, c_int, c_int, c_int, c_int, M) -> c_int,
+    pub conv3d: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, i64, P, i64, i64, *const f32, M) -> c_int,
 }
 
 // SAFETY: function pointers into the library, which stays loaded for the process.
@@ -49,6 +52,9 @@ pub fn api() -> Result<&'static Api> {
             head_gate: sym!("ns_video_lx_head_gate"),
             mod_rows: sym!("ns_video_lx_mod_rows"),
             ln_mod: sym!("ns_video_lx_ln_mod"),
+            rms_silu: sym!("ns_video_lx_rms_silu"),
+            d2s: sym!("ns_video_lx_d2s"),
+            conv3d: sym!("nsd_conv3d"),
         })
     })
     .as_ref()
@@ -114,4 +120,24 @@ pub fn mod_rows(g: &Gpu, x: *const f32, m: usize, c: usize, scale: *const f32, s
 pub fn ln_mod(g: &Gpu, x: *const f32, m: usize, c: usize, eps: f32, rows: *const i32, scale: *const f32, shift: *const f32, out: *mut f32) -> Result<()> {
     // SAFETY: the caller's buffers hold the rows named.
     check(unsafe { (api()?.ln_mod)(g.raw(), x, m as i64, c as i64, eps, rows, scale, shift, out) }, "layer norm (modulated)")
+}
+
+/// out [m, c] half = silu?(x / rms(x)) per row (x half)
+pub fn rms_silu(g: &Gpu, x: P, m: usize, c: usize, eps: f32, silu: bool, out: M) -> Result<()> {
+    // SAFETY: m x c halves each way.
+    check(unsafe { (api()?.rms_silu)(g.raw(), x, m as i64, c as i64, eps, c_int::from(silu), out) }, "rms (silu)")
+}
+
+/// 3-D depth to space of a channels-last volume (see lx.h)
+#[allow(clippy::too_many_arguments)]
+pub fn d2s(g: &Gpu, x: P, t: usize, h: usize, w: usize, c: usize, s: (usize, usize, usize), drop: usize, out: M) -> Result<()> {
+    // SAFETY: x holds t h w (c s0 s1 s2) halves, out (t s0 - drop) (h s1) (w s2) c.
+    check(unsafe { (api()?.d2s)(g.raw(), x, t as i64, h as i64, w as i64, c as i64, s.0 as c_int, s.1 as c_int, s.2 as c_int, drop as c_int, out) }, "depth to space")
+}
+
+/// A k^3 convolution of a channels-last volume [t, h, w, ci] half, zero padding k / 2 (nsd_conv3d), on `nsd`'s context
+#[allow(clippy::too_many_arguments)]
+pub fn conv3d(ctx: *mut c_void, x: P, thw: (usize, usize, usize), ci: usize, w: P, co: usize, k: usize, bias: *const f32, out: M) -> Result<()> {
+    // SAFETY: the caller's buffers hold the sizes named.
+    check(unsafe { (api()?.conv3d)(ctx, x, 1, thw.0 as i64, thw.1 as i64, thw.2 as i64, ci as i64, w, co as i64, k as i64, bias, out) }, "conv3d")
 }

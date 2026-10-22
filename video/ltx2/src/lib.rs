@@ -11,9 +11,12 @@
 pub mod cache;
 pub mod check;
 pub mod conn;
+pub mod dit;
 pub mod ffi;
 pub mod quant;
+pub mod sample;
 pub mod te;
+pub mod vae;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -58,6 +61,8 @@ pub struct Ltx2 {
     tok: Tokenizer,
     load_s: f64,
     lock: Mutex<()>,
+    /// the resident denoiser (dev or distilled), loaded on first use
+    pub dit: Mutex<Option<(bool, dit::Dit)>>,
 }
 
 fn role<'a>(files: &'a ModelFiles, r: &str) -> Result<&'a PathBuf> {
@@ -79,7 +84,7 @@ impl Ltx2 {
         let text_cache = cache::ensure(&components, threads, q8, log)?;
         let tok_path = files.get("tokenizer").cloned().unwrap_or_else(|| components.join("tokenizer/tokenizer.json"));
         let tok = Tokenizer::from_hf_json(&tok_path).map_err(Error)?;
-        Ok(Ltx2 { files: files.clone(), gpus: gpus.to_vec(), components, text_cache, tok, load_s: t0.elapsed().as_secs_f64(), lock: Mutex::new(()) })
+        Ok(Ltx2 { files: files.clone(), gpus: gpus.to_vec(), components, text_cache, tok, load_s: t0.elapsed().as_secs_f64(), lock: Mutex::new(()), dit: Mutex::new(None) })
     }
 
     /// The prompt's tokens: Gemma's tokenizer, no BOS (the pipeline's call adds none), at most 1,024
@@ -102,6 +107,20 @@ impl Ltx2 {
         let a = conn::Connector::load(&f, "ca", self.gpus.last().unwrap())?.run(s)?;
         log(format!("connectors in {:.1} s", t0.elapsed().as_secs_f64()));
         Ok((v, a))
+    }
+
+    /// The denoiser resident on the cards (`fast`: the distilled one), loaded if it is not
+    pub fn with_dit<T>(&self, fast: bool, log: &mut dyn FnMut(String), f: impl FnOnce(&dit::Dit) -> Result<T>) -> Result<T> {
+        let mut g = self.dit.lock().unwrap();
+        if g.as_ref().is_some_and(|(k, _)| *k != fast) {
+            *g = None;
+        }
+        if g.is_none() {
+            let path = role(&self.files, if fast { "denoiser-fast" } else { "denoiser" })?;
+            let split: Option<Vec<usize>> = std::env::var("LTX2_SPLIT").ok().map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
+            *g = Some((fast, dit::Dit::load(path, &self.gpus, split.as_deref(), log)?));
+        }
+        f(&g.as_ref().unwrap().1)
     }
 
     fn job(&self, spec: &Value, ctl: &mut JobCtl) -> Result<Value> {

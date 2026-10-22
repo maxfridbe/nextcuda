@@ -161,6 +161,11 @@ impl Nsd {
         }
     }
 
+    /// The context itself, for a kernel of `nsd.h` this crate does not bind (an engine binds it by name)
+    pub fn raw(&self) -> M {
+        self.ctx
+    }
+
     pub fn wait(&self) -> Result<()> {
         // SAFETY: a live context.
         self.ok(unsafe { (self.k.wait)(self.ctx) }, "waiting for the GPU")

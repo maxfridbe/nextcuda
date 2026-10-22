@@ -109,6 +109,36 @@ __global__ void ln_mod_k(const float* x, int64_t C, float eps, const int32_t* ro
     }
 }
 
+__global__ void rms_silu_k(const __half* x, int64_t C, float eps, int silu, __half* o) {
+    const size_t r = blockIdx.x;
+    const __half* row = x + r * C;
+    float s = 0.0f;
+    for (int64_t i = threadIdx.x; i < C; i += WG) {
+        const float v = __half2float(row[i]);
+        s += v * v;
+    }
+    const float inv = 1.0f / sqrtf(block_sum(s) / (float) C + eps);
+    for (int64_t i = threadIdx.x; i < C; i += WG) {
+        float v = __half2float(row[i]) * inv;
+        if (silu) v = v / (1.0f + expf(-v));
+        o[r * C + i] = f2h(v);
+    }
+}
+
+__global__ void d2s_k(const __half* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int drop, int64_t n, __half* o) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    // i over the output [To, Ho, Wo, C]
+    const int64_t Ho = H * s1, Wo = W * s2;
+    int64_t c = i % C, r = i / C;
+    const int64_t wo = r % Wo; r /= Wo;
+    const int64_t ho = r % Ho;
+    const int64_t to = r / Ho + drop;
+    const int64_t t = to / s0, a = to % s0, h = ho / s1, b = ho % s1, w = wo / s2, k = wo % s2;
+    const int64_t ci = ((c * s0 + a) * s1 + b) * s2 + k;
+    o[i] = x[((t * H + h) * W + w) * (C * s0 * s1 * s2) + ci];
+}
+
 inline unsigned blocks(int64_t n) { return (unsigned) ((n + 255) / 256); }
 
 }  // namespace
@@ -169,6 +199,23 @@ int ns_video_lx_ln_mod(ns_gpu* g, const float* x, int64_t M, int64_t C, float ep
     if (M == 0) return 0;
     NS_CU(cudaSetDevice(g->dev));
     ln_mod_k<<<(unsigned) M, WG, 0, g->q>>>(x, C, eps, rows, scale, shift, out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_video_lx_rms_silu(ns_gpu* g, const void* x, int64_t M, int64_t C, float eps, int silu, void* out) {
+    if (M == 0) return 0;
+    NS_CU(cudaSetDevice(g->dev));
+    rms_silu_k<<<(unsigned) M, WG, 0, g->q>>>((const __half*) x, C, eps, silu, (__half*) out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_video_lx_d2s(ns_gpu* g, const void* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int drop, void* out) {
+    const int64_t n = (T * s0 - drop) * H * s1 * W * s2 * C;
+    if (n <= 0) return 0;
+    NS_CU(cudaSetDevice(g->dev));
+    d2s_k<<<blocks(n), 256, 0, g->q>>>((const __half*) x, T, H, W, C, s0, s1, s2, drop, n, (__half*) out);
     NS_LAUNCH_CHECK();
     return 0;
 }

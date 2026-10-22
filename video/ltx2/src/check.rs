@@ -23,9 +23,6 @@ pub fn read_npy(path: &Path) -> Result<(Vec<usize>, Vec<f32>)> {
     }
     let (hl, at) = if b[6] == 1 { (u16::from_le_bytes([b[8], b[9]]) as usize, 10) } else { (u32::from_le_bytes([b[8], b[9], b[10], b[11]]) as usize, 12) };
     let head = String::from_utf8_lossy(&b[at..at + hl]).to_string();
-    if head.contains("'fortran_order': True") {
-        return Err(Error(format!("{}: Fortran order", path.display())));
-    }
     let shape: Vec<usize> = head.split("'shape': (").nth(1).and_then(|s| s.split(')').next())
         .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
     let d = &b[at + hl..];
@@ -38,6 +35,25 @@ pub fn read_npy(path: &Path) -> Result<(Vec<usize>, Vec<f32>)> {
     } else {
         return Err(Error(format!("{}: {head}", path.display())));
     };
+    if head.contains("'fortran_order': True") && shape.len() > 1 {
+        // column-major: the first index fastest - into row-major
+        let n = shape.len();
+        let mut out = vec![0f32; v.len()];
+        let mut idx = vec![0usize; n];
+        for (i, val) in v.iter().enumerate() {
+            let mut r = i;
+            for d in 0..n {
+                idx[d] = r % shape[d];
+                r /= shape[d];
+            }
+            let mut c = 0;
+            for d in 0..n {
+                c = c * shape[d] + idx[d];
+            }
+            out[c] = *val;
+        }
+        return Ok((shape, out));
+    }
     Ok((shape, v))
 }
 
@@ -93,7 +109,7 @@ pub fn run(m: &Ltx2, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)) -
             worst = worst.max(note(&format!("quant {name} vs float"), &g, &x, log).min(0.0));
         }
     }
-    let ids: Vec<u32> = get("ids")?.1.iter().map(|x| *x as u32).collect();
+    let ids: Vec<u32> = if dir.join("ids.npy").exists() { get("ids")?.1.iter().map(|x| *x as u32).collect() } else { Vec::new() };
     let t = ids.len();
     if stages.contains(&"tokens") {
         let prompt = std::fs::read_to_string(dir.join("prompt.txt")).map_err(|e| Error(format!("prompt.txt: {e}")))?;
@@ -135,5 +151,59 @@ pub fn run(m: &Ltx2, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)) -
         worst = worst.max(note("conn video (negative)", &nv, &get("neg_video_emb")?.1, log));
         worst = worst.max(note("conn audio (negative)", &na, &get("neg_audio_emb")?.1, log));
     }
+    if stages.contains(&"dit") {
+        // step 0 of the reference's schedule (sigma 1): each pass's velocities and the cond pass's blocks
+        let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("meta.json")).map_err(|e| Error(format!("meta.json: {e}")))?)
+            .map_err(|e| Error(format!("meta.json: {e}")))?;
+        let lt: Vec<usize> = meta["latent"].as_array().ok_or("meta.json: latent")?.iter().filter_map(|v| v.as_u64().map(|x| x as usize)).collect();
+        let la = meta["audio_frames"].as_u64().ok_or("meta.json: audio_frames")? as usize;
+        let sig0 = meta["sigmas"][0].as_f64().unwrap_or(1.0) as f32;
+        let text_dir = std::path::PathBuf::from(spec_text_dir(dir));
+        let tget = |n: &str| read_npy(&text_dir.join(format!("{n}.npy"))).map(|x| x.1);
+        let (lat, aud) = (get("lat_0")?.1, get("aud_0")?.1);
+        m.with_dit(false, &mut |l: String| eprintln!("{l}"), |d| {
+            let cond = d.text(&tget("video_emb")?, &tget("audio_emb")?)?;
+            let neg = d.text(&tget("neg_video_emb")?, &tget("neg_audio_emb")?)?;
+            let prep = d.prepare(crate::dit::Shape { f: lt[0], h: lt[1], w: lt[2], la, fps: 24.0 }, false)?;
+            d.set_step(&prep, sig0 * 1000.0)?;
+            for (name, text, stg, iso) in [("cond", &cond, false, false), ("uncond", &neg, false, false), ("stg", &cond, true, false), ("mod", &cond, false, true)] {
+                let t0 = std::time::Instant::now();
+                let caps: &[usize] = if name == "cond" { &[0, 1, 27, 28, 47] } else { &[] };
+                let (v, a, c) = d.forward(&prep, &lat, &aud, &crate::dit::Pass { text, stg, isolate: iso }, caps)?;
+                log(format!("dit {name} pass in {:.2} s", t0.elapsed().as_secs_f64()));
+                for (bi, cv, ca) in &c {
+                    note(&format!("dit blk{bi} video"), cv, &get(&format!("s0_blk{bi}_v"))?.1, log);
+                    note(&format!("dit blk{bi} audio"), ca, &get(&format!("s0_blk{bi}_a"))?.1, log);
+                }
+                worst = worst.max(note(&format!("dit {name} video"), &v, &get(&format!("s0_{name}_v"))?.1, log));
+                worst = worst.max(note(&format!("dit {name} audio"), &a, &get(&format!("s0_{name}_a"))?.1, log));
+            }
+            if stages.contains(&"steps") {
+                // the whole short schedule from the reference's noise, its latents after each step
+                let sig: Vec<f32> = meta["sigmas"].as_array().ok_or("meta.json: sigmas")?.iter().filter_map(|v| v.as_f64().map(|x| x as f32)).collect();
+                let (mut l, mut a) = (lat.clone(), aud.clone());
+                let mut got: Vec<(usize, Vec<f32>, Vec<f32>)> = Vec::new();
+                let mut each = |k: usize, l: &[f32], a: &[f32]| got.push((k, l.to_vec(), a.to_vec()));
+                let t0 = std::time::Instant::now();
+                crate::sample::denoise(d, &prep, &cond, &neg, &mut l, &mut a, &sig, 0,
+                                       &mut crate::sample::Hooks { progress: &mut |_, _| {}, cancel: &|| false, each: Some(&mut each) })?;
+                log(format!("steps: {} in {:.1} s", sig.len() - 1, t0.elapsed().as_secs_f64()));
+                for (k, gl, ga) in &got {
+                    worst = worst.max(note(&format!("step {k} video latents"), gl, &get(&format!("lat_{k}"))?.1, log));
+                    worst = worst.max(note(&format!("step {k} audio latents"), ga, &get(&format!("aud_{k}"))?.1, log));
+                }
+                std::fs::write(dir.join("ours_lat.f32"), crate::te::as_bytes(&l)).ok();
+                std::fs::write(dir.join("ours_aud.f32"), crate::te::as_bytes(&a)).ok();
+            }
+            Ok(())
+        })?;
+    }
     Ok(worst)
+}
+
+/// The text reference a DiT reference was made from: `text` in its meta.json, else ../t1
+fn spec_text_dir(dir: &Path) -> String {
+    std::fs::read(dir.join("meta.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["text"].as_str().map(str::to_string))
+        .unwrap_or_else(|| dir.parent().map(|p| p.join("t1").display().to_string()).unwrap_or_default())
 }

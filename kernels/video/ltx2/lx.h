@@ -28,6 +28,13 @@ int ns_video_lx_mod_rows(ns_gpu* g, const float* x, int64_t M, int64_t C, const 
 int ns_video_lx_ln_mod(ns_gpu* g, const float* x, int64_t M, int64_t C, float eps, const int32_t* rows, const float* scale,
                        const float* shift, float* out);
 
+/* The video VAE's: out [M, C] half = silu?(x / sqrt(mean(x^2) + eps)) per row (PerChannelRMSNorm, then SiLU when silu) -
+ * x half [M, C]; one block a row */
+int ns_video_lx_rms_silu(ns_gpu* g, const void* x, int64_t M, int64_t C, float eps, int silu, void* out);
+/* depth to space, channels-last: x half [T, H, W, C * s0 * s1 * s2] (channel c * s0 s1 s2 + i s1 s2 + j s2 + k) ->
+ * out [T s0 - drop, H s1, W s2, C] (out[t s0 + i - drop, h s1 + j, w s2 + k, c]; the first `drop` frames dropped) */
+int ns_video_lx_d2s(ns_gpu* g, const void* x, int64_t T, int64_t H, int64_t W, int64_t C, int s0, int s1, int s2, int drop, void* out);
+
 #ifdef __cplusplus
 }
 #endif
