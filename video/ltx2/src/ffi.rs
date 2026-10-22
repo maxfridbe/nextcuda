@@ -21,6 +21,8 @@ pub struct Api {
     pub rms_silu: unsafe extern "C" fn(G, P, i64, i64, f32, c_int, M) -> c_int,
     pub d2s: unsafe extern "C" fn(G, P, i64, i64, i64, i64, c_int, c_int, c_int, c_int, M) -> c_int,
     pub conv3d: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, i64, P, i64, i64, *const f32, M) -> c_int,
+    pub up2: unsafe extern "C" fn(G, P, i64, i64, i64, M) -> c_int,
+    pub aa_snake: unsafe extern "C" fn(M, *const f32, i64, i64, i64, *const f32, *const f32, *const f32, *const f32, *mut f32) -> c_int,
 }
 
 // SAFETY: function pointers into the library, which stays loaded for the process.
@@ -55,6 +57,8 @@ pub fn api() -> Result<&'static Api> {
             rms_silu: sym!("ns_video_lx_rms_silu"),
             d2s: sym!("ns_video_lx_d2s"),
             conv3d: sym!("nsd_conv3d"),
+            up2: sym!("ns_video_lx_up2"),
+            aa_snake: sym!("nsd_aa_snake"),
         })
     })
     .as_ref()
@@ -140,4 +144,19 @@ pub fn d2s(g: &Gpu, x: P, t: usize, h: usize, w: usize, c: usize, s: (usize, usi
 pub fn conv3d(ctx: *mut c_void, x: P, thw: (usize, usize, usize), ci: usize, w: P, co: usize, k: usize, bias: *const f32, out: M) -> Result<()> {
     // SAFETY: the caller's buffers hold the sizes named.
     check(unsafe { (api()?.conv3d)(ctx, x, 1, thw.0 as i64, thw.1 as i64, thw.2 as i64, ci as i64, w, co as i64, k as i64, bias, out) }, "conv3d")
+}
+
+/// nearest x2 of a channels-last half plane [h, w, c]
+pub fn up2(g: &Gpu, x: P, h: usize, w: usize, c: usize, out: M) -> Result<()> {
+    // SAFETY: h w c halves in, 4 h w c out.
+    check(unsafe { (api()?.up2)(g.raw(), x, h as i64, w as i64, c as i64, out) }, "nearest x2")
+}
+
+/// BigVGAN's anti-aliased SnakeBeta over float32 [b, c, l] (log alpha / beta [c], the 12-tap filters), on `nsd`'s
+/// context
+#[allow(clippy::too_many_arguments)]
+pub fn aa_snake(ctx: *mut c_void, x: *const f32, b: usize, c: usize, l: usize, la: *const f32, lb: *const f32, up: *const f32, down: *const f32, out: *mut f32)
+                -> Result<()> {
+    // SAFETY: the caller's buffers hold the sizes named.
+    check(unsafe { (api()?.aa_snake)(ctx, x, b as i64, c as i64, l as i64, la, lb, up, down, out) }, "anti-aliased snake")
 }

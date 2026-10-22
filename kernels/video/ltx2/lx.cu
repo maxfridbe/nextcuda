@@ -139,6 +139,13 @@ __global__ void d2s_k(const __half* x, int64_t T, int64_t H, int64_t W, int64_t 
     o[i] = x[((t * H + h) * W + w) * (C * s0 * s1 * s2) + ci];
 }
 
+__global__ void up2_k(const __half* x, int64_t H, int64_t W, int64_t C, int64_t n, __half* o) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const int64_t c = i % C, r = i / C, w = r % (2 * W), h = r / (2 * W);
+    o[i] = x[((h / 2) * W + w / 2) * C + c];
+}
+
 inline unsigned blocks(int64_t n) { return (unsigned) ((n + 255) / 256); }
 
 }  // namespace
@@ -216,6 +223,15 @@ int ns_video_lx_d2s(ns_gpu* g, const void* x, int64_t T, int64_t H, int64_t W, i
     if (n <= 0) return 0;
     NS_CU(cudaSetDevice(g->dev));
     d2s_k<<<blocks(n), 256, 0, g->q>>>((const __half*) x, T, H, W, C, s0, s1, s2, drop, n, (__half*) out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_video_lx_up2(ns_gpu* g, const void* x, int64_t H, int64_t W, int64_t C, void* out) {
+    const int64_t n = 4 * H * W * C;
+    if (n == 0) return 0;
+    NS_CU(cudaSetDevice(g->dev));
+    up2_k<<<blocks(n), 256, 0, g->q>>>((const __half*) x, H, W, C, n, (__half*) out);
     NS_LAUNCH_CHECK();
     return 0;
 }

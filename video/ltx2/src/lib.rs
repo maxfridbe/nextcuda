@@ -8,6 +8,7 @@
 //! The contract (`nextcuda_video::VideoEngine`): `generate` for a clip from a request, and jobs (`run_job`):
 //! `generate`, and `check` (the stages against reference/ltx2's dumps).
 
+pub mod audio;
 pub mod cache;
 pub mod check;
 pub mod conn;
@@ -85,6 +86,11 @@ impl Ltx2 {
         let tok_path = files.get("tokenizer").cloned().unwrap_or_else(|| components.join("tokenizer/tokenizer.json"));
         let tok = Tokenizer::from_hf_json(&tok_path).map_err(Error)?;
         Ok(Ltx2 { files: files.clone(), gpus: gpus.to_vec(), components, text_cache, tok, load_s: t0.elapsed().as_secs_f64(), lock: Mutex::new(()), dit: Mutex::new(None) })
+    }
+
+    /// A role's file
+    pub fn file(&self, r: &str) -> Result<&PathBuf> {
+        role(&self.files, r)
     }
 
     /// The prompt's tokens: Gemma's tokenizer, no BOS (the pipeline's call adds none), at most 1,024

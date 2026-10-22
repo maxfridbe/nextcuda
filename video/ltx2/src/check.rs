@@ -198,6 +198,41 @@ pub fn run(m: &Ltx2, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)) -
             Ok(())
         })?;
     }
+    if stages.contains(&"vae") {
+        // the reference's final latents through our decoder, against its frames
+        let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("meta.json")).map_err(|e| Error(format!("meta.json: {e}")))?)
+            .map_err(|e| Error(format!("meta.json: {e}")))?;
+        let lt: Vec<usize> = meta["latent"].as_array().ok_or("meta.json: latent")?.iter().filter_map(|v| v.as_u64().map(|x| x as usize)).collect();
+        let k = meta["sigmas"].as_array().map_or(1, |a| a.len() - 1);
+        let lat = get(&format!("lat_{k}"))?.1;
+        // packed [T, 128] (tokens f, h, w) is already channels-last [F, H, W, 128]
+        let t0 = std::time::Instant::now();
+        let dec = crate::vae::Decoder::load(m.file("vae")?, &m.gpus[0])?;
+        log(format!("vae loaded in {:.1} s", t0.elapsed().as_secs_f64()));
+        let t0 = std::time::Instant::now();
+        let px = dec.decode(&lat, lt[0], lt[1], lt[2], &mut |_, _| {})?;
+        log(format!("vae decode in {:.2} s", t0.elapsed().as_secs_f64()));
+        worst = worst.max(note("vae frames", &px, &get("video")?.1, log));
+    }
+    if stages.contains(&"audio") {
+        // the reference's final audio latents through our audio VAE (its mel), its mel through our vocoder (its wave)
+        let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("meta.json")).map_err(|e| Error(format!("meta.json: {e}")))?)
+            .map_err(|e| Error(format!("meta.json: {e}")))?;
+        let la = meta["audio_frames"].as_u64().ok_or("meta.json: audio_frames")? as usize;
+        let k = meta["sigmas"].as_array().map_or(1, |a| a.len() - 1);
+        let dec = crate::audio::AudioDecoder::load(m.file("audio-vae")?, &m.gpus[0])?;
+        let t0 = std::time::Instant::now();
+        let mel = dec.decode(&get(&format!("aud_{k}"))?.1, la)?;
+        log(format!("audio vae decode in {:.2} s", t0.elapsed().as_secs_f64()));
+        let (ms, want_mel) = get("mel")?;
+        worst = worst.max(note("audio mel", &mel, &want_mel, log));
+        let voc = crate::audio::Audio::load(m.file("vocoder")?, &m.gpus[0])?;
+        let t0 = std::time::Instant::now();
+        let wave = voc.vocode(&want_mel, ms[1])?;
+        log(format!("vocoder in {:.2} s", t0.elapsed().as_secs_f64()));
+        let flat: Vec<f32> = wave.concat();
+        worst = worst.max(note("audio wave (48 kHz)", &flat, &get("wave")?.1, log));
+    }
     Ok(worst)
 }
 
