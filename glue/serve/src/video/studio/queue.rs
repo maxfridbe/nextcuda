@@ -530,6 +530,13 @@ mod tests {
     }
 
     #[test]
+    fn ltx_models_have_their_own_names() {
+        assert_eq!(quant_of("ltx-2.5"), "LTX-2.5");
+        assert_eq!(quant_of("ltx-2.5-fast"), "LTX-2.5-FAST");
+        assert_eq!(quant_of("minimax-h3-q4km"), "Q4_K_M");
+    }
+
+    #[test]
     fn frames_and_chains() {
         assert_eq!(check_frames(107).unwrap(), 107);
         let e = check_frames(97).unwrap_err().message;

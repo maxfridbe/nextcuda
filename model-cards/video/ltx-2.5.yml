@@ -4,7 +4,7 @@ id: ltx-2.5
 kind: video
 arch: ltx2
 title: 'LTX-2.5 (the dev DiT Q4_K_M: 30 guided steps; text and a first frame to video with its own sound)'
-about: Lightricks' 22B audio-video DiT (dev, Q4_K_M GGUF), the Gemma-4 12B text encoder and connectors (quantized once on the box: Q4_K / Q8_0), the video and audio VAEs, the BWE vocoder (48 kHz), the latent upsampler (x2 shot upscaler)
+about: 'Lightricks'' 22B audio-video DiT (dev, Q4_K_M GGUF), the Gemma-4 12B text encoder and connectors (quantized once on the box: Q4_K / Q8_0), the video and audio VAEs, the BWE vocoder (48 kHz), the latent upsampler (x2 shot upscaler)'
 gpus: '0,1'
 split: true                      # nextcuda: the DiT's 48 blocks split over the two 12 GB cards, resident; the text stage loaded for a clip and released - nothing streamed
 defaults:

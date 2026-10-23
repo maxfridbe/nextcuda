@@ -4,7 +4,7 @@ id: ltx-2.5-fast
 kind: video
 arch: ltx2
 title: 'LTX-2.5 fast (the distilled DiT Q4_K_M: 8 steps, a preview)'
-about: the distilled DiT on its own eight sigmas (the movie maker's fast mode); the rest as ltx-2.5
+about: 'the distilled DiT on its own eight sigmas (the movie maker''s fast mode); the rest as ltx-2.5'
 gpus: '0,1'
 split: true
 defaults:
