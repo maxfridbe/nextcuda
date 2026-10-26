@@ -27,7 +27,17 @@ is the method (how to check, clock and tune an engine) and `docs/benchy/README.m
    load and calls for what it covers, the shared kernel for everything else (`NS_SILO=0` turns it off). Start a silo
    kernel as a copy of the shared one, then change the copy.
 
-Rules 1 and 3 are checked by `cargo test` (`cli/nextcuda/tests/architecture.rs`).
+6. **A front-door method is its handler.** `glue/serve/src/home/methods.rs`: `#[rpc(name = "image.generate", tags
+   = "image", example = r#"{...}"#)]` on a fn with a doc comment (its summary), and a request struct with
+   `#[derive(Rpc)]` (each field's doc comment its description, `#[schema(min, max, default, one_of ...)]` its
+   limits). The table, the OpenAPI document's operations, system.version's list and the wfe client
+   (`nextcuda gen-api` -> `wfe/home/src/gen/nextcuda.ts`) are made from that; never describe a method a second
+   time. The generator, rpcgen, is vibe-creative-platform's, vendored in `vendor/rpcgen`: change it there, then
+   `tooling/sync_rpcgen.sh` (a test fails on a copy edited here, and on a stale client). What happened is in the
+   answer's envelope (`error.code`, `retryable`), never only in the HTTP status.
+
+Rules 1 and 3 are checked by `cargo test` (`cli/nextcuda/tests/architecture.rs`); rule 6 by the compiler, `tsc` and
+`cargo test` (`home::api_files_tests`).
 
 ## Building
 
