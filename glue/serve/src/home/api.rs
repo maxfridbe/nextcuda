@@ -118,8 +118,10 @@ fn field_of(method: &str, m: &str) -> Option<String> {
     let (kind, name) = method.split_once('.')?;
     let me = table::methods().iter().find(|x| x.kind == kind && x.name == name)?;
     let first: String = m.trim_start_matches('"').chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
-    let mentioned = |f: &str| first == f || m.contains(&format!("needs \"{f}\""));
-    me.fields.iter().map(|f| f.name.as_str()).chain(["strength", "image", "reference", "continue_from"]).find(|f| mentioned(f)).map(str::to_string)
+    let names = || me.fields.iter().map(|f| f.name.as_str()).chain(["strength", "image", "reference", "continue_from"]);
+    // a field the message says is needed wins over its first word ("image.generate needs \"prompt\"" starts with
+    // image, a field too): the fields' order is no longer what decided it
+    names().find(|f| m.contains(&format!("needs \"{f}\""))).or_else(|| names().find(|f| first == *f)).map(str::to_string)
 }
 
 type Fail = (u16, String);
