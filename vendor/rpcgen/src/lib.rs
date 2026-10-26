@@ -655,6 +655,13 @@ impl Object {
         } else {
             serde_json::from_str(extra).unwrap_or_else(|e| panic!("#[schema] on {name}: not JSON ({e}): {extra}"))
         };
+        // a field's type is its Rust type and a fixed set of values is an enum: said in json they would be in the
+        // client alone (the document's type is the shape's), so they are refused here
+        for k in ["type", "enum"] {
+            if extra.get(k).is_some() {
+                panic!("#[schema(json)] on {name}: `{k}` is the field's Rust type (a set of values is a #[derive(Rpc)] enum)");
+            }
+        }
         self.fields.push(Field {
             name: name.into(),
             doc: doc.into(),
