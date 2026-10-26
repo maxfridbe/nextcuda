@@ -238,6 +238,74 @@ mod web {
         }
     }
 
+    /// An answer the handler made as JSON itself (a maker's handler answering a Response), described as `T`: the
+    /// document and the client show T, and `Shaped::check` holds each answer to it (`conforms`), so the description
+    /// cannot drift from what is sent. A debug build (the tests, `tooling/integration.sh`) answers a mismatch as an
+    /// error, `answer_shape`, naming where; a release build sends the answer and says on stderr where it differs
+    /// (the place only: a value could be a secret). Errors, other statuses and non-JSON bodies pass unchecked.
+    pub struct Shaped<T>(pub Response, std::marker::PhantomData<fn() -> T>);
+
+    impl<T: RpcType> RpcType for Shaped<T> {
+        fn shape(defs: &mut Defs) -> Shape {
+            T::shape(defs)
+        }
+    }
+
+    impl<T: RpcType> RpcResponse for Shaped<T> {
+        fn into_reply(self) -> Response {
+            self.0
+        }
+    }
+
+    impl<T: DeserializeOwned + Serialize> Shaped<T> {
+        /// The answer, checked against T.
+        pub async fn check(r: Response) -> Self {
+            let json = r
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("application/json"));
+            if r.status() != StatusCode::OK || !json {
+                return Shaped(r, std::marker::PhantomData);
+            }
+            let (parts, body) = r.into_parts();
+            let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let body = error_body(&format!("the answer could not be read: {e}"), "answer_shape", true);
+                    return Shaped((StatusCode::INTERNAL_SERVER_ERROR, axum::Json(body)).into_response(), std::marker::PhantomData);
+                }
+            };
+            let problem = match serde_json::from_slice::<Value>(&bytes) {
+                Ok(v) => conforms::<T>(&v).err(),
+                Err(_) => Some(Mismatch { at: String::new(), what: "the answer is not JSON".into() }),
+            };
+            if let Some(r) = problem.and_then(Self::mismatch) {
+                return r;
+            }
+            Shaped(Response::from_parts(parts, axum::body::Body::from(bytes)), std::marker::PhantomData)
+        }
+
+        /// An answer the handler made as a JSON value, checked against T and sent as JSON.
+        pub fn value(v: Value) -> Self {
+            if let Some(r) = conforms::<T>(&v).err().and_then(Self::mismatch) {
+                return r;
+            }
+            Shaped(axum::Json(v).into_response(), std::marker::PhantomData)
+        }
+
+        /// A debug build's error for a mismatch; a release build's line on stderr (None: send the answer).
+        fn mismatch(m: Mismatch) -> Option<Self> {
+            let ty = std::any::type_name::<T>().rsplit("::").next().unwrap_or("");
+            if cfg!(debug_assertions) {
+                let body = error_body(&format!("the answer is not a {ty}: {m}"), "answer_shape", false);
+                return Some(Shaped((StatusCode::INTERNAL_SERVER_ERROR, axum::Json(body)).into_response(), std::marker::PhantomData));
+            }
+            eprintln!("rpcgen: an answer is not the {ty} its method declares, at `{}`", if m.at.is_empty() { "." } else { &m.at });
+            None
+        }
+    }
+
     /// What a handler answers: a `Result` of an Rpc response and an error that is an HTTP response. `#[rpc]` names
     /// the answer's type through this, so the handler may spell its Result with an alias.
     pub trait RpcResult {
@@ -532,6 +600,8 @@ pub struct Field {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Object {
     pub fields: Vec<Field>,
+    /// a flattened map (`#[serde(flatten)] rest: Map<..>`): the object has other keys too, of this shape
+    pub rest: Option<Shape>,
 }
 
 impl Object {
@@ -560,6 +630,9 @@ impl Object {
     /// a `#[serde(flatten)]` field: its fields are this object's
     pub fn flatten(&mut self, other: Object) {
         self.fields.extend(other.fields);
+        if other.rest.is_some() {
+            self.rest = other.rest;
+        }
     }
 }
 
@@ -644,6 +717,9 @@ impl RpcType for Map<String, Value> {
     fn shape(_: &mut Defs) -> Shape {
         Shape::Map(Box::new(Shape::Json))
     }
+    fn object(_: &mut Defs) -> Object {
+        Object { fields: Vec::new(), rest: Some(Shape::Json) }
+    }
 }
 
 impl<T: RpcType> RpcType for Option<T> {
@@ -674,11 +750,17 @@ impl<K, T: RpcType> RpcType for BTreeMap<K, T> {
     fn shape(defs: &mut Defs) -> Shape {
         Shape::Map(Box::new(T::shape(defs)))
     }
+    fn object(defs: &mut Defs) -> Object {
+        Object { fields: Vec::new(), rest: Some(T::shape(defs)) }
+    }
 }
 
 impl<K, T: RpcType, H> RpcType for std::collections::HashMap<K, T, H> {
     fn shape(defs: &mut Defs) -> Shape {
         Shape::Map(Box::new(T::shape(defs)))
+    }
+    fn object(defs: &mut Defs) -> Object {
+        Object { fields: Vec::new(), rest: Some(T::shape(defs)) }
     }
 }
 
@@ -741,9 +823,67 @@ impl RpcType for NoParams {
     }
 }
 
+/// Where an answer differs from its type, and how.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mismatch {
+    /// the place, as `jobs[3].stage` (empty: the whole answer)
+    pub at: String,
+    pub what: String,
+}
+
+impl std::fmt::Display for Mismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.at.is_empty() {
+            write!(f, "{}", self.what)
+        } else {
+            write!(f, "{}: {}", self.at, self.what)
+        }
+    }
+}
+
+/// Whether a JSON value is a `T`: it decodes as one, and nothing in it is lost when that T is encoded again (a
+/// field the type does not name; a null is not lost, it is what an absent Option says).
+pub fn conforms<T: DeserializeOwned + Serialize>(v: &Value) -> Result<(), Mismatch> {
+    let t: T = serde_path_to_error::deserialize(v).map_err(|e| {
+        let at = e.path().to_string();
+        Mismatch { at: if at == "." { String::new() } else { at }, what: e.into_inner().to_string() }
+    })?;
+    let back = serde_json::to_value(&t).map_err(|e| Mismatch { at: String::new(), what: format!("it does not encode again: {e}") })?;
+    let mut lost = Vec::new();
+    lost_fields(v, &back, String::new(), &mut lost);
+    match lost.first() {
+        None => Ok(()),
+        Some(first) => Err(Mismatch {
+            at: first.clone(),
+            what: format!("not a field of the type{}", if lost.len() > 1 { format!(" (nor {})", lost[1..].iter().take(9).cloned().collect::<Vec<_>>().join(", ")) } else { String::new() }),
+        }),
+    }
+}
+
+fn lost_fields(a: &Value, b: &Value, at: String, out: &mut Vec<String>) {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            for (k, va) in x {
+                let here = if at.is_empty() { k.clone() } else { format!("{at}.{k}") };
+                match y.get(k) {
+                    None if !va.is_null() => out.push(here),
+                    None => {}
+                    Some(vb) => lost_fields(va, vb, here, out),
+                }
+            }
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            for (i, (va, vb)) in x.iter().zip(y).enumerate() {
+                lost_fields(va, vb, format!("{at}[{i}]"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// An answer not typed yet: what the method answered before it had a type. The client sees `any`, and the
 /// count of these (`untyped_responses`) is held by a test that only lets it fall.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct Untyped(pub Value);
 
@@ -753,8 +893,19 @@ impl RpcType for Untyped {
     }
 }
 
+/// An answer that is a file: its bytes with their Content-Type, as `Raw` sends them. For `Shaped<Blob>`, a handler
+/// that makes the download itself (the document shows octet-stream, the client gets a Blob).
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct Blob;
+
+impl RpcType for Blob {
+    fn shape(_: &mut Defs) -> Shape {
+        Shape::Blob
+    }
+}
+
 /// `{"ok": true}`: an action with nothing else to say.
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, Default)]
 pub struct Done {
     pub ok: bool,
 }
@@ -977,6 +1128,9 @@ fn named_schema(n: &Named) -> Value {
             let mut v = json!({"type": "object", "properties": props});
             if !required.is_empty() {
                 v["required"] = Value::Array(required);
+            }
+            if let Some(rest) = &object.rest {
+                v["additionalProperties"] = if *rest == Shape::Json { json!(true) } else { schema(rest) };
             }
             if !doc.is_empty() {
                 v["description"] = json!(doc);
@@ -1208,6 +1362,10 @@ pub fn typescript(title: &str, methods: &[MethodInfo]) -> Result<String, String>
                     ts_jsdoc(&mut out, "  ", &f.doc, &field_tags(f));
                     out.push_str(&format!("  {}{}: {};\n", ts_key(&f.name), if f.optional { "?" } else { "" }, field_ts(f)));
                 }
+                if object.rest.is_some() {
+                    // its other keys (a flattened map): `unknown`, as an index signature must admit every field's type
+                    out.push_str("  /** other keys */\n  [key: string]: unknown;\n");
+                }
                 out.push_str("}\n\n");
             }
             Named::Union { doc, values } => {
@@ -1277,6 +1435,9 @@ fn facts_of_openapi(doc: &str) -> Result<Facts, String> {
         }
         if let Some(e) = t["enum"].as_array() {
             f.insert(format!("{tname}: values: {}", e.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join(" | ")));
+        }
+        if t.get("properties").is_some() && t.get("additionalProperties").is_some() {
+            f.insert(format!("{tname}: other keys"));
         }
         let req: Vec<&str> = t["required"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
         for (fname, p) in t["properties"].as_object().into_iter().flatten() {
@@ -1352,7 +1513,9 @@ fn facts_of_typescript(ts: &str) -> Facts {
             i += 1;
             while i < lines.len() && lines[i] != "}" {
                 let p = lines[i].trim();
-                if !p.starts_with("/**") && !p.starts_with('*') && p.contains(':') {
+                if p.starts_with("[key: string]") {
+                    f.insert(format!("{tname}: other keys"));
+                } else if !p.starts_with("/**") && !p.starts_with('*') && p.contains(':') {
                     let key = p.split(':').next().unwrap_or("");
                     let (fname, opt) = match key.strip_suffix('?') {
                         Some(k) => (k.trim_matches('"').to_string(), true),
@@ -1434,6 +1597,33 @@ pub fn parity(methods: &[MethodInfo]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(serde::Deserialize, Serialize)]
+    struct Card {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        stages: Vec<Stage>,
+    }
+
+    #[derive(serde::Deserialize, Serialize)]
+    struct Stage {
+        name: String,
+    }
+
+    /// An answer conforms to its type when it decodes and nothing in it falls outside the type; a mismatch names
+    /// its place.
+    #[test]
+    fn conforms_names_where_an_answer_differs() {
+        assert_eq!(conforms::<Card>(&json!({"id": "a", "note": null, "stages": [{"name": "lyrics"}]})), Ok(()));
+        let e = conforms::<Card>(&json!({"id": "a", "stages": [{"name": "lyrics"}, {"name": 3}]})).unwrap_err();
+        assert_eq!(e.at, "stages[1].name");
+        let e = conforms::<Card>(&json!({"stages": []})).unwrap_err();
+        assert!(e.what.contains("missing field `id`"), "{e}");
+        let e = conforms::<Card>(&json!({"id": "a", "stages": [{"name": "x", "secs": 2}], "extra": 1})).unwrap_err();
+        assert_eq!(e.at, "extra");
+        assert!(e.what.contains("nor stages[0].secs"), "{e}");
+    }
 
     /// The checker sees a fact one document drops: a limit, a field's words, an example, a tag.
     #[test]

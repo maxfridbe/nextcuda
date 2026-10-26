@@ -8,12 +8,16 @@ export interface AudioCancelReq {
   label?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.describePromptGuideMD takes. */
 export interface AudioDescribePromptGuideMdReq {
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.generate takes. */
@@ -98,16 +102,22 @@ export interface AudioGenerateReq {
    * @default true
    */
   wait?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.history takes. */
 export interface AudioHistoryReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.info takes. */
 export interface AudioInfoReq {
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.jobs takes. */
@@ -121,14 +131,20 @@ export interface AudioJobsReq {
   limit?: number | null;
   /** only this project's */
   project?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.progress takes. */
 export interface AudioProgressReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.queue.list takes. */
 export interface AudioQueueListReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.queue.move takes. */
@@ -149,6 +165,8 @@ export interface AudioQueueMoveReq {
   priority?: number | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.queue.pause takes. */
@@ -159,6 +177,8 @@ export interface AudioQueuePauseReq {
   project?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.queue.resume takes. */
@@ -169,6 +189,8 @@ export interface AudioQueueResumeReq {
   project?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.speak takes. */
@@ -246,6 +268,8 @@ export interface AudioSpeakReq {
    * @default true
    */
   wait?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.status takes. */
@@ -254,6 +278,8 @@ export interface AudioStatusReq {
   label?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** ACE-Step 1.5's task: text2music | cover | repaint | edit | lego */
@@ -320,6 +346,8 @@ export interface AudioTranscribeReq {
    * @default true
    */
   words?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.upload takes. */
@@ -328,6 +356,8 @@ export interface AudioUploadReq {
   data: string;
   /** the file's name; kept as up_<unix seconds>_<name>.wav (letters, digits, . _ - kept, the rest _, 60 characters) */
   name: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.voices.add takes. */
@@ -347,6 +377,8 @@ export interface AudioVoicesAddReq {
   sample: string;
   /** what the recording says (a closer clone) */
   text?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.voices.design takes. */
@@ -367,12 +399,16 @@ export interface AudioVoicesDesignReq {
   seed?: number | null;
   /** what the sample says (default: a ten-second line in the language) */
   text?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.voices.list takes. */
 export interface AudioVoicesListReq {
   /** only this owner's voices */
   owner?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What audio.voices.remove takes. */
@@ -380,6 +416,8 @@ export interface AudioVoicesRemoveReq {
   name: string;
   /** the voice's owner, when it has one */
   owner?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** How a clip carries on from the last: video | png | latent | none */
@@ -394,18 +432,24 @@ export interface ImageCancelReq {
   label?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.canvases.list takes. */
 export interface ImageCanvasesListReq {
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.describePromptGuideMD takes. */
 export interface ImageDescribePromptGuideMdReq {
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.edit takes. */
@@ -476,6 +520,8 @@ export interface ImageEditReq {
    * @default true
    */
   wait?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.generate takes. */
@@ -550,16 +596,22 @@ export interface ImageGenerateReq {
    * @default true
    */
   wait?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.history takes. */
 export interface ImageHistoryReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.info takes. */
 export interface ImageInfoReq {
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.jobs takes. */
@@ -573,6 +625,8 @@ export interface ImageJobsReq {
   limit?: number | null;
   /** only this project's */
   project?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.ocr takes. */
@@ -597,14 +651,20 @@ export interface ImageOcrReq {
   temperature?: number | null;
   /** one page: read its 640-pixel tiles too (default true) */
   tiles?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.progress takes. */
 export interface ImageProgressReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.queue.list takes. */
 export interface ImageQueueListReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.queue.move takes. */
@@ -625,6 +685,8 @@ export interface ImageQueueMoveReq {
   priority?: number | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.queue.pause takes. */
@@ -635,6 +697,8 @@ export interface ImageQueuePauseReq {
   project?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.queue.resume takes. */
@@ -645,6 +709,8 @@ export interface ImageQueueResumeReq {
   project?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.status takes. */
@@ -653,6 +719,8 @@ export interface ImageStatusReq {
   label?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.upload takes. */
@@ -661,6 +729,8 @@ export interface ImageUploadReq {
   data: string;
   /** the file's name: png jpg jpeg webp; kept as up_<unix seconds>_<name> (letters, digits, . _ - kept, the rest _, 60 characters) */
   name: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.upscale takes. */
@@ -727,6 +797,8 @@ export interface ImageUpscaleReq {
    * @default true
    */
   wait?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What image.vectorize takes. */
@@ -812,6 +884,8 @@ export interface ImageVectorizeReq {
    * @default true
    */
   wait?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What llm.chat takes. */
@@ -830,20 +904,28 @@ export interface LlmChatReq {
   temperature?: number | null;
   /** OpenAI tool definitions */
   tools?: (Record<string, unknown>)[] | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What llm.describePromptGuideMD takes. */
 export interface LlmDescribePromptGuideMdReq {
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What llm.models takes. */
 export interface LlmModelsReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What llm.requests takes. */
 export interface LlmRequestsReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** A mesh tool's operation: decimate | remesh | uv | convert */
@@ -855,12 +937,16 @@ export interface Model3dCancelReq {
   label?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.describePromptGuideMD takes. */
 export interface Model3dDescribePromptGuideMdReq {
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.generate takes. */
@@ -941,16 +1027,22 @@ export interface Model3dGenerateReq {
    * @default true
    */
   wait?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.history takes. */
 export interface Model3dHistoryReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.info takes. */
 export interface Model3dInfoReq {
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.jobs takes. */
@@ -964,14 +1056,20 @@ export interface Model3dJobsReq {
   limit?: number | null;
   /** only this project's */
   project?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.progress takes. */
 export interface Model3dProgressReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.queue.list takes. */
 export interface Model3dQueueListReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.queue.move takes. */
@@ -992,6 +1090,8 @@ export interface Model3dQueueMoveReq {
   priority?: number | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.queue.pause takes. */
@@ -1002,6 +1102,8 @@ export interface Model3dQueuePauseReq {
   project?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.queue.resume takes. */
@@ -1012,6 +1114,8 @@ export interface Model3dQueueResumeReq {
   project?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.rig takes. */
@@ -1074,6 +1178,8 @@ export interface Model3dRigReq {
    * @default true
    */
   wait?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.status takes. */
@@ -1082,6 +1188,8 @@ export interface Model3dStatusReq {
   label?: string | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.tool takes. */
@@ -1099,6 +1207,8 @@ export interface Model3dToolReq {
   passes?: number | null;
   /** uv: the texture's side (2048) */
   size?: number | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What model3d.upload takes. */
@@ -1107,6 +1217,8 @@ export interface Model3dUploadReq {
   data: string;
   /** the file's name: png jpg jpeg webp glb obj; kept as up_<unix seconds>_<name> */
   name: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** A reference picture's size: match | max */
@@ -1120,14 +1232,20 @@ export type ResponseFormat = "url" | "b64_json";
 
 /** What system.busy takes. */
 export interface SystemBusyReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.cards takes. */
 export interface SystemCardsReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.config takes. */
 export interface SystemConfigReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.configSet takes. */
@@ -1136,6 +1254,8 @@ export interface SystemConfigSetReq {
   set?: Record<string, unknown> | null;
   /** the whole file instead */
   text?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.disable takes. */
@@ -1144,16 +1264,22 @@ export interface SystemDisableReq {
   force?: boolean | null;
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.drive.measure takes. */
 export interface SystemDriveMeasureReq {
   /** the drive's id (nvme1n1) or its mount point (system.drives) */
   drive: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.drives takes. */
 export interface SystemDrivesReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.enable takes. */
@@ -1162,6 +1288,8 @@ export interface SystemEnableReq {
   gpus?: number[] | null;
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.files.delete takes. */
@@ -1169,6 +1297,8 @@ export interface SystemFilesDeleteReq {
   kind: FileKind;
   /** the file's name; a clip: h3_... with or without .mp4 */
   name: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.files.stat takes. */
@@ -1176,6 +1306,8 @@ export interface SystemFilesStatReq {
   kind: FileKind;
   /** the file's name (the last part of its URL) */
   name: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.gpus takes. */
@@ -1184,6 +1316,8 @@ export interface SystemGpusReq {
   gpus: number[];
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.load takes. */
@@ -1192,6 +1326,8 @@ export interface SystemLoadReq {
   model: string;
   /** answer when it has loaded (default: at once, loading in the background) */
   wait?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.maintenance takes. */
@@ -1204,30 +1340,42 @@ export interface SystemMaintenanceReq {
   on?: boolean | null;
   /** true: unload the loaded models not answering now (frees the cards) */
   unload?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.models.pull.cancel takes. */
 export interface SystemModelsPullCancelReq {
   /** the model being downloaded */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.models.pull takes. */
 export interface SystemModelsPullReq {
   /** the card's id (system.models, downloaded false) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.models.pulls takes. */
 export interface SystemModelsPullsReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.models takes. */
 export interface SystemModelsReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.move.cancel takes. */
 export interface SystemMoveCancelReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.move takes. */
@@ -1236,30 +1384,42 @@ export interface SystemMoveReq {
   drive: string;
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.ping takes. */
 export interface SystemPingReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.restart takes. */
 export interface SystemRestartReq {
   /** serve | switch | studio | video | image | audio | llm */
   service: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.state takes. */
 export interface SystemStateReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.unload takes. */
 export interface SystemUnloadReq {
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What system.version takes. */
 export interface SystemVersionReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** The text encoder: teacher | student */
@@ -1272,24 +1432,34 @@ export type Upscaler = "esrgan-general" | "esrgan-anime" | "latent";
 export interface VideoCancelReq {
   /** a clip's label (none: the running clip) */
   label?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.canvases.list takes. */
 export interface VideoCanvasesListReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.describePromptGuideMD takes. */
 export interface VideoDescribePromptGuideMdReq {
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.engines.list takes. */
 export interface VideoEnginesListReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.films.list takes. */
 export interface VideoFilmsListReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.generate takes. */
@@ -1486,31 +1656,43 @@ export interface VideoGenerateReq {
    * @multipleOf 32
    */
   width?: number | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.jobs.get takes. */
 export interface VideoJobsGetReq {
   /** h3_YYYYMMDD_HHMMSS */
   name: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.jobs.list takes. */
 export interface VideoJobsListReq {
   limit?: number | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.projects.list takes. */
 export interface VideoProjectsListReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.queue.clear takes. */
 export interface VideoQueueClearReq {
   batch?: string | null;
   project?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.queue.list takes. */
 export interface VideoQueueListReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.queue.move takes. */
@@ -1528,40 +1710,56 @@ export interface VideoQueueMoveReq {
    * @maximum 9
    */
   priority?: number | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.queue.pause takes. */
 export interface VideoQueuePauseReq {
   batch?: string | null;
   project?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.queue.remove takes. */
 export interface VideoQueueRemoveReq {
   label: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.queue.resume takes. */
 export interface VideoQueueResumeReq {
   batch?: string | null;
   project?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.status takes. */
 export interface VideoStatusReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.summary takes. */
 export interface VideoSummaryReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.templates.list takes. */
 export interface VideoTemplatesListReq {
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.timeline takes. */
 export interface VideoTimelineReq {
   project: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.upload takes. */
@@ -1570,6 +1768,8 @@ export interface VideoUploadReq {
   data: string;
   /** the file's name: png jpg jpeg webp mp4 mov webm mkv wav mp3 flac m4a ogg; saved as ref_<unix seconds>_<name> (letters, digits, . _ - kept, the rest _, 60 characters) */
   name: string;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.upscale takes. */
@@ -1639,6 +1839,8 @@ export interface VideoUpscaleReq {
    * @default true
    */
   wait?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** What video.wait takes. */
@@ -1652,6 +1854,8 @@ export interface VideoWaitReq {
   timeout_s?: number | null;
   /** the last version seen */
   version?: string | null;
+  /** other keys */
+  [key: string]: unknown;
 }
 
 /** Every method: what it takes and what it answers. */
