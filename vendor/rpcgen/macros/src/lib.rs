@@ -6,8 +6,9 @@
 //! - `#[derive(Rpc)]` on a struct or a unit enum a method takes or answers: its shape as TypeScript and JSON
 //!   Schema, following its serde attributes (`default`, `rename`, `rename_all`, `skip`, `flatten`, Option).
 //!   A field may say more, as C#'s [Range] / [DefaultValue] do: `#[schema(min = 0.05, max = 1, default = 0.6)]`,
-//!   `#[schema(one_of = "image, audio, video")]` (a string union in TypeScript too), `max_length`, `pattern`,
-//!   `format`, `example`, or `json = r#"{...}"#` (any JSON Schema keywords) - all in the OpenAPI document.
+//!   `max_length`, `pattern`, `format`, `example`, or `json = r#"{...}"#` (any JSON Schema keywords) - all in the
+//!   OpenAPI document. A field of a fixed set of values is a unit enum with #[derive(Rpc)] (a string union in
+//!   TypeScript, an enum in the schema); `one_of` on a string does not compile.
 //! - `#[rpc(name = "GetJob", tags = "jobs")]` on an `async fn(state, request) -> Result<Response, Error>`: the
 //!   method. The doc comment is its summary (first line) and description. The name is PascalCase and starts
 //!   with a verb; the request and the response must be `Rpc` types (else the trait bound fails to compile).
@@ -29,6 +30,7 @@ const VERBS: &[&str] = &[
     "Reset", "Rename", "Clone", "Import", "Export", "Inspect", "Assign", "Split", "Slice", "Cut", "Vectorize", "Transcribe",
     "Design", "Prepare", "Rewrite", "Plan", "Refresh", "Regenerate", "Troubleshoot", "Restart", "Job", "Rpc", "Check",
     "Calibrate", "Analyze", "Inspect", "Merge", "Move", "Use", "Mark", "Open", "Run", "Send", "Write", "Read", "Find", "Search",
+    "Paste", "Edit", "Recast", "Renarrate", "Remeasure", "Assemble", "Describe", "Replace", "Upscale", "Apply", "Choose",
 ];
 
 fn doc_lines(attrs: &[Attribute]) -> Vec<String> {
@@ -87,7 +89,8 @@ fn serde_of(attrs: &[Attribute]) -> syn::Result<Serde> {
                         let _ = m.value()?.parse::<LitStr>()?;
                     }
                 }
-                "skip" | "skip_deserializing" => s.skip = true,
+                // #[serde(other)]: the catch-all of an enum read back from storage - not a value a caller sends
+                "skip" | "skip_deserializing" | "other" => s.skip = true,
                 "skip_serializing_if" => {
                     s.skip_serializing_if = true;
                     let _ = m.value()?.parse::<LitStr>()?;
@@ -157,7 +160,7 @@ fn renamed(name: &str, rule: Option<&str>) -> String {
 /// A field's `#[schema(...)]`: the JSON Schema keywords it adds (as JSON text) and its string values (one_of).
 fn schema_of(attrs: &[Attribute]) -> syn::Result<(String, Vec<String>)> {
     let mut kv: Vec<String> = Vec::new();
-    let mut one_of: Vec<String> = Vec::new();
+    let one_of: Vec<String> = Vec::new();
     let mut raw = String::new();
     let num = |e: &Expr| -> syn::Result<String> {
         match e {
@@ -193,9 +196,13 @@ fn schema_of(attrs: &[Attribute]) -> syn::Result<(String, Vec<String>)> {
                 "default" => kv.push(format!("\"default\": {}", json_lit(v)?)),
                 "example" => kv.push(format!("\"example\": {}", json_lit(v)?)),
                 "pattern" | "format" => kv.push(format!("{key:?}: {}", json_lit(v)?)),
+                // a field of a fixed set of values is an enum, not a string with a list beside it: the handler matches
+                // the enum, the TypeScript is its union, and no other value gets in (the user's rule, 2026-10-26)
                 "one_of" => {
-                    let Expr::Lit(syn::ExprLit { lit: Lit::Str(s), .. }) = v else { return Err(Error::new_spanned(v, "one_of = \"a, b, c\"")) };
-                    one_of.extend(s.value().split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()));
+                    return Err(Error::new_spanned(
+                        &nv.path,
+                        "a field that takes one of a fixed set of values is an enum: a unit enum with #[derive(Rpc)] (serde's rename / rename_all for its words), not a String with one_of",
+                    ));
                 }
                 "json" => {
                     let Expr::Lit(syn::ExprLit { lit: Lit::Str(s), .. }) = v else { return Err(Error::new_spanned(v, "json = r#\"{...}\"#")) };
@@ -226,7 +233,14 @@ pub fn derive_rpc(input: TokenStream) -> TokenStream {
 fn derive(input: DeriveInput) -> syn::Result<TokenStream2> {
     let name = &input.ident;
     let name_s = name.to_string();
-    let doc = doc_lines(&input.attrs).join(" ");
+    let docs = doc_lines(&input.attrs);
+    // a note about an internal route ("PUT /api/jobs/{id}/cover — ...") is the developer's, not the type's public
+    // description: it stays in the source and out of the document
+    let internal = docs.first().is_some_and(|l| {
+        let l = l.trim_start_matches('`');
+        ["GET ", "POST ", "PUT ", "DELETE ", "PATCH "].iter().any(|m| l.strip_prefix(m).is_some_and(|r| r.trim_start_matches('`').starts_with("/api")))
+    });
+    let doc = if internal { String::new() } else { docs.join(" ") };
     let cont = serde_of(&input.attrs)?;
     if !input.generics.params.is_empty() {
         return Err(Error::new_spanned(&input.generics, "#[derive(Rpc)] takes no generic types: name the concrete type"));
@@ -310,11 +324,12 @@ struct RpcArgs {
     name: Option<LitStr>,
     tags: Vec<String>,
     example: Option<LitStr>,
+    examples: Option<LitStr>,
 }
 
 impl Parse for RpcArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut a = RpcArgs { name: None, tags: Vec::new(), example: None };
+        let mut a = RpcArgs { name: None, tags: Vec::new(), example: None, examples: None };
         let metas = Punctuated::<Meta, Token![,]>::parse_terminated(input)?;
         for m in metas {
             let Meta::NameValue(nv) = &m else { return Err(Error::new_spanned(m, "expected name = \"...\" or tags = \"a, b\"")) };
@@ -331,8 +346,13 @@ impl Parse for RpcArgs {
                     return Err(Error::new_spanned(s, "example is a JSON object: the body a caller sends"));
                 }
                 a.example = Some(s.clone());
+            } else if nv.path.is_ident("examples") {
+                if !s.value().trim_start().starts_with('{') {
+                    return Err(Error::new_spanned(s, "examples is a JSON object: name -> the body a caller sends"));
+                }
+                a.examples = Some(s.clone());
             } else {
-                return Err(Error::new_spanned(&nv.path, "#[rpc] takes name, tags and example"));
+                return Err(Error::new_spanned(&nv.path, "#[rpc] takes name, tags, example and examples"));
             }
         }
         Ok(a)
@@ -384,9 +404,14 @@ fn method(args: RpcArgs, f: ItemFn) -> syn::Result<TokenStream2> {
     if summary.is_empty() {
         return Err(Error::new_spanned(fname, "a #[rpc] handler has a doc comment: its first line is the method's summary"));
     }
-    let description = docs.join(" ");
+    // paragraphs (a blank doc line) are kept; the lines of one paragraph are one line
+    let description = docs.split(|l| l.is_empty()).map(|p| p.join(" ")).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
     let tags = &args.tags;
     let example = match &args.example {
+        Some(e) => quote! { Some(#e) },
+        None => quote! { None },
+    };
+    let examples = match &args.examples {
         Some(e) => quote! { Some(#e) },
         None => quote! { None },
     };
@@ -434,7 +459,7 @@ fn method(args: RpcArgs, f: ItemFn) -> syn::Result<TokenStream2> {
 
         #[doc(hidden)]
         #vis fn #info() -> ::rpcgen::MethodInfo {
-            ::rpcgen::MethodInfo::new::<#req_ty, #resp>(#name, #summary, #description, &[#(#tags),*]).with_example(#example)
+            ::rpcgen::MethodInfo::new::<#req_ty, #resp>(#name, #summary, #description, &[#(#tags),*]).with_example(#example).with_examples(#examples)
         }
 
         #handler_fn

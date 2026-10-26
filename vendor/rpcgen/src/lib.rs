@@ -26,12 +26,14 @@
 //! #[derive(serde::Serialize, Rpc)]
 //! pub struct Thing { pub id: String, pub tags: Vec<String> }
 //! #[derive(serde::Deserialize, Rpc)]
+//! #[serde(rename_all = "lowercase")]
+//! pub enum Kind { Image, Audio }
+//! #[derive(serde::Deserialize, Rpc)]
 //! pub struct Make {
 //!     /// how far from the picture
 //!     #[schema(min = 0.05, max = 1, default = 0.6)]
 //!     pub strength: Option<f64>,
-//!     #[schema(one_of = "image, audio")]
-//!     pub kind: String,
+//!     pub kind: Kind,
 //! }
 //! /// Make a thing
 //! #[rpc(name = "CreateThing")]
@@ -39,7 +41,7 @@
 //! rpc_methods![App; get_thing, create_thing];
 //! let infos: Vec<_> = rpc_methods().into_iter().map(|m| m.info).collect();
 //! let ts = rpcgen::typescript("t", &infos).unwrap();
-//! assert!(ts.contains("kind: \"image\" | \"audio\";") && ts.contains("strength?: number | null;"), "{ts}");
+//! assert!(ts.contains("export type Kind = \"image\" | \"audio\";") && ts.contains("kind: Kind;") && ts.contains("strength?: number | null;"), "{ts}");
 //! let doc = rpcgen::openapi(serde_json::json!({"title": "t", "version": "1"}), "/", &infos).unwrap();
 //! assert!(doc.contains("maximum: 1") && doc.contains("- image"), "{doc}");
 //! /// Get a thing by its id
@@ -102,6 +104,17 @@
 //! #[rpc(name = "GetThing")]
 //! async fn a(_app: App, req: Plain) -> Result<Thing, Error> { Ok(Thing { id: req.id, tags: vec![] }) }
 //! rpc_methods![App; a];
+//! ```
+//!
+//! a field of a fixed set of values written as a string (it is an enum):
+//!
+//! ```compile_fail
+//! use rpcgen::Rpc;
+//! #[derive(serde::Deserialize, Rpc)]
+//! pub struct Make {
+//!     #[schema(one_of = "image, audio")]
+//!     pub kind: String,
+//! }
 //! ```
 //!
 //! and a method with nothing said of it:
@@ -181,6 +194,46 @@ mod web {
                 }
             }
             r
+        }
+    }
+
+    /// The routes of a table: `POST /api/<Method>` each, its body (none is `{}`) decoded into the method's request.
+    /// A name is matched as written here; the public door matches it in any case and passes it on as written.
+    pub fn router<S: Clone + Send + Sync + 'static>(methods: Vec<Method<S>>) -> axum::Router<S> {
+        let mut r = axum::Router::new();
+        for m in methods {
+            let handler = m.handler;
+            r = r.route(
+                &format!("/api/{}", m.info.name),
+                axum::routing::post(move |axum::extract::State(s): axum::extract::State<S>, body: axum::body::Bytes| async move {
+                    // no body, or only whitespace, is {} (a method whose fields are all optional); else it is JSON
+                    let text = std::str::from_utf8(&body).unwrap_or("").trim();
+                    if text.is_empty() || text == "null" {
+                        return handler(s, Value::Null).await;
+                    }
+                    match serde_json::from_str::<Value>(text) {
+                        Ok(v) => handler(s, v).await,
+                        Err(e) => bad_payload(format!("the body is not JSON: {e}")),
+                    }
+                }),
+            );
+        }
+        r
+    }
+
+    /// An answer passed on as the handler made it (a maker's handler answering a Response): untyped, and counted with
+    /// the Untyped ones (`untyped_responses`) until the method answers a type of its own.
+    pub struct Passthrough(pub Response);
+
+    impl RpcType for Passthrough {
+        fn shape(_: &mut Defs) -> Shape {
+            Shape::Untyped
+        }
+    }
+
+    impl RpcResponse for Passthrough {
+        fn into_reply(self) -> Response {
+            self.0
         }
     }
 
@@ -734,6 +787,8 @@ pub struct MethodInfo {
     pub defs: Defs,
     /// `#[rpc(example = r#"{...}"#)]`: the body a caller sends, as JSON text
     pub example: Option<&'static str>,
+    /// `#[rpc(examples = r#"{"name": {...}}"#)]`: several, by name, as JSON text
+    pub examples: Option<&'static str>,
 }
 
 impl MethodInfo {
@@ -750,12 +805,22 @@ impl MethodInfo {
         let mut defs = Defs::default();
         let request = Req::shape(&mut defs);
         let response = Resp::shape(&mut defs);
-        MethodInfo { name, summary, description, tags: tags.to_vec(), request, response, defs, example: None }
+        MethodInfo { name, summary, description, tags: tags.to_vec(), request, response, defs, example: None, examples: None }
     }
 
     pub fn with_example(mut self, example: Option<&'static str>) -> Self {
         self.example = example;
         self
+    }
+
+    pub fn with_examples(mut self, examples: Option<&'static str>) -> Self {
+        self.examples = examples;
+        self
+    }
+
+    /// The named examples (`#[rpc(examples)]`), name -> body.
+    pub fn named_examples(&self) -> Map<String, Value> {
+        self.examples.and_then(|e| serde_json::from_str::<Value>(e).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default()
     }
 
     /// The request's fields, when it is an object type (for the catalogue's example body).
@@ -773,6 +838,9 @@ impl MethodInfo {
     /// of its type (`name?` for an optional one).
     pub fn example_body(&self) -> Value {
         if let Some(e) = self.example.and_then(|e| serde_json::from_str::<Value>(e).ok()) {
+            return e;
+        }
+        if let Some((_, e)) = self.named_examples().into_iter().next() {
             return e;
         }
         let mut o = Map::new();
@@ -882,9 +950,21 @@ fn named_schema(n: &Named) -> Value {
     }
 }
 
-/// The OpenAPI document of a table: `info` (title, version, description: the maker's own prose) and `servers`
-/// as given, a path per method (`/api/<Method>`, POST), the named types as components.
-pub fn openapi(info: Value, server: &str, methods: &[MethodInfo]) -> Result<String, String> {
+/// The OpenAPI document of a table: its head as given - `info` alone (title, version, description: the project's
+/// own prose), or `{"info": ..., "tags": [...], "paths": {...}, "components": {"schemas": {...}}}` (a description
+/// per tag; paths that are not methods of the table, such as an OpenAI-compatible API that keeps OpenAI's shape,
+/// with the schemas they use) - `servers` as given, a path per method (`/api/<Method>`, POST), the named types as
+/// components. A method and a head path of one path is a mistake.
+pub fn openapi(head: Value, server: &str, methods: &[MethodInfo]) -> Result<String, String> {
+    let (info, tags, extra_paths, extra_schemas) = match head.get("info") {
+        Some(i) => (
+            i.clone(),
+            head.get("tags").cloned(),
+            head.get("paths").and_then(|p| p.as_object()).cloned().unwrap_or_default(),
+            head.pointer("/components/schemas").and_then(|p| p.as_object()).cloned().unwrap_or_default(),
+        ),
+        None => (head, None, Map::new(), Map::new()),
+    };
     let defs = all_defs(methods)?;
     let mut paths = Map::new();
     for m in methods {
@@ -893,7 +973,12 @@ pub fn openapi(info: Value, server: &str, methods: &[MethodInfo]) -> Result<Stri
             op["description"] = json!(m.description);
         }
         if !m.takes_nothing() {
-            op["requestBody"] = json!({"required": true, "content": {"application/json": {"schema": schema(&m.request), "example": m.example_body()}}});
+            let mut media = json!({"schema": schema(&m.request), "example": m.example_body()});
+            let named = m.named_examples();
+            if !named.is_empty() {
+                media["examples"] = Value::Object(named.into_iter().map(|(k, v)| (k, json!({"value": v}))).collect());
+            }
+            op["requestBody"] = json!({"required": true, "content": {"application/json": media}});
         }
         let ok = match &m.response {
             Shape::Blob => json!({"description": "the bytes, with their Content-Type", "content": {"application/octet-stream": {"schema": schema(&m.response)}}}),
@@ -902,13 +987,27 @@ pub fn openapi(info: Value, server: &str, methods: &[MethodInfo]) -> Result<Stri
         op["responses"] = json!({"200": ok, "400": {"description": "a payload that does not fit: {error}"}, "404": {"description": "not there: {error}"}});
         paths.insert(format!("/api/{}", m.name), json!({"post": op}));
     }
-    let schemas: Map<String, Value> = defs.types.iter().map(|(k, v)| (k.clone(), named_schema(v))).collect();
+    for (k, v) in extra_paths {
+        if paths.insert(k.clone(), v).is_some() {
+            return Err(format!("{k} is both a method and a path of the document's head"));
+        }
+    }
+    let mut schemas: Map<String, Value> = defs.types.iter().map(|(k, v)| (k.clone(), named_schema(v))).collect();
+    for (k, v) in extra_schemas {
+        if schemas.contains_key(&k) {
+            return Err(format!("{k} is both a method's type and a schema of the document's head"));
+        }
+        schemas.insert(k, v);
+    }
     // in a document's own order (a JSON map would sort `components` first and `openapi` last)
     let y = |v: Value| serde_yaml::to_value(v).map_err(|e| e.to_string());
     let mut doc = serde_yaml::Mapping::new();
     doc.insert("openapi".into(), "3.1.0".into());
     doc.insert("info".into(), y(info)?);
     doc.insert("servers".into(), y(json!([{"url": server}]))?);
+    if let Some(t) = tags {
+        doc.insert("tags".into(), y(t)?);
+    }
     doc.insert("paths".into(), y(Value::Object(paths))?);
     doc.insert("components".into(), y(json!({"schemas": schemas}))?);
     serde_yaml::to_string(&doc).map_err(|e| e.to_string())
