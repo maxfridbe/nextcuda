@@ -12,6 +12,7 @@
 //! - `#[rpc(name = "GetJob", tags = "jobs")]` on an `async fn(state, request) -> Result<Response, Error>`: the
 //!   method. The doc comment is its summary (first line) and description. The name is PascalCase and starts
 //!   with a verb; the request and the response must be `Rpc` types (else the trait bound fails to compile).
+//!   `produces = "audio/wav, audio/mpeg"` names a download's media types (a Raw or Blob answer).
 //! - `rpc_methods![State; a, b, jobs::c]`: a table of async methods (axum); `rpc_methods![sync State, Error; ...]`
 //!   one of sync methods (`fn(&State, request) -> Result<Response, Error>`, Error: From<rpcgen::BadPayload>).
 //!   Two methods of one name, or names of two styles (`GetJob` and `system.ping`), do not compile.
@@ -325,11 +326,13 @@ struct RpcArgs {
     tags: Vec<String>,
     example: Option<LitStr>,
     examples: Option<LitStr>,
+    /// a download's media types, as `produces = "audio/wav, audio/mpeg"`
+    produces: Vec<String>,
 }
 
 impl Parse for RpcArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut a = RpcArgs { name: None, tags: Vec::new(), example: None, examples: None };
+        let mut a = RpcArgs { name: None, tags: Vec::new(), example: None, examples: None, produces: Vec::new() };
         let metas = Punctuated::<Meta, Token![,]>::parse_terminated(input)?;
         for m in metas {
             let Meta::NameValue(nv) = &m else { return Err(Error::new_spanned(m, "expected name = \"...\" or tags = \"a, b\"")) };
@@ -351,8 +354,13 @@ impl Parse for RpcArgs {
                     return Err(Error::new_spanned(s, "examples is a JSON object: name -> the body a caller sends"));
                 }
                 a.examples = Some(s.clone());
+            } else if nv.path.is_ident("produces") {
+                a.produces = s.value().split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+                if a.produces.is_empty() || a.produces.iter().any(|t| !t.contains('/') || t.contains(' ')) {
+                    return Err(Error::new_spanned(s, "produces is a download's media types: \"audio/wav, audio/mpeg\""));
+                }
             } else {
-                return Err(Error::new_spanned(&nv.path, "#[rpc] takes name, tags, example and examples"));
+                return Err(Error::new_spanned(&nv.path, "#[rpc] takes name, tags, example, examples and produces"));
             }
         }
         Ok(a)
@@ -388,10 +396,12 @@ fn method(args: RpcArgs, f: ItemFn) -> syn::Result<TokenStream2> {
         FnArg::Typed(p) => Ok((*p.ty).clone()),
         FnArg::Receiver(r) => Err(Error::new_spanned(r, "a #[rpc] handler is a free fn")),
     };
-    let (state, req) = match inputs.as_slice() {
-        [s] => (ty_of(s)?, None),
-        [s, r] => (ty_of(s)?, Some(ty_of(r)?)),
-        _ => return Err(Error::new_spanned(&f.sig.inputs, "a #[rpc] handler takes (state) or (state, request)")),
+    // a third parameter is the request's headers (a download honouring Range, say): async handlers only
+    let (state, req, headers) = match inputs.as_slice() {
+        [s] => (ty_of(s)?, None, false),
+        [s, r] => (ty_of(s)?, Some(ty_of(r)?), false),
+        [s, r, _h] if !sync => (ty_of(s)?, Some(ty_of(r)?), true),
+        _ => return Err(Error::new_spanned(&f.sig.inputs, "a #[rpc] handler takes (state), (state, request) or, async, (state, request, headers)")),
     };
     // the answer's type through ::rpcgen::RpcResult, so an alias of a Result is fine and anything that is not
     // a Result of an Rpc response and an HTTP error fails the trait bound
@@ -415,13 +425,22 @@ fn method(args: RpcArgs, f: ItemFn) -> syn::Result<TokenStream2> {
         Some(e) => quote! { Some(#e) },
         None => quote! { None },
     };
+    let produces = &args.produces;
     let info = format_ident!("__rpc_info_{}", fname);
     let handler = format_ident!("__rpc_handler_{}", fname);
     let check = format_ident!("__rpc_check_{}", fname);
     let const_name = format_ident!("__RPC_NAME_{}", fname);
     let req_ty = req.clone().unwrap_or_else(|| syn::parse_quote!(::rpcgen::NoParams));
     let wait = if sync { quote! {} } else { quote! { .await } };
-    let call = if req.is_some() { quote! { #fname(__state, __req) #wait } } else { quote! { { let _ = __req; #fname(__state) #wait } } };
+    // a sync handler has no headers to drop
+    let drop_headers = if sync { quote! {} } else { quote! { let _ = __headers; } };
+    let call = if headers {
+        quote! { #fname(__state, __req, __headers) #wait }
+    } else if req.is_some() {
+        quote! { { #drop_headers #fname(__state, __req) #wait } }
+    } else {
+        quote! { { #drop_headers let _ = __req; #fname(__state) #wait } }
+    };
     let vis = &f.vis;
     let handler_fn = if sync {
         quote! {
@@ -434,7 +453,7 @@ fn method(args: RpcArgs, f: ItemFn) -> syn::Result<TokenStream2> {
     } else {
         quote! {
             #[doc(hidden)]
-            #vis fn #handler(__state: #state, __body: ::rpcgen::serde_json::Value) -> ::rpcgen::Reply {
+            #vis fn #handler(__state: #state, __body: ::rpcgen::serde_json::Value, __headers: ::rpcgen::HeaderMap) -> ::rpcgen::Reply {
                 Box::pin(async move {
                     let __req: #req_ty = match ::rpcgen::decode(__body) {
                         Ok(r) => r,
@@ -459,7 +478,7 @@ fn method(args: RpcArgs, f: ItemFn) -> syn::Result<TokenStream2> {
 
         #[doc(hidden)]
         #vis fn #info() -> ::rpcgen::MethodInfo {
-            ::rpcgen::MethodInfo::new::<#req_ty, #resp>(#name, #summary, #description, &[#(#tags),*]).with_example(#example).with_examples(#examples)
+            ::rpcgen::MethodInfo::new::<#req_ty, #resp>(#name, #summary, #description, &[#(#tags),*]).with_example(#example).with_examples(#examples).with_produces(&[#(#produces),*])
         }
 
         #handler_fn

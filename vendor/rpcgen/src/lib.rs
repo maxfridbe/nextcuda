@@ -89,6 +89,41 @@
 //! async fn a(_app: App, req: ThingRef) -> Result<Thing, Error> { Ok(Thing { id: req.id, tags: vec![] }) }
 //! ```
 //!
+//! A sync table (nextcuda's), with and without a request: it compiles and answers.
+//!
+//! ```
+//! use rpcgen::{rpc, BadPayload, Rpc};
+//! #[derive(Debug)]
+//! pub struct Fail(String);
+//! impl From<BadPayload> for Fail { fn from(b: BadPayload) -> Self { Fail(b.0) } }
+//! #[derive(serde::Deserialize, Rpc)]
+//! pub struct Ping { pub n: i64 }
+//! #[derive(serde::Serialize, Rpc)]
+//! pub struct Pong { pub n: i64 }
+//! /// Ping it
+//! #[rpc(name = "system.ping")]
+//! fn ping(_s: &(), req: Ping) -> Result<Pong, Fail> { Ok(Pong { n: req.n }) }
+//! /// Its state
+//! #[rpc(name = "system.state")]
+//! fn state(_s: &()) -> Result<Pong, Fail> { Ok(Pong { n: 0 }) }
+//! rpcgen::rpc_methods![sync (), Fail; ping, state];
+//! let m = rpc_methods();
+//! assert_eq!((m[0].handler)(&(), serde_json::json!({"n": 3})).unwrap(), serde_json::json!({"n": 3}));
+//! ```
+//!
+//! A download's media types are media types:
+//!
+//! ```compile_fail
+//! use rpcgen::{rpc, Raw, Rpc};
+//! type App = std::sync::Arc<()>;
+//! type Error = (axum::http::StatusCode, String);
+//! #[derive(serde::Deserialize, Rpc)]
+//! pub struct ThingRef { pub id: String }
+//! /// Download a thing
+//! #[rpc(name = "DownloadThing", produces = "wav")]
+//! async fn a(_app: App, _req: ThingRef) -> Result<Raw, Error> { unimplemented!() }
+//! ```
+//!
 //! a request (or response) type that is not an Rpc type:
 //!
 //! ```compile_fail,E0277
@@ -157,10 +192,13 @@ mod web {
     /// What a handler's future answers.
     pub type Reply = Pin<Box<dyn Future<Output = Response> + Send>>;
 
+    /// A request's headers, for a handler that takes them as its third parameter.
+    pub use axum::http::HeaderMap;
+
     /// One method of a table: what it is, and its handler (the request decoded from JSON, the answer encoded).
     pub struct Method<S> {
         pub info: MethodInfo,
-        pub handler: fn(S, Value) -> Reply,
+        pub handler: fn(S, Value, HeaderMap) -> Reply,
         /// whether a body fits the request type, without running the method
         pub check: fn(&Value) -> Result<(), BadPayload>,
     }
@@ -206,14 +244,14 @@ mod web {
             let handler = m.handler;
             r = r.route(
                 &format!("/api/{}", m.info.name),
-                axum::routing::post(move |axum::extract::State(s): axum::extract::State<S>, body: axum::body::Bytes| async move {
+                axum::routing::post(move |axum::extract::State(s): axum::extract::State<S>, headers: HeaderMap, body: axum::body::Bytes| async move {
                     // no body, or only whitespace, is {} (a method whose fields are all optional); else it is JSON
                     let text = std::str::from_utf8(&body).unwrap_or("").trim();
                     if text.is_empty() || text == "null" {
-                        return handler(s, Value::Null).await;
+                        return handler(s, Value::Null, headers).await;
                     }
                     match serde_json::from_str::<Value>(text) {
-                        Ok(v) => handler(s, v).await,
+                        Ok(v) => handler(s, v, headers).await,
                         Err(e) => bad_payload(format!("the body is not JSON: {e}")),
                     }
                 }),
@@ -984,6 +1022,8 @@ pub struct MethodInfo {
     pub example: Option<&'static str>,
     /// `#[rpc(examples = r#"{"name": {...}}"#)]`: several, by name, as JSON text
     pub examples: Option<&'static str>,
+    /// `#[rpc(produces = "audio/wav, audio/mpeg")]`: a download's media types (none: application/octet-stream)
+    pub produces: Vec<&'static str>,
 }
 
 impl MethodInfo {
@@ -1000,7 +1040,7 @@ impl MethodInfo {
         let mut defs = Defs::default();
         let request = Req::shape(&mut defs);
         let response = Resp::shape(&mut defs);
-        MethodInfo { name, summary, description, tags: tags.to_vec(), request, response, defs, example: None, examples: None }
+        MethodInfo { name, summary, description, tags: tags.to_vec(), request, response, defs, example: None, examples: None, produces: Vec::new() }
     }
 
     pub fn with_example(mut self, example: Option<&'static str>) -> Self {
@@ -1010,6 +1050,11 @@ impl MethodInfo {
 
     pub fn with_examples(mut self, examples: Option<&'static str>) -> Self {
         self.examples = examples;
+        self
+    }
+
+    pub fn with_produces(mut self, produces: &[&'static str]) -> Self {
+        self.produces = produces.to_vec();
         self
     }
 
@@ -1183,8 +1228,15 @@ pub fn openapi(head: Value, server: &str, methods: &[MethodInfo]) -> Result<Stri
             }
             op["requestBody"] = json!({"required": true, "content": {"application/json": media}});
         }
+        if !m.produces.is_empty() && m.response != Shape::Blob {
+            return Err(format!("{}: produces is a download's media types, and it answers JSON", m.name));
+        }
         let ok = match &m.response {
-            Shape::Blob => json!({"description": "the bytes, with their Content-Type", "content": {"application/octet-stream": {"schema": schema(&m.response)}}}),
+            Shape::Blob => {
+                let types = if m.produces.is_empty() { vec!["application/octet-stream"] } else { m.produces.clone() };
+                let content: Map<String, Value> = types.iter().map(|t| (t.to_string(), json!({"schema": schema(&m.response)}))).collect();
+                json!({"description": "the bytes, with their Content-Type", "content": content})
+            }
             s => json!({"description": "ok", "content": {"application/json": {"schema": schema(s)}}}),
         };
         op["responses"] = json!({"200": ok, "400": {"description": "a payload that does not fit: {error}"}, "404": {"description": "not there: {error}"}});
@@ -1327,6 +1379,9 @@ fn method_doc(m: &MethodInfo) -> (String, Vec<(String, String)>) {
     if !m.tags.is_empty() {
         tags.push(("tags".to_string(), m.tags.join(", ")));
     }
+    if !m.produces.is_empty() {
+        tags.push(("produces".to_string(), m.produces.join(", ")));
+    }
     for (name, body) in method_examples(m) {
         tags.push(("example".to_string(), if name.is_empty() { body.to_string() } else { format!("{name} {body}") }));
     }
@@ -1419,6 +1474,11 @@ fn facts_of_openapi(doc: &str) -> Result<Facts, String> {
         f.insert(format!("{name}: text: {text}"));
         for t in op["tags"].as_array().into_iter().flatten() {
             f.insert(format!("{name}: tag: {}", t.as_str().unwrap_or("")));
+        }
+        for ct in op["responses"]["200"]["content"].as_object().into_iter().flatten().map(|(k, _)| k) {
+            if ct != "application/json" && ct != "application/octet-stream" {
+                f.insert(format!("{name}: produces: {ct}"));
+            }
         }
         let media = &op["requestBody"]["content"]["application/json"];
         if let Some(e) = media.get("example") {
@@ -1558,6 +1618,10 @@ fn facts_of_typescript(ts: &str) -> Facts {
                     for tag in v.split(", ") {
                         f.insert(format!("{name}: tag: {tag}"));
                     }
+                } else if let Some(v) = t.strip_prefix("produces ") {
+                    for ct in v.split(", ") {
+                        f.insert(format!("{name}: produces: {ct}"));
+                    }
                 } else if let Some(v) = t.strip_prefix("example ") {
                     match v.split_once(' ').filter(|(n, _)| !n.starts_with(['{', '['])) {
                         Some((n, body)) => f.insert(format!("{name}: example {n}: {body}")),
@@ -1635,7 +1699,7 @@ mod tests {
         defs.named("Make", "what Make takes", o);
         let m = MethodInfo {
             name: "CreateThing", summary: "Make a thing", description: "Make a thing", tags: vec!["things"],
-            request: Shape::Ref("Make".into()), response: Shape::Json, defs, example: Some(r#"{"id": "1"}"#), examples: None,
+            request: Shape::Ref("Make".into()), response: Shape::Json, defs, example: Some(r#"{"id": "1"}"#), examples: None, produces: Vec::new(),
         };
         let doc = openapi(json!({"title": "t", "version": "0"}), "/", std::slice::from_ref(&m)).unwrap();
         let ts = typescript("t", std::slice::from_ref(&m)).unwrap();
