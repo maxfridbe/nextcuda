@@ -219,7 +219,7 @@ pub struct SystemCardsReq {
 #[allow(non_snake_case)]
 pub struct SystemEnableReq {
     /// the cards (default: as registered); several for a model that spans cards
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_vec_int")]
     pub gpus: Option<Vec<i64>>,
     /// the model's registry id (system.models)
     pub model: String,
@@ -233,6 +233,7 @@ pub struct SystemEnableReq {
 #[allow(non_snake_case)]
 pub struct SystemGpusReq {
     /// the cards: one or more (an image or audio model loads on the first of them with room)
+    #[serde(deserialize_with = "rpcgen::de::vec_int")]
     pub gpus: Vec<i64>,
     /// the model's registry id (system.models)
     pub model: String,
@@ -386,7 +387,7 @@ pub struct LlmChatReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(min = 0, max = 86400)]
     pub keep_up_s: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub max_tokens: Option<i64>,
     /// [{role, content}]
     pub messages: Vec<serde_json::Map<String, serde_json::Value>>,
@@ -460,12 +461,12 @@ pub struct ImageGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// pictures
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub n: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub negative_prompt: Option<String>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
@@ -489,13 +490,13 @@ pub struct ImageGenerateReq {
     pub sampler: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub seed: Option<i64>,
     /// WxH, e.g. 1024x1024, both multiples of 16 (default: the model's, or the init picture's aspect)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
     /// image.info's steps: a few-step model (turbo) runs only its own count (6)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub steps: Option<i64>,
     /// with image: how far from it (ComfyUI's denoise: the last steps of a round(steps / strength)-step schedule); 0.3-0.6 is the usual img2img range
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -532,7 +533,7 @@ pub struct ImageEditReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
@@ -556,12 +557,12 @@ pub struct ImageEditReq {
     /// url (default) or b64_json
     #[serde(rename = "response_format", default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub seed: Option<i64>,
     /// default: the last picture's aspect
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub steps: Option<i64>,
     /// how far from the first picture: 1 (default) makes a new picture guided by it; below 1 starts from the first picture, encoded and noised to the level strength reaches: the run is the last steps of a round(steps / strength)-step schedule, exactly ComfyUI's KSampler denoise (a few-step model such as turbo starts at strength itself, then takes its own levels below it). With reference true the picture also conditions the model, which holds it closer than a plain img2img at the same number: measured on Qwen-Image 2.1, 0.9 keeps the framing, face, hair and clothes and still makes the change asked; 0.75 and below give back nearly the same picture. With reference false it behaves as other tools' img2img. The first picture is resized to the output's size
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -598,11 +599,11 @@ pub struct ImageUpscaleReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// waifu2x's denoise level (-1: none)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -1, max = 3)]
     pub noise: Option<i64>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
@@ -621,10 +622,10 @@ pub struct ImageUpscaleReq {
     #[schema(one_of = "url, b64_json")]
     pub response_format: Option<String>,
     /// the factor: Real-ESRGAN 2, 3 (animevideov3) or 4; waifu2x 1 (denoise only), 2, 4 ... 32 (its 2x model again each time)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub scale: Option<i64>,
     /// the tile's side in input pixels (Real-ESRGAN 200, waifu2x 400 by default: as the ncnn programs)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 32)]
     pub tile: Option<i64>,
     /// the upscaler's model (image.info's upscale list): realesrgan-x4plus (default at 4x), realesr-animevideov3 (default at 2x / 3x), ..., models-cunet (waifu2x's default)
@@ -647,7 +648,7 @@ pub struct ImageVectorizeReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(max_length = 60)]
     pub batch: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 1, max = 8, default = 2)]
     pub beams: Option<i64>,
     /// queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
@@ -661,14 +662,14 @@ pub struct ImageVectorizeReq {
     #[schema(max_length = 120)]
     pub label: Option<String>,
     /// the sequence at most as the model counts it (the picture's 257 rows and the prompt first: 5000 leaves 4741 tokens of SVG)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 260, max = 8192, default = 5000)]
     pub max_length: Option<i64>,
     /// the model's id; none: the loaded one, else the first enabled
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
@@ -690,7 +691,7 @@ pub struct ImageVectorizeReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(default = true)]
     pub sample: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub seed: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(default = 1.0)]
@@ -716,7 +717,7 @@ pub struct VideoUpscaleReq {
     #[schema(max_length = 60)]
     pub batch: Option<String>,
     /// the H.264 encode's quality (lower: better, bigger)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 0, max = 40, default = 16)]
     pub crf: Option<i64>,
     /// or a clip made here (a video.generate clip's name, h3_..., with or without .mp4)
@@ -734,10 +735,10 @@ pub struct VideoUpscaleReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// as image.upscale
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub noise: Option<i64>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
@@ -757,10 +758,10 @@ pub struct VideoUpscaleReq {
     #[schema(one_of = "url, b64_json")]
     pub response_format: Option<String>,
     /// as image.upscale
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub scale: Option<i64>,
     /// as image.upscale
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub tile: Option<i64>,
     /// as image.upscale (realesr-animevideov3: trained on video frames)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -793,13 +794,13 @@ pub struct ImageOcrReq {
     /// the pages, base64, data: URLs or upload:<name> (image.upload), in order: pictures, or PDFs (split into their pages, 150 dpi)
     pub images: Vec<String>,
     /// default 8192
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub max_tokens: Option<i64>,
     /// an OCR model's id (default: the first enabled)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// no n-gram of this many tokens repeated (35; 0: off)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub ngram: Option<i64>,
     /// "document parsing." (default), "Free OCR.", "<|grounding|>Convert the document to markdown.", "Parse the figure."; several pages: each page under it, or (each_page false) the model's "Multi page parsing."; a <PAGE> mark before each page
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -847,7 +848,7 @@ pub struct ImageStatusReq {
 #[allow(non_snake_case)]
 pub struct ImageJobsReq {
     /// ended jobs listed
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 0, max = 200, default = 20)]
     pub limit: Option<i64>,
     /// only this project's
@@ -874,11 +875,11 @@ pub struct ImageQueueMoveReq {
     /// the job's label (looked up first)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 1, default = 1)]
     pub position: Option<i64>,
     /// give it this priority too (where later jobs go)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9)]
     pub priority: Option<i64>,
     /// or the reentrant_id it was submitted with (used when label is absent or empty)
@@ -1008,7 +1009,7 @@ pub struct AudioGenerateReq {
     #[schema(max_length = 60)]
     pub batch: Option<String>,
     /// acestep-1.5: the tempo (else the planner's, or none said)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub bpm: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cfg: Option<f64>,
@@ -1044,7 +1045,7 @@ pub struct AudioGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner: Option<bool>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
@@ -1074,12 +1075,12 @@ pub struct AudioGenerateReq {
     pub repaint_strength: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seconds: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub seed: Option<i64>,
     /// edit: the words the recording sings now
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_lyrics: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub steps: Option<i64>,
     /// acestep-1.5: text2music (default: from the words alone); with audio - cover (the recording performed anew: input its words, instructions its sound), repaint (repaint_start to repaint_end made again; an end past the recording extends it), edit (new words sung over the recording: source_lyrics the words it sings now), lego (a vocal track over an instrumental: acestep-1.5-base)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1135,7 +1136,7 @@ pub struct AudioSpeakReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<serde_json::Map<String, serde_json::Value>>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
@@ -1159,7 +1160,7 @@ pub struct AudioSpeakReq {
     /// the most to make
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seconds: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub seed: Option<i64>,
     /// several speakers (VibeVoice: input a script of "Speaker N: words" lines): each speaker's voice, Speaker 1's first - a saved voice's name, a recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL) or upload:<name>; a model that takes them is picked when model is not given
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1205,7 +1206,7 @@ pub struct AudioTranscribeReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<serde_json::Map<String, serde_json::Value>>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
@@ -1297,7 +1298,7 @@ pub struct AudioVoicesDesignReq {
     #[serde(rename = "replace", default, skip_serializing_if = "Option::is_none")]
     pub replace: Option<bool>,
     /// another seed, another speaker of that kind
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub seed: Option<i64>,
     /// what the sample says (default: a ten-second line in the language)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1370,7 +1371,7 @@ pub struct AudioStatusReq {
 #[allow(non_snake_case)]
 pub struct AudioJobsReq {
     /// ended jobs listed
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 0, max = 200, default = 20)]
     pub limit: Option<i64>,
     /// only this project's
@@ -1397,11 +1398,11 @@ pub struct AudioQueueMoveReq {
     /// the job's label (looked up first)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 1, default = 1)]
     pub position: Option<i64>,
     /// give it this priority too (where later jobs go)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9)]
     pub priority: Option<i64>,
     /// or the reentrant_id it was submitted with (used when label is absent or empty)
@@ -1501,7 +1502,7 @@ pub struct Model3dGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cfg: Option<f64>,
     /// at most this many triangles (decimated to it)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub faces: Option<i64>,
     /// or a GLB made here to paint (its file name or url), as mesh
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1531,7 +1532,7 @@ pub struct Model3dGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<serde_json::Map<String, serde_json::Value>>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
@@ -1551,18 +1552,18 @@ pub struct Model3dGenerateReq {
     #[schema(default = true)]
     pub remove_background: Option<bool>,
     /// the shape's grid / octree resolution: detail against time and memory
-    #[serde(rename = "resolution", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "resolution", default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub resolution: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub seed: Option<i64>,
     /// denoising steps of each stage
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub steps: Option<i64>,
     /// PBR textures too (base colour, metallic-roughness); default: what the model does (model3d.info)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture: Option<bool>,
     /// the texture's side in texels
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub texture_size: Option<i64>,
     /// true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1589,7 +1590,7 @@ pub struct Model3dRigReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<f64>,
     /// an animating model: frames to make
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub frames: Option<i64>,
     /// queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1609,7 +1610,7 @@ pub struct Model3dRigReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<serde_json::Map<String, serde_json::Value>>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
@@ -1627,9 +1628,9 @@ pub struct Model3dRigReq {
     #[serde(rename = "reentrant_id", default, skip_serializing_if = "Option::is_none")]
     #[schema(max_length = 200)]
     pub reentrant_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub seed: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub steps: Option<i64>,
     /// true: answer when it ends; false: answer at once with the job
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1648,7 +1649,7 @@ pub struct Model3dToolReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge: Option<f64>,
     /// decimate: at most this many triangles
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub faces: Option<i64>,
     /// or a GLB made here
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1659,10 +1660,10 @@ pub struct Model3dToolReq {
     #[schema(one_of = "decimate, remesh, uv, convert")]
     pub op: String,
     /// remesh: passes (5)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub passes: Option<i64>,
     /// uv: the texture's side (2048)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub size: Option<i64>,
     /// what else the caller sent: passed on as it came
     #[serde(flatten)]
@@ -1719,7 +1720,7 @@ pub struct Model3dStatusReq {
 #[allow(non_snake_case)]
 pub struct Model3dJobsReq {
     /// ended jobs listed
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 0, max = 200, default = 20)]
     pub limit: Option<i64>,
     /// only this project's
@@ -1746,11 +1747,11 @@ pub struct Model3dQueueMoveReq {
     /// the job's label (looked up first)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 1, default = 1)]
     pub position: Option<i64>,
     /// give it this priority too (where later jobs go)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9)]
     pub priority: Option<i64>,
     /// or the reentrant_id it was submitted with (used when label is absent or empty)
@@ -1896,14 +1897,14 @@ pub struct VideoGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_frame: Option<String>,
     /// the length exactly, instead of seconds: 17k + 5 (22, 39, 56 ... 107, 124 ... 362); another count is refused, the message naming the nearest two
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 22, max = 362)]
     pub frames: Option<i64>,
     /// a motion guide: "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide_clip: Option<String>,
     /// as width
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 256, max = 1344, default = 576, json = r#"{"multipleOf": 32}"#)]
     pub height: Option<i64>,
     /// "<series> NN/MM: text", e.g. "Harbour 03/12: the lamp": NN is the clip's place in video.timeline (the edit order), the text before it the series the anchors prev / first look in and the project when none is given. Letters, digits, _ and  -.,:'()!?/ only (others are dropped); labels name clips for video.cancel, video.queue.move and video.queue.remove
@@ -1921,7 +1922,7 @@ pub struct VideoGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub negative_prompt: Option<String>,
     /// a queued clip goes ahead of every clip of a lower priority (same priority: first come first made)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
     pub priority: Option<i64>,
     /// default: the label's series
@@ -1973,7 +1974,7 @@ pub struct VideoGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(min = 1, max = 15.1, default = 10)]
     pub seconds: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -2147483648, max = 2147483648, default = 0)]
     pub seed: Option<i64>,
     /// flow shift of the sound (3)
@@ -1986,7 +1987,7 @@ pub struct VideoGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// denoising steps; below 8 only with a turbo LoRA
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 1, max = 40, default = 10)]
     pub steps: Option<i64>,
     /// the text encoder
@@ -2005,7 +2006,7 @@ pub struct VideoGenerateReq {
     #[schema(default = "esrgan-general", one_of = "esrgan-general, esrgan-anime, latent")]
     pub upscaler: Option<String>,
     /// a multiple of 32; width x height at most 1032192 pixels (768 x 1344); video.canvases.list has the tested ones
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 256, max = 1344, default = 768, json = r#"{"multipleOf": 32}"#)]
     pub width: Option<i64>,
     /// what else the caller sent: passed on as it came
@@ -2064,11 +2065,11 @@ pub struct VideoQueueListReq {
 #[allow(non_snake_case)]
 pub struct VideoQueueMoveReq {
     pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 1, default = 1)]
     pub position: Option<i64>,
     /// give it this priority too (where later clips go)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9)]
     pub priority: Option<i64>,
     /// what else the caller sent: passed on as it came
@@ -2129,7 +2130,7 @@ pub struct VideoQueueClearReq {
 #[derive(Deserialize, Serialize, Rpc)]
 #[allow(non_snake_case)]
 pub struct VideoJobsListReq {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub limit: Option<i64>,
     /// what else the caller sent: passed on as it came
     #[serde(flatten)]

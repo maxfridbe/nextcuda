@@ -285,6 +285,49 @@ impl axum::response::IntoResponse for RpcError {
     }
 }
 
+/// Lenient decoders for `#[serde(deserialize_with = ...)]`: JSON has numbers, not integers, and a caller's arithmetic
+/// sends 512.0 for 512 - an integer field takes a whole number written either way (and nothing else).
+pub mod de {
+    use serde::{Deserialize, Deserializer};
+
+    fn whole<E: serde::de::Error>(v: serde_json::Value) -> Result<i64, E> {
+        match &v {
+            serde_json::Value::Number(n) => n
+                .as_i64()
+                .or_else(|| n.as_f64().filter(|f| f.fract() == 0.0 && f.abs() < 9.0e15).map(|f| f as i64))
+                .ok_or_else(|| E::custom(format!("{n} is not a whole number"))),
+            other => Err(E::custom(format!("expected a whole number, got {other}"))),
+        }
+    }
+
+    /// an i64 from 5 or 5.0
+    pub fn int<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+        whole(serde_json::Value::deserialize(d)?)
+    }
+
+    /// an Option<i64> from null, 5 or 5.0
+    pub fn opt_int<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+        match serde_json::Value::deserialize(d)? {
+            serde_json::Value::Null => Ok(None),
+            v => whole(v).map(Some),
+        }
+    }
+
+    /// a Vec<i64> of whole numbers written either way
+    pub fn vec_int<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<i64>, D::Error> {
+        Vec::<serde_json::Value>::deserialize(d)?.into_iter().map(whole).collect()
+    }
+
+    /// an Option<Vec<i64>>
+    pub fn opt_vec_int<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<i64>>, D::Error> {
+        match serde_json::Value::deserialize(d)? {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::Array(a) => a.into_iter().map(whole).collect::<Result<Vec<_>, _>>().map(Some),
+            other => Err(serde::de::Error::custom(format!("expected a list of whole numbers, got {other}"))),
+        }
+    }
+}
+
 /// A payload that does not fit a sync method's request type: the table's error type is made from it.
 #[derive(Debug, Clone)]
 pub struct BadPayload(pub String);
@@ -985,6 +1028,23 @@ mod tests {
         assert_eq!((style_of("system.configSet"), style_of("llm.describePromptGuideMD"), style_of("system.Ping")), (2, 2, 0));
         assert!(one_style(&["GetJob", "ListJobs"]) && one_style(&["system.ping", "video.status"]));
         assert!(!one_style(&["GetJob", "system.ping"]));
+    }
+
+    #[test]
+    fn an_integer_is_a_whole_number_written_either_way() {
+        #[derive(serde::Deserialize)]
+        struct R {
+            #[serde(deserialize_with = "de::int")]
+            n: i64,
+            #[serde(default, deserialize_with = "de::opt_int")]
+            m: Option<i64>,
+        }
+        let r: R = serde_json::from_value(json!({"n": 512.0, "m": 3})).unwrap();
+        assert_eq!((r.n, r.m), (512, Some(3)));
+        assert!(serde_json::from_value::<R>(json!({"n": 1.5})).is_err());
+        assert!(serde_json::from_value::<R>(json!({"n": "512"})).is_err());
+        let r: R = serde_json::from_value(json!({"n": 1, "m": null})).unwrap();
+        assert_eq!(r.m, None);
     }
 
     #[test]
