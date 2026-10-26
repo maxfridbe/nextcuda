@@ -20,7 +20,10 @@ export interface AudioDescribePromptGuideMdReq {
 export interface AudioGenerateReq {
   /** acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end) */
   audio?: string | null;
-  /** a group inside the project */
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
   batch?: string | null;
   /** acestep-1.5: the tempo (else the planner's, or none said) */
   bpm?: number | null;
@@ -29,7 +32,10 @@ export interface AudioGenerateReq {
   cover_noise?: number | null;
   /** cover / repaint: the share of the steps conditioned on the recording, 0 to 1 (0.5) */
   cover_strength?: number | null;
-  /** queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch */
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
   held?: boolean | null;
   /** the lyrics, [verse] / [chorus] tags on lines of their own (empty: instrumental) */
   input?: string | null;
@@ -37,7 +43,10 @@ export interface AudioGenerateReq {
   instructions: string;
   /** acestep-1.5: key and scale, "C major", "F# minor" */
   key?: string | null;
-  /** names the job for <kind>.status and <kind>.cancel (default: its id) */
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
   label?: string | null;
   /** acestep-1.5: the lyrics' language as a code (en, zh, ja, es ...; default unknown) */
   language?: string | null;
@@ -45,13 +54,27 @@ export interface AudioGenerateReq {
   model?: string | null;
   /** acestep-1.5 text2music: the 5 Hz planner LM writes the metas, the caption and the song's audio codes first (true, as the platform's use_lm) */
   planner?: boolean | null;
-  /** a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made) */
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project} */
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
   project?: string | null;
-  /** false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn */
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
   queue?: boolean | null;
-  /** idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again) */
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
   /** repaint: seconds; -1 or none: the recording's end; past it: the song extended to it */
   repaint_end?: number | null;
@@ -70,7 +93,10 @@ export interface AudioGenerateReq {
   task?: AudioTask | null;
   /** acestep-1.5: beats a bar: "4", "3", "6" */
   time_signature?: string | null;
-  /** true: answer when it ends (the job goes on if the call drops); false: answer at once with the job */
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
   wait?: boolean | null;
 }
 
@@ -86,7 +112,12 @@ export interface AudioInfoReq {
 
 /** What audio.jobs takes. */
 export interface AudioJobsReq {
-  /** ended jobs listed */
+  /**
+   * ended jobs listed
+   * @minimum 0
+   * @maximum 200
+   * @default 20
+   */
   limit?: number | null;
   /** only this project's */
   project?: string | null;
@@ -104,8 +135,17 @@ export interface AudioQueueListReq {
 export interface AudioQueueMoveReq {
   /** the job's label (looked up first) */
   label?: string | null;
+  /**
+   *
+   * @minimum 1
+   * @default 1
+   */
   position?: number | null;
-  /** give it this priority too (where later jobs go) */
+  /**
+   * give it this priority too (where later jobs go)
+   * @minimum -9
+   * @maximum 9
+   */
   priority?: number | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
@@ -133,19 +173,31 @@ export interface AudioQueueResumeReq {
 
 /** What audio.speak takes. */
 export interface AudioSpeakReq {
-  /** a group inside the project */
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
   batch?: string | null;
   /** guidance with instructions (Breeze TTS 2: 4 by default for design and direction; 1 turns it off) */
   cfg?: number | null;
-  /** carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice's sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped */
+  /**
+   * carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice's sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped
+   * @maxLength 200
+   */
   continue_from?: string | null;
-  /** queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch */
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
   held?: boolean | null;
   /** the text to say (Breeze TTS 2: vocal events inline - English (laugh) (sigh) (cough) (clears throat), Chinese [笑] [叹气] [咳嗽] [清嗓子]) */
   input: string;
   /** how to say it (CustomVoice), or the voice to make up (VoiceDesign, Breeze TTS 2: write it in the language of the text); with a cloned voice (ref_audio or a saved voice) the direction of its tone, emotion, pace (Breeze TTS 2: voice direction - picked for you when model is not given) */
   instructions?: string | null;
-  /** names the job for <kind>.status and <kind>.cancel (default: its id) */
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
   label?: string | null;
   /** english, chinese, japanese ... or auto (default). Checked when submitted against the model's list (Qwen3-TTS: chinese, english, german, italian, portuguese, spanish, japanese, korean, french, russian); VoxCPM2 has no list and takes any */
   language?: string | null;
@@ -153,13 +205,27 @@ export interface AudioSpeakReq {
   model?: string | null;
   /** the engine's own: greedy, temperature, top-k, streaming */
   options?: Record<string, unknown> | null;
-  /** a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made) */
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project} */
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
   project?: string | null;
-  /** false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn */
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
   queue?: boolean | null;
-  /** idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again) */
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
   /** a recording of the voice to clone: WAV as base64 or a data: URL, or upload:<name> (audio.upload, any format it takes) - the Base model */
   ref_audio?: string | null;
@@ -168,11 +234,17 @@ export interface AudioSpeakReq {
   /** the most to make */
   seconds?: number | null;
   seed?: number | null;
-  /** several speakers (VibeVoice: input a script of "Speaker N: words" lines): each speaker's voice, Speaker 1's first - a saved voice's name, a recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL) or upload:<name>; a model that takes them is picked when model is not given */
+  /**
+   * several speakers (VibeVoice: input a script of "Speaker N: words" lines): each speaker's voice, Speaker 1's first - a saved voice's name, a recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL) or upload:<name>; a model that takes them is picked when model is not given
+   * @maxItems 4
+   */
   speakers?: string[] | null;
   /** a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices) */
   voice?: string | null;
-  /** true: answer when it ends (the job goes on if the call drops); false: answer at once with the job */
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
   wait?: boolean | null;
 }
 
@@ -191,11 +263,20 @@ export type AudioTask = "text2music" | "cover" | "repaint" | "edit" | "lego";
 export interface AudioTranscribeReq {
   /** the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono */
   audio: string;
-  /** a group inside the project */
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
   batch?: string | null;
-  /** queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch */
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
   held?: boolean | null;
-  /** names the job for <kind>.status and <kind>.cancel (default: its id) */
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
   label?: string | null;
   /** a code or a name (en, english, de, german ...); none or auto: detected on the first 30 s */
   language?: string | null;
@@ -203,21 +284,41 @@ export interface AudioTranscribeReq {
   model?: string | null;
   /** the engine's own: condition (each window prompted with the text before it), no-speech (the silence threshold), fallback (decode an unsure window again, warmer) */
   options?: Record<string, unknown> | null;
-  /** a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made) */
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project} */
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
   project?: string | null;
   /** text that leads the first window: names, spelling, style (Whisper's initial_prompt) */
   prompt?: string | null;
-  /** false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn */
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
   queue?: boolean | null;
-  /** idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again) */
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
   /** into English instead of the language spoken */
   translate?: boolean | null;
-  /** true: answer when it ends (the job goes on if the call drops); false: answer at once with the job */
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
   wait?: boolean | null;
-  /** each word's start and end (and the model's probability for it) */
+  /**
+   * each word's start and end (and the model's probability for it)
+   * @default true
+   */
   words?: boolean | null;
 }
 
@@ -235,7 +336,10 @@ export interface AudioVoicesAddReq {
   language?: string | null;
   /** lowercase letters, digits, - and _ */
   name: string;
-  /** who it belongs to (an app or a person): voices.list filters by it, and replace / voices.remove of an owned voice must name it */
+  /**
+   * who it belongs to (an app or a person): voices.list filters by it, and replace / voices.remove of an owned voice must name it
+   * @maxLength 60
+   */
   owner?: string | null;
   /** over a voice of that name */
   replace?: boolean | null;
@@ -253,7 +357,10 @@ export interface AudioVoicesDesignReq {
   /** a voice-design model */
   model?: string | null;
   name: string;
-  /** who it belongs to (as voices.add) */
+  /**
+   * who it belongs to (as voices.add)
+   * @maxLength 60
+   */
   owner?: string | null;
   replace?: boolean | null;
   /** another seed, another speaker of that kind */
@@ -303,27 +410,53 @@ export interface ImageDescribePromptGuideMdReq {
 
 /** What image.edit takes. */
 export interface ImageEditReq {
-  /** a group inside the project */
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
   batch?: string | null;
-  /** queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch */
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
   held?: boolean | null;
   /** up to 8, base64, data: URLs or upload:<name> (image.upload) - PNG, JPEG, WebP; each at most 40 MP, the request at most 256 MiB; each is resized to about 1 MP, so 2048 px on the long side is plenty */
   images: string[];
-  /** names the job for <kind>.status and <kind>.cancel (default: its id) */
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
   label?: string | null;
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
-  /** a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made) */
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project} */
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
   project?: string | null;
   /** the instructions */
   prompt: string;
-  /** false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn */
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
   queue?: boolean | null;
-  /** idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again) */
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
-  /** true (default): the pictures condition the model as an edit's references (its vision tower reads them) as well as being where strength starts; false: a plain img2img - the denoise starts from the first picture and the prompt alone guides it, comparable with other tools' img2img (needs strength below 1) */
+  /**
+   * true (default): the pictures condition the model as an edit's references (its vision tower reads them) as well as being where strength starts; false: a plain img2img - the denoise starts from the first picture and the prompt alone guides it, comparable with other tools' img2img (needs strength below 1)
+   * @default true
+   */
   reference?: boolean | null;
   /** url (default) or b64_json */
   response_format?: string | null;
@@ -331,23 +464,40 @@ export interface ImageEditReq {
   /** default: the last picture's aspect */
   size?: string | null;
   steps?: number | null;
-  /** how far from the first picture: 1 (default) makes a new picture guided by it; below 1 starts from the first picture, encoded and noised to the level strength reaches: the run is the last steps of a round(steps / strength)-step schedule, exactly ComfyUI's KSampler denoise (a few-step model such as turbo starts at strength itself, then takes its own levels below it). With reference true the picture also conditions the model, which holds it closer than a plain img2img at the same number: measured on Qwen-Image 2.1, 0.9 keeps the framing, face, hair and clothes and still makes the change asked; 0.75 and below give back nearly the same picture. With reference false it behaves as other tools' img2img. The first picture is resized to the output's size */
+  /**
+   * how far from the first picture: 1 (default) makes a new picture guided by it; below 1 starts from the first picture, encoded and noised to the level strength reaches: the run is the last steps of a round(steps / strength)-step schedule, exactly ComfyUI's KSampler denoise (a few-step model such as turbo starts at strength itself, then takes its own levels below it). With reference true the picture also conditions the model, which holds it closer than a plain img2img at the same number: measured on Qwen-Image 2.1, 0.9 keeps the framing, face, hair and clothes and still makes the change asked; 0.75 and below give back nearly the same picture. With reference false it behaves as other tools' img2img. The first picture is resized to the output's size
+   * @minimum 0.05
+   * @maximum 1
+   * @default 1
+   */
   strength?: number | null;
-  /** true: answer when it ends (the job goes on if the call drops); false: answer at once with the job */
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
   wait?: boolean | null;
 }
 
 /** What image.generate takes. */
 export interface ImageGenerateReq {
-  /** a group inside the project */
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
   batch?: string | null;
   /** true guidance (needs negative_prompt) */
   cfg?: number | null;
-  /** queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch */
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
   held?: boolean | null;
   /** an init picture (base64, a data: URL, or upload:<name> from image.upload; at most 40 MP): a plain img2img - the denoise starts from it at strength and the prompt guides it (it is no reference: for an edit that reads the picture use image.edit). Needs strength below 1 */
   image?: string | null;
-  /** names the job for <kind>.status and <kind>.cancel (default: its id) */
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
   label?: string | null;
   /** name:scale */
   loras?: string[] | null;
@@ -356,14 +506,28 @@ export interface ImageGenerateReq {
   /** pictures */
   n?: number | null;
   negative_prompt?: string | null;
-  /** a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made) */
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project} */
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
   project?: string | null;
   prompt: string;
-  /** false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn */
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
   queue?: boolean | null;
-  /** idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again) */
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
   /** url (default) or b64_json */
   response_format?: string | null;
@@ -375,9 +539,16 @@ export interface ImageGenerateReq {
   size?: string | null;
   /** image.info's steps: a few-step model (turbo) runs only its own count (6) */
   steps?: number | null;
-  /** with image: how far from it (ComfyUI's denoise: the last steps of a round(steps / strength)-step schedule); 0.3-0.6 is the usual img2img range */
+  /**
+   * with image: how far from it (ComfyUI's denoise: the last steps of a round(steps / strength)-step schedule); 0.3-0.6 is the usual img2img range
+   * @minimum 0.05
+   * @maximum 1
+   */
   strength?: number | null;
-  /** true: answer when it ends (the job goes on if the call drops); false: answer at once with the job */
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
   wait?: boolean | null;
 }
 
@@ -393,7 +564,12 @@ export interface ImageInfoReq {
 
 /** What image.jobs takes. */
 export interface ImageJobsReq {
-  /** ended jobs listed */
+  /**
+   * ended jobs listed
+   * @minimum 0
+   * @maximum 200
+   * @default 20
+   */
   limit?: number | null;
   /** only this project's */
   project?: string | null;
@@ -435,8 +611,17 @@ export interface ImageQueueListReq {
 export interface ImageQueueMoveReq {
   /** the job's label (looked up first) */
   label?: string | null;
+  /**
+   *
+   * @minimum 1
+   * @default 1
+   */
   position?: number | null;
-  /** give it this priority too (where later jobs go) */
+  /**
+   * give it this priority too (where later jobs go)
+   * @minimum -9
+   * @maximum 9
+   */
   priority?: number | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
@@ -480,73 +665,162 @@ export interface ImageUploadReq {
 
 /** What image.upscale takes. */
 export interface ImageUpscaleReq {
-  /** a group inside the project */
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
   batch?: string | null;
-  /** queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch */
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
   held?: boolean | null;
   /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload) */
   image: string;
-  /** names the job for <kind>.status and <kind>.cancel (default: its id) */
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
   label?: string | null;
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
-  /** waifu2x's denoise level (-1: none) */
+  /**
+   * waifu2x's denoise level (-1: none)
+   * @minimum -1
+   * @maximum 3
+   */
   noise?: number | null;
-  /** a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made) */
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project} */
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
   project?: string | null;
-  /** false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn */
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
   queue?: boolean | null;
-  /** idempotent submit (as image.generate) */
+  /**
+   * idempotent submit (as image.generate)
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
   response_format?: ResponseFormat | null;
   /** the factor: Real-ESRGAN 2, 3 (animevideov3) or 4; waifu2x 1 (denoise only), 2, 4 ... 32 (its 2x model again each time) */
   scale?: number | null;
-  /** the tile's side in input pixels (Real-ESRGAN 200, waifu2x 400 by default: as the ncnn programs) */
+  /**
+   * the tile's side in input pixels (Real-ESRGAN 200, waifu2x 400 by default: as the ncnn programs)
+   * @minimum 32
+   */
   tile?: number | null;
   /** the upscaler's model (image.info's upscale list): realesrgan-x4plus (default at 4x), realesr-animevideov3 (default at 2x / 3x), ..., models-cunet (waifu2x's default) */
   variant?: string | null;
-  /** true: answer when it ends; false: answer at once with the job */
+  /**
+   * true: answer when it ends; false: answer at once with the job
+   * @default true
+   */
   wait?: boolean | null;
 }
 
 /** What image.vectorize takes. */
 export interface ImageVectorizeReq {
-  /** a group inside the project */
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
   batch?: string | null;
+  /**
+   *
+   * @minimum 1
+   * @maximum 8
+   * @default 2
+   */
   beams?: number | null;
-  /** queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch */
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
   held?: boolean | null;
   /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload) */
   image: string;
-  /** names the job for image.status and image.cancel */
+  /**
+   * names the job for image.status and image.cancel
+   * @maxLength 120
+   */
   label?: string | null;
-  /** the sequence at most as the model counts it (the picture's 257 rows and the prompt first: 5000 leaves 4741 tokens of SVG) */
+  /**
+   * the sequence at most as the model counts it (the picture's 257 rows and the prompt first: 5000 leaves 4741 tokens of SVG)
+   * @minimum 260
+   * @maximum 8192
+   * @default 5000
+   */
   max_length?: number | null;
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
-  /** a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made) */
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project} */
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
   project?: string | null;
-  /** false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn */
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
   queue?: boolean | null;
-  /** idempotent submit (as image.generate) */
+  /**
+   * idempotent submit (as image.generate)
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
+  /**
+   *
+   * @default 1.0
+   */
   repetition_penalty?: number | null;
-  /** false: the likeliest tokens (beam search, or greedy with beams 1) */
+  /**
+   * false: the likeliest tokens (beam search, or greedy with beams 1)
+   * @default true
+   */
   sample?: boolean | null;
   seed?: number | null;
+  /**
+   *
+   * @default 1.0
+   */
   temperature?: number | null;
+  /**
+   *
+   * @default 0.9
+   */
   top_p?: number | null;
-  /** true: answer when it ends; false: answer at once with the job */
+  /**
+   * true: answer when it ends; false: answer at once with the job
+   * @default true
+   */
   wait?: boolean | null;
 }
 
 /** What llm.chat takes. */
 export interface LlmChatReq {
-  /** keep the model loaded this long after the answer: picture, sound and video work does not stop it for room meanwhile (as /v1/chat/completions' X-Keep-Up-S header, which Open WebUI sends: 300). Absent: nothing kept - once idle the model may be stopped for other work */
+  /**
+   * keep the model loaded this long after the answer: picture, sound and video work does not stop it for room meanwhile (as /v1/chat/completions' X-Keep-Up-S header, which Open WebUI sends: 300). Absent: nothing kept - once idle the model may be stopped for other work
+   * @minimum 0
+   * @maximum 86400
+   */
   keep_up_s?: number | null;
   max_tokens?: number | null;
   /** [{role, content}] */
@@ -591,7 +865,10 @@ export interface Model3dDescribePromptGuideMdReq {
 
 /** What model3d.generate takes. */
 export interface Model3dGenerateReq {
-  /** a group inside the project */
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
   batch?: string | null;
   /** guidance */
   cfg?: number | null;
@@ -599,13 +876,23 @@ export interface Model3dGenerateReq {
   faces?: number | null;
   /** or a GLB made here to paint (its file name or url), as mesh */
   file?: string | null;
-  /** queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch */
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
   held?: boolean | null;
   /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (model3d.upload); a transparent background is the object's outline, an opaque one is cut out (remove_background) */
   image?: string | null;
-  /** several views of the object (a multi-view model: model3d.info's abilities.views); each a picture or {image, side} */
+  /**
+   * several views of the object (a multi-view model: model3d.info's abilities.views); each a picture or {image, side}
+   * @maxItems 8
+   * @items {"oneOf":[{"type":"string"},{"properties":{"image":{"type":"string"},"side":{"description":"front, back, left, right, top, bottom, or an azimuth in degrees","type":"string"}},"type":"object"}]}
+   */
   images?: unknown[] | null;
-  /** names the job for <kind>.status and <kind>.cancel (default: its id) */
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
   label?: string | null;
   /** a mesh to paint instead of making one (a model that textures: Hunyuan3D 2.1, hunyuan3d-2.1-paint): a GLB or OBJ as base64 or a data: URL; image says how it is painted */
   mesh?: string | null;
@@ -613,15 +900,32 @@ export interface Model3dGenerateReq {
   model?: string | null;
   /** the engine's own (model3d.info lists them) */
   options?: Record<string, unknown> | null;
-  /** a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made) */
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project} */
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
   project?: string | null;
-  /** false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn */
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
   queue?: boolean | null;
-  /** idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again) */
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
-  /** cut the background out of an opaque picture */
+  /**
+   * cut the background out of an opaque picture
+   * @default true
+   */
   remove_background?: boolean | null;
   /** the shape's grid / octree resolution: detail against time and memory */
   resolution?: number | null;
@@ -632,7 +936,10 @@ export interface Model3dGenerateReq {
   texture?: boolean | null;
   /** the texture's side in texels */
   texture_size?: number | null;
-  /** true: answer when it ends (the job goes on if the call drops); false: answer at once with the job */
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
   wait?: boolean | null;
 }
 
@@ -648,7 +955,12 @@ export interface Model3dInfoReq {
 
 /** What model3d.jobs takes. */
 export interface Model3dJobsReq {
-  /** ended jobs listed */
+  /**
+   * ended jobs listed
+   * @minimum 0
+   * @maximum 200
+   * @default 20
+   */
   limit?: number | null;
   /** only this project's */
   project?: string | null;
@@ -666,8 +978,17 @@ export interface Model3dQueueListReq {
 export interface Model3dQueueMoveReq {
   /** the job's label (looked up first) */
   label?: string | null;
+  /**
+   *
+   * @minimum 1
+   * @default 1
+   */
   position?: number | null;
-  /** give it this priority too (where later jobs go) */
+  /**
+   * give it this priority too (where later jobs go)
+   * @minimum -9
+   * @maximum 9
+   */
   priority?: number | null;
   /** or the reentrant_id it was submitted with (used when label is absent or empty) */
   reentrant_id?: string | null;
@@ -695,7 +1016,10 @@ export interface Model3dQueueResumeReq {
 
 /** What model3d.rig takes. */
 export interface Model3dRigReq {
-  /** a group inside the project */
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
   batch?: string | null;
   cfg?: number | null;
   /** or a GLB made here (model3d.generate's file name or url) */
@@ -703,9 +1027,15 @@ export interface Model3dRigReq {
   fps?: number | null;
   /** an animating model: frames to make */
   frames?: number | null;
-  /** queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch */
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
   held?: boolean | null;
-  /** names the job for <kind>.status and <kind>.cancel (default: its id) */
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
   label?: string | null;
   /** the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload) */
   mesh?: string | null;
@@ -713,19 +1043,36 @@ export interface Model3dRigReq {
   model?: string | null;
   /** the engine's own */
   options?: Record<string, unknown> | null;
-  /** a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made) */
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project} */
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
   project?: string | null;
   /** an animating model: the motion, in words ("a dragon flapping its wings") */
   prompt?: string | null;
-  /** false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn */
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
   queue?: boolean | null;
-  /** idempotent submit (as model3d.generate) */
+  /**
+   * idempotent submit (as model3d.generate)
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
   seed?: number | null;
   steps?: number | null;
-  /** true: answer when it ends; false: answer at once with the job */
+  /**
+   * true: answer when it ends; false: answer at once with the job
+   * @default true
+   */
   wait?: boolean | null;
 }
 
@@ -947,27 +1294,56 @@ export interface VideoFilmsListReq {
 
 /** What video.generate takes. */
 export interface VideoGenerateReq {
-  /** a group inside the project, held or cleared together */
+  /**
+   * a group inside the project, held or cleared together
+   * @maxLength 60
+   */
   batch?: string | null;
   /** a camera name: prev_cam / first_cam anchor on the series' clips of the same camera */
   camera?: string | null;
-  /** how the clip carries on from another, as one object (it sets guide_clip, first_audio, first_audio_s, first_frame, chain_mode, exposure_ref; those given flat win). There is no renormalisation step here: pin_renorm and other keys are listed back in ignored */
+  /**
+   * how the clip carries on from another, as one object (it sets guide_clip, first_audio, first_audio_s, first_frame, chain_mode, exposure_ref; those given flat win). There is no renormalisation step here: pin_renorm and other keys are listed back in ignored
+   * @properties {"color_reanchor":{"description":"true (= from), an anchor or a picture: the carried pictures scaled to its brightness (exposure_ref) - gain 0.75-1.35 on luminance, against drift"},"context_frames":{"description":"0 or 17k + 5 (22 = 0.92 s): the last N frames of from as one moving keyframe at frame 0 (guide_clip) - the clip replays them, so trim N/2 each side at the join","type":"integer"},"from":{"default":"prev","description":"anchor or file: the clip carried on from","type":"string"},"mode":{"description":"still: chain_mode","enum":["video","png","latent"],"type":"string"},"sound":{"default":true,"description":"with context_frames: the sound's last N/24 s too (first_audio, first_audio_s)","type":"boolean"},"still":{"description":"from's last frame as the first frame (first_frame); default: when context_frames is 0","type":"boolean"}}
+   */
   chain?: Record<string, unknown> | null;
-  /** how a first_frame clip is carried over: its mp4's last frame, its lossless .last.png, its last latent, or not at all */
+  /**
+   * how a first_frame clip is carried over: its mp4's last frame, its lossless .last.png, its last latent, or not at all
+   * @default "video"
+   */
   chain_mode?: ChainMode | null;
   /** noise on the first frame (harmful here: shows as confetti) */
   cond_noise_aug?: number | null;
+  /**
+   *
+   * @minimum 0
+   * @maximum 1
+   * @default 1
+   */
   control_end?: number | null;
   /** a mask clip or picture (file): regenerate inside it */
   control_mask?: string | null;
   /** the clip the mask applies to (file) */
   control_source?: string | null;
-  /** the part of the steps the control steers */
+  /**
+   * the part of the steps the control steers
+   * @minimum 0
+   * @maximum 1
+   * @default 0
+   */
   control_start?: number | null;
+  /**
+   *
+   * @minimum 0
+   * @maximum 10
+   * @default 1
+   */
   control_strength?: number | null;
   /** a ControlNet control clip (file); not with Ref2VA */
   control_video?: string | null;
-  /** the denoiser, by video.engines.list's quant (Q8_0 is read as INT8); REF2VA is chosen by itself when ref_images or ref_videos are given */
+  /**
+   * the denoiser, by video.engines.list's quant (Q8_0 is read as INT8); REF2VA is chosen by itself when ref_images or ref_videos are given
+   * @default "INT8"
+   */
   engine?: string | null;
   /** anchor or file: a picture whose exposure and colour the clip keeps */
   exposure_ref?: string | null;
@@ -977,39 +1353,78 @@ export interface VideoGenerateReq {
   first_audio_s?: number | null;
   /** anchor or file: the clip starts on this picture / clip's last frame */
   first_frame?: string | null;
-  /** the length exactly, instead of seconds: 17k + 5 (22, 39, 56 ... 107, 124 ... 362); another count is refused, the message naming the nearest two */
+  /**
+   * the length exactly, instead of seconds: 17k + 5 (22, 39, 56 ... 107, 124 ... 362); another count is refused, the message naming the nearest two
+   * @minimum 22
+   * @maximum 362
+   */
   frames?: number | null;
   /** a motion guide: "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe */
   guide_clip?: string | null;
-  /** as width */
+  /**
+   * as width
+   * @minimum 256
+   * @maximum 1344
+   * @default 576
+   * @multipleOf 32
+   */
   height?: number | null;
-  /** "<series> NN/MM: text", e.g. "Harbour 03/12: the lamp": NN is the clip's place in video.timeline (the edit order), the text before it the series the anchors prev / first look in and the project when none is given. Letters, digits, _ and  -.,:'()!?/ only (others are dropped); labels name clips for video.cancel, video.queue.move and video.queue.remove */
+  /**
+   * "<series> NN/MM: text", e.g. "Harbour 03/12: the lamp": NN is the clip's place in video.timeline (the edit order), the text before it the series the anchors prev / first look in and the project when none is given. Letters, digits, _ and  -.,:'()!?/ only (others are dropped); labels name clips for video.cancel, video.queue.move and video.queue.remove
+   * @maxLength 80
+   */
   label?: string | null;
   /** anchor or file: the clip ends on this picture (prev: the newest clip anywhere) */
   last_frame?: string | null;
-  /** "path:strength" */
+  /**
+   * "path:strength"
+   * @items {"maxLength":200,"type":"string"}
+   */
   loras?: string[] | null;
   /** ignored: H3 runs at cfg 1 (one pass a step, no unconditional branch), so a negative prompt has nothing to steer - say what is there instead (negations render). Accepted and listed in the answer's ignored */
   negative_prompt?: string | null;
-  /** a queued clip goes ahead of every clip of a lower priority (same priority: first come first made) */
+  /**
+   * a queued clip goes ahead of every clip of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** default: the label's series */
+  /**
+   * default: the label's series
+   * @maxLength 60
+   */
   project?: string | null;
   /** read as written - tokenized whole, no template, no sections parsed. H3 was trained on three fields in a fixed order: integrated_multimodal_description (shots, actions, camera, dialogue), overall_soundscape, non_diegetic_music; video.describePromptGuideMD has the form and its rules */
   prompt: string;
-  /** queue the clip when the studio is busy (false: 409 busy) */
+  /**
+   * queue the clip when the studio is busy (false: 409 busy)
+   * @default false
+   */
   queue?: boolean | null;
-  /** idempotent submit: a clip of this id queued, running or made is answered (reentered: true) instead of a new one; a failed one is made again */
+  /**
+   * idempotent submit: a clip of this id queued, running or made is answered (reentered: true) instead of a new one; a failed one is made again
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
-  /** voices to speak in: <Audio 1> ... in the prompt */
+  /**
+   * voices to speak in: <Audio 1> ... in the prompt
+   * @maxItems 3
+   */
   ref_audios?: string[] | null;
   /** reference pictures resized to the canvas, or kept as large as fits */
   ref_image_size?: RefImageSize | null;
-  /** Ref2VA reference pictures (files in the clips directory), <Image 1> ... in the prompt */
+  /**
+   * Ref2VA reference pictures (files in the clips directory), <Image 1> ... in the prompt
+   * @maxItems 9
+   */
   ref_images?: string[] | null;
   /** the reference clips' sound too */
   ref_video_sound?: boolean | null;
-  /** Ref2VA reference clips */
+  /**
+   * Ref2VA reference clips
+   * @maxItems 3
+   */
   ref_videos?: string[] | null;
   /** "from-to" seconds to regenerate in source; a source shorter than the clip is extended */
   regen?: string | null;
@@ -1019,8 +1434,19 @@ export interface VideoGenerateReq {
   sampler?: string | null;
   /** ComfyUI's name */
   schedule?: string | null;
-  /** length; snapped up to the model's frame grid (17k + 5 frames at 24 fps: 4 s -> 107 frames); the model is trained on 5.2-15.1 s. The answer's frames and seconds say what is made */
+  /**
+   * length; snapped up to the model's frame grid (17k + 5 frames at 24 fps: 4 s -> 107 frames); the model is trained on 5.2-15.1 s. The answer's frames and seconds say what is made
+   * @minimum 1
+   * @maximum 15.1
+   * @default 10
+   */
   seconds?: number | null;
+  /**
+   *
+   * @minimum -2147483648
+   * @maximum 2147483648
+   * @default 0
+   */
   seed?: number | null;
   /** flow shift of the sound (3) */
   shift_audio?: number | null;
@@ -1028,17 +1454,37 @@ export interface VideoGenerateReq {
   shift_video?: number | null;
   /** anchor or file: a masked run - this clip's latents are kept outside the regenerated part */
   source?: string | null;
-  /** denoising steps; below 8 only with a turbo LoRA */
+  /**
+   * denoising steps; below 8 only with a turbo LoRA
+   * @minimum 1
+   * @maximum 40
+   * @default 10
+   */
   steps?: number | null;
-  /** the text encoder */
+  /**
+   * the text encoder
+   * @default "teacher"
+   */
   te?: TextEncoder | null;
   /** the text encoder sees the reference pictures */
   te_pictures?: boolean | null;
-  /** upscale at decode (1.5: the canvas 1.5 times); above 1 only */
+  /**
+   * upscale at decode (1.5: the canvas 1.5 times); above 1 only
+   * @minimum 1
+   */
   upscale?: number | null;
-  /** with upscale */
+  /**
+   * with upscale
+   * @default "esrgan-general"
+   */
   upscaler?: Upscaler | null;
-  /** a multiple of 32; width x height at most 1032192 pixels (768 x 1344); video.canvases.list has the tested ones */
+  /**
+   * a multiple of 32; width x height at most 1032192 pixels (768 x 1344); video.canvases.list has the tested ones
+   * @minimum 256
+   * @maximum 1344
+   * @default 768
+   * @multipleOf 32
+   */
   width?: number | null;
 }
 
@@ -1070,8 +1516,17 @@ export interface VideoQueueListReq {
 /** What video.queue.move takes. */
 export interface VideoQueueMoveReq {
   label: string;
+  /**
+   *
+   * @minimum 1
+   * @default 1
+   */
   position?: number | null;
-  /** give it this priority too (where later clips go) */
+  /**
+   * give it this priority too (where later clips go)
+   * @minimum -9
+   * @maximum 9
+   */
   priority?: number | null;
 }
 
@@ -1119,27 +1574,55 @@ export interface VideoUploadReq {
 
 /** What video.upscale takes. */
 export interface VideoUpscaleReq {
-  /** a group inside the project */
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
   batch?: string | null;
-  /** the H.264 encode's quality (lower: better, bigger) */
+  /**
+   * the H.264 encode's quality (lower: better, bigger)
+   * @minimum 0
+   * @maximum 40
+   * @default 16
+   */
   crf?: number | null;
   /** or a clip made here (a video.generate clip's name, h3_..., with or without .mp4) */
   file?: string | null;
-  /** queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch */
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
   held?: boolean | null;
-  /** names the job for image.status and image.cancel */
+  /**
+   * names the job for image.status and image.cancel
+   * @maxLength 120
+   */
   label?: string | null;
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
   /** as image.upscale */
   noise?: number | null;
-  /** a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made) */
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
   priority?: number | null;
-  /** a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project} */
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
   project?: string | null;
-  /** false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn */
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
   queue?: boolean | null;
-  /** idempotent submit (as image.generate) */
+  /**
+   * idempotent submit (as image.generate)
+   * @maxLength 200
+   */
   reentrant_id?: string | null;
   /** url (default): the server keeps the MP4 and links it */
   response_format?: ResponseFormat | null;
@@ -1151,13 +1634,21 @@ export interface VideoUpscaleReq {
   variant?: string | null;
   /** the clip: MP4 / WebM / MOV ... as base64 or a data: URL */
   video?: string | null;
-  /** true: answer when it ends; false: answer at once with the job */
+  /**
+   * true: answer when it ends; false: answer at once with the job
+   * @default true
+   */
   wait?: boolean | null;
 }
 
 /** What video.wait takes. */
 export interface VideoWaitReq {
-  /** the longest it waits (above 60: refused) */
+  /**
+   * the longest it waits (above 60: refused)
+   * @minimum 0
+   * @maximum 60
+   * @default 30
+   */
   timeout_s?: number | null;
   /** the last version seen */
   version?: string | null;
@@ -1165,107 +1656,588 @@ export interface VideoWaitReq {
 
 /** Every method: what it takes and what it answers. */
 export interface Methods {
+  /**
+   * The box: the GPUs (memory by process and vouched for), every model's state, the front ends
+   * @tags system
+   */
   "system.state": { req: SystemStateReq; resp: any };
+  /**
+   * Is anything working: a clip made or waiting to run, a picture, sound or chat answered, a model loading. video.accepts says whether video.generate starts a clip at once (else 409 busy without queue: true)
+   * @tags system
+   */
   "system.busy": { req: SystemBusyReq; resp: any };
+  /**
+   * Is the control plane here, and does it take work: `available` (it answered), `maintenance` and, when on, `reason` (the notice's words) and `retry_after_s`. Nothing is loaded or started: the cheap call a client makes before sending work and after an error
+   * @tags system
+   */
   "system.ping": { req: SystemPingReq; resp: any };
+  /**
+   * The release, the API's version, the kinds enabled, the features this build has (names a client can test for) and the methods callable now
+   * @tags system
+   */
   "system.version": { req: SystemVersionReq; resp: any };
+  /**
+   * A file an answer linked: its bytes and SHA-256 (to check a download), mtime, URL
+   * @tags system
+   * @example {"kind":"video","name":"h3_20261011_220723.mp4"}
+   */
   "system.files.stat": { req: SystemFilesStatReq; resp: any };
+  /**
+   * Delete a file: a picture, a song or speech, a clip (with its record, last frame, latents and sound tail; not while it is made) or an upload (ref_...)
+   * @tags system
+   * @example {"kind":"video","name":"h3_20261011_220723"}
+   */
   "system.files.delete": { req: SystemFilesDeleteReq; resp: any };
+  /**
+   * Every registered model: kind, enabled, its GPUs, its state (disabled, unloaded, loading, loaded, busy, ready), what it can do (capabilities, methods); downloaded: true. Then every model a card offers that is not downloaded: downloaded: false, state not_downloaded, enabled false, bytes, the drive and folder it would go to, fits, its download under way (pull) - system.models.pull fetches one
+   * @tags system
+   */
   "system.models": { req: SystemModelsReq; resp: any };
+  /**
+   * Download a model a card offers (system.models: downloaded false), in the background: its files fetched (or linked when the machine has them; a partial file resumed), each SHA-256 checked, then the model registered and enabled. Into the first models folder with the room (NS_MODELS, then NS_MODEL_DIRS, then each drive's); one download at a time a folder (a second waits, queued). Answers at once with the download (system.models.pulls follows it)
+   * @tags system
+   * @example {"model":"qwen-image-2.1-q8"}
+   */
   "system.models.pull": { req: SystemModelsPullReq; resp: any };
+  /**
+   * The downloads under way and the last ones, newest first: model, state (queued, downloading, verifying, done, failed, cancelled), bytes_done, bytes_total, pct, speed (bytes a second), eta_s, drive, folder, error
+   * @tags system
+   */
   "system.models.pulls": { req: SystemModelsPullsReq; resp: any };
+  /**
+   * Stop a model's download: curl stopped, what it fetched kept (a pull again resumes it), nothing registered
+   * @tags system
+   * @example {"model":"qwen-image-2.1-q8"}
+   */
   "system.models.pull.cancel": { req: SystemModelsPullCancelReq; resp: any };
+  /**
+   * The GPUs, one neutral list: name, memory (total, used, free, and what the enabled models are counted for), load, power, temperature, the models and processes on each
+   * @tags system
+   */
   "system.cards": { req: SystemCardsReq; resp: any };
+  /**
+   * Offer a model on GPU(s): it loads on its first request and unloads when idle; chat models join Open WebUI's list
+   * @tags system
+   * @example {"gpus":[0],"model":"qwen-image-2.1-q8"}
+   */
   "system.enable": { req: SystemEnableReq; resp: any };
+  /**
+   * Change the cards a model may use (enabled or not); more than fit is allowed (the card shows overbooked). A loaded model moved off its card unloads: its next request loads it on the new cards
+   * @tags system
+   * @example {"gpus":[0,1],"model":"qwen3.8-27b-q4"}
+   */
   "system.gpus": { req: SystemGpusReq; resp: any };
+  /**
+   * Withdraw a model: unloaded (after the requests it is answering), off Open WebUI's list and this spec
+   * @tags system
+   * @example {"model":"qwen-image-2.1-q8"}
+   */
   "system.disable": { req: SystemDisableReq; resp: any };
+  /**
+   * Load an enabled model now (otherwise its first request does)
+   * @tags system
+   * @example {"model":"minimax-music3","wait":true}
+   */
   "system.load": { req: SystemLoadReq; resp: any };
+  /**
+   * Unload a model now (it stays enabled)
+   * @tags system
+   * @example {"model":"minimax-music3"}
+   */
   "system.unload": { req: SystemUnloadReq; resp: any };
+  /**
+   * The settings file (nextcuda.conf): its text, every setting the program reads (value, default, what reads it), the file's others
+   * @tags system
+   */
   "system.config": { req: SystemConfigReq; resp: any };
+  /**
+   * Change settings (the file copied first): set {NAME: value, NAME: null to remove} or text (the whole file); answers what changed and what must restart
+   * @tags system
+   * @example {"set":{"NS_IDLE_MINUTES":"15"}}
+   */
   "system.configSet": { req: SystemConfigSetReq; resp: any };
+  /**
+   * Restart what reads the settings: serve, switch, studio, video, image, audio or llm
+   * @tags system
+   * @example {"service":"switch"}
+   */
   "system.restart": { req: SystemRestartReq; resp: any };
+  /**
+   * Maintenance mode: the box set aside for development. On, what would start work (llm.chat, image/audio/video generation, edits, speech, system.load / enable, the OpenAI POST routes) is refused with error code maintenance (retryable, retry_after_s, the notice in error.maintenance; /v1: HTTP 503 + Retry-After); status, listings, cancels and guides answer as always; queued image and audio jobs wait, the video queue pauses, running work finishes; system.busy / version / state carry the notice, and Open WebUI's chats are answered with it. The answer to turning it on carries a bypass key: a request with the header X-Maintenance-Bypass: <key> goes through (a developer testing meanwhile). Without on: the current state
+   * @tags system
+   * @example {"eta_s":3600,"message":"kernel work","on":true,"unload":true}
+   */
   "system.maintenance": { req: SystemMaintenanceReq; resp: any };
+  /**
+   * The drives the models are on: device, PCIe link, mount, size, free space, the models' bytes, the read speed as measured (and when); each model's bytes by drive, whether it streams its weights from the disk while it serves, and for each other drive what a move needs or why it cannot move now; the move under way (or the last)
+   * @tags system
+   */
   "system.drives": { req: SystemDrivesReq; resp: any };
+  /**
+   * Measure a drive's read speed in the background (up to 4 GiB of its largest model files read with O_DIRECT, past the page cache; nothing written), kept with its date (system.drives). Refused while a model loads from it or a move uses it
+   * @tags system
+   * @example {"drive":"nvme1n1"}
+   */
   "system.drive.measure": { req: SystemDriveMeasureReq; resp: any };
+  /**
+   * Move a model's files to another drive, as a job (its progress in system.drives' move): each file copied and read back (size, SHA-256), then the registry repointed, then the old files removed - those another model names stay. Refused while the model is loaded or loading (stop it first), another move runs, or the drive lacks the room (plus 1%, at least 4 GiB); nothing loads the model while it moves
+   * @tags system
+   * @example {"drive":"nvme1n1","model":"olmocr-2-7b-q8"}
+   */
   "system.move": { req: SystemMoveReq; resp: any };
+  /**
+   * Stop the move under way: what it copied is removed and the registry stays as it was (once the registry is repointed it finishes)
+   * @tags system
+   */
   "system.move.cancel": { req: SystemMoveCancelReq; resp: any };
+  /**
+   * A chat completion (OpenAI's body; stream is ignored - use /v1/chat/completions to stream)
+   * @tags llm
+   * @example {"max_tokens":200,"messages":[{"content":"Say hello in five words.","role":"user"}],"model":"qwen3.8-flash-next-iq2_xs"}
+   */
   "llm.chat": { req: LlmChatReq; resp: any };
+  /**
+   * The chat requests running and the last ones that ended, with their speeds as the server reports them live: prompt tokens (reused from the cache), read seconds, tokens generated, tok/s
+   * @tags llm
+   */
   "llm.requests": { req: LlmRequestsReq; resp: any };
+  /**
+   * The enabled chat models (what Open WebUI lists) and which is loaded
+   * @tags llm
+   */
   "llm.models": { req: LlmModelsReq; resp: any };
+  /**
+   * How to prompt the model, as Markdown
+   * @tags llm
+   * @example {"model":"qwen3.8-flash-next-iq2_xs"}
+   */
   "llm.describePromptGuideMD": { req: LlmDescribePromptGuideMdReq; resp: any };
+  /**
+   * Pictures from a prompt, or from an init picture (image + strength: img2img); the model loads first if it must. Checked when submitted (a bad value is a 400 even with wait: false)
+   * @tags image
+   * @example {"model":"qwen-image-2.1-q8","prompt":"a lighthouse at dusk, oil painting","size":"1024x768"}
+   */
   "image.generate": { req: ImageGenerateReq; resp: any };
+  /**
+   * Edit or compose pictures: the first is changed, the others are references the prompt names. With reference: false and strength below 1 it is a plain img2img (as image.generate's image). Checked when submitted (a bad value is a 400 even with wait: false)
+   * @tags image
+   * @example {"images":["data:image/png;base64,iVBORw0..."],"prompt":"make it night, keep the lighthouse"}
+   */
   "image.edit": { req: ImageEditReq; resp: any };
+  /**
+   * A picture made bigger (an upscaler: Real-ESRGAN - realesrgan-x4plus, realesrgan-x4plus-anime, realesr-animevideov3 2x/3x/4x - or waifu2x - cunet, upconv_7 anime / photo, denoise -1 to 3, 1x to 32x), in overlapped tiles; alpha kept. A job like image.generate (wait, reentrant_id, status, cancel)
+   * @tags image
+   * @example {"image":"upload:up_1792400000_still.png","model":"real-esrgan","scale":4,"variant":"realesrgan-x4plus"}
+   */
   "image.upscale": { req: ImageUpscaleReq; resp: any };
+  /**
+   * A picture written as SVG code (StarVector-1B im2svg: a CLIP encoder and StarCoder-1B; logos, icons, simple illustrations). As the model's own generate_im2svg: the picture flattened on white, 2 beams sampled (top_p 0.9) until </svg> or max_length; the SVG may stop short there (closed: false - the caller closes or cuts it). A job like image.generate (wait, reentrant_id, status, cancel)
+   * @tags image
+   * @example {"image":"upload:up_1792400000_logo.png","max_length":5000,"model":"starvector-1b-im2svg"}
+   */
   "image.vectorize": { req: ImageVectorizeReq; resp: any };
+  /**
+   * A clip made bigger frame by frame by an upscaler (as image.upscale: the variant, scale, noise, tile), its sound copied as it was; an MP4 back. A job in the image queue (image.status, image.cancel)
+   * @tags video
+   * @example {"file":"h3_20261019_121939","model":"real-esrgan","scale":2,"variant":"realesr-animevideov3"}
+   */
   "video.upscale": { req: VideoUpscaleReq; resp: any };
+  /**
+   * Read pages (an OCR model: Unlimited-OCR): their text as Markdown, tables as HTML, boxes with <|grounding|>
+   * @tags image
+   * @example {"images":["data:image/png;base64,iVBORw0..."],"prompt":"document parsing."}
+   */
   "image.ocr": { req: ImageOcrReq; resp: any };
+  /**
+   * The model's defaults, samplers, schedules, options and LoRAs (loaded: from the server)
+   * @tags image
+   * @example {}
+   */
   "image.info": { req: ImageInfoReq; resp: any };
+  /**
+   * One job (image.generate / image.edit) by its label or reentrant_id (one of them is needed: image.jobs lists them): state, stage and what it waits for, its place in the queue, progress, its pictures when done
+   * @tags image
+   * @example {"label":"poster-7"}
+   */
   "image.status": { req: ImageStatusReq; resp: any };
+  /**
+   * The image jobs: running, waiting (in run order) and the last ended, each as image.status answers it
+   * @tags image
+   * @example {"limit":5}
+   */
   "image.jobs": { req: ImageJobsReq; resp: any };
+  /**
+   * The waiting image jobs in run order (held ones too: held, waiting_for)
+   * @tags image
+   */
   "image.queue.list": { req: ImageQueueListReq; resp: any };
+  /**
+   * Move a waiting job to a place in the queue (1 = made next)
+   * @tags image
+   * @example {"label":"poster-9","position":1}
+   */
   "image.queue.move": { req: ImageQueueMoveReq; resp: any };
+  /**
+   * Hold a waiting job (label or reentrant_id), a project or batch (also the ones submitted later), or (none) the whole image queue; running jobs go on
+   * @tags image
+   * @example {"project":"Harbour"}
+   */
   "image.queue.pause": { req: ImageQueuePauseReq; resp: any };
+  /**
+   * Release what queue.pause held (none: everything)
+   * @tags image
+   * @example {}
+   */
   "image.queue.resume": { req: ImageQueueResumeReq; resp: any };
+  /**
+   * Keep a picture here once (PNG, JPEG, WebP; at most 40 MP): image.generate's image, image.edit's and image.ocr's images then name it as "upload:<name>" instead of sending it again. Kept until system.files.delete {kind: image, name}
+   * @tags image
+   * @example {"data":"iVBORw0KGgo...","name":"hero.png"}
+   */
   "image.upload": { req: ImageUploadReq; resp: any };
+  /**
+   * Stop a job by its label or reentrant_id (running: between steps; waiting: at once; ended: ok with already_ended); neither: whatever the image servers are making
+   * @tags image
+   * @example {"label":"poster-7"}
+   */
   "image.cancel": { req: ImageCancelReq; resp: any };
+  /**
+   * Sizes for image.generate: the model's tested ones with their aspect, and the time measured here per size
+   * @tags image
+   * @example {}
+   */
   "image.canvases.list": { req: ImageCanvasesListReq; resp: any };
+  /**
+   * The request running: step of steps, how many wait
+   * @tags image
+   */
   "image.progress": { req: ImageProgressReq; resp: any };
+  /**
+   * The pictures made, newest first, with their settings
+   * @tags image
+   */
   "image.history": { req: ImageHistoryReq; resp: any };
+  /**
+   * How to prompt the model, as Markdown
+   * @tags image
+   * @example {"model":"qwen-image-2.1-q8"}
+   */
   "image.describePromptGuideMD": { req: ImageDescribePromptGuideMdReq; resp: any };
+  /**
+   * A song from a description and lyrics, or from a recording (acestep-1.5: a cover, a repaint or an extension, new words over it); the model loads first if it must; the answer links the WAV
+   * @tags audio
+   * @example {"input":"[verse]\nRiver runs slow tonight\n[chorus]\nCarry me home","instructions":"warm acoustic folk, 90 BPM, a soft male voice","model":"minimax-music3","seconds":60}
+   */
   "audio.generate": { req: AudioGenerateReq; resp: any };
+  /**
+   * Speech from text (a speech model: Qwen3-TTS, VoxCPM2, Breeze TTS 2); the answer links the WAV. Checked when submitted (voice, language, continue_from, ref_audio: a 400 even with wait: false). Two run at once (one per card: system.busy.parallel), so a book can keep two chunks in flight with wait: false - but a chunk with continue_from needs the chunk before it finished
+   * @tags audio
+   * @example {"input":"Good morning. The bread is still warm.","instructions":"cheerful, a little hurried","language":"english","model":"qwen3-tts-custom","voice":"ryan"}
+   */
   "audio.speak": { req: AudioSpeakReq; resp: any };
+  /**
+   * Speech to text (a recogniser: Whisper large-v3-turbo, 99 languages): the text, its segments timed by the model's timestamps and (words, the default) each word timed by its cross-attention. A job like audio.speak (wait, reentrant_id, status, cancel); long recordings go in 30 s windows, so an hour takes minutes
+   * @tags audio
+   * @example {"audio":"upload:up_1792400000_take2.wav","language":"english","words":true}
+   */
   "audio.transcribe": { req: AudioTranscribeReq; resp: any };
+  /**
+   * The saved voices (cloned or designed): name, owner, what the sample says, its description, length, whether it can be spoken now (ready) and by which enabled models; sample: its WAV
+   * @tags audio
+   * @example {"owner":"film-app"}
+   */
   "audio.voices.list": { req: AudioVoicesListReq; resp: any };
+  /**
+   * Save a voice cloned from a recording (WAV, MP3, FLAC, Ogg, M4A; 3-15 s of one speaker is best)
+   * @tags audio
+   * @example {"name":"grandpa","sample":"data:audio/mpeg;base64,SUQzBAAAAA...","text":"Well, back in my day we walked to school."}
+   */
   "audio.voices.add": { req: AudioVoicesAddReq; resp: any };
+  /**
+   * Make up a voice from a description (the voice-design model reads a sample) and save it
+   * @tags audio
+   * @example {"instructions":"A deep, warm male narrator in his fifties, unhurried, a slight rasp.","language":"english","name":"narrator"}
+   */
   "audio.voices.design": { req: AudioVoicesDesignReq; resp: any };
+  /**
+   * Delete a saved voice (an owned one: owner must match)
+   * @tags audio
+   * @example {"name":"narrator"}
+   */
   "audio.voices.remove": { req: AudioVoicesRemoveReq; resp: any };
+  /**
+   * The model's defaults, limits and options (a speech model: its voices and languages)
+   * @tags audio
+   * @example {}
+   */
   "audio.info": { req: AudioInfoReq; resp: any };
+  /**
+   * The request running: its phase and how far
+   * @tags audio
+   */
   "audio.progress": { req: AudioProgressReq; resp: any };
+  /**
+   * The songs and speech made, newest first
+   * @tags audio
+   */
   "audio.history": { req: AudioHistoryReq; resp: any };
+  /**
+   * One job (audio.generate / audio.speak) by its label or reentrant_id (one of them is needed: audio.jobs lists them): state, stage and what it waits for, its place in the queue, progress, its sound when done
+   * @tags audio
+   * @example {"label":"theme-3"}
+   */
   "audio.status": { req: AudioStatusReq; resp: any };
+  /**
+   * The audio jobs: running, waiting (in run order) and the last ended, each as audio.status answers it
+   * @tags audio
+   * @example {"limit":5}
+   */
   "audio.jobs": { req: AudioJobsReq; resp: any };
+  /**
+   * The waiting audio jobs in run order (held ones too: held, waiting_for)
+   * @tags audio
+   */
   "audio.queue.list": { req: AudioQueueListReq; resp: any };
+  /**
+   * Move a waiting job to a place in the queue (1 = made next)
+   * @tags audio
+   * @example {"label":"chapter-4","position":1}
+   */
   "audio.queue.move": { req: AudioQueueMoveReq; resp: any };
+  /**
+   * Hold a waiting job (label or reentrant_id), a project or batch (also the ones submitted later), or (none) the whole audio queue; running jobs go on
+   * @tags audio
+   * @example {"project":"Harbour"}
+   */
   "audio.queue.pause": { req: AudioQueuePauseReq; resp: any };
+  /**
+   * Release what queue.pause held (none: everything)
+   * @tags audio
+   * @example {}
+   */
   "audio.queue.resume": { req: AudioQueueResumeReq; resp: any };
+  /**
+   * Keep a recording here once (WAV, MP3, FLAC, Ogg, M4A; kept as WAV): audio.speak's ref_audio and audio.voices.add's sample then name it as "upload:<name>" instead of sending it again. Kept until system.files.delete {kind: audio, name}
+   * @tags audio
+   * @example {"data":"SUQzBAAAAA...","name":"grandpa.mp3"}
+   */
   "audio.upload": { req: AudioUploadReq; resp: any };
+  /**
+   * Stop a job by its label or reentrant_id (running: between steps or frames; waiting: at once; ended: ok with already_ended); neither: whatever the audio servers are making
+   * @tags audio
+   * @example {"label":"theme-3"}
+   */
   "audio.cancel": { req: AudioCancelReq; resp: any };
+  /**
+   * How to prompt the model, as Markdown
+   * @tags audio
+   * @example {"model":"minimax-music3"}
+   */
   "audio.describePromptGuideMD": { req: AudioDescribePromptGuideMdReq; resp: any };
+  /**
+   * A mesh from a picture of an object, or several views of it (TRELLIS.2, Hunyuan3D, Pixal3D; the model loads first if it must): its shape and, with texture, PBR textures - or, given a mesh (or file), that mesh painted like the picture; the answer links the GLB. A job like image.generate (wait, reentrant_id, status, cancel)
+   * @tags model3d
+   * @example {"image":"data:image/png;base64,iVBORw0...","model":"trellis2","reentrant_id":"chair-1","seed":42,"texture":true,"wait":false}
+   */
   "model3d.generate": { req: Model3dGenerateReq; resp: any };
+  /**
+   * A mesh given a skeleton and skin weights (UniRig, RigNet), or set in motion by words (AnimateAnyMesh: prompt); the answer links the rigged or animated GLB. A job like model3d.generate
+   * @tags model3d
+   * @example {"file":"1792132541-trellis2-42.glb","model":"unirig"}
+   */
   "model3d.rig": { req: Model3dRigReq; resp: any };
+  /**
+   * The CPU mesh tools, here (no GPU, no model): decimate (to a triangle budget), remesh (even triangles), uv (a fresh atlas, the texture or colours baked across), convert; the result is saved beside the meshes made (model3d.history) and linked
+   * @tags model3d
+   * @example {"faces":20000,"file":"1792132541-trellis2-42.glb","op":"decimate"}
+   */
   "model3d.tool": { req: Model3dToolReq; resp: any };
+  /**
+   * The model's abilities (generate, texture, views, rig, animate), defaults and options (loaded: from the server)
+   * @tags model3d
+   * @example {}
+   */
   "model3d.info": { req: Model3dInfoReq; resp: any };
+  /**
+   * The request running: its phase (image, structure, shape, texture, decode, mesh, bake, skeleton, skin, motion) and how far
+   * @tags model3d
+   */
   "model3d.progress": { req: Model3dProgressReq; resp: any };
+  /**
+   * The meshes made, newest first, with their settings and pictures
+   * @tags model3d
+   */
   "model3d.history": { req: Model3dHistoryReq; resp: any };
+  /**
+   * One job (model3d.generate / model3d.rig) by its label or reentrant_id: state, stage and what it waits for, its place in the queue, progress, its GLB when done
+   * @tags model3d
+   * @example {"label":"chair-1"}
+   */
   "model3d.status": { req: Model3dStatusReq; resp: any };
+  /**
+   * The 3D jobs: running, waiting (in run order) and the last ended, each as model3d.status answers it
+   * @tags model3d
+   * @example {"limit":5}
+   */
   "model3d.jobs": { req: Model3dJobsReq; resp: any };
+  /**
+   * The waiting 3D jobs in run order (held ones too: held, waiting_for)
+   * @tags model3d
+   */
   "model3d.queue.list": { req: Model3dQueueListReq; resp: any };
+  /**
+   * Move a waiting job to a place in the queue (1 = made next)
+   * @tags model3d
+   * @example {"label":"chair-2","position":1}
+   */
   "model3d.queue.move": { req: Model3dQueueMoveReq; resp: any };
+  /**
+   * Hold a waiting job (label or reentrant_id), a project or batch (also the ones submitted later), or (none) the whole 3D queue; running jobs go on
+   * @tags model3d
+   * @example {"project":"Props"}
+   */
   "model3d.queue.pause": { req: Model3dQueuePauseReq; resp: any };
+  /**
+   * Release what queue.pause held (none: everything)
+   * @tags model3d
+   * @example {}
+   */
   "model3d.queue.resume": { req: Model3dQueueResumeReq; resp: any };
+  /**
+   * Keep a picture (PNG, JPEG, WebP) or a mesh (GLB, OBJ) here once: model3d.generate's image / images and model3d.rig's mesh then name it as "upload:<name>". Kept until system.files.delete {kind: model3d, name}
+   * @tags model3d
+   * @example {"data":"iVBORw0KGgo...","name":"chair.png"}
+   */
   "model3d.upload": { req: Model3dUploadReq; resp: any };
+  /**
+   * Stop a job by its label or reentrant_id (running: between steps; waiting: at once; ended: ok with already_ended); neither: whatever the 3D servers are making
+   * @tags model3d
+   * @example {"label":"chair-1"}
+   */
   "model3d.cancel": { req: Model3dCancelReq; resp: any };
+  /**
+   * How to get good meshes from the model, as Markdown
+   * @tags model3d
+   * @example {"model":"trellis2"}
+   */
   "model3d.describePromptGuideMD": { req: Model3dDescribePromptGuideMdReq; resp: any };
+  /**
+   * Make a clip: it starts at once when the studio is idle (queued: false, the job), else it is queued with queue: true (queued: true, its position) or refused with 409 busy. Anchors (first_frame, last_frame, exposure_ref, first_audio, guide_clip, source) take prev, prev_cam, first, first_cam - clips of the label's series, see label - or a file in the clips directory (video.upload, or a finished clip's name)
+   * @tags video
+   * @example {"label":"Fox 01/03: snow","prompt":"integrated_multimodal_description: [Shot 1] Live-action, a red fox trots through deep snow at dawn.\n\noverall_soundscape: soft wind, crunching snow.\n\nnon_diegetic_music: None.","queue":true,"seconds":5,"steps":8}
+   */
   "video.generate": { req: VideoGenerateReq; resp: any };
+  /**
+   * The clip running or last: stage, percent, ETA, timings, a preview picture of the shot while it samples (preview), the queue, version
+   * @tags video
+   */
   "video.status": { req: VideoStatusReq; resp: any };
+  /**
+   * Long poll: answers when the status's version changes, or at the timeout
+   * @tags video
+   * @example {"timeout_s":30,"version":""}
+   */
   "video.wait": { req: VideoWaitReq; resp: any };
+  /**
+   * Stop the running clip at its next step; with a label, that clip only: stopped if it runs, dropped from the queue if it waits
+   * @tags video
+   * @example {"label":"Fox 02/03: the den"}
+   */
   "video.cancel": { req: VideoCancelReq; resp: any };
+  /**
+   * The queue in the order it will run (each item as video.generate checked it)
+   * @tags video
+   */
   "video.queue.list": { req: VideoQueueListReq; resp: any };
+  /**
+   * Move a queued clip (the first with that label) to a place in the queue: 1 = made next
+   * @tags video
+   * @example {"label":"Fox 03/03: night","position":1}
+   */
   "video.queue.move": { req: VideoQueueMoveReq; resp: any };
+  /**
+   * Drop the queued clips with that label (a running one: video.cancel)
+   * @tags video
+   * @example {"label":"Fox 03/03: night"}
+   */
   "video.queue.remove": { req: VideoQueueRemoveReq; resp: any };
+  /**
+   * Hold a project or batch (none: everything)
+   * @tags video
+   * @example {"project":"Harbour"}
+   */
   "video.queue.pause": { req: VideoQueuePauseReq; resp: any };
+  /**
+   * Release a project or batch (none: everything)
+   * @tags video
+   * @example {}
+   */
   "video.queue.resume": { req: VideoQueueResumeReq; resp: any };
+  /**
+   * Drop the queue, or a project's / batch's part of it
+   * @tags video
+   * @example {}
+   */
   "video.queue.clear": { req: VideoQueueClearReq; resp: any };
+  /**
+   * Finished clips (GET /v1/video/files/<file> fetches one)
+   * @tags video
+   * @example {"limit":20}
+   */
   "video.jobs.list": { req: VideoJobsListReq; resp: any };
+  /**
+   * A clip's record: settings, per-stage seconds, energy
+   * @tags video
+   * @example {"name":"h3_20261009_113734"}
+   */
   "video.jobs.get": { req: VideoJobsGetReq; resp: any };
+  /**
+   * A project's clips in edit order: done (with its file's name), running, held, queued
+   * @tags video
+   * @example {"project":"Harbour"}
+   */
   "video.timeline": { req: VideoTimelineReq; resp: any };
+  /**
+   * The projects and batches
+   * @tags video
+   */
   "video.projects.list": { req: VideoProjectsListReq; resp: any };
+  /**
+   * Joined films
+   * @tags video
+   */
   "video.films.list": { req: VideoFilmsListReq; resp: any };
+  /**
+   * Prompt templates
+   * @tags video
+   */
   "video.templates.list": { req: VideoTemplatesListReq; resp: any };
+  /**
+   * The denoisers the daemon has, and the video.generate keys each takes: INT8 / Q6_K / Q4_K_M (text and image to video: anchors, guides, ControlNet, masked runs) and REF2VA (reference pictures and clips; no ControlNet or masked runs). ref_audios, anchors and guides work with every one
+   * @tags video
+   */
   "video.engines.list": { req: VideoEnginesListReq; resp: any };
+  /**
+   * The canvases and their measured cost
+   * @tags video
+   */
   "video.canvases.list": { req: VideoCanvasesListReq; resp: any };
+  /**
+   * Measured GPU time per second of video, energy, queue ETA
+   * @tags video
+   */
   "video.summary": { req: VideoSummaryReq; resp: any };
+  /**
+   * Put a reference, control video, mask or keyframe beside the clips (its name is what the other keys take). The request is at most 256 MiB, so the file at most about 190 MiB as base64. Uploads are kept: nothing deletes them (they sit in the clips directory with the clips)
+   * @tags video
+   * @example {"data":"iVBORw0KGgo...","name":"fox.png"}
+   */
   "video.upload": { req: VideoUploadReq; resp: any };
+  /**
+   * How to prompt the model, as Markdown
+   * @tags video
+   * @example {"model":"minimax-h3"}
+   */
   "video.describePromptGuideMD": { req: VideoDescribePromptGuideMdReq; resp: any };
 }
 
@@ -1291,209 +2263,588 @@ export function client(post: Post, raw?: PostRaw) {
   const bytes = (m: string, b: unknown) => (raw ? raw(m, b) : Promise.reject(new Error("no raw call given")));
   void bytes;
   return {
-    /** The box: the GPUs (memory by process and vouched for), every model's state, the front ends */
+    /**
+     * The box: the GPUs (memory by process and vouched for), every model's state, the front ends
+     * @tags system
+     */
     "system.state": (req: SystemStateReq = {}): Promise<any> => post("system.state", req),
-    /** Is anything working: a clip made or waiting to run, a picture, sound or chat answered, a model loading. video.accepts says whether video.generate starts a clip at once (else 409 busy without queue: true) */
+    /**
+     * Is anything working: a clip made or waiting to run, a picture, sound or chat answered, a model loading. video.accepts says whether video.generate starts a clip at once (else 409 busy without queue: true)
+     * @tags system
+     */
     "system.busy": (req: SystemBusyReq = {}): Promise<any> => post("system.busy", req),
-    /** Is the control plane here, and does it take work: `available` (it answered), `maintenance` and, when on, `reason` (the notice's words) and `retry_after_s`. Nothing is loaded or started: the cheap call a client makes before sending work and after an error */
+    /**
+     * Is the control plane here, and does it take work: `available` (it answered), `maintenance` and, when on, `reason` (the notice's words) and `retry_after_s`. Nothing is loaded or started: the cheap call a client makes before sending work and after an error
+     * @tags system
+     */
     "system.ping": (req: SystemPingReq = {}): Promise<any> => post("system.ping", req),
-    /** The release, the API's version, the kinds enabled, the features this build has (names a client can test for) and the methods callable now */
+    /**
+     * The release, the API's version, the kinds enabled, the features this build has (names a client can test for) and the methods callable now
+     * @tags system
+     */
     "system.version": (req: SystemVersionReq = {}): Promise<any> => post("system.version", req),
-    /** A file an answer linked: its bytes and SHA-256 (to check a download), mtime, URL */
+    /**
+     * A file an answer linked: its bytes and SHA-256 (to check a download), mtime, URL
+     * @tags system
+     * @example {"kind":"video","name":"h3_20261011_220723.mp4"}
+     */
     "system.files.stat": (req: SystemFilesStatReq): Promise<any> => post("system.files.stat", req),
-    /** Delete a file: a picture, a song or speech, a clip (with its record, last frame, latents and sound tail; not while it is made) or an upload (ref_...) */
+    /**
+     * Delete a file: a picture, a song or speech, a clip (with its record, last frame, latents and sound tail; not while it is made) or an upload (ref_...)
+     * @tags system
+     * @example {"kind":"video","name":"h3_20261011_220723"}
+     */
     "system.files.delete": (req: SystemFilesDeleteReq): Promise<any> => post("system.files.delete", req),
-    /** Every registered model: kind, enabled, its GPUs, its state (disabled, unloaded, loading, loaded, busy, ready), what it can do (capabilities, methods); downloaded: true. Then every model a card offers that is not downloaded: downloaded: false, state not_downloaded, enabled false, bytes, the drive and folder it would go to, fits, its download under way (pull) - system.models.pull fetches one */
+    /**
+     * Every registered model: kind, enabled, its GPUs, its state (disabled, unloaded, loading, loaded, busy, ready), what it can do (capabilities, methods); downloaded: true. Then every model a card offers that is not downloaded: downloaded: false, state not_downloaded, enabled false, bytes, the drive and folder it would go to, fits, its download under way (pull) - system.models.pull fetches one
+     * @tags system
+     */
     "system.models": (req: SystemModelsReq = {}): Promise<any> => post("system.models", req),
-    /** Download a model a card offers (system.models: downloaded false), in the background: its files fetched (or linked when the machine has them; a partial file resumed), each SHA-256 checked, then the model registered and enabled. Into the first models folder with the room (NS_MODELS, then NS_MODEL_DIRS, then each drive's); one download at a time a folder (a second waits, queued). Answers at once with the download (system.models.pulls follows it) */
+    /**
+     * Download a model a card offers (system.models: downloaded false), in the background: its files fetched (or linked when the machine has them; a partial file resumed), each SHA-256 checked, then the model registered and enabled. Into the first models folder with the room (NS_MODELS, then NS_MODEL_DIRS, then each drive's); one download at a time a folder (a second waits, queued). Answers at once with the download (system.models.pulls follows it)
+     * @tags system
+     * @example {"model":"qwen-image-2.1-q8"}
+     */
     "system.models.pull": (req: SystemModelsPullReq): Promise<any> => post("system.models.pull", req),
-    /** The downloads under way and the last ones, newest first: model, state (queued, downloading, verifying, done, failed, cancelled), bytes_done, bytes_total, pct, speed (bytes a second), eta_s, drive, folder, error */
+    /**
+     * The downloads under way and the last ones, newest first: model, state (queued, downloading, verifying, done, failed, cancelled), bytes_done, bytes_total, pct, speed (bytes a second), eta_s, drive, folder, error
+     * @tags system
+     */
     "system.models.pulls": (req: SystemModelsPullsReq = {}): Promise<any> => post("system.models.pulls", req),
-    /** Stop a model's download: curl stopped, what it fetched kept (a pull again resumes it), nothing registered */
+    /**
+     * Stop a model's download: curl stopped, what it fetched kept (a pull again resumes it), nothing registered
+     * @tags system
+     * @example {"model":"qwen-image-2.1-q8"}
+     */
     "system.models.pull.cancel": (req: SystemModelsPullCancelReq): Promise<any> => post("system.models.pull.cancel", req),
-    /** The GPUs, one neutral list: name, memory (total, used, free, and what the enabled models are counted for), load, power, temperature, the models and processes on each */
+    /**
+     * The GPUs, one neutral list: name, memory (total, used, free, and what the enabled models are counted for), load, power, temperature, the models and processes on each
+     * @tags system
+     */
     "system.cards": (req: SystemCardsReq = {}): Promise<any> => post("system.cards", req),
-    /** Offer a model on GPU(s): it loads on its first request and unloads when idle; chat models join Open WebUI's list */
+    /**
+     * Offer a model on GPU(s): it loads on its first request and unloads when idle; chat models join Open WebUI's list
+     * @tags system
+     * @example {"gpus":[0],"model":"qwen-image-2.1-q8"}
+     */
     "system.enable": (req: SystemEnableReq): Promise<any> => post("system.enable", req),
-    /** Change the cards a model may use (enabled or not); more than fit is allowed (the card shows overbooked). A loaded model moved off its card unloads: its next request loads it on the new cards */
+    /**
+     * Change the cards a model may use (enabled or not); more than fit is allowed (the card shows overbooked). A loaded model moved off its card unloads: its next request loads it on the new cards
+     * @tags system
+     * @example {"gpus":[0,1],"model":"qwen3.8-27b-q4"}
+     */
     "system.gpus": (req: SystemGpusReq): Promise<any> => post("system.gpus", req),
-    /** Withdraw a model: unloaded (after the requests it is answering), off Open WebUI's list and this spec */
+    /**
+     * Withdraw a model: unloaded (after the requests it is answering), off Open WebUI's list and this spec
+     * @tags system
+     * @example {"model":"qwen-image-2.1-q8"}
+     */
     "system.disable": (req: SystemDisableReq): Promise<any> => post("system.disable", req),
-    /** Load an enabled model now (otherwise its first request does) */
+    /**
+     * Load an enabled model now (otherwise its first request does)
+     * @tags system
+     * @example {"model":"minimax-music3","wait":true}
+     */
     "system.load": (req: SystemLoadReq): Promise<any> => post("system.load", req),
-    /** Unload a model now (it stays enabled) */
+    /**
+     * Unload a model now (it stays enabled)
+     * @tags system
+     * @example {"model":"minimax-music3"}
+     */
     "system.unload": (req: SystemUnloadReq): Promise<any> => post("system.unload", req),
-    /** The settings file (nextcuda.conf): its text, every setting the program reads (value, default, what reads it), the file's others */
+    /**
+     * The settings file (nextcuda.conf): its text, every setting the program reads (value, default, what reads it), the file's others
+     * @tags system
+     */
     "system.config": (req: SystemConfigReq = {}): Promise<any> => post("system.config", req),
-    /** Change settings (the file copied first): set {NAME: value, NAME: null to remove} or text (the whole file); answers what changed and what must restart */
+    /**
+     * Change settings (the file copied first): set {NAME: value, NAME: null to remove} or text (the whole file); answers what changed and what must restart
+     * @tags system
+     * @example {"set":{"NS_IDLE_MINUTES":"15"}}
+     */
     "system.configSet": (req: SystemConfigSetReq): Promise<any> => post("system.configSet", req),
-    /** Restart what reads the settings: serve, switch, studio, video, image, audio or llm */
+    /**
+     * Restart what reads the settings: serve, switch, studio, video, image, audio or llm
+     * @tags system
+     * @example {"service":"switch"}
+     */
     "system.restart": (req: SystemRestartReq): Promise<any> => post("system.restart", req),
-    /** Maintenance mode: the box set aside for development. On, what would start work (llm.chat, image/audio/video generation, edits, speech, system.load / enable, the OpenAI POST routes) is refused with error code maintenance (retryable, retry_after_s, the notice in error.maintenance; /v1: HTTP 503 + Retry-After); status, listings, cancels and guides answer as always; queued image and audio jobs wait, the video queue pauses, running work finishes; system.busy / version / state carry the notice, and Open WebUI's chats are answered with it. The answer to turning it on carries a bypass key: a request with the header X-Maintenance-Bypass: <key> goes through (a developer testing meanwhile). Without on: the current state */
+    /**
+     * Maintenance mode: the box set aside for development. On, what would start work (llm.chat, image/audio/video generation, edits, speech, system.load / enable, the OpenAI POST routes) is refused with error code maintenance (retryable, retry_after_s, the notice in error.maintenance; /v1: HTTP 503 + Retry-After); status, listings, cancels and guides answer as always; queued image and audio jobs wait, the video queue pauses, running work finishes; system.busy / version / state carry the notice, and Open WebUI's chats are answered with it. The answer to turning it on carries a bypass key: a request with the header X-Maintenance-Bypass: <key> goes through (a developer testing meanwhile). Without on: the current state
+     * @tags system
+     * @example {"eta_s":3600,"message":"kernel work","on":true,"unload":true}
+     */
     "system.maintenance": (req: SystemMaintenanceReq): Promise<any> => post("system.maintenance", req),
-    /** The drives the models are on: device, PCIe link, mount, size, free space, the models' bytes, the read speed as measured (and when); each model's bytes by drive, whether it streams its weights from the disk while it serves, and for each other drive what a move needs or why it cannot move now; the move under way (or the last) */
+    /**
+     * The drives the models are on: device, PCIe link, mount, size, free space, the models' bytes, the read speed as measured (and when); each model's bytes by drive, whether it streams its weights from the disk while it serves, and for each other drive what a move needs or why it cannot move now; the move under way (or the last)
+     * @tags system
+     */
     "system.drives": (req: SystemDrivesReq = {}): Promise<any> => post("system.drives", req),
-    /** Measure a drive's read speed in the background (up to 4 GiB of its largest model files read with O_DIRECT, past the page cache; nothing written), kept with its date (system.drives). Refused while a model loads from it or a move uses it */
+    /**
+     * Measure a drive's read speed in the background (up to 4 GiB of its largest model files read with O_DIRECT, past the page cache; nothing written), kept with its date (system.drives). Refused while a model loads from it or a move uses it
+     * @tags system
+     * @example {"drive":"nvme1n1"}
+     */
     "system.drive.measure": (req: SystemDriveMeasureReq): Promise<any> => post("system.drive.measure", req),
-    /** Move a model's files to another drive, as a job (its progress in system.drives' move): each file copied and read back (size, SHA-256), then the registry repointed, then the old files removed - those another model names stay. Refused while the model is loaded or loading (stop it first), another move runs, or the drive lacks the room (plus 1%, at least 4 GiB); nothing loads the model while it moves */
+    /**
+     * Move a model's files to another drive, as a job (its progress in system.drives' move): each file copied and read back (size, SHA-256), then the registry repointed, then the old files removed - those another model names stay. Refused while the model is loaded or loading (stop it first), another move runs, or the drive lacks the room (plus 1%, at least 4 GiB); nothing loads the model while it moves
+     * @tags system
+     * @example {"drive":"nvme1n1","model":"olmocr-2-7b-q8"}
+     */
     "system.move": (req: SystemMoveReq): Promise<any> => post("system.move", req),
-    /** Stop the move under way: what it copied is removed and the registry stays as it was (once the registry is repointed it finishes) */
+    /**
+     * Stop the move under way: what it copied is removed and the registry stays as it was (once the registry is repointed it finishes)
+     * @tags system
+     */
     "system.move.cancel": (req: SystemMoveCancelReq = {}): Promise<any> => post("system.move.cancel", req),
-    /** A chat completion (OpenAI's body; stream is ignored - use /v1/chat/completions to stream) */
+    /**
+     * A chat completion (OpenAI's body; stream is ignored - use /v1/chat/completions to stream)
+     * @tags llm
+     * @example {"max_tokens":200,"messages":[{"content":"Say hello in five words.","role":"user"}],"model":"qwen3.8-flash-next-iq2_xs"}
+     */
     "llm.chat": (req: LlmChatReq): Promise<any> => post("llm.chat", req),
-    /** The chat requests running and the last ones that ended, with their speeds as the server reports them live: prompt tokens (reused from the cache), read seconds, tokens generated, tok/s */
+    /**
+     * The chat requests running and the last ones that ended, with their speeds as the server reports them live: prompt tokens (reused from the cache), read seconds, tokens generated, tok/s
+     * @tags llm
+     */
     "llm.requests": (req: LlmRequestsReq = {}): Promise<any> => post("llm.requests", req),
-    /** The enabled chat models (what Open WebUI lists) and which is loaded */
+    /**
+     * The enabled chat models (what Open WebUI lists) and which is loaded
+     * @tags llm
+     */
     "llm.models": (req: LlmModelsReq = {}): Promise<any> => post("llm.models", req),
-    /** How to prompt the model, as Markdown */
+    /**
+     * How to prompt the model, as Markdown
+     * @tags llm
+     * @example {"model":"qwen3.8-flash-next-iq2_xs"}
+     */
     "llm.describePromptGuideMD": (req: LlmDescribePromptGuideMdReq): Promise<any> => post("llm.describePromptGuideMD", req),
-    /** Pictures from a prompt, or from an init picture (image + strength: img2img); the model loads first if it must. Checked when submitted (a bad value is a 400 even with wait: false) */
+    /**
+     * Pictures from a prompt, or from an init picture (image + strength: img2img); the model loads first if it must. Checked when submitted (a bad value is a 400 even with wait: false)
+     * @tags image
+     * @example {"model":"qwen-image-2.1-q8","prompt":"a lighthouse at dusk, oil painting","size":"1024x768"}
+     */
     "image.generate": (req: ImageGenerateReq): Promise<any> => post("image.generate", req),
-    /** Edit or compose pictures: the first is changed, the others are references the prompt names. With reference: false and strength below 1 it is a plain img2img (as image.generate's image). Checked when submitted (a bad value is a 400 even with wait: false) */
+    /**
+     * Edit or compose pictures: the first is changed, the others are references the prompt names. With reference: false and strength below 1 it is a plain img2img (as image.generate's image). Checked when submitted (a bad value is a 400 even with wait: false)
+     * @tags image
+     * @example {"images":["data:image/png;base64,iVBORw0..."],"prompt":"make it night, keep the lighthouse"}
+     */
     "image.edit": (req: ImageEditReq): Promise<any> => post("image.edit", req),
-    /** A picture made bigger (an upscaler: Real-ESRGAN - realesrgan-x4plus, realesrgan-x4plus-anime, realesr-animevideov3 2x/3x/4x - or waifu2x - cunet, upconv_7 anime / photo, denoise -1 to 3, 1x to 32x), in overlapped tiles; alpha kept. A job like image.generate (wait, reentrant_id, status, cancel) */
+    /**
+     * A picture made bigger (an upscaler: Real-ESRGAN - realesrgan-x4plus, realesrgan-x4plus-anime, realesr-animevideov3 2x/3x/4x - or waifu2x - cunet, upconv_7 anime / photo, denoise -1 to 3, 1x to 32x), in overlapped tiles; alpha kept. A job like image.generate (wait, reentrant_id, status, cancel)
+     * @tags image
+     * @example {"image":"upload:up_1792400000_still.png","model":"real-esrgan","scale":4,"variant":"realesrgan-x4plus"}
+     */
     "image.upscale": (req: ImageUpscaleReq): Promise<any> => post("image.upscale", req),
-    /** A picture written as SVG code (StarVector-1B im2svg: a CLIP encoder and StarCoder-1B; logos, icons, simple illustrations). As the model's own generate_im2svg: the picture flattened on white, 2 beams sampled (top_p 0.9) until </svg> or max_length; the SVG may stop short there (closed: false - the caller closes or cuts it). A job like image.generate (wait, reentrant_id, status, cancel) */
+    /**
+     * A picture written as SVG code (StarVector-1B im2svg: a CLIP encoder and StarCoder-1B; logos, icons, simple illustrations). As the model's own generate_im2svg: the picture flattened on white, 2 beams sampled (top_p 0.9) until </svg> or max_length; the SVG may stop short there (closed: false - the caller closes or cuts it). A job like image.generate (wait, reentrant_id, status, cancel)
+     * @tags image
+     * @example {"image":"upload:up_1792400000_logo.png","max_length":5000,"model":"starvector-1b-im2svg"}
+     */
     "image.vectorize": (req: ImageVectorizeReq): Promise<any> => post("image.vectorize", req),
-    /** A clip made bigger frame by frame by an upscaler (as image.upscale: the variant, scale, noise, tile), its sound copied as it was; an MP4 back. A job in the image queue (image.status, image.cancel) */
+    /**
+     * A clip made bigger frame by frame by an upscaler (as image.upscale: the variant, scale, noise, tile), its sound copied as it was; an MP4 back. A job in the image queue (image.status, image.cancel)
+     * @tags video
+     * @example {"file":"h3_20261019_121939","model":"real-esrgan","scale":2,"variant":"realesr-animevideov3"}
+     */
     "video.upscale": (req: VideoUpscaleReq): Promise<any> => post("video.upscale", req),
-    /** Read pages (an OCR model: Unlimited-OCR): their text as Markdown, tables as HTML, boxes with <|grounding|> */
+    /**
+     * Read pages (an OCR model: Unlimited-OCR): their text as Markdown, tables as HTML, boxes with <|grounding|>
+     * @tags image
+     * @example {"images":["data:image/png;base64,iVBORw0..."],"prompt":"document parsing."}
+     */
     "image.ocr": (req: ImageOcrReq): Promise<any> => post("image.ocr", req),
-    /** The model's defaults, samplers, schedules, options and LoRAs (loaded: from the server) */
+    /**
+     * The model's defaults, samplers, schedules, options and LoRAs (loaded: from the server)
+     * @tags image
+     * @example {}
+     */
     "image.info": (req: ImageInfoReq): Promise<any> => post("image.info", req),
-    /** One job (image.generate / image.edit) by its label or reentrant_id (one of them is needed: image.jobs lists them): state, stage and what it waits for, its place in the queue, progress, its pictures when done */
+    /**
+     * One job (image.generate / image.edit) by its label or reentrant_id (one of them is needed: image.jobs lists them): state, stage and what it waits for, its place in the queue, progress, its pictures when done
+     * @tags image
+     * @example {"label":"poster-7"}
+     */
     "image.status": (req: ImageStatusReq): Promise<any> => post("image.status", req),
-    /** The image jobs: running, waiting (in run order) and the last ended, each as image.status answers it */
+    /**
+     * The image jobs: running, waiting (in run order) and the last ended, each as image.status answers it
+     * @tags image
+     * @example {"limit":5}
+     */
     "image.jobs": (req: ImageJobsReq): Promise<any> => post("image.jobs", req),
-    /** The waiting image jobs in run order (held ones too: held, waiting_for) */
+    /**
+     * The waiting image jobs in run order (held ones too: held, waiting_for)
+     * @tags image
+     */
     "image.queue.list": (req: ImageQueueListReq = {}): Promise<any> => post("image.queue.list", req),
-    /** Move a waiting job to a place in the queue (1 = made next) */
+    /**
+     * Move a waiting job to a place in the queue (1 = made next)
+     * @tags image
+     * @example {"label":"poster-9","position":1}
+     */
     "image.queue.move": (req: ImageQueueMoveReq): Promise<any> => post("image.queue.move", req),
-    /** Hold a waiting job (label or reentrant_id), a project or batch (also the ones submitted later), or (none) the whole image queue; running jobs go on */
+    /**
+     * Hold a waiting job (label or reentrant_id), a project or batch (also the ones submitted later), or (none) the whole image queue; running jobs go on
+     * @tags image
+     * @example {"project":"Harbour"}
+     */
     "image.queue.pause": (req: ImageQueuePauseReq): Promise<any> => post("image.queue.pause", req),
-    /** Release what queue.pause held (none: everything) */
+    /**
+     * Release what queue.pause held (none: everything)
+     * @tags image
+     * @example {}
+     */
     "image.queue.resume": (req: ImageQueueResumeReq): Promise<any> => post("image.queue.resume", req),
-    /** Keep a picture here once (PNG, JPEG, WebP; at most 40 MP): image.generate's image, image.edit's and image.ocr's images then name it as "upload:<name>" instead of sending it again. Kept until system.files.delete {kind: image, name} */
+    /**
+     * Keep a picture here once (PNG, JPEG, WebP; at most 40 MP): image.generate's image, image.edit's and image.ocr's images then name it as "upload:<name>" instead of sending it again. Kept until system.files.delete {kind: image, name}
+     * @tags image
+     * @example {"data":"iVBORw0KGgo...","name":"hero.png"}
+     */
     "image.upload": (req: ImageUploadReq): Promise<any> => post("image.upload", req),
-    /** Stop a job by its label or reentrant_id (running: between steps; waiting: at once; ended: ok with already_ended); neither: whatever the image servers are making */
+    /**
+     * Stop a job by its label or reentrant_id (running: between steps; waiting: at once; ended: ok with already_ended); neither: whatever the image servers are making
+     * @tags image
+     * @example {"label":"poster-7"}
+     */
     "image.cancel": (req: ImageCancelReq): Promise<any> => post("image.cancel", req),
-    /** Sizes for image.generate: the model's tested ones with their aspect, and the time measured here per size */
+    /**
+     * Sizes for image.generate: the model's tested ones with their aspect, and the time measured here per size
+     * @tags image
+     * @example {}
+     */
     "image.canvases.list": (req: ImageCanvasesListReq): Promise<any> => post("image.canvases.list", req),
-    /** The request running: step of steps, how many wait */
+    /**
+     * The request running: step of steps, how many wait
+     * @tags image
+     */
     "image.progress": (req: ImageProgressReq = {}): Promise<any> => post("image.progress", req),
-    /** The pictures made, newest first, with their settings */
+    /**
+     * The pictures made, newest first, with their settings
+     * @tags image
+     */
     "image.history": (req: ImageHistoryReq = {}): Promise<any> => post("image.history", req),
-    /** How to prompt the model, as Markdown */
+    /**
+     * How to prompt the model, as Markdown
+     * @tags image
+     * @example {"model":"qwen-image-2.1-q8"}
+     */
     "image.describePromptGuideMD": (req: ImageDescribePromptGuideMdReq): Promise<any> => post("image.describePromptGuideMD", req),
-    /** A song from a description and lyrics, or from a recording (acestep-1.5: a cover, a repaint or an extension, new words over it); the model loads first if it must; the answer links the WAV */
+    /**
+     * A song from a description and lyrics, or from a recording (acestep-1.5: a cover, a repaint or an extension, new words over it); the model loads first if it must; the answer links the WAV
+     * @tags audio
+     * @example {"input":"[verse]\nRiver runs slow tonight\n[chorus]\nCarry me home","instructions":"warm acoustic folk, 90 BPM, a soft male voice","model":"minimax-music3","seconds":60}
+     */
     "audio.generate": (req: AudioGenerateReq): Promise<any> => post("audio.generate", req),
-    /** Speech from text (a speech model: Qwen3-TTS, VoxCPM2, Breeze TTS 2); the answer links the WAV. Checked when submitted (voice, language, continue_from, ref_audio: a 400 even with wait: false). Two run at once (one per card: system.busy.parallel), so a book can keep two chunks in flight with wait: false - but a chunk with continue_from needs the chunk before it finished */
+    /**
+     * Speech from text (a speech model: Qwen3-TTS, VoxCPM2, Breeze TTS 2); the answer links the WAV. Checked when submitted (voice, language, continue_from, ref_audio: a 400 even with wait: false). Two run at once (one per card: system.busy.parallel), so a book can keep two chunks in flight with wait: false - but a chunk with continue_from needs the chunk before it finished
+     * @tags audio
+     * @example {"input":"Good morning. The bread is still warm.","instructions":"cheerful, a little hurried","language":"english","model":"qwen3-tts-custom","voice":"ryan"}
+     */
     "audio.speak": (req: AudioSpeakReq): Promise<any> => post("audio.speak", req),
-    /** Speech to text (a recogniser: Whisper large-v3-turbo, 99 languages): the text, its segments timed by the model's timestamps and (words, the default) each word timed by its cross-attention. A job like audio.speak (wait, reentrant_id, status, cancel); long recordings go in 30 s windows, so an hour takes minutes */
+    /**
+     * Speech to text (a recogniser: Whisper large-v3-turbo, 99 languages): the text, its segments timed by the model's timestamps and (words, the default) each word timed by its cross-attention. A job like audio.speak (wait, reentrant_id, status, cancel); long recordings go in 30 s windows, so an hour takes minutes
+     * @tags audio
+     * @example {"audio":"upload:up_1792400000_take2.wav","language":"english","words":true}
+     */
     "audio.transcribe": (req: AudioTranscribeReq): Promise<any> => post("audio.transcribe", req),
-    /** The saved voices (cloned or designed): name, owner, what the sample says, its description, length, whether it can be spoken now (ready) and by which enabled models; sample: its WAV */
+    /**
+     * The saved voices (cloned or designed): name, owner, what the sample says, its description, length, whether it can be spoken now (ready) and by which enabled models; sample: its WAV
+     * @tags audio
+     * @example {"owner":"film-app"}
+     */
     "audio.voices.list": (req: AudioVoicesListReq): Promise<any> => post("audio.voices.list", req),
-    /** Save a voice cloned from a recording (WAV, MP3, FLAC, Ogg, M4A; 3-15 s of one speaker is best) */
+    /**
+     * Save a voice cloned from a recording (WAV, MP3, FLAC, Ogg, M4A; 3-15 s of one speaker is best)
+     * @tags audio
+     * @example {"name":"grandpa","sample":"data:audio/mpeg;base64,SUQzBAAAAA...","text":"Well, back in my day we walked to school."}
+     */
     "audio.voices.add": (req: AudioVoicesAddReq): Promise<any> => post("audio.voices.add", req),
-    /** Make up a voice from a description (the voice-design model reads a sample) and save it */
+    /**
+     * Make up a voice from a description (the voice-design model reads a sample) and save it
+     * @tags audio
+     * @example {"instructions":"A deep, warm male narrator in his fifties, unhurried, a slight rasp.","language":"english","name":"narrator"}
+     */
     "audio.voices.design": (req: AudioVoicesDesignReq): Promise<any> => post("audio.voices.design", req),
-    /** Delete a saved voice (an owned one: owner must match) */
+    /**
+     * Delete a saved voice (an owned one: owner must match)
+     * @tags audio
+     * @example {"name":"narrator"}
+     */
     "audio.voices.remove": (req: AudioVoicesRemoveReq): Promise<any> => post("audio.voices.remove", req),
-    /** The model's defaults, limits and options (a speech model: its voices and languages) */
+    /**
+     * The model's defaults, limits and options (a speech model: its voices and languages)
+     * @tags audio
+     * @example {}
+     */
     "audio.info": (req: AudioInfoReq): Promise<any> => post("audio.info", req),
-    /** The request running: its phase and how far */
+    /**
+     * The request running: its phase and how far
+     * @tags audio
+     */
     "audio.progress": (req: AudioProgressReq = {}): Promise<any> => post("audio.progress", req),
-    /** The songs and speech made, newest first */
+    /**
+     * The songs and speech made, newest first
+     * @tags audio
+     */
     "audio.history": (req: AudioHistoryReq = {}): Promise<any> => post("audio.history", req),
-    /** One job (audio.generate / audio.speak) by its label or reentrant_id (one of them is needed: audio.jobs lists them): state, stage and what it waits for, its place in the queue, progress, its sound when done */
+    /**
+     * One job (audio.generate / audio.speak) by its label or reentrant_id (one of them is needed: audio.jobs lists them): state, stage and what it waits for, its place in the queue, progress, its sound when done
+     * @tags audio
+     * @example {"label":"theme-3"}
+     */
     "audio.status": (req: AudioStatusReq): Promise<any> => post("audio.status", req),
-    /** The audio jobs: running, waiting (in run order) and the last ended, each as audio.status answers it */
+    /**
+     * The audio jobs: running, waiting (in run order) and the last ended, each as audio.status answers it
+     * @tags audio
+     * @example {"limit":5}
+     */
     "audio.jobs": (req: AudioJobsReq): Promise<any> => post("audio.jobs", req),
-    /** The waiting audio jobs in run order (held ones too: held, waiting_for) */
+    /**
+     * The waiting audio jobs in run order (held ones too: held, waiting_for)
+     * @tags audio
+     */
     "audio.queue.list": (req: AudioQueueListReq = {}): Promise<any> => post("audio.queue.list", req),
-    /** Move a waiting job to a place in the queue (1 = made next) */
+    /**
+     * Move a waiting job to a place in the queue (1 = made next)
+     * @tags audio
+     * @example {"label":"chapter-4","position":1}
+     */
     "audio.queue.move": (req: AudioQueueMoveReq): Promise<any> => post("audio.queue.move", req),
-    /** Hold a waiting job (label or reentrant_id), a project or batch (also the ones submitted later), or (none) the whole audio queue; running jobs go on */
+    /**
+     * Hold a waiting job (label or reentrant_id), a project or batch (also the ones submitted later), or (none) the whole audio queue; running jobs go on
+     * @tags audio
+     * @example {"project":"Harbour"}
+     */
     "audio.queue.pause": (req: AudioQueuePauseReq): Promise<any> => post("audio.queue.pause", req),
-    /** Release what queue.pause held (none: everything) */
+    /**
+     * Release what queue.pause held (none: everything)
+     * @tags audio
+     * @example {}
+     */
     "audio.queue.resume": (req: AudioQueueResumeReq): Promise<any> => post("audio.queue.resume", req),
-    /** Keep a recording here once (WAV, MP3, FLAC, Ogg, M4A; kept as WAV): audio.speak's ref_audio and audio.voices.add's sample then name it as "upload:<name>" instead of sending it again. Kept until system.files.delete {kind: audio, name} */
+    /**
+     * Keep a recording here once (WAV, MP3, FLAC, Ogg, M4A; kept as WAV): audio.speak's ref_audio and audio.voices.add's sample then name it as "upload:<name>" instead of sending it again. Kept until system.files.delete {kind: audio, name}
+     * @tags audio
+     * @example {"data":"SUQzBAAAAA...","name":"grandpa.mp3"}
+     */
     "audio.upload": (req: AudioUploadReq): Promise<any> => post("audio.upload", req),
-    /** Stop a job by its label or reentrant_id (running: between steps or frames; waiting: at once; ended: ok with already_ended); neither: whatever the audio servers are making */
+    /**
+     * Stop a job by its label or reentrant_id (running: between steps or frames; waiting: at once; ended: ok with already_ended); neither: whatever the audio servers are making
+     * @tags audio
+     * @example {"label":"theme-3"}
+     */
     "audio.cancel": (req: AudioCancelReq): Promise<any> => post("audio.cancel", req),
-    /** How to prompt the model, as Markdown */
+    /**
+     * How to prompt the model, as Markdown
+     * @tags audio
+     * @example {"model":"minimax-music3"}
+     */
     "audio.describePromptGuideMD": (req: AudioDescribePromptGuideMdReq): Promise<any> => post("audio.describePromptGuideMD", req),
-    /** A mesh from a picture of an object, or several views of it (TRELLIS.2, Hunyuan3D, Pixal3D; the model loads first if it must): its shape and, with texture, PBR textures - or, given a mesh (or file), that mesh painted like the picture; the answer links the GLB. A job like image.generate (wait, reentrant_id, status, cancel) */
+    /**
+     * A mesh from a picture of an object, or several views of it (TRELLIS.2, Hunyuan3D, Pixal3D; the model loads first if it must): its shape and, with texture, PBR textures - or, given a mesh (or file), that mesh painted like the picture; the answer links the GLB. A job like image.generate (wait, reentrant_id, status, cancel)
+     * @tags model3d
+     * @example {"image":"data:image/png;base64,iVBORw0...","model":"trellis2","reentrant_id":"chair-1","seed":42,"texture":true,"wait":false}
+     */
     "model3d.generate": (req: Model3dGenerateReq): Promise<any> => post("model3d.generate", req),
-    /** A mesh given a skeleton and skin weights (UniRig, RigNet), or set in motion by words (AnimateAnyMesh: prompt); the answer links the rigged or animated GLB. A job like model3d.generate */
+    /**
+     * A mesh given a skeleton and skin weights (UniRig, RigNet), or set in motion by words (AnimateAnyMesh: prompt); the answer links the rigged or animated GLB. A job like model3d.generate
+     * @tags model3d
+     * @example {"file":"1792132541-trellis2-42.glb","model":"unirig"}
+     */
     "model3d.rig": (req: Model3dRigReq): Promise<any> => post("model3d.rig", req),
-    /** The CPU mesh tools, here (no GPU, no model): decimate (to a triangle budget), remesh (even triangles), uv (a fresh atlas, the texture or colours baked across), convert; the result is saved beside the meshes made (model3d.history) and linked */
+    /**
+     * The CPU mesh tools, here (no GPU, no model): decimate (to a triangle budget), remesh (even triangles), uv (a fresh atlas, the texture or colours baked across), convert; the result is saved beside the meshes made (model3d.history) and linked
+     * @tags model3d
+     * @example {"faces":20000,"file":"1792132541-trellis2-42.glb","op":"decimate"}
+     */
     "model3d.tool": (req: Model3dToolReq): Promise<any> => post("model3d.tool", req),
-    /** The model's abilities (generate, texture, views, rig, animate), defaults and options (loaded: from the server) */
+    /**
+     * The model's abilities (generate, texture, views, rig, animate), defaults and options (loaded: from the server)
+     * @tags model3d
+     * @example {}
+     */
     "model3d.info": (req: Model3dInfoReq): Promise<any> => post("model3d.info", req),
-    /** The request running: its phase (image, structure, shape, texture, decode, mesh, bake, skeleton, skin, motion) and how far */
+    /**
+     * The request running: its phase (image, structure, shape, texture, decode, mesh, bake, skeleton, skin, motion) and how far
+     * @tags model3d
+     */
     "model3d.progress": (req: Model3dProgressReq = {}): Promise<any> => post("model3d.progress", req),
-    /** The meshes made, newest first, with their settings and pictures */
+    /**
+     * The meshes made, newest first, with their settings and pictures
+     * @tags model3d
+     */
     "model3d.history": (req: Model3dHistoryReq = {}): Promise<any> => post("model3d.history", req),
-    /** One job (model3d.generate / model3d.rig) by its label or reentrant_id: state, stage and what it waits for, its place in the queue, progress, its GLB when done */
+    /**
+     * One job (model3d.generate / model3d.rig) by its label or reentrant_id: state, stage and what it waits for, its place in the queue, progress, its GLB when done
+     * @tags model3d
+     * @example {"label":"chair-1"}
+     */
     "model3d.status": (req: Model3dStatusReq): Promise<any> => post("model3d.status", req),
-    /** The 3D jobs: running, waiting (in run order) and the last ended, each as model3d.status answers it */
+    /**
+     * The 3D jobs: running, waiting (in run order) and the last ended, each as model3d.status answers it
+     * @tags model3d
+     * @example {"limit":5}
+     */
     "model3d.jobs": (req: Model3dJobsReq): Promise<any> => post("model3d.jobs", req),
-    /** The waiting 3D jobs in run order (held ones too: held, waiting_for) */
+    /**
+     * The waiting 3D jobs in run order (held ones too: held, waiting_for)
+     * @tags model3d
+     */
     "model3d.queue.list": (req: Model3dQueueListReq = {}): Promise<any> => post("model3d.queue.list", req),
-    /** Move a waiting job to a place in the queue (1 = made next) */
+    /**
+     * Move a waiting job to a place in the queue (1 = made next)
+     * @tags model3d
+     * @example {"label":"chair-2","position":1}
+     */
     "model3d.queue.move": (req: Model3dQueueMoveReq): Promise<any> => post("model3d.queue.move", req),
-    /** Hold a waiting job (label or reentrant_id), a project or batch (also the ones submitted later), or (none) the whole 3D queue; running jobs go on */
+    /**
+     * Hold a waiting job (label or reentrant_id), a project or batch (also the ones submitted later), or (none) the whole 3D queue; running jobs go on
+     * @tags model3d
+     * @example {"project":"Props"}
+     */
     "model3d.queue.pause": (req: Model3dQueuePauseReq): Promise<any> => post("model3d.queue.pause", req),
-    /** Release what queue.pause held (none: everything) */
+    /**
+     * Release what queue.pause held (none: everything)
+     * @tags model3d
+     * @example {}
+     */
     "model3d.queue.resume": (req: Model3dQueueResumeReq): Promise<any> => post("model3d.queue.resume", req),
-    /** Keep a picture (PNG, JPEG, WebP) or a mesh (GLB, OBJ) here once: model3d.generate's image / images and model3d.rig's mesh then name it as "upload:<name>". Kept until system.files.delete {kind: model3d, name} */
+    /**
+     * Keep a picture (PNG, JPEG, WebP) or a mesh (GLB, OBJ) here once: model3d.generate's image / images and model3d.rig's mesh then name it as "upload:<name>". Kept until system.files.delete {kind: model3d, name}
+     * @tags model3d
+     * @example {"data":"iVBORw0KGgo...","name":"chair.png"}
+     */
     "model3d.upload": (req: Model3dUploadReq): Promise<any> => post("model3d.upload", req),
-    /** Stop a job by its label or reentrant_id (running: between steps; waiting: at once; ended: ok with already_ended); neither: whatever the 3D servers are making */
+    /**
+     * Stop a job by its label or reentrant_id (running: between steps; waiting: at once; ended: ok with already_ended); neither: whatever the 3D servers are making
+     * @tags model3d
+     * @example {"label":"chair-1"}
+     */
     "model3d.cancel": (req: Model3dCancelReq): Promise<any> => post("model3d.cancel", req),
-    /** How to get good meshes from the model, as Markdown */
+    /**
+     * How to get good meshes from the model, as Markdown
+     * @tags model3d
+     * @example {"model":"trellis2"}
+     */
     "model3d.describePromptGuideMD": (req: Model3dDescribePromptGuideMdReq): Promise<any> => post("model3d.describePromptGuideMD", req),
-    /** Make a clip: it starts at once when the studio is idle (queued: false, the job), else it is queued with queue: true (queued: true, its position) or refused with 409 busy. Anchors (first_frame, last_frame, exposure_ref, first_audio, guide_clip, source) take prev, prev_cam, first, first_cam - clips of the label's series, see label - or a file in the clips directory (video.upload, or a finished clip's name) */
+    /**
+     * Make a clip: it starts at once when the studio is idle (queued: false, the job), else it is queued with queue: true (queued: true, its position) or refused with 409 busy. Anchors (first_frame, last_frame, exposure_ref, first_audio, guide_clip, source) take prev, prev_cam, first, first_cam - clips of the label's series, see label - or a file in the clips directory (video.upload, or a finished clip's name)
+     * @tags video
+     * @example {"label":"Fox 01/03: snow","prompt":"integrated_multimodal_description: [Shot 1] Live-action, a red fox trots through deep snow at dawn.\n\noverall_soundscape: soft wind, crunching snow.\n\nnon_diegetic_music: None.","queue":true,"seconds":5,"steps":8}
+     */
     "video.generate": (req: VideoGenerateReq): Promise<any> => post("video.generate", req),
-    /** The clip running or last: stage, percent, ETA, timings, a preview picture of the shot while it samples (preview), the queue, version */
+    /**
+     * The clip running or last: stage, percent, ETA, timings, a preview picture of the shot while it samples (preview), the queue, version
+     * @tags video
+     */
     "video.status": (req: VideoStatusReq = {}): Promise<any> => post("video.status", req),
-    /** Long poll: answers when the status's version changes, or at the timeout */
+    /**
+     * Long poll: answers when the status's version changes, or at the timeout
+     * @tags video
+     * @example {"timeout_s":30,"version":""}
+     */
     "video.wait": (req: VideoWaitReq): Promise<any> => post("video.wait", req),
-    /** Stop the running clip at its next step; with a label, that clip only: stopped if it runs, dropped from the queue if it waits */
+    /**
+     * Stop the running clip at its next step; with a label, that clip only: stopped if it runs, dropped from the queue if it waits
+     * @tags video
+     * @example {"label":"Fox 02/03: the den"}
+     */
     "video.cancel": (req: VideoCancelReq): Promise<any> => post("video.cancel", req),
-    /** The queue in the order it will run (each item as video.generate checked it) */
+    /**
+     * The queue in the order it will run (each item as video.generate checked it)
+     * @tags video
+     */
     "video.queue.list": (req: VideoQueueListReq = {}): Promise<any> => post("video.queue.list", req),
-    /** Move a queued clip (the first with that label) to a place in the queue: 1 = made next */
+    /**
+     * Move a queued clip (the first with that label) to a place in the queue: 1 = made next
+     * @tags video
+     * @example {"label":"Fox 03/03: night","position":1}
+     */
     "video.queue.move": (req: VideoQueueMoveReq): Promise<any> => post("video.queue.move", req),
-    /** Drop the queued clips with that label (a running one: video.cancel) */
+    /**
+     * Drop the queued clips with that label (a running one: video.cancel)
+     * @tags video
+     * @example {"label":"Fox 03/03: night"}
+     */
     "video.queue.remove": (req: VideoQueueRemoveReq): Promise<any> => post("video.queue.remove", req),
-    /** Hold a project or batch (none: everything) */
+    /**
+     * Hold a project or batch (none: everything)
+     * @tags video
+     * @example {"project":"Harbour"}
+     */
     "video.queue.pause": (req: VideoQueuePauseReq): Promise<any> => post("video.queue.pause", req),
-    /** Release a project or batch (none: everything) */
+    /**
+     * Release a project or batch (none: everything)
+     * @tags video
+     * @example {}
+     */
     "video.queue.resume": (req: VideoQueueResumeReq): Promise<any> => post("video.queue.resume", req),
-    /** Drop the queue, or a project's / batch's part of it */
+    /**
+     * Drop the queue, or a project's / batch's part of it
+     * @tags video
+     * @example {}
+     */
     "video.queue.clear": (req: VideoQueueClearReq): Promise<any> => post("video.queue.clear", req),
-    /** Finished clips (GET /v1/video/files/<file> fetches one) */
+    /**
+     * Finished clips (GET /v1/video/files/<file> fetches one)
+     * @tags video
+     * @example {"limit":20}
+     */
     "video.jobs.list": (req: VideoJobsListReq): Promise<any> => post("video.jobs.list", req),
-    /** A clip's record: settings, per-stage seconds, energy */
+    /**
+     * A clip's record: settings, per-stage seconds, energy
+     * @tags video
+     * @example {"name":"h3_20261009_113734"}
+     */
     "video.jobs.get": (req: VideoJobsGetReq): Promise<any> => post("video.jobs.get", req),
-    /** A project's clips in edit order: done (with its file's name), running, held, queued */
+    /**
+     * A project's clips in edit order: done (with its file's name), running, held, queued
+     * @tags video
+     * @example {"project":"Harbour"}
+     */
     "video.timeline": (req: VideoTimelineReq): Promise<any> => post("video.timeline", req),
-    /** The projects and batches */
+    /**
+     * The projects and batches
+     * @tags video
+     */
     "video.projects.list": (req: VideoProjectsListReq = {}): Promise<any> => post("video.projects.list", req),
-    /** Joined films */
+    /**
+     * Joined films
+     * @tags video
+     */
     "video.films.list": (req: VideoFilmsListReq = {}): Promise<any> => post("video.films.list", req),
-    /** Prompt templates */
+    /**
+     * Prompt templates
+     * @tags video
+     */
     "video.templates.list": (req: VideoTemplatesListReq = {}): Promise<any> => post("video.templates.list", req),
-    /** The denoisers the daemon has, and the video.generate keys each takes: INT8 / Q6_K / Q4_K_M (text and image to video: anchors, guides, ControlNet, masked runs) and REF2VA (reference pictures and clips; no ControlNet or masked runs). ref_audios, anchors and guides work with every one */
+    /**
+     * The denoisers the daemon has, and the video.generate keys each takes: INT8 / Q6_K / Q4_K_M (text and image to video: anchors, guides, ControlNet, masked runs) and REF2VA (reference pictures and clips; no ControlNet or masked runs). ref_audios, anchors and guides work with every one
+     * @tags video
+     */
     "video.engines.list": (req: VideoEnginesListReq = {}): Promise<any> => post("video.engines.list", req),
-    /** The canvases and their measured cost */
+    /**
+     * The canvases and their measured cost
+     * @tags video
+     */
     "video.canvases.list": (req: VideoCanvasesListReq = {}): Promise<any> => post("video.canvases.list", req),
-    /** Measured GPU time per second of video, energy, queue ETA */
+    /**
+     * Measured GPU time per second of video, energy, queue ETA
+     * @tags video
+     */
     "video.summary": (req: VideoSummaryReq = {}): Promise<any> => post("video.summary", req),
-    /** Put a reference, control video, mask or keyframe beside the clips (its name is what the other keys take). The request is at most 256 MiB, so the file at most about 190 MiB as base64. Uploads are kept: nothing deletes them (they sit in the clips directory with the clips) */
+    /**
+     * Put a reference, control video, mask or keyframe beside the clips (its name is what the other keys take). The request is at most 256 MiB, so the file at most about 190 MiB as base64. Uploads are kept: nothing deletes them (they sit in the clips directory with the clips)
+     * @tags video
+     * @example {"data":"iVBORw0KGgo...","name":"fox.png"}
+     */
     "video.upload": (req: VideoUploadReq): Promise<any> => post("video.upload", req),
-    /** How to prompt the model, as Markdown */
+    /**
+     * How to prompt the model, as Markdown
+     * @tags video
+     * @example {"model":"minimax-h3"}
+     */
     "video.describePromptGuideMD": (req: VideoDescribePromptGuideMdReq): Promise<any> => post("video.describePromptGuideMD", req),
   };
 }

@@ -60,6 +60,14 @@ mod api_files_tests {
         }
     }
 
+    /// The document and the client say the same things: every field, limit, default, enum and example is in both.
+    #[test]
+    fn the_document_and_the_client_agree() {
+        if let Err(e) = rpcgen::parity(&super::methods::infos()) {
+            panic!("{e}");
+        }
+    }
+
     /// vendor/rpcgen is the platform's rpcgen as tooling/sync_rpcgen.sh copied it: the tree hash it recorded is the
     /// copy's (sha256 of the "sha256  path" lines, sorted by path). Edit rpcgen in vibe-creative-platform, then sync.
     #[test]

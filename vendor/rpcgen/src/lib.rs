@@ -42,6 +42,7 @@
 //! let infos: Vec<_> = rpc_methods().into_iter().map(|m| m.info).collect();
 //! let ts = rpcgen::typescript("t", &infos).unwrap();
 //! assert!(ts.contains("export type Kind = \"image\" | \"audio\";") && ts.contains("kind: Kind;") && ts.contains("strength?: number | null;"), "{ts}");
+//! rpcgen::parity(&infos).unwrap();
 //! let doc = rpcgen::openapi(serde_json::json!({"title": "t", "version": "1"}), "/", &infos).unwrap();
 //! assert!(doc.contains("maximum: 1") && doc.contains("- image"), "{doc}");
 //! /// Get a thing by its id
@@ -681,6 +682,49 @@ impl<K, T: RpcType, H> RpcType for std::collections::HashMap<K, T, H> {
     }
 }
 
+/// A field of a change that may be left out (keep what is there), null (clear it) or a value (set it): a token,
+/// a name. `#[serde(default, skip_serializing_if = "Patch::is_keep")]` on the field.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Patch<T> {
+    #[default]
+    Keep,
+    Clear,
+    Set(T),
+}
+
+impl<T> Patch<T> {
+    pub fn is_keep(&self) -> bool {
+        matches!(self, Patch::Keep)
+    }
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Patch<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match Option::<T>::deserialize(d)? {
+            None => Patch::Clear,
+            Some(v) => Patch::Set(v),
+        })
+    }
+}
+
+impl<T: Serialize> Serialize for Patch<T> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Patch::Set(v) => v.serialize(s),
+            _ => s.serialize_none(),
+        }
+    }
+}
+
+impl<T: RpcType> RpcType for Patch<T> {
+    fn shape(defs: &mut Defs) -> Shape {
+        Shape::Nullable(Box::new(T::shape(defs)))
+    }
+    fn optional() -> bool {
+        true
+    }
+}
+
 /// A method that takes no parameters: any body (or none) is fine.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoParams;
@@ -973,10 +1017,15 @@ pub fn openapi(head: Value, server: &str, methods: &[MethodInfo]) -> Result<Stri
             op["description"] = json!(m.description);
         }
         if !m.takes_nothing() {
-            let mut media = json!({"schema": schema(&m.request), "example": m.example_body()});
-            let named = m.named_examples();
+            // the method's own examples only (a placeholder body is no example; the TypeScript has none either)
+            let mut media = json!({"schema": schema(&m.request)});
+            let all = method_examples(m);
+            if let Some((_, e)) = all.iter().find(|(n, _)| n.is_empty()) {
+                media["example"] = e.clone();
+            }
+            let named: Map<String, Value> = all.into_iter().filter(|(n, _)| !n.is_empty()).map(|(k, v)| (k, json!({"value": v}))).collect();
             if !named.is_empty() {
-                media["examples"] = Value::Object(named.into_iter().map(|(k, v)| (k, json!({"value": v}))).collect());
+                media["examples"] = Value::Object(named);
             }
             op["requestBody"] = json!({"required": true, "content": {"application/json": media}});
         }
@@ -1033,6 +1082,44 @@ fn ts(s: &Shape) -> String {
     }
 }
 
+// ---- facts: what both documents say of a field and a method, from one place ----------------------------------
+
+/// A field's `#[schema]` facts as JSDoc / JSON Schema pairs, in a fixed order: (tag, JSON value). Both generators
+/// write exactly these (the OpenAPI schema's keywords, the TypeScript JSDoc tags), and `parity` checks it.
+pub fn field_facts(f: &Field) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    if let Value::Object(extra) = &f.extra {
+        let order = ["minimum", "maximum", "default", "minLength", "maxLength", "maxItems", "pattern", "format", "example"];
+        for k in order {
+            if let Some(v) = extra.get(k) {
+                out.push((k.to_string(), v.clone()));
+            }
+        }
+        for (k, v) in extra {
+            if !order.contains(&k.as_str()) {
+                out.push((k.clone(), v.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// A method's examples: (name, body) - the single one is named "" . A method that takes nothing has none: its
+/// body is ignored, so an example of it shows nothing (the document has no request body to put one in).
+pub fn method_examples(m: &MethodInfo) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    if m.takes_nothing() {
+        return out;
+    }
+    if let Some(e) = m.example.and_then(|e| serde_json::from_str::<Value>(e).ok()) {
+        out.push((String::new(), e));
+    }
+    for (k, v) in m.named_examples() {
+        out.push((k, v));
+    }
+    out
+}
+
 /// A field's TypeScript: its one_of values as a union of literals (kept nullable and in arrays as the shape is)
 fn field_ts(f: &Field) -> String {
     if f.one_of.is_empty() {
@@ -1048,9 +1135,48 @@ fn field_ts(f: &Field) -> String {
 }
 
 fn ts_doc(out: &mut String, indent: &str, doc: &str) {
-    if !doc.is_empty() {
-        out.push_str(&format!("{indent}/** {} */\n", doc.replace("*/", "* /")));
+    ts_jsdoc(out, indent, doc, &[]);
+}
+
+/// A JSDoc block: the text (its paragraphs kept), then `@tag value` lines.
+fn ts_jsdoc(out: &mut String, indent: &str, doc: &str, tags: &[(String, String)]) {
+    let clean = |t: &str| t.replace("*/", "* /");
+    if doc.is_empty() && tags.is_empty() {
+        return;
     }
+    if tags.is_empty() && !doc.contains('\n') {
+        out.push_str(&format!("{indent}/** {} */\n", clean(doc)));
+        return;
+    }
+    out.push_str(&format!("{indent}/**\n"));
+    for line in doc.split('\n') {
+        out.push_str(&format!("{indent} *{}{}\n", if line.is_empty() { "" } else { " " }, clean(line)));
+    }
+    for (t, v) in tags {
+        out.push_str(&format!("{indent} * @{t} {}\n", clean(v)));
+    }
+    out.push_str(&format!("{indent} */\n"));
+}
+
+/// A field's JSDoc tags: its `#[schema]` facts, each `@<keyword> <JSON>`
+fn field_tags(f: &Field) -> Vec<(String, String)> {
+    field_facts(f).into_iter().map(|(k, v)| (k, v.to_string())).collect()
+}
+
+/// A method's JSDoc: its summary and description, `@tags`, `@example [name] <JSON>`
+fn method_doc(m: &MethodInfo) -> (String, Vec<(String, String)>) {
+    let mut text = m.summary.to_string();
+    if m.description.len() > m.summary.len() {
+        text = m.description.to_string();
+    }
+    let mut tags = Vec::new();
+    if !m.tags.is_empty() {
+        tags.push(("tags".to_string(), m.tags.join(", ")));
+    }
+    for (name, body) in method_examples(m) {
+        tags.push(("example".to_string(), if name.is_empty() { body.to_string() } else { format!("{name} {body}") }));
+    }
+    (text, tags)
 }
 
 fn ident_ok(name: &str) -> bool {
@@ -1079,7 +1205,7 @@ pub fn typescript(title: &str, methods: &[MethodInfo]) -> Result<String, String>
                 ts_doc(&mut out, "", doc);
                 out.push_str(&format!("export interface {name} {{\n"));
                 for f in &object.fields {
-                    ts_doc(&mut out, "  ", &f.doc);
+                    ts_jsdoc(&mut out, "  ", &f.doc, &field_tags(f));
                     out.push_str(&format!("  {}{}: {};\n", ts_key(&f.name), if f.optional { "?" } else { "" }, field_ts(f)));
                 }
                 out.push_str("}\n\n");
@@ -1096,6 +1222,8 @@ pub fn typescript(title: &str, methods: &[MethodInfo]) -> Result<String, String>
     out.push_str("/** Every method: what it takes and what it answers. */\nexport interface Methods {\n");
     for m in methods {
         let resp = if m.response == Shape::Blob { "Blob".to_string() } else { ts(&m.response) };
+        let (text, tags) = method_doc(m);
+        ts_jsdoc(&mut out, "  ", &text, &tags);
         out.push_str(&format!("  {}: {{ req: {}; resp: {resp} }};\n", ts_key(m.name), ts(&m.request)));
     }
     out.push_str("}\n\n/** The methods that take no parameters (their body may be left out). */\nexport type NoParamMethods = ");
@@ -1106,7 +1234,8 @@ pub fn typescript(title: &str, methods: &[MethodInfo]) -> Result<String, String>
     out.push_str("/** A call that answers raw bytes (a download). */\nexport type PostRaw = (method: string, body: unknown) => Promise<Blob>;\n\n");
     out.push_str("export function client(post: Post, raw?: PostRaw) {\n  const bytes = (m: string, b: unknown) => (raw ? raw(m, b) : Promise.reject(new Error(\"no raw call given\")));\n  void bytes;\n  return {\n");
     for m in methods {
-        ts_doc(&mut out, "    ", m.summary);
+        let (text, tags) = method_doc(m);
+        ts_jsdoc(&mut out, "    ", &text, &tags);
         let resp = ts(&m.response);
         let (params, body) = if m.takes_nothing() { (format!("req: {} = {{}}", ts(&m.request)), "req".to_string()) } else { (format!("req: {}", ts(&m.request)), "req".to_string()) };
         let call = if m.response == Shape::Blob { format!("Promise<Blob> => bytes({:?}, {body})", m.name) } else { format!("Promise<{resp}> => post({:?}, {body})", m.name) };
@@ -1116,9 +1245,221 @@ pub fn typescript(title: &str, methods: &[MethodInfo]) -> Result<String, String>
     Ok(out)
 }
 
+// ---- parity: the two documents say the same ------------------------------------------------------------------
+
+/// What one document says, as lines (`GetJob: text: ...`, `Thing.id: doc: ...`, `Thing.id: @minimum 0`,
+/// `Thing.id: optional`, `Kind: values: a | b`), sorted: two documents agree when their lines are equal.
+type Facts = std::collections::BTreeSet<String>;
+
+fn facts_of_openapi(doc: &str) -> Result<Facts, String> {
+    let v: Value = serde_yaml::from_str::<Value>(doc).map_err(|e| format!("the OpenAPI document does not parse: {e}"))?;
+    let mut f = Facts::new();
+    for (path, ops) in v["paths"].as_object().into_iter().flatten() {
+        let Some(name) = path.strip_prefix("/api/") else { continue };
+        let op = &ops["post"];
+        let text = op["description"].as_str().or_else(|| op["summary"].as_str()).unwrap_or("");
+        f.insert(format!("{name}: text: {text}"));
+        for t in op["tags"].as_array().into_iter().flatten() {
+            f.insert(format!("{name}: tag: {}", t.as_str().unwrap_or("")));
+        }
+        let media = &op["requestBody"]["content"]["application/json"];
+        if let Some(e) = media.get("example") {
+            f.insert(format!("{name}: example: {e}"));
+        }
+        for (k, e) in media["examples"].as_object().into_iter().flatten() {
+            f.insert(format!("{name}: example {k}: {}", e["value"]));
+        }
+    }
+    let known = ["minimum", "maximum", "default", "minLength", "maxLength", "maxItems", "pattern", "format", "example"];
+    for (tname, t) in v["components"]["schemas"].as_object().into_iter().flatten() {
+        if let Some(d) = t["description"].as_str() {
+            f.insert(format!("{tname}: doc: {d}"));
+        }
+        if let Some(e) = t["enum"].as_array() {
+            f.insert(format!("{tname}: values: {}", e.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join(" | ")));
+        }
+        let req: Vec<&str> = t["required"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
+        for (fname, p) in t["properties"].as_object().into_iter().flatten() {
+            let at = format!("{tname}.{fname}");
+            if let Some(d) = p["description"].as_str() {
+                f.insert(format!("{at}: doc: {d}"));
+            }
+            if !req.contains(&fname.as_str()) {
+                f.insert(format!("{at}: optional"));
+            }
+            for (k, val) in p.as_object().into_iter().flatten() {
+                // the shape writes `items` as a bare type or $ref and never inline `properties`; anything more is the
+                // field's own #[schema(json)], which the TypeScript carries as a tag
+                let own = match k.as_str() {
+                    "items" => val.as_object().is_some_and(|o| o.keys().any(|x| x != "type" && x != "$ref")),
+                    "properties" => true,
+                    _ => false,
+                };
+                if own || known.contains(&k.as_str()) || !["type", "description", "items", "anyOf", "$ref", "enum", "additionalProperties", "properties", "required"].contains(&k.as_str()) {
+                    f.insert(format!("{at}: @{k} {val}"));
+                }
+            }
+        }
+    }
+    Ok(f)
+}
+
+/// The JSDoc block just before line `i`: its text (paragraphs kept) and its `@tag value` lines.
+fn jsdoc_before(lines: &[&str], i: usize) -> (String, Vec<String>) {
+    let mut j = i;
+    if j == 0 || !lines[j - 1].trim_end().ends_with("*/") {
+        return (String::new(), Vec::new());
+    }
+    let end = j - 1;
+    while j > 0 && !lines[j - 1].trim_start().starts_with("/**") {
+        j -= 1;
+    }
+    let start = j - 1;
+    let block: Vec<&str> = lines[start..=end].to_vec();
+    if block.len() == 1 {
+        let t = block[0].trim().trim_start_matches("/**").trim_end_matches("*/").trim().to_string();
+        return (t, Vec::new());
+    }
+    let (mut text, mut tags) = (Vec::new(), Vec::new());
+    for l in &block[1..block.len() - 1] {
+        let l = l.trim_start().strip_prefix('*').unwrap_or(l).strip_prefix(' ').unwrap_or_else(|| l.trim_start().strip_prefix('*').unwrap_or(""));
+        if let Some(t) = l.strip_prefix('@') {
+            tags.push(t.to_string());
+        } else {
+            text.push(l.to_string());
+        }
+    }
+    (text.join("\n"), tags)
+}
+
+fn facts_of_typescript(ts: &str) -> Facts {
+    let lines: Vec<&str> = ts.lines().collect();
+    let mut f = Facts::new();
+    let mut i = 0;
+    let mut in_client = false;
+    while i < lines.len() {
+        let l = lines[i];
+        if let Some(rest) = l.strip_prefix("export interface ") {
+            let tname = rest.trim_end_matches(" {").trim();
+            if tname == "Methods" || tname == "RpcError" {
+                i += 1;
+                continue;
+            }
+            let (d, _) = jsdoc_before(&lines, i);
+            if !d.is_empty() {
+                f.insert(format!("{tname}: doc: {d}"));
+            }
+            i += 1;
+            while i < lines.len() && lines[i] != "}" {
+                let p = lines[i].trim();
+                if !p.starts_with("/**") && !p.starts_with('*') && p.contains(':') {
+                    let key = p.split(':').next().unwrap_or("");
+                    let (fname, opt) = match key.strip_suffix('?') {
+                        Some(k) => (k.trim_matches('"').to_string(), true),
+                        None => (key.trim_matches('"').to_string(), false),
+                    };
+                    let at = format!("{tname}.{fname}");
+                    let (d, tags) = jsdoc_before(&lines, i);
+                    if !d.is_empty() {
+                        f.insert(format!("{at}: doc: {d}"));
+                    }
+                    if opt {
+                        f.insert(format!("{at}: optional"));
+                    }
+                    for t in tags {
+                        f.insert(format!("{at}: @{t}"));
+                    }
+                }
+                i += 1;
+            }
+        } else if let Some(rest) = l.strip_prefix("export type ").filter(|r| r.contains(" = \"") || r.contains(" = never")) {
+            let (tname, vals) = rest.split_once(" = ").unwrap();
+            if tname == "NoParamMethods" {
+                i += 1;
+                continue;
+            }
+            let (d, _) = jsdoc_before(&lines, i);
+            if !d.is_empty() {
+                f.insert(format!("{tname}: doc: {d}"));
+            }
+            let vals: Vec<String> = vals.trim_end_matches(';').split(" | ").map(|v| v.trim_matches('"').to_string()).collect();
+            f.insert(format!("{tname}: values: {}", vals.join(" | ")));
+        } else if l.starts_with("export function client(") {
+            in_client = true;
+        } else if in_client && l.starts_with("    ") && !l.trim_start().starts_with(['/', '*']) && l.contains(": (") {
+            let name = l.trim().split(": (").next().unwrap_or("").trim_matches('"').to_string();
+            let (d, tags) = jsdoc_before(&lines, i);
+            f.insert(format!("{name}: text: {d}"));
+            for t in tags {
+                if let Some(v) = t.strip_prefix("tags ") {
+                    for tag in v.split(", ") {
+                        f.insert(format!("{name}: tag: {tag}"));
+                    }
+                } else if let Some(v) = t.strip_prefix("example ") {
+                    match v.split_once(' ').filter(|(n, _)| !n.starts_with(['{', '['])) {
+                        Some((n, body)) => f.insert(format!("{name}: example {n}: {body}")),
+                        None => f.insert(format!("{name}: example: {v}")),
+                    };
+                }
+            }
+        }
+        i += 1;
+    }
+    f
+}
+
+/// Whether the OpenAPI document and the TypeScript made from these methods say the same: every description,
+/// tag, example, optional field and `#[schema]` fact in one is in the other. Each project calls it in its
+/// staleness test, so a generator change that drops something from one of them fails `cargo test`.
+pub fn parity(methods: &[MethodInfo]) -> Result<(), String> {
+    let doc = openapi(json!({"title": "parity", "version": "0"}), "/", methods)?;
+    let ts = typescript("parity", methods)?;
+    let a = facts_of_openapi(&doc)?;
+    let b = facts_of_typescript(&ts);
+    let only_doc: Vec<&String> = a.difference(&b).collect();
+    let only_ts: Vec<&String> = b.difference(&a).collect();
+    if only_doc.is_empty() && only_ts.is_empty() {
+        return Ok(());
+    }
+    let mut msg = String::from("the OpenAPI document and the TypeScript differ:\n");
+    for x in only_doc.iter().take(40) {
+        msg.push_str(&format!("  only in the document: {x}\n"));
+    }
+    for x in only_ts.iter().take(40) {
+        msg.push_str(&format!("  only in the TypeScript: {x}\n"));
+    }
+    Err(msg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The checker sees a fact one document drops: a limit, a field's words, an example, a tag.
+    #[test]
+    fn parity_finds_what_one_side_dropped() {
+        let mut defs = Defs::default();
+        let mut o = Object::default();
+        o.field_with::<f64>(&mut defs, "strength", "how far from the picture", true, r#"{"minimum": 0.05, "default": 0.6}"#, &[]);
+        o.field::<String>(&mut defs, "id", "the job", false);
+        defs.named("Make", "what Make takes", o);
+        let m = MethodInfo {
+            name: "CreateThing", summary: "Make a thing", description: "Make a thing", tags: vec!["things"],
+            request: Shape::Ref("Make".into()), response: Shape::Json, defs, example: Some(r#"{"id": "1"}"#), examples: None,
+        };
+        let doc = openapi(json!({"title": "t", "version": "0"}), "/", std::slice::from_ref(&m)).unwrap();
+        let ts = typescript("t", std::slice::from_ref(&m)).unwrap();
+        let a = facts_of_openapi(&doc).unwrap();
+        assert_eq!(a, facts_of_typescript(&ts), "the two agree to begin with");
+        for (drop, what) in [("   * @minimum 0.05\n", "@minimum"), ("   * how far from the picture\n", "doc"),
+                             ("     * @example {\"id\":\"1\"}\n", "example"), ("     * @tags things\n", "tag")] {
+            assert!(ts.contains(drop), "{drop:?} is in the TypeScript");
+            let cut = facts_of_typescript(&ts.replace(drop, ""));
+            assert!(a.difference(&cut).any(|x| x.contains(what)), "dropping {what} is seen");
+        }
+        let cut = facts_of_openapi(&doc.replace("minimum: 0.05", "")).unwrap();
+        assert!(facts_of_typescript(&ts).difference(&cut).any(|x| x.contains("@minimum")), "and from the document too");
+    }
 
     #[test]
     fn a_name_has_one_style_and_a_table_one() {
