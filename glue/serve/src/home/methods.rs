@@ -103,6 +103,112 @@ pub fn infos() -> Vec<rpcgen::MethodInfo> {
 }
 
 // generated once from the published request schemas (2026-10-26); maintained by hand from here
+
+// ---- the options: a field of a fixed set of values is an enum (its word on the wire, as before) ----
+
+/// A file's kind (where it lives): image | audio | video | model3d
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum FileKind {
+    #[serde(rename = "image")]
+    Image,
+    #[serde(rename = "audio")]
+    Audio,
+    #[serde(rename = "video")]
+    Video,
+    #[serde(rename = "model3d")]
+    Model3d,
+}
+
+/// How a picture comes back: a URL, or the bytes as base64 (OpenAI's names): url | b64_json
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum ResponseFormat {
+    #[serde(rename = "url")]
+    Url,
+    #[serde(rename = "b64_json")]
+    B64Json,
+}
+
+/// A repaint's balance: balanced | conservative | aggressive
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum RepaintMode {
+    #[serde(rename = "balanced")]
+    Balanced,
+    #[serde(rename = "conservative")]
+    Conservative,
+    #[serde(rename = "aggressive")]
+    Aggressive,
+}
+
+/// ACE-Step 1.5's task: text2music | cover | repaint | edit | lego
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum AudioTask {
+    #[serde(rename = "text2music")]
+    Text2music,
+    #[serde(rename = "cover")]
+    Cover,
+    #[serde(rename = "repaint")]
+    Repaint,
+    #[serde(rename = "edit")]
+    Edit,
+    #[serde(rename = "lego")]
+    Lego,
+}
+
+/// A mesh tool's operation: decimate | remesh | uv | convert
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum MeshOp {
+    #[serde(rename = "decimate")]
+    Decimate,
+    #[serde(rename = "remesh")]
+    Remesh,
+    #[serde(rename = "uv")]
+    Uv,
+    #[serde(rename = "convert")]
+    Convert,
+}
+
+/// How a clip carries on from the last: video | png | latent | none
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum ChainMode {
+    #[serde(rename = "video")]
+    Video,
+    #[serde(rename = "png")]
+    Png,
+    #[serde(rename = "latent")]
+    Latent,
+    #[serde(rename = "none")]
+    None,
+}
+
+/// A reference picture's size: match | max
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum RefImageSize {
+    #[serde(rename = "match")]
+    Match,
+    #[serde(rename = "max")]
+    Max,
+}
+
+/// The text encoder: teacher | student
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum TextEncoder {
+    #[serde(rename = "teacher")]
+    Teacher,
+    #[serde(rename = "student")]
+    Student,
+}
+
+/// The upscaler: esrgan-general | esrgan-anime | latent
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum Upscaler {
+    #[serde(rename = "esrgan-general")]
+    EsrganGeneral,
+    #[serde(rename = "esrgan-anime")]
+    EsrganAnime,
+    #[serde(rename = "latent")]
+    Latent,
+}
+
 /// What system.state takes.
 #[derive(Deserialize, Serialize, Rpc)]
 #[allow(non_snake_case)]
@@ -143,8 +249,7 @@ pub struct SystemVersionReq {
 #[derive(Deserialize, Serialize, Rpc)]
 #[allow(non_snake_case)]
 pub struct SystemFilesStatReq {
-    #[schema(one_of = "image, audio, video, model3d")]
-    pub kind: String,
+    pub kind: FileKind,
     /// the file's name (the last part of its URL)
     pub name: String,
     /// what else the caller sent: passed on as it came
@@ -156,8 +261,7 @@ pub struct SystemFilesStatReq {
 #[derive(Deserialize, Serialize, Rpc)]
 #[allow(non_snake_case)]
 pub struct SystemFilesDeleteReq {
-    #[schema(one_of = "image, audio, video, model3d")]
-    pub kind: String,
+    pub kind: FileKind,
     /// the file's name; a clip: h3_... with or without .mp4
     pub name: String,
     /// what else the caller sent: passed on as it came
@@ -619,8 +723,7 @@ pub struct ImageUpscaleReq {
     #[schema(max_length = 200)]
     pub reentrant_id: Option<String>,
     #[serde(rename = "response_format", default, skip_serializing_if = "Option::is_none")]
-    #[schema(one_of = "url, b64_json")]
-    pub response_format: Option<String>,
+    pub response_format: Option<ResponseFormat>,
     /// the factor: Real-ESRGAN 2, 3 (animevideov3) or 4; waifu2x 1 (denoise only), 2, 4 ... 32 (its 2x model again each time)
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub scale: Option<i64>,
@@ -755,8 +858,7 @@ pub struct VideoUpscaleReq {
     pub reentrant_id: Option<String>,
     /// url (default): the server keeps the MP4 and links it
     #[serde(rename = "response_format", default, skip_serializing_if = "Option::is_none")]
-    #[schema(one_of = "url, b64_json")]
-    pub response_format: Option<String>,
+    pub response_format: Option<ResponseFormat>,
     /// as image.upscale
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub scale: Option<i64>,
@@ -1065,8 +1167,7 @@ pub struct AudioGenerateReq {
     pub repaint_end: Option<f64>,
     /// repaint: how much of the recording is kept at the span's edges (balanced)
     #[serde(rename = "repaint_mode", default, skip_serializing_if = "Option::is_none")]
-    #[schema(one_of = "balanced, conservative, aggressive")]
-    pub repaint_mode: Option<String>,
+    pub repaint_mode: Option<RepaintMode>,
     /// repaint: seconds into the recording (0)
     #[serde(rename = "repaint_start", default, skip_serializing_if = "Option::is_none")]
     pub repaint_start: Option<f64>,
@@ -1084,8 +1185,7 @@ pub struct AudioGenerateReq {
     pub steps: Option<i64>,
     /// acestep-1.5: text2music (default: from the words alone); with audio - cover (the recording performed anew: input its words, instructions its sound), repaint (repaint_start to repaint_end made again; an end past the recording extends it), edit (new words sung over the recording: source_lyrics the words it sings now), lego (a vocal track over an instrumental: acestep-1.5-base)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(one_of = "text2music, cover, repaint, edit, lego")]
-    pub task: Option<String>,
+    pub task: Option<AudioTask>,
     /// acestep-1.5: beats a bar: "4", "3", "6"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_signature: Option<String>,
@@ -1657,8 +1757,7 @@ pub struct Model3dToolReq {
     /// the mesh: GLB or OBJ as base64, a data: URL or upload:<name>
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<String>,
-    #[schema(one_of = "decimate, remesh, uv, convert")]
-    pub op: String,
+    pub op: MeshOp,
     /// remesh: passes (5)
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub passes: Option<i64>,
@@ -1856,8 +1955,8 @@ pub struct VideoGenerateReq {
     pub chain: Option<serde_json::Map<String, serde_json::Value>>,
     /// how a first_frame clip is carried over: its mp4's last frame, its lossless .last.png, its last latent, or not at all
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(default = "video", one_of = "video, png, latent, none")]
-    pub chain_mode: Option<String>,
+    #[schema(default = "video")]
+    pub chain_mode: Option<ChainMode>,
     /// noise on the first frame (harmful here: shows as confetti)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cond_noise_aug: Option<f64>,
@@ -1945,8 +2044,7 @@ pub struct VideoGenerateReq {
     pub ref_audios: Option<Vec<String>>,
     /// reference pictures resized to the canvas, or kept as large as fits
     #[serde(rename = "ref_image_size", default, skip_serializing_if = "Option::is_none")]
-    #[schema(one_of = "match, max")]
-    pub ref_image_size: Option<String>,
+    pub ref_image_size: Option<RefImageSize>,
     /// Ref2VA reference pictures (files in the clips directory), <Image 1> ... in the prompt
     #[serde(rename = "ref_images", default, skip_serializing_if = "Option::is_none")]
     #[schema(max_items = 9)]
@@ -1992,8 +2090,8 @@ pub struct VideoGenerateReq {
     pub steps: Option<i64>,
     /// the text encoder
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(default = "teacher", one_of = "teacher, student")]
-    pub te: Option<String>,
+    #[schema(default = "teacher")]
+    pub te: Option<TextEncoder>,
     /// the text encoder sees the reference pictures
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub te_pictures: Option<bool>,
@@ -2003,8 +2101,8 @@ pub struct VideoGenerateReq {
     pub upscale: Option<f64>,
     /// with upscale
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(default = "esrgan-general", one_of = "esrgan-general, esrgan-anime, latent")]
-    pub upscaler: Option<String>,
+    #[schema(default = "esrgan-general")]
+    pub upscaler: Option<Upscaler>,
     /// a multiple of 32; width x height at most 1032192 pixels (768 x 1344); video.canvases.list has the tested ones
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 256, max = 1344, default = 768, json = r#"{"multipleOf": 32}"#)]
@@ -2867,3 +2965,24 @@ rpcgen::rpc_methods![sync Arc<Home>, RpcFail;
     video_queue_clear, video_jobs_list, video_jobs_get, video_timeline, video_projects_list, video_films_list,
     video_templates_list, video_engines_list, video_canvases_list, video_summary, video_upload, video_describe_prompt_guide_md,
 ];
+
+#[cfg(test)]
+mod tests {
+    /// Every name a request refers to (an option's enum) is a named type of the table: the document's components
+    /// carry them, so its $refs resolve.
+    #[test]
+    fn every_reference_is_described() {
+        let comps = rpcgen::components(&super::infos()).unwrap();
+        for m in super::methods() {
+            for f in &m.fields {
+                let s = serde_json::to_string(&rpcgen::field_schema(f)).unwrap();
+                for r in s.split("#/components/schemas/").skip(1) {
+                    let name = r.split('"').next().unwrap();
+                    assert!(comps.contains_key(name), "{} {}: {name} is not described", m.full(), f.name);
+                }
+            }
+        }
+        assert!(comps.contains_key("ChainMode") && comps.contains_key("FileKind"));
+    }
+}
+

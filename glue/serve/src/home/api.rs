@@ -1475,7 +1475,9 @@ impl Home {
                 on.join(", "), now(), spec::CODES, spec::LABELS)},
             "servers": [{"url": format!("http://{host}")}],
             "security": [{"bearer": []}],
-            "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer", "description": "the token on the page's API tab (NS_API_TOKEN, or serve.json)"}}},
+            // the named types the methods' requests refer to (their enums: ChainMode, FileKind ...), from methods.rs
+            "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer", "description": "the token on the page's API tab (NS_API_TOKEN, or serve.json)"}},
+                           "schemas": rpcgen::components(&table::infos()).unwrap_or_default()},
             "paths": paths,
         })
     }

@@ -56,7 +56,7 @@ export interface AudioGenerateReq {
   /** repaint: seconds; -1 or none: the recording's end; past it: the song extended to it */
   repaint_end?: number | null;
   /** repaint: how much of the recording is kept at the span's edges (balanced) */
-  repaint_mode?: "balanced" | "conservative" | "aggressive" | null;
+  repaint_mode?: RepaintMode | null;
   /** repaint: seconds into the recording (0) */
   repaint_start?: number | null;
   /** repaint, balanced: 0 keeps the most, 1 the least (0.5) */
@@ -67,7 +67,7 @@ export interface AudioGenerateReq {
   source_lyrics?: string | null;
   steps?: number | null;
   /** acestep-1.5: text2music (default: from the words alone); with audio - cover (the recording performed anew: input its words, instructions its sound), repaint (repaint_start to repaint_end made again; an end past the recording extends it), edit (new words sung over the recording: source_lyrics the words it sings now), lego (a vocal track over an instrumental: acestep-1.5-base) */
-  task?: "text2music" | "cover" | "repaint" | "edit" | "lego" | null;
+  task?: AudioTask | null;
   /** acestep-1.5: beats a bar: "4", "3", "6" */
   time_signature?: string | null;
   /** true: answer when it ends (the job goes on if the call drops); false: answer at once with the job */
@@ -184,6 +184,9 @@ export interface AudioStatusReq {
   reentrant_id?: string | null;
 }
 
+/** ACE-Step 1.5's task: text2music | cover | repaint | edit | lego */
+export type AudioTask = "text2music" | "cover" | "repaint" | "edit" | "lego";
+
 /** What audio.transcribe takes. */
 export interface AudioTranscribeReq {
   /** the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono */
@@ -271,6 +274,12 @@ export interface AudioVoicesRemoveReq {
   /** the voice's owner, when it has one */
   owner?: string | null;
 }
+
+/** How a clip carries on from the last: video | png | latent | none */
+export type ChainMode = "video" | "png" | "latent" | "none";
+
+/** A file's kind (where it lives): image | audio | video | model3d */
+export type FileKind = "image" | "audio" | "video" | "model3d";
 
 /** What image.cancel takes. */
 export interface ImageCancelReq {
@@ -491,7 +500,7 @@ export interface ImageUpscaleReq {
   queue?: boolean | null;
   /** idempotent submit (as image.generate) */
   reentrant_id?: string | null;
-  response_format?: "url" | "b64_json" | null;
+  response_format?: ResponseFormat | null;
   /** the factor: Real-ESRGAN 2, 3 (animevideov3) or 4; waifu2x 1 (denoise only), 2, 4 ... 32 (its 2x model again each time) */
   scale?: number | null;
   /** the tile's side in input pixels (Real-ESRGAN 200, waifu2x 400 by default: as the ncnn programs) */
@@ -562,6 +571,9 @@ export interface LlmModelsReq {
 /** What llm.requests takes. */
 export interface LlmRequestsReq {
 }
+
+/** A mesh tool's operation: decimate | remesh | uv | convert */
+export type MeshOp = "decimate" | "remesh" | "uv" | "convert";
 
 /** What model3d.cancel takes. */
 export interface Model3dCancelReq {
@@ -735,7 +747,7 @@ export interface Model3dToolReq {
   file?: string | null;
   /** the mesh: GLB or OBJ as base64, a data: URL or upload:<name> */
   mesh?: string | null;
-  op: "decimate" | "remesh" | "uv" | "convert";
+  op: MeshOp;
   /** remesh: passes (5) */
   passes?: number | null;
   /** uv: the texture's side (2048) */
@@ -749,6 +761,15 @@ export interface Model3dUploadReq {
   /** the file's name: png jpg jpeg webp glb obj; kept as up_<unix seconds>_<name> */
   name: string;
 }
+
+/** A reference picture's size: match | max */
+export type RefImageSize = "match" | "max";
+
+/** A repaint's balance: balanced | conservative | aggressive */
+export type RepaintMode = "balanced" | "conservative" | "aggressive";
+
+/** How a picture comes back: a URL, or the bytes as base64 (OpenAI's names): url | b64_json */
+export type ResponseFormat = "url" | "b64_json";
 
 /** What system.busy takes. */
 export interface SystemBusyReq {
@@ -798,14 +819,14 @@ export interface SystemEnableReq {
 
 /** What system.files.delete takes. */
 export interface SystemFilesDeleteReq {
-  kind: "image" | "audio" | "video" | "model3d";
+  kind: FileKind;
   /** the file's name; a clip: h3_... with or without .mp4 */
   name: string;
 }
 
 /** What system.files.stat takes. */
 export interface SystemFilesStatReq {
-  kind: "image" | "audio" | "video" | "model3d";
+  kind: FileKind;
   /** the file's name (the last part of its URL) */
   name: string;
 }
@@ -894,6 +915,12 @@ export interface SystemUnloadReq {
 export interface SystemVersionReq {
 }
 
+/** The text encoder: teacher | student */
+export type TextEncoder = "teacher" | "student";
+
+/** The upscaler: esrgan-general | esrgan-anime | latent */
+export type Upscaler = "esrgan-general" | "esrgan-anime" | "latent";
+
 /** What video.cancel takes. */
 export interface VideoCancelReq {
   /** a clip's label (none: the running clip) */
@@ -927,7 +954,7 @@ export interface VideoGenerateReq {
   /** how the clip carries on from another, as one object (it sets guide_clip, first_audio, first_audio_s, first_frame, chain_mode, exposure_ref; those given flat win). There is no renormalisation step here: pin_renorm and other keys are listed back in ignored */
   chain?: Record<string, unknown> | null;
   /** how a first_frame clip is carried over: its mp4's last frame, its lossless .last.png, its last latent, or not at all */
-  chain_mode?: "video" | "png" | "latent" | "none" | null;
+  chain_mode?: ChainMode | null;
   /** noise on the first frame (harmful here: shows as confetti) */
   cond_noise_aug?: number | null;
   control_end?: number | null;
@@ -977,7 +1004,7 @@ export interface VideoGenerateReq {
   /** voices to speak in: <Audio 1> ... in the prompt */
   ref_audios?: string[] | null;
   /** reference pictures resized to the canvas, or kept as large as fits */
-  ref_image_size?: "match" | "max" | null;
+  ref_image_size?: RefImageSize | null;
   /** Ref2VA reference pictures (files in the clips directory), <Image 1> ... in the prompt */
   ref_images?: string[] | null;
   /** the reference clips' sound too */
@@ -1004,13 +1031,13 @@ export interface VideoGenerateReq {
   /** denoising steps; below 8 only with a turbo LoRA */
   steps?: number | null;
   /** the text encoder */
-  te?: "teacher" | "student" | null;
+  te?: TextEncoder | null;
   /** the text encoder sees the reference pictures */
   te_pictures?: boolean | null;
   /** upscale at decode (1.5: the canvas 1.5 times); above 1 only */
   upscale?: number | null;
   /** with upscale */
-  upscaler?: "esrgan-general" | "esrgan-anime" | "latent" | null;
+  upscaler?: Upscaler | null;
   /** a multiple of 32; width x height at most 1032192 pixels (768 x 1344); video.canvases.list has the tested ones */
   width?: number | null;
 }
@@ -1115,7 +1142,7 @@ export interface VideoUpscaleReq {
   /** idempotent submit (as image.generate) */
   reentrant_id?: string | null;
   /** url (default): the server keeps the MP4 and links it */
-  response_format?: "url" | "b64_json" | null;
+  response_format?: ResponseFormat | null;
   /** as image.upscale */
   scale?: number | null;
   /** as image.upscale */
