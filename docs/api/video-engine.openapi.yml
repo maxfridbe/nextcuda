@@ -1,0 +1,556 @@
+openapi: 3.1.0
+info:
+  title: 'nextcuda video daemon (nextcuda video start: /engine/... on its socket)'
+  version: generated
+  description: 'A server''s own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextcuda gen-api`: do not edit.'
+servers:
+- url: /
+paths:
+  /engine/status:
+    get:
+      operationId: status
+      summary: 'The daemon: its denoisers, GPUs, engines and queue'
+      tags:
+      - engine
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /engine/gpus:
+    get:
+      operationId: gpus
+      summary: The GPUs found at start, each marked served or not
+      tags:
+      - engine
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FoundGpu'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /engine/jobs:
+    get:
+      operationId: jobs
+      summary: Every job, newest first
+      tags:
+      - engine
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/JobSummary'
+        default:
+          description: 'an error: the body''s `error` says what'
+    post:
+      operationId: submit
+      summary: 'Queues a job: a kind (bench-blocks, check-block, denoise, decode, encode, generate) and its keys, on an engine and a GPU the daemon has'
+      tags:
+      - engine
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobSpec'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Queued'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /engine/jobs/{id}:
+    get:
+      operationId: job
+      summary: A job in full
+      tags:
+      - engine
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /engine/jobs/{id}/cancel:
+    post:
+      operationId: cancel
+      summary: 'Stops a job: a queued one is dropped, a running one stops at its next block boundary'
+      tags:
+      - engine
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cancelling'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /engine/jobs/{id}/remove:
+    post:
+      operationId: remove
+      summary: Forgets a job that is not running
+      tags:
+      - engine
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Removed'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /engine/unload:
+    post:
+      operationId: unload
+      summary: 'Unloads a GPU''s engine (every GPU''s without one named): now, or after its running job'
+      tags:
+      - engine
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnloadReq'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Unloads'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /engine/shutdown:
+    post:
+      operationId: shutdown
+      summary: 'Stops the daemon: the queue cancelled, running jobs stop at their next block boundary, then the engines unload'
+      tags:
+      - engine
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShuttingDown'
+        default:
+          description: 'an error: the body''s `error` says what'
+components:
+  schemas:
+    Cancelling:
+      type: object
+      properties:
+        id:
+          type: integer
+        state:
+          type: string
+          description: 'cancelled, "cancelling: ..." (it stops at the next block boundary), or the state it had already'
+      required:
+      - id
+      - state
+      description: A job told to stop
+    EngineFile:
+      type: object
+      properties:
+        name:
+          type: string
+          description: INT8, or a GGUF form's name
+        path:
+          type: string
+        gib:
+          type: number
+        default:
+          type: boolean
+      required:
+      - name
+      - path
+      - gib
+      - default
+      description: A denoiser the daemon has
+    FoundGpu:
+      type: object
+      properties:
+        index:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        served:
+          type: boolean
+      required:
+      - served
+      additionalProperties: true
+      description: A GPU found on the machine at start, and whether the daemon serves it
+    Job:
+      type: object
+      properties:
+        id:
+          type: integer
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the spec''s kind: bench-blocks, check-block, denoise, decode, encode, generate'
+        state:
+          $ref: '#/components/schemas/JobState'
+        created:
+          type: number
+          description: unix seconds
+        started:
+          anyOf:
+          - type: number
+          - type: 'null'
+        finished:
+          anyOf:
+          - type: number
+          - type: 'null'
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+        progress:
+          anyOf:
+          - $ref: '#/components/schemas/JobProgress'
+          - type: 'null'
+        gpu:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the GPU it runs or ran on (or the one its spec asked for)
+        last:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: its log's last line
+        elapsed_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'running: seconds since it started'
+        spec:
+          type: object
+        log:
+          type: array
+          items:
+            type: string
+        result:
+          description: what the engine made (the kind's own report; null until done)
+      required:
+      - id
+      - state
+      - created
+      - spec
+      - log
+      - result
+      description: 'A job in full: its summary, the spec it was given, its log and its result'
+    JobProgress:
+      type: object
+      properties:
+        done:
+          type: integer
+        total:
+          type: integer
+      required:
+      - done
+      - total
+      description: Steps done of the job's total, as it last reported
+    JobRef:
+      type: object
+      properties:
+        id:
+          type: string
+      required:
+      - id
+      description: A job by its id
+    JobSpec:
+      type: object
+      properties:
+        kind:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: bench-blocks, check-block, denoise, decode, encode, generate
+        engine:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'a denoiser the daemon has (default: its model)'
+        gpu:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'a GPU it serves (default: the first free)'
+      additionalProperties: true
+      description: 'A job to run: its kind and the kind''s own keys'
+    JobState:
+      type: string
+      enum:
+      - queued
+      - running
+      - done
+      - failed
+      - cancelled
+      description: Where a job is
+    JobSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the spec''s kind: bench-blocks, check-block, denoise, decode, encode, generate'
+        state:
+          $ref: '#/components/schemas/JobState'
+        created:
+          type: number
+          description: unix seconds
+        started:
+          anyOf:
+          - type: number
+          - type: 'null'
+        finished:
+          anyOf:
+          - type: number
+          - type: 'null'
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+        progress:
+          anyOf:
+          - $ref: '#/components/schemas/JobProgress'
+          - type: 'null'
+        gpu:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the GPU it runs or ran on (or the one its spec asked for)
+        last:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: its log's last line
+        elapsed_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'running: seconds since it started'
+      required:
+      - id
+      - state
+      - created
+      description: A job, in short
+    Queued:
+      type: object
+      properties:
+        id:
+          type: integer
+      required:
+      - id
+      description: A job queued
+    Removed:
+      type: object
+      properties:
+        id:
+          type: integer
+        removed:
+          type: boolean
+      required:
+      - id
+      - removed
+      description: A job forgotten
+    ShuttingDown:
+      type: object
+      properties:
+        shutdown:
+          type: string
+      required:
+      - shutdown
+      description: The daemon stopping
+    Slot:
+      type: object
+      properties:
+        gpu:
+          type: integer
+        span:
+          type: array
+          items:
+            type: integer
+          description: 'the cards a spanning slot''s worker takes (empty: gpu alone)'
+        name:
+          type: string
+        pci:
+          type: string
+        mem_gib:
+          type: number
+        shared:
+          type: boolean
+          description: shared with the language models
+        engine:
+          type: string
+          description: unloaded, starting..., waiting for the GPU..., loading, loaded, unloading
+        info:
+          description: the engine's own report of what it loaded (model ...)
+        denoiser:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the denoiser loaded, by name
+        worker:
+          anyOf:
+          - $ref: '#/components/schemas/Worker'
+          - type: 'null'
+        busy_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+        engine_gib:
+          description: the engine's GPU memory, its cap and the card's free memory (its last report)
+        cap_gib: {}
+        card_free_gib: {}
+        running:
+          anyOf:
+          - $ref: '#/components/schemas/JobSummary'
+          - type: 'null'
+        idle_seconds:
+          type: integer
+        unload_in_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'a loaded engine with nothing to do: seconds until it unloads'
+      required:
+      - gpu
+      - span
+      - name
+      - pci
+      - mem_gib
+      - shared
+      - engine
+      - info
+      - engine_gib
+      - cap_gib
+      - card_free_gib
+      - idle_seconds
+      description: A GPU the daemon serves, and the engine on it
+    Status:
+      type: object
+      properties:
+        version:
+          type: string
+        model:
+          type: string
+          description: the default denoiser's checkpoint
+        engines:
+          type: array
+          items:
+            $ref: '#/components/schemas/EngineFile'
+        gpus:
+          type: array
+          items:
+            $ref: '#/components/schemas/Slot'
+        queued:
+          type: array
+          items:
+            type: integer
+          description: the waiting jobs' ids, in order
+        unload_after_idle_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+      required:
+      - version
+      - model
+      - engines
+      - gpus
+      - queued
+      description: 'The daemon: its denoisers, its GPUs and what runs on them, the queue'
+    UnloadReq:
+      type: object
+      properties:
+        gpu:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'none: every one'
+      description: Which GPU's engine to unload
+    Unloading:
+      type: object
+      properties:
+        gpu:
+          type: integer
+        unload:
+          type: string
+          description: now, or after the running job
+      required:
+      - gpu
+      - unload
+      description: An unload asked of one GPU
+    Unloads:
+      type: object
+      properties:
+        unload:
+          type: array
+          items:
+            $ref: '#/components/schemas/Unloading'
+      required:
+      - unload
+      description: The unloads asked
+    Worker:
+      type: object
+      properties:
+        pid:
+          type: integer
+        rss_gib:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - pid
+      description: A slot's worker process

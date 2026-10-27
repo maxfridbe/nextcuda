@@ -56,7 +56,10 @@ pub fn api_files() -> Vec<(&'static str, String)> {
 
 /// Every server's route table: (its name, its title, its routes, the pages whose client it is)
 pub fn route_tables() -> Vec<(&'static str, &'static str, Vec<rpcgen::RouteInfo>, Vec<&'static str>)> {
-    vec![("image", "nextcuda image server (nextcuda image serve)", crate::image::route_infos(), vec!["wfe/image/src/gen/routes.ts", "wfe/ocr/src/gen/routes.ts"])]
+    vec![("image", "nextcuda image server (nextcuda image serve)", crate::image::route_infos(), vec!["wfe/image/src/gen/routes.ts", "wfe/ocr/src/gen/routes.ts"]),
+         ("video", "nextcuda video studio (nextcuda video serve)", crate::video::studio::routes::infos(), vec!["wfe/video/src/gen/routes.ts"]),
+         // the daemon's (its Unix socket; the studio passes /engine/... on): a document, no page
+         ("video-engine", "nextcuda video daemon (nextcuda video start: /engine/... on its socket)", crate::video::daemon::route_infos(), vec![])]
 }
 
 #[cfg(test)]

@@ -26,9 +26,11 @@ async function joinFilm(): Promise<void> {
   if (!project) return;
   const done = state.timelineClips.filter((c) => c.state === "done").length;
   if (!window.confirm(`Join the ${done} finished clips of "${project}" into one film?`)) return;
-  const r = await api.join(project);
-  if (!r.ok || !r.join) {
-    window.alert(`join failed: ${r.error ?? "?"}`);
+  let r;
+  try {
+    r = await api.join(project);
+  } catch (e) {
+    window.alert(`join failed: ${e instanceof Error ? e.message : String(e)}`);
     return;
   }
   state.joins = [...state.joins, r.join];
@@ -56,10 +58,6 @@ async function importScene(file: File): Promise<void> {
     const name = window.prompt("Queue this scene as project:", suggested);
     if (name === null) return;
     const r = await api.importScene(scene, name, true);
-    if (r.error) {
-      window.alert(`import failed: ${r.error}`);
-      return;
-    }
     window.alert(`imported ${r.imported} clips as "${r.project}" (held — resume when ready)`);
     navigate({ tab: "jobs", project: r.project ?? name, clip: null });
   } catch (e) {

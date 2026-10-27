@@ -58,6 +58,10 @@ use serde_json::{json, Value};
 use crate::http;
 use crate::video::signals;
 
+mod routes;
+
+pub use routes::infos as route_infos;
+
 pub struct Options {
     /// The Unix socket the API answers on.
     pub socket: PathBuf,
@@ -574,155 +578,14 @@ impl Daemon {
         }
     }
 
-    /// One request on the socket.
+    /// One request on the socket: what routes.rs declares
     fn route(&self, stream: &std::os::unix::net::UnixStream, req: http::Request) -> Result<()> {
-        let (status, body) = match (req.path.strip_prefix("/engine/"), req.json()) {
-            (Some(rest), Ok(v)) => self.handle(&req.method, rest, v),
-            (None, _) => (404, json!({"error": format!("no route {} {}", req.method, req.path)})),
-            (_, Err(e)) => (400, json!({"error": e})),
-        };
-        http::respond(stream, status, &body);
-        Ok(())
-    }
-
-    fn handle(&self, method: &str, path: &str, body: Value) -> (u16, Value) {
-        let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
-        let mut s = self.s.lock().unwrap();
-        match (method, parts.as_slice()) {
-            ("GET", ["status"]) => {
-                let idle_limit = self.opts.idle;
-                let mut gpus = Vec::new();
-                for k in 0..s.slots.len() {
-                    let running = s.slots[k].running.and_then(|r| s.jobs.get(&r)).map(|j| {
-                        let mut v = j.summary();
-                        v["elapsed_seconds"] = json!(j.started.map(|t| now() - t));
-                        v
-                    });
-                    let sl = &mut s.slots[k];
-                    let idle = sl.last_active.elapsed().as_secs();
-                    let busy = gpu_busy(&sl.pci, &mut sl.busy_sample);
-                    let unload_in = match (idle_limit, sl.worker_pid, sl.running) {
-                        (Some(limit), Some(_), None) => Some(limit.as_secs().saturating_sub(idle)),
-                        _ => None,
-                    };
-                    gpus.push(json!({
-                        "gpu": sl.gpu, "span": sl.span, "name": sl.name, "pci": sl.pci, "mem_gib": sl.mem_gib, "shared": sl.shared,
-                        "engine": sl.engine, "info": sl.info, "denoiser": self.opts.engine_of_path(sl.info.get("model")),
-                        "worker": sl.worker_pid.map(|pid| json!({"pid": pid, "rss_gib": rss_gib(pid)})),
-                        "busy_pct": busy, "engine_gib": sl.stats["gib_in_use"], "cap_gib": sl.stats["gib_cap"],
-                        "card_free_gib": sl.stats["gib_free_card"], "running": running,
-                        "idle_seconds": if sl.running.is_some() { 0 } else { idle }, "unload_in_seconds": unload_in}));
-                }
-                (200, json!({"version": crate::VERSION, "model": self.opts.model, "engines": self.opts.engine_names().iter().filter_map(|n| self.opts.engine_path(Some(n))).map(|(n, p)| json!({
-                                 "name": n, "path": p, "gib": std::fs::metadata(&p).map_or(0.0, |m| m.len() as f64 / (1u64 << 30) as f64),
-                                 "default": n == self.opts.model_name})).collect::<Vec<_>>(), "gpus": gpus,
-                             "queued": s.queue.iter().collect::<Vec<_>>(),
-                             "unload_after_idle_seconds": self.opts.idle.map(|d| d.as_secs())}))
-            }
-            ("GET", ["gpus"]) => {
-                let served: Vec<usize> = s.slots.iter().map(|sl| sl.gpu).collect();
-                let list: Vec<Value> = self
-                    .found
-                    .iter()
-                    .map(|g| {
-                        let mut g = g.clone();
-                        g["served"] = json!(g["index"].as_u64().is_some_and(|i| served.contains(&(i as usize))));
-                        g
-                    })
-                    .collect();
-                (200, json!(list))
-            }
-            ("GET", ["jobs"]) => (200, json!(s.jobs.values().rev().map(JobRec::summary).collect::<Vec<_>>())),
-            ("GET", ["jobs", id]) => match id.parse::<u64>().ok().and_then(|i| s.jobs.get(&i)) {
-                Some(j) => (200, j.full()),
-                None => (404, json!({"error": format!("no job {id}")})),
-            },
-            ("POST", ["jobs"]) => {
-                if s.shutdown {
-                    return (409, json!({"error": "the daemon is shutting down"}));
-                }
-                if body.get("kind").and_then(|k| k.as_str()).is_none() {
-                    return (400, json!({"error": "a job needs a \"kind\" (bench-blocks, check-block, denoise, decode, encode, generate)"}));
-                }
-                if let Some(e) = body.get("engine") {
-                    if !e.as_str().is_some_and(|e| self.opts.engine_path(Some(e)).is_some()) {
-                        return (400, json!({"error": format!("\"engine\": {e} is not one this daemon has ({:?})", self.opts.engine_names())}));
-                    }
-                }
-                if let Some(g) = body.get("gpu") {
-                    let served: Vec<usize> = s.slots.iter().map(|sl| sl.gpu).collect();
-                    if !g.as_u64().is_some_and(|g| served.contains(&(g as usize))) {
-                        return (400, json!({"error": format!("\"gpu\": {g} is not one this daemon serves ({served:?})")}));
-                    }
-                }
-                let id = s.next;
-                s.next += 1;
-                s.jobs.insert(id, JobRec { id, spec: body, state: "queued", log: Vec::new(), result: None, error: None,
-                                           cancel: Arc::new(AtomicBool::new(false)), created: now(), started: None,
-                                           finished: None, progress: None, gpu: None });
-                s.queue.push_back(id);
-                self.cv.notify_all();
-                (200, json!({"id": id}))
-            }
-            ("POST", ["jobs", id, "cancel"]) => {
-                let Some(i) = id.parse::<u64>().ok() else { return (404, json!({"error": format!("no job {id}")})) };
-                s.queue.retain(|q| *q != i);
-                match s.jobs.get_mut(&i) {
-                    Some(j) if j.state == "queued" => {
-                        j.state = "cancelled";
-                        j.finished = Some(now());
-                        (200, json!({"id": i, "state": "cancelled"}))
-                    }
-                    Some(j) if j.state == "running" => {
-                        j.cancel.store(true, Ordering::Relaxed);
-                        (200, json!({"id": i, "state": "cancelling: it stops at the next block boundary"}))
-                    }
-                    Some(j) => (200, json!({"id": i, "state": j.state})),
-                    None => (404, json!({"error": format!("no job {i}")})),
-                }
-            }
-            ("POST", ["jobs", id, "remove"]) => {
-                let Some(i) = id.parse::<u64>().ok() else { return (404, json!({"error": format!("no job {id}")})) };
-                match s.jobs.get(&i).map(|j| j.state) {
-                    None => (404, json!({"error": format!("no job {i}")})),
-                    Some("running") => (409, json!({"error": format!("job {i} is running: stop it first")})),
-                    Some(_) => {
-                        s.queue.retain(|q| *q != i);
-                        s.jobs.remove(&i);
-                        (200, json!({"id": i, "removed": true}))
-                    }
-                }
-            }
-            ("POST", ["unload"]) => {
-                let want = body.get("gpu").and_then(|g| g.as_u64()).map(|g| g as usize);
-                let mut hit = Vec::new();
-                for sl in s.slots.iter_mut().filter(|sl| want.is_none_or(|g| g == sl.gpu)) {
-                    sl.unload_requested = true;
-                    hit.push(json!({"gpu": sl.gpu, "unload": if sl.running.is_some() { "after the running job" } else { "now" }}));
-                }
-                self.cv.notify_all();
-                if hit.is_empty() {
-                    (400, json!({"error": "no such GPU served"}))
-                } else {
-                    (200, json!({"unload": hit}))
-                }
-            }
-            ("POST", ["shutdown"]) => {
-                s.shutdown = true;
-                for id in std::mem::take(&mut s.queue) {
-                    if let Some(j) = s.jobs.get_mut(&id) {
-                        j.state = "cancelled";
-                    }
-                }
-                let running: Vec<u64> = s.slots.iter().filter_map(|sl| sl.running).collect();
-                for r in running {
-                    s.jobs[&r].cancel.store(true, Ordering::Relaxed);
-                }
-                self.cv.notify_all();
-                (200, json!({"shutdown": "running jobs stop at their next block boundary, then the engines unload"}))
-            }
-            _ => (404, json!({"error": format!("no route {method} /engine/{path}")})),
+        let (method, path) = (req.method.clone(), req.path.clone());
+        let mut cx = routes::Cx { s: stream.try_clone().map_err(|e| Error(e.to_string()))?, req };
+        if !routes::serve(self, &mut cx) {
+            http::respond(stream, 404, &json!({"error": format!("no route {method} {path}")}));
         }
+        Ok(())
     }
 }
 

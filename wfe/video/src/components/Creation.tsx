@@ -1,6 +1,6 @@
 /** Everything to do with making a new clip. Deliberately separate from Jobs. */
 import { jsx } from "../jsx.js";
-import { rpc } from "../api.js";
+import { api, rpc } from "../api.js";
 import { load, refresh, render, save, state } from "../state.js";
 import { navigate } from "../router.js";
 import type { Canvas, Engine, GenerateRequest } from "../types.js";
@@ -229,9 +229,7 @@ async function addRefs(kind: RefKind, files: FileList | null): Promise<void> {
   for (const f of Array.from(files ?? [])) {
     if (form[kind].length >= REF_MAX[kind]) break;
     try {
-      const r = await fetch(`api/upload?name=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
-      const j = (await r.json()) as { ok: boolean; name?: string; error?: string };
-      if (!j.ok || !j.name) throw new Error(j.error ?? `HTTP ${r.status}`);
+      const j = await api.upload(f);
       form[kind] = [...form[kind], j.name];
       state.error = null;
     } catch (e) {
@@ -311,9 +309,7 @@ async function setControl(key: ControlKey, files: FileList | null): Promise<void
   const f = files?.[0];
   if (!f) return;
   try {
-    const r = await fetch(`api/upload?name=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
-    const j = (await r.json()) as { ok: boolean; name?: string; error?: string };
-    if (!j.ok || !j.name) throw new Error(j.error ?? `HTTP ${r.status}`);
+    const j = await api.upload(f);
     form[key] = j.name;
     state.error = null;
   } catch (e) {
