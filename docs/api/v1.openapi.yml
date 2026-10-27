@@ -1,0 +1,1378 @@
+openapi: 3.1.0
+info:
+  title: 'nextcuda''s front door: the OpenAI-compatible routes and the files (Authorization: Bearer <token>)'
+  version: generated
+  description: 'A server''s own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextcuda gen-api`: do not edit.'
+servers:
+- url: /
+paths:
+  /v1/models:
+    get:
+      operationId: models
+      summary: The enabled chat, image and audio models
+      tags:
+      - openai
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DoorModels'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/chat/completions:
+    post:
+      operationId: chat
+      summary: 'Chat (stream: true for server-sent events; tools), to the chat model named (its X-Keep-Up-S header keeps it loaded that long after)'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatBody'
+            example:
+              messages:
+              - role: user
+                content: Hello
+              stream: false
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {}
+            text/event-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/images/generations:
+    post:
+      operationId: generations
+      summary: 'Pictures (and ours: steps, seed, sampler, schedule, cfg, negative_prompt, loras), to the image model named'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageGenerateBody'
+            example:
+              prompt: a lighthouse at dusk
+              size: 1024x1024
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pictures'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/images/edits:
+    post:
+      operationId: edits
+      summary: 'Edits: multipart (image, image[] ...) or JSON images, to the image model named'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageEditBody'
+            example:
+              prompt: make it night
+              images:
+              - data:image/png;base64,...
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ImageEditBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pictures'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/audio/speech:
+    post:
+      operationId: speech
+      summary: 'A song (input: the lyrics, instructions: the music) or speech (input: the text; voice, language, instructions, ref_audio, ref_text); response_format wav or url'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AudioSpeechBody'
+            example:
+              instructions: warm folk
+              input: |-
+                [verse]
+                River runs slow
+              response_format: url
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/audio/transcriptions:
+    post:
+      operationId: transcriptions
+      summary: 'A recording written down, to the recogniser (OpenAI''s whisper-1, or no name: the one here)'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AudioTranscribeBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transcript'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/images/files/{name}:
+    get:
+      operationId: imageFile
+      summary: A picture an answer links (data[].url of image.generate / image.edit); no byte ranges (always the whole file)
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the answer's url has it
+      responses:
+        '200':
+          description: the file
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/audio/files/{name}:
+    get:
+      operationId: audioFile
+      summary: A song or speech an answer links (data[].url of audio.generate / audio.speak); byte ranges (Range) supported
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the answer's url has it
+      - name: Range
+        in: header
+        required: false
+        schema:
+          type: string
+        description: 'bytes=a-b, bytes=a- or bytes=-n (one span): answered 206 with Content-Range'
+      responses:
+        '200':
+          description: the file
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+        '206':
+          description: the span asked for
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+  /v1/model3d/files/{name}:
+    get:
+      operationId: model3dFile
+      summary: A mesh an answer links (data[].url of model3d.generate / model3d.rig), or its picture (.png) or its record (.json); from the directory (no 3D server need run)
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the answer's url has it
+      responses:
+        '200':
+          description: the file
+          content:
+            model/gltf-binary:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/model3d/generate:
+    post:
+      operationId: model3dGenerate
+      summary: 'A mesh from a picture (image) or several views (images: [{image, side}]); texture, seed, steps, faces; response_format glb or url'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Model3dGenerateBody'
+            example:
+              image: data:image/png;base64,iVBORw0...
+              texture: true
+              response_format: url
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Meshes'
+            model/gltf-binary:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/model3d/rig:
+    post:
+      operationId: model3dRig
+      summary: 'A mesh rigged (skeleton and skin weights) or animated (prompt: the motion); mesh as base64 GLB / OBJ, or file: a GLB made here'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Model3dRigBody'
+            example:
+              file: 1792132541-trellis2-42.glb
+              response_format: url
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Meshes'
+            model/gltf-binary:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/video/files/{name}:
+    get:
+      operationId: videoFile
+      summary: 'A finished clip: <clip>.mp4 (video.jobs.list''s file, video.status''s and video.timeline''s file URLs); also <clip>.preview.png (video.status''s preview while it samples) and <clip>.last.png (a clip''s last frame); byte ranges (Range) supported'
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the answer's url has it
+      - name: Range
+        in: header
+        required: false
+        schema:
+          type: string
+        description: 'bytes=a-b, bytes=a- or bytes=-n (one span): answered 206 with Content-Range'
+      responses:
+        '200':
+          description: the file
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+        '206':
+          description: the span asked for
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+  /v1/video/thumbs/{name}:
+    get:
+      operationId: videoThumb
+      summary: A finished clip's 240-pixel still, 5 s in (video.timeline's thumb)
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the answer's url has it
+      responses:
+        '200':
+          description: the file
+          content:
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/audio/voices/{name}:
+    get:
+      operationId: voiceSample
+      summary: A saved voice's sample (audio.voices.list's sample)
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the answer's url has it
+      responses:
+        '200':
+          description: the file
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+components:
+  schemas:
+    AudioSpeechBody:
+      type: object
+      properties:
+        input:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a song: the lyrics ([verse] / [chorus] tags on lines of their own; empty: instrumental); speech: the text to say (required; also as text)'
+        instructions:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a song: the music - genre, mood, tempo, instruments, voice (required unless a recording is given; also as prompt or description); speech: how to say it, the voice to make up, or a cloned voice''s direction'
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: guidance (also as guidance_scale)
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a song: the lyrics'' language as a code; speech: the language spoken (auto by default)'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the model's id (this server's; OpenAI's and the reference servers' names are taken for it)
+        options:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: 'the engine''s own options, {NAME: value} (/api/info lists them)'
+        seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'a song: its length; speech: the most to make (also as duration, or max_new_tokens: frames)'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: also as num_inference_steps
+        response_format:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'wav (default: the file) or url (JSON with its link; needs an output directory)'
+        normalize:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'speech: false says the text as written (default: symbols as words, no markdown)'
+        audio:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end)'
+        bpm:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'acestep-1.5: the tempo (else the planner''s, or none said)'
+        cover_noise:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'cover: how close the start is to the recording, 0 (from noise) to 1 (0)'
+        cover_strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'cover / repaint: the share of the steps conditioned on the recording, 0 to 1 (0.5)'
+        key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'acestep-1.5: key and scale, "C major", "F# minor"'
+        planner:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'acestep-1.5 text2music: the 5 Hz planner LM writes the metas, the caption and the song''s audio codes first (true, as the platform''s use_lm)'
+        repaint_end:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'repaint: seconds; -1 or none: the recording''s end; past it: the song extended to it'
+        repaint_mode:
+          anyOf:
+          - $ref: '#/components/schemas/RepaintMode'
+          - type: 'null'
+          description: 'repaint: how much of the recording is kept at the span''s edges (balanced)'
+        repaint_start:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'repaint: seconds into the recording (0)'
+        repaint_strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'repaint, balanced: 0 keeps the most, 1 the least (0.5)'
+        source_lyrics:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'edit: the words the recording sings now'
+        task:
+          anyOf:
+          - $ref: '#/components/schemas/AudioTask'
+          - type: 'null'
+          description: 'acestep-1.5: text2music (default: from the words alone); with audio - cover (the recording performed anew: input its words, instructions its sound), repaint (repaint_start to repaint_end made again; an end past the recording extends it), edit (new words sung over the recording: source_lyrics the words it sings now), lego (a vocal track over an instrumental: acestep-1.5-base)'
+        time_signature:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'acestep-1.5: beats a bar: "4", "3", "6"'
+        continue_from:
+          anyOf:
+          - type: string
+          - type: 'null'
+          maxLength: 200
+          description: 'carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice''s sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped'
+        ref_audio:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a recording of the voice to clone: WAV as base64 or a data: URL, or upload:<name> (audio.upload, any format it takes) - the Base model'
+        ref_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what the recording says: the closer, in-context clone (Breeze TTS 2: required, the exact transcript)'
+        speakers:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          maxItems: 4
+          description: 'several speakers (VibeVoice: input a script of "Speaker N: words" lines): each speaker''s voice, Speaker 1''s first - a saved voice''s name, a recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL) or upload:<name>, or {ref_audio | voice, ref_text}; a model that takes them is picked when model is not given'
+        voice:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices)'
+      additionalProperties: true
+      description: 'What /v1/audio/speech takes: a song (a song model: input the lyrics, instructions the music) or speech (a speech model: input the text; voice, language, instructions, ref_audio, ref_text ...), as the model this server runs is'
+    AudioTask:
+      type: string
+      enum:
+      - text2music
+      - cover
+      - repaint
+      - edit
+      - lego
+      description: 'ACE-Step 1.5''s task: text2music | cover | repaint | edit | lego'
+    AudioTranscribeBody:
+      type: object
+      properties:
+        audio:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono (or file: the same, OpenAI''s name; one of them is required)'
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a code or a name (en, english, de, german ...); none or auto: detected on the first 30 s'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        options:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: 'the engine''s own: condition (each window prompted with the text before it), no-speech (the silence threshold), fallback (decode an unsure window again, warmer)'
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'text that leads the first window: names, spelling, style (Whisper''s initial_prompt)'
+        translate:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: into English instead of the language spoken
+        words:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: true
+          description: each word's start and end (and the model's probability for it)
+      additionalProperties: true
+      description: 'What audio.transcribe makes from: the body its kind''s server takes.'
+    ChatBody:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            type: object
+          description: '[{role, content}]: content a string or OpenAI''s parts (text, image_url); an assistant''s reasoning_content (/api/chat: thinking) and tool_calls'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id (any: the one served)'
+        stream:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'as server-sent events (default false; /api/chat: true, as lines)'
+        max_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        max_completion_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        temperature:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: 1.0
+        top_p:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: 0.95
+        tools:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          description: OpenAI tool definitions
+        tool_choice:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'none: no tools'
+        reasoning_effort:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'none, low, medium, high or max (/api/chat: effort)'
+        chat_template_kwargs:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: 'llama.cpp''s: enable_thinking (false answers without thinking), reasoning_effort'
+      required:
+      - messages
+      additionalProperties: true
+      description: 'A chat: OpenAI''s chat completions body (and /api/chat''s: effort, thinking)'
+    DoorModel:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        owned_by:
+          type: string
+        created:
+          type: integer
+        kind:
+          type: string
+          description: llm, image or audio
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: its title
+      required:
+      - id
+      - object
+      - owned_by
+      - created
+      - kind
+      description: An enabled model, as OpenAI lists them (with its kind)
+    DoorModels:
+      type: object
+      properties:
+        object:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/DoorModel'
+      required:
+      - object
+      - data
+      description: 'OpenAI''s list: the enabled chat, image and audio models'
+    FileName:
+      type: object
+      properties:
+        name:
+          type: string
+          description: the file's name as the answer's url has it
+      required:
+      - name
+      description: A file a link names (`.../files/{name}`)
+    ImageEditBody:
+      type: object
+      properties:
+        images:
+          type: array
+          items:
+            type: string
+          description: 'up to 8, base64, data: URLs or upload:<name> (image.upload) - PNG, JPEG, WebP; each at most 40 MP, the request at most 256 MiB; each is resized to about 1 MP, so 2048 px on the long side is plenty'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        prompt:
+          type: string
+          description: the instructions
+        reference:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: true
+          description: 'true (default): the pictures condition the model as an edit''s references (its vision tower reads them) as well as being where strength starts; false: a plain img2img - the denoise starts from the first picture and the prompt alone guides it, comparable with other tools'' img2img (needs strength below 1)'
+        response_format:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: url (default) or b64_json
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        size:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'default: the last picture''s aspect'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0.05
+          maximum: 1
+          default: 1
+          description: 'how far from the first picture: 1 (default) makes a new picture guided by it; below 1 starts from the first picture, encoded and noised to the level strength reaches: the run is the last steps of a round(steps / strength)-step schedule, exactly ComfyUI''s KSampler denoise (a few-step model such as turbo starts at strength itself, then takes its own levels below it). With reference true the picture also conditions the model, which holds it closer than a plain img2img at the same number: measured on Qwen-Image 2.1, 0.9 keeps the framing, face, hair and clothes and still makes the change asked; 0.75 and below give back nearly the same picture. With reference false it behaves as other tools'' img2img. The first picture is resized to the output''s size'
+      required:
+      - images
+      - prompt
+      additionalProperties: true
+      description: 'What image.edit makes from: the body its kind''s server takes.'
+    ImageGenerateBody:
+      type: object
+      properties:
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: true guidance (needs negative_prompt)
+        image:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'an init picture (base64, a data: URL, or upload:<name> from image.upload; at most 40 MP): a plain img2img - the denoise starts from it at strength and the prompt guides it (it is no reference: for an edit that reads the picture use image.edit). Needs strength below 1'
+        loras:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          description: each "name:scale" (a registered LoRA's id or a file) or {"name", "scale"}; [] unloads them
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        n:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: pictures
+        negative_prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+        prompt:
+          type: string
+        response_format:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: url (default) or b64_json
+        sampler:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: ComfyUI's names (euler, euler_ancestral, dpmpp_2m ...)
+        schedule:
+          anyOf:
+          - type: string
+          - type: 'null'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        size:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'WxH, e.g. 1024x1024, both multiples of 16 (default: the model''s, or the init picture''s aspect)'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'image.info''s steps: a few-step model (turbo) runs only its own count (6)'
+        strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0.05
+          maximum: 1
+          description: 'with image: how far from it (ComfyUI''s denoise: the last steps of a round(steps / strength)-step schedule); 0.3-0.6 is the usual img2img range'
+      required:
+      - prompt
+      additionalProperties: true
+      description: 'What image.generate makes from: the body its kind''s server takes.'
+    Mesh:
+      type: object
+      properties:
+        url:
+          type: string
+          description: 'the GLB (glTF binary): GET it here'
+        picture:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the picture it was made from (PNG)
+        bytes:
+          type: integer
+        created:
+          type: integer
+          description: unix seconds
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+        arch:
+          anyOf:
+          - type: string
+          - type: 'null'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+        resolution:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        faces:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the triangle budget asked
+        triangles:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: what it has
+        texture:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: a texture was asked for
+        textured:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it has one
+        rigged:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'rigged: its joints'
+        animated:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'animated: its frames'
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: a rig's motion
+        frames:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'rig: the frames asked'
+        views:
+          anyOf:
+          - type: array
+            items:
+              anyOf:
+              - type: string
+              - type: 'null'
+          - type: 'null'
+          description: 'each picture''s side (null: not said)'
+        took:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: seconds it took
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the card's energy, watt-hours
+      required:
+      - url
+      - bytes
+      - created
+      additionalProperties: true
+      description: 'A mesh made here: its links, and its settings (its sidecar <name>.json)'
+    MeshRun:
+      type: object
+      properties:
+        took:
+          type: number
+        seed:
+          type: integer
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+        triangles:
+          type: integer
+      required:
+      - took
+      - seed
+      - triangles
+      description: How a mesh was made
+    Meshes:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Mesh'
+        nextcuda:
+          $ref: '#/components/schemas/MeshRun'
+      required:
+      - created
+      - data
+      - nextcuda
+      description: 'A mesh made (response_format url): its links and settings, and how it was made (`nextcuda`: this server''s key)'
+    Model3dGenerateBody:
+      type: object
+      properties:
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: guidance
+        faces:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: at most this many triangles (decimated to it)
+        file:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: or a GLB made here to paint (its file name or url), as mesh
+        image:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (model3d.upload); a transparent background is the object''s outline, an opaque one is cut out (remove_background) (or {image, side}, as an item of images)'
+        images:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          maxItems: 8
+          items:
+            oneOf:
+            - type: string
+            - properties:
+                image:
+                  type: string
+                side:
+                  description: front, back, left, right, top, bottom, or an azimuth in degrees
+                  type: string
+              type: object
+          description: 'several views of the object (a multi-view model: model3d.info''s abilities.views); each a picture or {image, side}'
+        mesh:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a mesh to paint instead of making one (a model that textures: Hunyuan3D 2.1, hunyuan3d-2.1-paint): a GLB or OBJ as base64 or a data: URL; image says how it is painted'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        options:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: the engine's own (model3d.info lists them)
+        remove_background:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: true
+          description: cut the background out of an opaque picture
+        resolution:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'the shape''s grid / octree resolution: detail against time and memory'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: denoising steps of each stage
+        texture:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'PBR textures too (base colour, metallic-roughness); default: what the model does (model3d.info)'
+        texture_size:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the texture's side in texels
+      additionalProperties: true
+      description: 'What model3d.generate makes from: the body its kind''s server takes.'
+    Model3dRigBody:
+      type: object
+      properties:
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+        file:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: or a GLB made here (model3d.generate's file name or url)
+        fps:
+          anyOf:
+          - type: number
+          - type: 'null'
+        frames:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'an animating model: frames to make'
+        mesh:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload)'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        options:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: the engine's own
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'an animating model: the motion, in words ("a dragon flapping its wings")'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+      additionalProperties: true
+      description: 'What model3d.rig makes from: the body its kind''s server takes.'
+    PictureMade:
+      type: object
+      properties:
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+        b64_json:
+          anyOf:
+          - type: string
+          - type: 'null'
+        revised_prompt:
+          type: string
+        seed:
+          type: integer
+        width:
+          type: integer
+        height:
+          type: integer
+      required:
+      - revised_prompt
+      - seed
+      - width
+      - height
+      description: 'A picture made: its link (response_format url) or its PNG (b64_json)'
+    Pictures:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PictureMade'
+        nextsycl:
+          $ref: '#/components/schemas/PicturesRun'
+      required:
+      - created
+      - data
+      - nextsycl
+      description: 'OpenAI''s images answer, with how they were made (`nextsycl`: the key nextsycl''s contract names it; the front door''s methods call it run)'
+    PicturesRun:
+      type: object
+      properties:
+        seconds:
+          type: number
+        steps:
+          type: integer
+        seed:
+          type: integer
+          description: the first picture's; the n-th is seed + n
+        loras:
+          type: array
+          items:
+            type: string
+          description: name:scale, as merged
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the card's energy, watt-hours
+      required:
+      - seconds
+      - steps
+      - seed
+      - loras
+      description: How pictures were made
+    RepaintMode:
+      type: string
+      enum:
+      - balanced
+      - conservative
+      - aggressive
+      description: 'A repaint''s balance: balanced | conservative | aggressive'
+    Sound:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SoundItem'
+        nextsycl:
+          $ref: '#/components/schemas/SoundRun'
+      required:
+      - created
+      - data
+      - nextsycl
+      description: 'A sound made (response_format url): its link and settings, and how it was made (`nextsycl`: the key nextsycl''s contract names it; the front door''s methods call it run)'
+    SoundItem:
+      type: object
+      properties:
+        url:
+          type: string
+          description: the WAV (GET it here; byte ranges)
+        prompt:
+          type: string
+          description: 'a song: its description; speech: the text said'
+        lyrics:
+          type: string
+          description: a song's lyrics ("" none)
+        seconds:
+          type: number
+          description: seconds of sound
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+        took:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: seconds it took to make
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the card's energy, watt-hours
+        created:
+          type: integer
+          description: unix seconds
+        voice:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'speech: the voice (built-in or saved)'
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+        instructions:
+          anyOf:
+          - type: string
+          - type: 'null'
+        cloned:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'speech: spoken in a recording''s voice'
+        continued:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'speech: the file it carried on from (continue_from)'
+      required:
+      - url
+      - prompt
+      - lyrics
+      - seconds
+      - created
+      additionalProperties: true
+      description: 'A song or speech made here: its link, what it was made from (the WAV''s own tags) and how'
+    SoundRun:
+      type: object
+      properties:
+        took:
+          type: number
+        seconds:
+          type: number
+          description: seconds of sound
+        seed:
+          type: integer
+        steps:
+          type: integer
+        cfg:
+          type: number
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - took
+      - seconds
+      - seed
+      - steps
+      - cfg
+      description: How a sound was made
+    Timed:
+      type: object
+      properties:
+        start:
+          type: number
+          description: seconds from the recording's start
+        end:
+          type: number
+        text:
+          type: string
+        probability:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'a word: the model''s mean probability of its tokens'
+      required:
+      - start
+      - end
+      - text
+      description: A stretch or a word of a transcript, timed
+    Transcript:
+      type: object
+      properties:
+        model:
+          type: string
+        text:
+          type: string
+          description: the whole transcript
+        language:
+          type: string
+          description: 'the language written down (a code: en), detected or as asked'
+        duration:
+          type: number
+          description: seconds of recording
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Timed'
+          description: stretches timed by the model's timestamp tokens
+        words:
+          type: array
+          items:
+            $ref: '#/components/schemas/Timed'
+          description: 'each word timed (empty with words: false)'
+        created:
+          type: integer
+        nextsycl:
+          $ref: '#/components/schemas/TranscriptRun'
+      required:
+      - model
+      - text
+      - language
+      - duration
+      - segments
+      - words
+      - created
+      - nextsycl
+      description: A recording written down
+    TranscriptRun:
+      type: object
+      properties:
+        took:
+          type: number
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+        seconds:
+          type: number
+          description: seconds of recording
+      required:
+      - took
+      - seconds
+      description: How a transcript was made

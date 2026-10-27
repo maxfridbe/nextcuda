@@ -35,7 +35,7 @@
 //! than those merged in reloads the engine with them (the old one is dropped first: its VRAM is the new one's) - until
 //! the engines take a LoRA per request on a side path.
 
-mod routes;
+pub(crate) mod routes;
 
 pub use routes::infos as route_infos;
 

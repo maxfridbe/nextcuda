@@ -27,7 +27,7 @@
 //!
 //! One request runs at a time (one engine on its GPU); the others wait their turn.
 
-mod routes;
+pub(crate) mod routes;
 
 pub use routes::infos as route_infos;
 

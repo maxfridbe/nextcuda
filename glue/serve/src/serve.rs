@@ -47,7 +47,7 @@
 //! session when that is longer, and reads only the rest. GLM's thinking comes back as `reasoning_content`, the
 //! answer as `content`.
 
-mod routes;
+pub(crate) mod routes;
 
 pub use routes::infos as route_infos;
 

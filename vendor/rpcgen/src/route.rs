@@ -112,7 +112,7 @@ pub struct RouteInfo {
     pub produces: Vec<&'static str>,
     /// a file served in byte ranges (a Range header answered 206)
     pub ranges: bool,
-    /// a body a caller sends (Body::Json), as JSON text
+    /// a body a caller sends (Body::Json, or JsonOrForm's JSON), as JSON text
     pub example: Option<&'static str>,
 }
 
@@ -485,7 +485,7 @@ pub fn check_routes(routes: &[RouteInfo]) -> Result<(), String> {
                 None => return Err(format!("{k}: {{{p}}} is not a field of the request")),
             }
         }
-        if r.example.is_some() && r.body != Body::Json {
+        if r.example.is_some() && !matches!(r.body, Body::Json | Body::JsonOrForm) {
             return Err(format!("{k}: an example is a JSON body's"));
         }
     }
@@ -562,7 +562,11 @@ fn route_op(r: &RouteInfo) -> Value {
         }
         Body::JsonOrForm => {
             let s = r.form.as_ref().map(schema).unwrap_or_else(|| json!({"type": "object"}));
-            op["requestBody"] = json!({"required": true, "content": {"application/json": {"schema": s}, "multipart/form-data": {"schema": s}}});
+            let mut media = json!({"schema": s});
+            if let Some(e) = route_examples(r) {
+                media["example"] = e;
+            }
+            op["requestBody"] = json!({"required": true, "content": {"application/json": media, "multipart/form-data": {"schema": s}}});
         }
     }
     // a JSON answer that may be a file instead (response_format wav): the file's types are bytes

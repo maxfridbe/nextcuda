@@ -63,6 +63,7 @@ pub fn route_tables() -> Vec<(&'static str, &'static str, Vec<rpcgen::RouteInfo>
         ("model3d", "nextcuda 3D server (nextcuda model3d serve)", crate::model3d::route_infos(), vec!["wfe/model3d/src/gen/routes.ts"]),
         ("llm", "nextcuda chat server (nextcuda serve FILE)", crate::serve::route_infos(), vec![]),
         ("home", "nextcuda's front door: its page's API and documents (nextcuda serve)", routes::infos(), vec!["wfe/home/src/gen/routes.ts"]),
+        ("v1", "nextcuda's front door: the OpenAI-compatible routes and the files (Authorization: Bearer <token>)", api::openai::infos(), vec![]),
     ]
 }
 

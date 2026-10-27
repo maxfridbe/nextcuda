@@ -26,6 +26,8 @@ use super::spec;
 // the document's operations and the wfe client are made from them.
 use super::methods::{self as table, Method};
 
+pub(crate) mod openai;
+
 /// system.version's api: raised when an answer changes in a way an old client misreads
 const API_VERSION: u32 = 3;
 
@@ -203,8 +205,10 @@ impl Home {
             }
             return;
         }
-        if let Err((st, m)) = self.openai(&mut s, &req) {
-            fail(&mut s, st, m);
+        // the OpenAI-compatible routes: openai.rs's table
+        let mut cx = crate::page::Cx { s, req, cors: String::new() };
+        if let Err((st, m)) = openai::serve(self, &mut cx) {
+            fail(&mut cx.s, st, m);
         }
     }
 
@@ -1166,155 +1170,6 @@ impl Home {
         if v["ok"] == true { Ok(json!({"name": v["name"]})) } else { Err((400, v["error"].as_str().unwrap_or("the upload failed").to_string())) }
     }
 
-    /// The OpenAI-compatible routes: to the switcher, or to the kind's server for the model the request names
-    fn openai(self: &Arc<Self>, s: &mut Conn, req: &Request) -> Result<(), Fail> {
-        let all = self.models();
-        let on = self.kinds_on(&all);
-        let need = |k: &str| if on.contains(&k) { Ok(()) } else { Err((409u16, format!("no {k} model is enabled"))) };
-        let pass = |s: &mut Conn, t: &crate::http::Target| http::forward(s, t, req).map_err(|e| (502, e));
-        match (req.method.as_str(), req.path.as_str()) {
-            ("GET", "/v1/models") => {
-                let mut data: Vec<Value> = Vec::new();
-                for m in all.iter().filter(|m| m["enabled"] != false && matches!(registry::kind_of(m), "llm" | "image" | "audio")) {
-                    data.push(json!({"id": m["id"], "object": "model", "owned_by": "nextcuda", "created": 0, "kind": registry::kind_of(m), "name": m["title"]}));
-                }
-                http::respond(s, 200, &json!({"object": "list", "data": data}));
-                Ok(())
-            }
-            ("POST", "/v1/chat/completions") => {
-                let model = serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v["model"].as_str().map(str::to_string));
-                // a card's model not downloaded is said as such (chat_target refuses or fetches it), not "none enabled"
-                if !model.as_deref().is_some_and(|m| self.not_downloaded(m).is_some()) {
-                    need("llm")?;
-                }
-                let t = self.chat_target(model.as_deref())?;
-                let r = pass(s, &t);
-                if let Some(secs) = crate::switch::keep_up_s(&req.head) {
-                    if let Some(id) = self.chat_loaded(&self.models()) {
-                        self.keep_chat(&id, secs);
-                    }
-                }
-                r
-            }
-            ("POST", p @ ("/v1/images/generations" | "/v1/images/edits" | "/v1/audio/speech")) => {
-                let kind = if p.starts_with("/v1/images") { "image" } else { "audio" };
-                // the model the body names (a JSON field, or a multipart part)
-                let ctype = http::header(&req.head, "content-type").unwrap_or_default();
-                let named = if let Some(b) = ctype.split("boundary=").nth(1) {
-                    http::multipart(&req.body, b.trim_matches('"')).ok()
-                        .and_then(|ps| ps.into_iter().find(|p| p.name == "model").map(|p| String::from_utf8_lossy(&p.data).trim().to_string()))
-                } else {
-                    serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v["model"].as_str().map(str::to_string))
-                };
-                // a card's model not downloaded: refused (409 model_not_downloaded), or with NS_AUTO_PULL fetched first
-                let fetched = named.as_deref().filter(|n| self.not_downloaded(n).is_some()).map(str::to_string);
-                if let Some(n) = &fetched {
-                    self.need_downloaded(n, None, true)?;
-                }
-                let all = if fetched.is_some() { self.models() } else { all.clone() };
-                if fetched.is_none() {
-                    need(kind)?;
-                }
-                // OpenAI's own names (dall-e-3, tts-1 ...) mean "the kind's model"
-                let named = named.filter(|n| all.iter().any(|m| m["id"] == n.as_str()));
-                // speech with a voice or a recording and no model of ours named: the speech model for it
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-                let has = |k: &str| body[k].as_str().is_some_and(|v| !v.is_empty());
-                let many = body["speakers"].as_array().is_some_and(|a| !a.is_empty());
-                let id = if kind == "audio" && named.is_none() && (has("voice") || has("ref_audio") || many) {
-                    self.speech_model(&body, &all)?
-                } else {
-                    self.pick(kind, &json!({"model": named}), &all)?
-                };
-                let t = self.ensure(&id)?;
-                pass(s, &t)
-            }
-            ("POST", "/v1/audio/transcriptions") => {
-                need("audio")?;
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-                // OpenAI's whisper-1 (or no name): the recogniser here
-                let named = body["model"].as_str().filter(|n| all.iter().any(|m| m["id"] == *n));
-                let id = self.recogniser(&json!({"model": named}), &all)?;
-                let t = self.ensure(&id)?;
-                pass(s, &t)
-            }
-            ("GET", p) if p.starts_with("/v1/images/files/") => pass(s, &self.file_target("image")),
-            ("GET", p) if p.starts_with("/v1/audio/files/") => pass(s, &self.file_target("audio")),
-            ("GET", p) if p.starts_with("/v1/model3d/files/") => {
-                // from the directory (a tool's result needs no 3D server running)
-                let name = p["/v1/model3d/files/".len()..].split('?').next().unwrap_or("");
-                let kind = match name.rsplit('.').next() {
-                    Some("glb") => "model/gltf-binary",
-                    Some("png") => "image/png",
-                    Some("json") => "application/json",
-                    _ => return Err((404, format!("no file {name}"))),
-                };
-                let plain = crate::files::plain(name).ok_or_else(|| (404, format!("no file {name}")))?;
-                let b = std::fs::read(self.out_dir("model3d").join(plain)).map_err(|_| (404, format!("no file {name}")))?;
-                http::respond_bytes(s, 200, kind, &b, "Cache-Control: max-age=31536000, immutable\r\n");
-                Ok(())
-            }
-            ("POST", p @ ("/v1/model3d/generate" | "/v1/model3d/rig")) => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-                // a card's 3D model not downloaded: refused, or with NS_AUTO_PULL fetched first
-                let fetched = body["model"].as_str().filter(|n| self.not_downloaded(n).is_some()).map(str::to_string);
-                if let Some(n) = &fetched {
-                    self.need_downloaded(n, None, true)?;
-                } else {
-                    need("model3d")?;
-                }
-                let all = if fetched.is_some() { self.models() } else { all.clone() };
-                let named = body["model"].as_str().filter(|n| all.iter().any(|m| m["id"] == *n)).map(str::to_string);
-                let want = if p.ends_with("/rig") { "rig" } else { "generate" };
-                let id = match named {
-                    Some(n) => self.pick("model3d", &json!({"model": n}), &all)?,
-                    None => all.iter().filter(|m| registry::kind_of(m) == "model3d" && m["enabled"] != false)
-                        .find(|m| m["does"].as_array().is_none_or(|a| a.iter().any(|x| x == want || (want == "rig" && x == "animate"))))
-                        .map(|m| m["id"].as_str().unwrap_or("").to_string()).ok_or_else(|| (409u16, format!("no enabled 3D model does {want}")))?,
-                };
-                let t = self.ensure(&id)?;
-                pass(s, &t)
-            }
-            ("GET", p) if p.starts_with("/v1/video/files/") => {
-                // a clip in the studio's output (its /out/ route; a Range header passed on for seeking)
-                need("video")?;
-                let name = p["/v1/video/files/".len()..].split('?').next().unwrap_or("");
-                let still = name.ends_with(".preview.png") || name.ends_with(".last.png");
-                if name.is_empty() || name.contains('/') || !(name.ends_with(".mp4") || still) {
-                    return Err((404, format!("no clip {name}")));
-                }
-                let head = String::from_utf8_lossy(&req.head).into_owned();
-                let range = head.split("\r\n").find(|l| l.split(':').next().is_some_and(|k| k.trim().eq_ignore_ascii_case("range")));
-                let up = format!("GET /out/{name} HTTP/1.1\r\nHost: studio\r\n{}Connection: close\r\n\r\n", range.map(|r| format!("{r}\r\n")).unwrap_or_default());
-                let req = Request { method: "GET".into(), path: format!("/out/{name}"), target: format!("/out/{name}"), head: up.into_bytes(),
-                                    origin: None, host: None, body: Vec::new() };
-                http::forward(s, &self.target("video"), &req).map_err(|e| (502, e))
-            }
-            ("GET", p) if p.starts_with("/v1/video/thumbs/") => {
-                need("video")?;
-                let name = &p["/v1/video/thumbs/".len()..];
-                if name.is_empty() || name.contains('/') || !name.ends_with(".webp") {
-                    return Err((404, format!("no still {name}")));
-                }
-                let req = Request { method: "GET".into(), path: format!("/thumb/{name}"), target: format!("/thumb/{name}"),
-                                    head: format!("GET /thumb/{name} HTTP/1.1\r\nHost: studio\r\nConnection: close\r\n\r\n").into_bytes(),
-                                    origin: None, host: None, body: Vec::new() };
-                http::forward(s, &self.target("video"), &req).map_err(|e| (502, e))
-            }
-            ("GET", p) if p.starts_with("/v1/audio/voices/") => {
-                let name = p["/v1/audio/voices/".len()..].trim_end_matches(".wav");
-                match self.voices().sample_path(name).and_then(|f| std::fs::read(f).ok()) {
-                    Some(b) => {
-                        http::respond_bytes(s, 200, "audio/wav", &b, "Cache-Control: no-cache\r\n");
-                        Ok(())
-                    }
-                    None => Err((404, format!("no saved voice {name}"))),
-                }
-            }
-            (m, p) => Err((404, format!("no route {m} {p} (GET /openapi.yml)"))),
-        }
-    }
-
     /// The OpenAPI document of what the enabled kinds offer. Open (GET /openapi.yml needs no token), so it carries
     /// none: `<token>` in the examples; the page's own copy (`token`) has it filled in
     pub(crate) fn openapi(&self, req: &Request, token: bool) -> Value {
@@ -1415,55 +1270,25 @@ impl Home {
                 "x-curl": curl,
             }}));
         }
-        let oa = |summary: &str, body: Value, answer: &str| {
-            let schema: Value = spec::result(answer).and_then(|r| serde_json::from_str(&r).ok()).unwrap_or(json!({"type": "object"}));
-            json!({"tags": ["openai"], "summary": summary, "requestBody": {"required": true, "content": {"application/json": {"example": body}}},
-                   "responses": {"200": {"description": format!("OpenAI's shape, no envelope (as {answer}'s result)"), "content": {"application/json": {"schema": schema}}},
-                                 "4XX": {"description": "OpenAI's error: {\"error\": {\"message\", \"type\"}}"}}})
-        };
-        // a file an answer links: the bearer token like every route here; byte ranges where the kind's server serves them
-        let file = |summary: &str, name: &str, mime: &str, ranges: bool| {
-            let mut params = vec![json!({"name": "name", "in": "path", "required": true, "schema": {"type": "string"}, "description": name})];
-            let mut responses = json!({"200": {"description": format!("the file ({mime})"), "content": {mime: {"schema": {"type": "string", "format": "binary"}}}},
-                                       "401": {"description": "unauthorized: the bearer token is needed here too"},
-                                       "404": {"description": "no such file"}});
-            if ranges {
-                params.push(json!({"name": "Range", "in": "header", "required": false, "schema": {"type": "string"},
-                                   "description": "bytes=a-b, bytes=a- or bytes=-n (one span): answered 206 with Content-Range; Accept-Ranges: bytes"}));
-                responses["206"] = json!({"description": "the span asked for", "content": {mime: {"schema": {"type": "string", "format": "binary"}}}});
+        // the OpenAI-compatible routes and the files (openai.rs's table), of the kinds enabled; an example names the
+        // kind's first enabled model, as a caller would
+        let infos: Vec<rpcgen::RouteInfo> = openai::infos().into_iter().filter(|r| openai::kind_of(r.path).is_none_or(|k| on.contains(&k))).collect();
+        for (path, mut ops) in rpcgen::route_paths(&infos).unwrap_or_else(|e| panic!("the /v1 routes: {e}")) {
+            let kind = openai::kind_of(&path);
+            for op in ops.as_object_mut().into_iter().flat_map(|o| o.values_mut()) {
+                if let (Some(k), Some(e)) = (kind, op.pointer_mut("/requestBody/content/application~1json/example").and_then(|e| e.as_object_mut())) {
+                    if let Some(first) = ids(k).first() {
+                        e.insert("model".into(), first.clone());
+                    }
+                }
+                op["responses"]["default"] = json!({"description": "OpenAI's error: {\"error\": {\"message\", \"type\"}} (HTTP 4xx / 5xx; 401 without the token)"});
             }
-            json!({"get": {"tags": ["files"], "summary": format!("{summary}{}", if ranges { "; byte ranges (Range) supported" } else { "; no byte ranges (always the whole file)" }),
-                           "security": [{"bearer": []}], "parameters": params, "responses": responses}})
-        };
-        paths.insert("/v1/models".into(), json!({"get": {"tags": ["openai"], "summary": "The enabled chat, image and audio models", "responses": {"200": {"description": "OpenAI's list"}}}}));
-        if on.contains(&"llm") {
-            paths.insert("/v1/chat/completions".into(), json!({"post": oa("Chat (streams with stream: true; tools)",
-                json!({"model": ids("llm").first(), "messages": [{"role": "user", "content": "Hello"}], "stream": false}), "llm.chat")}));
+            paths.insert(path, ops);
         }
-        if on.contains(&"image") {
-            paths.insert("/v1/images/generations".into(), json!({"post": oa("Pictures (and ours: steps, seed, sampler, schedule, cfg, negative_prompt, loras)",
-                json!({"model": ids("image").first(), "prompt": "a lighthouse at dusk", "size": "1024x1024"}), "image.generate")}));
-            paths.insert("/v1/images/edits".into(), json!({"post": oa("Edits: multipart (image, image[] ...) or JSON images",
-                json!({"prompt": "make it night", "images": ["data:image/png;base64,..."]}), "image.edit")}));
-            paths.insert("/v1/images/files/{name}".into(), file("A picture an answer links (data[].url of image.generate / image.edit)", "<file>.png", "image/png", false));
-        }
-        if on.contains(&"audio") {
-            paths.insert("/v1/audio/speech".into(), json!({"post": oa("A song (input: the lyrics, instructions: the music) or speech (input: the text; voice, \
-                language, instructions, ref_audio, ref_text); response_format wav or url",
-                json!({"model": ids("audio").first(), "instructions": "warm folk", "input": "[verse]\nRiver runs slow", "response_format": "url"}), "audio.generate")}));
-            paths.insert("/v1/audio/files/{name}".into(), file("A song or speech an answer links (data[].url of audio.generate / audio.speak)", "<file>.wav", "audio/wav", true));
-            paths.insert("/v1/audio/voices/{name}".into(), file("A saved voice's sample (audio.voices.list's sample)", "<voice>.wav", "audio/wav", false));
-        }
-        if on.contains(&"model3d") {
-            paths.insert("/v1/model3d/generate".into(), json!({"post": oa("A mesh from a picture (image) or several views (images: [{image, side}]); texture, seed, steps, faces; response_format glb or url",
-                json!({"model": ids("model3d").first(), "image": "data:image/png;base64,iVBORw0...", "texture": true, "response_format": "url"}), "model3d.generate")}));
-            paths.insert("/v1/model3d/rig".into(), json!({"post": oa("A mesh rigged (skeleton and skin weights) or animated (prompt: the motion); mesh as base64 GLB / OBJ, or file: a GLB made here",
-                json!({"model": ids("model3d").first(), "file": "1792132541-trellis2-42.glb", "response_format": "url"}), "model3d.rig")}));
-            paths.insert("/v1/model3d/files/{name}".into(), file("A mesh an answer links (data[].url of model3d.generate / model3d.rig), or its picture (.png)", "<file>.glb", "model/gltf-binary", true));
-        }
-        if on.contains(&"video") {
-            paths.insert("/v1/video/files/{name}".into(), file("A finished clip: <clip>.mp4 (video.jobs.list's file, video.status's and video.timeline's file URLs); also <clip>.preview.png (video.status's preview while it samples) and <clip>.last.png (a clip's last frame), image/png", "<clip>.mp4, e.g. h3_20261011_220723.mp4", "video/mp4", true));
-            paths.insert("/v1/video/thumbs/{name}".into(), file("A finished clip's 240-pixel still, 5 s in (video.timeline's thumb)", "<clip>.webp", "image/webp", false));
+        let mut schemas = rpcgen::components(&table::infos()).unwrap_or_default();
+        // the /v1 routes' types beside the methods'
+        for (k, v) in rpcgen::route_components(&openai::infos()).unwrap_or_default() {
+            schemas.entry(k).or_insert(v);
         }
         json!({
             "openapi": "3.0.3",
@@ -1477,7 +1302,7 @@ impl Home {
             "security": [{"bearer": []}],
             // the named types the methods' requests refer to (their enums: ChainMode, FileKind ...), from methods.rs
             "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer", "description": "the token on the page's API tab (NS_API_TOKEN, or serve.json)"}},
-                           "schemas": rpcgen::components(&table::infos()).unwrap_or_default()},
+                           "schemas": schemas},
             "paths": paths,
         })
     }
@@ -1507,6 +1332,20 @@ mod tests {
         assert_eq!(rpc_error("model3d.generate", 501, None, "x")["retryable"], false);
         // Breeze TTS 2's fields are in audio.speak's contract
         assert!(m("audio", "speak").fields.iter().any(|f| f.name == "cfg"));
+    }
+
+    /// The document puts the /v1 routes' types beside the methods': a name both use is one type
+    #[test]
+    fn the_routes_and_the_methods_name_one_type_one_way() {
+        let methods = rpcgen::components(&table::infos()).unwrap();
+        let routes = rpcgen::route_components(&super::openai::infos()).unwrap();
+        for (k, v) in &routes {
+            if let Some(m) = methods.get(k) {
+                assert_eq!(m, v, "{k} is two types: a method's and a /v1 route's");
+            }
+        }
+        rpcgen::check_routes(&super::openai::infos()).unwrap();
+        rpcgen::route_parity(&super::openai::infos()).unwrap();
     }
 
     #[test]
