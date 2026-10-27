@@ -16,10 +16,13 @@
 //! (0, L, row - (H - 1) / 2, column - (W - 1) / 2); the rotation pairs features (i, 64 + i) - the shared kernel's own
 //! order, so nothing is permuted.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use nextcuda_core::{DevBuf, Error, Gpu, Result};
 use nextcuda_diffusion::kernels::{none, Dt, Nsd};
+use nextcuda_diffusion::lora::{self, Delta};
 use nextcuda_gguf::{GType, Gguf};
 
 use crate::ffi;
@@ -80,6 +83,25 @@ impl Part {
         }
         nsd.wait()?;
         Ok(Part { w: None, qtype: 0, rows: n, k, int8: Some((w, sc)) })
+    }
+
+    /// The matrix with LoRA updates merged in, float32 on the card (W + B . A each; `int8_of` then makes its rows):
+    /// the products are int8, so the updates go into the weights before they are quantized rather than beside them
+    fn merged(nsd: &Nsd, p: Part, ds: &[Delta]) -> Result<Part> {
+        let src = p.w.as_ref().ok_or_else(|| Error("a LoRA into a matrix already int8".into()))?;
+        let w = DevBuf::f32(&nsd.gpu, p.rows * p.k)?;
+        nsd.dequant(src.ptr(), p.qtype, p.rows * p.k, w.ptr(), Dt::F32)?;
+        for d in ds {
+            if d.n != p.rows || d.k != p.k {
+                return Err(Error(format!("LoRA {}: [{}, {}], the matrix is [{}, {}]", d.target, d.n, d.k, p.rows, p.k)));
+            }
+            // dW [n, k] = B [n, r] . (A^T [k, r])^T
+            let at: Vec<f32> = (0..d.k * d.r).map(|i| d.a[(i % d.r) * d.k + i / d.r]).collect();
+            let (a, b) = (DevBuf::from_f32(&nsd.gpu, &at)?, DevBuf::from_f32(&nsd.gpu, &d.b)?);
+            nsd.linear_acc(b.ptr(), Dt::F32, d.n, d.r, a.ptr(), d.k, w.ptr(), 0)?;
+            nsd.wait()?;
+        }
+        Ok(Part { w: Some(w), qtype: 0, rows: p.rows, k: p.k, int8: None })
     }
 }
 
@@ -206,11 +228,22 @@ pub fn image_positions(h: usize, w: usize, l: usize) -> Vec<[f64; 4]> {
 }
 
 impl Dit {
-    /// The weights from `f`; `int8`: the blocks' matrices as int8 ConvRot rows (q, k and v as one)
-    pub fn load(f: &Gguf, nsd: &Nsd, int8: bool, log: &mut dyn FnMut(String)) -> Result<Dit> {
+    /// The weights from `f`; `int8`: the blocks' matrices as int8 ConvRot rows (q, k and v as one); `loras`: updates
+    /// merged into the blocks' matrices first (int8 only: as stored they would have to be kept in float)
+    pub fn load(f: &Gguf, nsd: &Nsd, int8: bool, loras: Vec<Delta>, log: &mut dyn FnMut(String)) -> Result<Dit> {
         let gpu = nsd.gpu.clone();
         let t0 = std::time::Instant::now();
-        let part = |name: &str| -> Result<Part> {
+        if !int8 && !loras.is_empty() {
+            return Err(Error("a LoRA needs the int8 matrices (NS_MOSS_INT8=0 keeps them as stored, with nothing to merge into)".into()));
+        }
+        let merging = !loras.is_empty();
+        // the updates by their module's key, each taken when its matrix is read
+        let mut by_key: BTreeMap<String, Vec<Delta>> = BTreeMap::new();
+        for d in loras {
+            by_key.entry(lora::key(&d.target)).or_default().push(d);
+        }
+        let pending = RefCell::new(by_key);
+        let stored = |name: &str| -> Result<Part> {
             let t = f.tensor(name).ok_or_else(|| Error(format!("{}: no tensor {name}", f.paths[0].display())))?;
             let code = t.ty.code();
             if ![0, 1, 8, 12, 13, 14, 30].contains(&code) {
@@ -221,6 +254,13 @@ impl Dit {
             let w = DevBuf::new(&gpu, bytes.len())?;
             w.write(0, &bytes)?;
             Ok(Part { w: Some(w), qtype: code, rows, k, int8: None })
+        };
+        let part = |name: &str| -> Result<Part> {
+            let p = stored(name)?;
+            match pending.borrow_mut().remove(&lora::key(name.strip_suffix(".weight").unwrap_or(name))) {
+                Some(ds) => Part::merged(nsd, p, &ds),
+                None => Ok(p),
+            }
         };
         let vecd = |name: &str| -> Result<DevBuf> { DevBuf::from_f32(&gpu, &host_vec(f, name)?) };
         let scaled = |name: &str, s: f32| -> Result<DevBuf> { DevBuf::from_f32(&gpu, &host_vec(f, name)?.iter().map(|v| v * s).collect::<Vec<_>>()) };
@@ -244,15 +284,15 @@ impl Dit {
         };
         let text_block = |p: &str| -> Result<TextBlock> {
             Ok(TextBlock {
-                qkv: part(&format!("{p}qkv.weight"))?,
+                qkv: stored(&format!("{p}qkv.weight"))?,
                 qkv_b: vecd(&format!("{p}qkv.bias"))?,
-                proj: part(&format!("{p}proj.weight"))?,
+                proj: stored(&format!("{p}proj.weight"))?,
                 proj_bs: scaled(&format!("{p}proj.bias"), ffi::ACT_SCALE)?,
-                up: part(&format!("{p}ffn_up.weight"))?,
+                up: stored(&format!("{p}ffn_up.weight"))?,
                 up_b: vecd(&format!("{p}ffn_up.bias"))?,
-                gate: part(&format!("{p}ffn_gate.weight"))?,
+                gate: stored(&format!("{p}ffn_gate.weight"))?,
                 gate_b: vecd(&format!("{p}ffn_gate.bias"))?,
-                down: part(&format!("{p}ffn_down.weight"))?,
+                down: stored(&format!("{p}ffn_down.weight"))?,
                 down_b: vecd(&format!("{p}ffn_down.bias"))?,
                 norm1: vecd(&format!("{p}norm1.weight"))?,
                 norm2: vecd(&format!("{p}norm2.weight"))?,
@@ -287,7 +327,7 @@ impl Dit {
             fused: env("NS_MOSS_FUSED").unwrap_or(1) != 0,
             video_w: vecd("video_embedder.weight")?,
             video_b: vecd("video_embedder.bias")?,
-            text_proj: part("text_embedder.proj.weight")?,
+            text_proj: stored("text_embedder.proj.weight")?,
             text_proj_b: vecd("text_embedder.proj.bias")?,
             text_blocks: (0..nt).map(|i| text_block(&format!("text_embedder.blocks.{i}."))).collect::<Result<_>>()?,
             layers: (0..nl).map(|i| block(&format!("layers.{i}."))).collect::<Result<_>>()?,
@@ -300,6 +340,9 @@ impl Dit {
             final_w: vecd("final_linear_video.weight")?,
             bytes: f.tensors.iter().map(|t| t.bytes).sum(),
         };
+        if let Some(k) = pending.borrow().keys().next() {
+            return Err(Error(format!("a LoRA names {k} ({} modules left) that is not one of MOSS-Image's blocks' matrices (q k v o ffn_up_gate ffn_down: the ones merged into)", pending.borrow().len())));
+        }
         if dit.bands.len() != BANDS || dit.text_proj.k != TEXT_DIM {
             return Err(Error(format!("{}: {} rope bands and text width {}: MOSS-Image's DiT has 16 and 4096", f.paths[0].display(), dit.bands.len(),
                                      dit.text_proj.k)));
@@ -308,8 +351,8 @@ impl Dit {
             Some(s) => format!("its silo for sm_{}, attention {}", s.sm, ["half", "float", "fp8", "fp8v"][(dit.fp8 + 1) as usize]),
             None => "the shared kernels".into(),
         };
-        log(format!("moss-image dit: {nl} blocks, {nt} text blocks on {} ({}, {silo_words}) in {:.1} s", gpu.name,
-                    if int8 { "int8 ConvRot" } else { "as stored" }, t0.elapsed().as_secs_f64()));
+        log(format!("moss-image dit: {nl} blocks, {nt} text blocks on {} ({}{}, {silo_words}) in {:.1} s", gpu.name,
+                    if int8 { "int8 ConvRot" } else { "as stored" }, if merging { ", LoRAs merged" } else { "" }, t0.elapsed().as_secs_f64()));
         Ok(dit)
     }
 

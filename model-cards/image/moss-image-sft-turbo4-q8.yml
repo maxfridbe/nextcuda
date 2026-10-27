@@ -1,0 +1,30 @@
+# MOSS-Image SFT Turbo, 4 steps (text to image; Rust + CUDA)
+# model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets.
+# moss-image-sft-q8's files and akhaliq's 4-step distillation LoRA (fp32, rank 128), merged into the DiT at load
+# before its matrices are made int8 - the same VRAM as the full model, a picture in 4 unguided steps.
+id: moss-image-sft-turbo4-q8
+kind: image
+arch: moss-image
+title: 'MOSS-Image SFT Turbo Q8_0 (4 steps, no guidance; text to image; Rust + CUDA)'
+about: 'MOSS-Image-SFT with akhaliq''s MOSS-Image-SFT-4-steps LoRA v2.0 (Apache-2.0; DMD from the 50-step guided model onto the scheduler''s own 4 levels) merged at load: 4 steps at cfg 1, about a twentieth of the full model''s time. 6 steps near 1536 wide, 8 at 2048 x 2048'
+gpus: '0,1'
+split: true                      # as moss-image-sft-q8: the DiT and the VAE on the first card, the text encoder on the second
+vram_gib: 7.0
+defaults:
+  steps: 4
+  cfg: 1.0
+  sampler: euler
+  schedule: shift
+  size: 1024x1024
+env: {}
+files:
+  transformer: moss-image-sft-q80
+  text-encoder: qwen35-9b-q80
+  vae: moss-image-sft-vae
+  turbo-lora:
+    key: moss-image-sft-4step-lora
+    url: https://huggingface.co/akhaliq/MOSS-Image-SFT-4-steps/resolve/2ded95c37a029360245926fe72e475e30039bbfb/moss_image_sft_4step_v2.0.safetensors
+    size: 1189176752
+    sha256: 154c7f1455c3bf9925945c2f1ea2e4f09d0d0c67256081384a094b2b585f913f
+    path: moss-image-sft/loras/moss_image_sft_4step_v2.0.safetensors
+guide: guides/moss-image.md

@@ -11,6 +11,10 @@
 //!
 //! Two cards: the DiT and the VAE on the first (5.5 GB and their activations), the text encoder on the second (9.5 GB),
 //! every weight resident in its file's type - nothing streamed.
+//!
+//! LoRAs (the blocks' q k v o ffn_up_gate ffn_down) are merged into the matrices at load, before they are made int8. A
+//! `turbo-lora` file is a few-step distillation (akhaliq's MOSS-Image-SFT-4-steps: DMD onto the scheduler's own 4-step
+//! levels, t = 1000 / 910 / 717 / 24): with it the defaults are 4 steps and no guidance.
 
 pub mod check;
 pub mod dit;
@@ -24,11 +28,14 @@ use std::time::Instant;
 use nextcuda_core::{DevBuf, Gpu};
 use nextcuda_diffusion::kernels::Nsd;
 use nextcuda_gguf::Gguf;
-use nextcuda_image::{Defaults, Error, ImageEngine, ImageKind, ImageRequest, LoadOptions, ModelFiles, Picture, Result, Sampler, Schedule, Step};
+use nextcuda_diffusion::lora;
+use nextcuda_image::{Defaults, Error, ImageEngine, ImageKind, ImageRequest, LoadOptions, LoraUse, ModelFiles, Picture, Result, Sampler, Schedule, Step};
 
 pub const ARCH: &str = "moss-image";
 /// the transformer GGUF, the text encoder GGUF (Qwen3.5-9B), the VAE (diffusers' safetensors)
 pub const ROLES: &[&str] = &["transformer", "text-encoder", "vae"];
+/// a turbo entry's few-step LoRA (merged at load; its defaults 4 steps, cfg 1)
+pub const TURBO: &str = "turbo-lora";
 /// MOSSImageScheduler's shift, and its training grid's steps
 const SHIFT: f32 = 5.0;
 const TRAIN_STEPS: usize = 1000;
@@ -39,8 +46,8 @@ pub fn kind() -> ImageKind {
     ImageKind { archs: &[ARCH], name: "MOSS-Image SFT (5.1B single-stream DiT, Qwen3.5-9B text encoder, FLUX.2 VAE; Rust + CUDA)", roles: ROLES, load, options: &[] }
 }
 
-fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], _o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<Box<dyn ImageEngine>> {
-    Ok(Box::new(MossImage::load(files, gpus, log)?))
+fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<Box<dyn ImageEngine>> {
+    Ok(Box::new(MossImage::load(files, gpus, &o.merge_loras, log)?))
 }
 
 /// torch.linspace(start, end, n) in float32, as torch makes it: the first half from the start, the rest from the end,
@@ -113,6 +120,8 @@ pub struct MossImage {
     pub(crate) nsd: Nsd,
     pub(crate) dit: dit::Dit,
     pub(crate) vae: vae::Vae,
+    /// a turbo LoRA merged: 4 steps and no guidance by default
+    turbo: bool,
     gpu: Arc<Gpu>,
     loaded: Instant,
     load_s: f64,
@@ -125,8 +134,9 @@ fn role<'f>(files: &'f ModelFiles, r: &str) -> Result<&'f std::path::Path> {
 }
 
 impl MossImage {
-    /// The DiT and the VAE on `gpus[0]`, the text encoder on `gpus[1]` (or beside them on one card large enough)
-    pub fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], log: &mut dyn FnMut(String)) -> Result<MossImage> {
+    /// The DiT and the VAE on `gpus[0]`, the text encoder on `gpus[1]` (or beside them on one card large enough); the
+    /// `turbo-lora` file and `loras` merged into the DiT
+    pub fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], loras: &[LoraUse], log: &mut dyn FnMut(String)) -> Result<MossImage> {
         let t0 = Instant::now();
         nextcuda_core::use_kind("image");
         let gpu = gpus.first().ok_or_else(|| Error("no GPU".into()))?.clone();
@@ -146,9 +156,16 @@ impl MossImage {
         let nsd = Nsd::new(&gpu)?;
         // the int8 tensor cores unless NS_MOSS_INT8=0 (the matrices as stored: slower, a hair closer to the reference)
         let int8 = std::env::var("NS_MOSS_INT8").map_or(true, |v| v != "0");
-        let dit = dit::Dit::load(&f, &nsd, int8, log)?;
+        let turbo = files.get(TURBO);
+        let mut deltas = Vec::new();
+        for (name, path, scale) in turbo.map(|p| ("turbo", p.as_path(), 1.0)).into_iter().chain(loras.iter().map(|l| (l.name.as_str(), l.path.as_path(), l.scale))) {
+            let d = lora::read(path, scale).map_err(Error)?;
+            log(format!("LoRA {name} x {scale}: {} matrices, rank {}", d.len(), d.first().map_or(0, |x| x.r)));
+            deltas.extend(d);
+        }
+        let dit = dit::Dit::load(&f, &nsd, int8, deltas, log)?;
         let vae = vae::Vae::load(role(files, "vae")?, &nsd, log)?;
-        Ok(MossImage { te, nsd, dit, vae, gpu, loaded: Instant::now(), load_s: t0.elapsed().as_secs_f64(), busy: Mutex::new(()), conds: Mutex::new(Vec::new()) })
+        Ok(MossImage { te, nsd, dit, vae, turbo: turbo.is_some(), gpu, loaded: Instant::now(), load_s: t0.elapsed().as_secs_f64(), busy: Mutex::new(()), conds: Mutex::new(Vec::new()) })
     }
 
     /// The text encoder's last hidden state for a prompt, the last few kept
@@ -204,7 +221,8 @@ impl ImageEngine for MossImage {
         ARCH
     }
     fn defaults(&self) -> Defaults {
-        Defaults { width: 1024, height: 1024, steps: 50, cfg: 3.0, sampler: Sampler::Euler, schedule: Schedule::Shift, shift: SHIFT }
+        let (steps, cfg) = if self.turbo { (4, 1.0) } else { (50, 3.0) };
+        Defaults { width: 1024, height: 1024, steps, cfg, sampler: Sampler::Euler, schedule: Schedule::Shift, shift: SHIFT }
     }
     fn samplers(&self) -> Vec<Sampler> {
         vec![Sampler::Euler]

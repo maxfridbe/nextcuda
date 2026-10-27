@@ -521,7 +521,7 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
     if m["arch"].as_str() == Some(nextcuda_image_mossimage::ARCH) {
         let gs = gpus(args)?;
         let mut log = |s: String| eprintln!("{s}");
-        let e = nextcuda_image_mossimage::MossImage::load(&files, &gs, &mut log).map_err(|e| e.0)?;
+        let e = nextcuda_image_mossimage::MossImage::load(&files, &gs, &[], &mut log).map_err(|e| e.0)?;
         let st = opt(args, "--stages").unwrap_or("tokens,te,sched,dit,steps,vae");
         let worst = nextcuda_image_mossimage::check::run(&e, dir, &st.split(',').collect::<Vec<_>>(), &mut log).map_err(|e| e.0)?;
         println!("lowest cosine {worst:.6}");
