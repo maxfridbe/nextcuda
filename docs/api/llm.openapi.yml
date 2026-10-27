@@ -1,0 +1,749 @@
+openapi: 3.1.0
+info:
+  title: nextcuda chat server (nextcuda serve FILE)
+  version: generated
+  description: 'A server''s own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextcuda gen-api`: do not edit.'
+servers:
+- url: /
+paths:
+  /health:
+    get:
+      operationId: health
+      summary: Whether the server answers
+      tags:
+      - server
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /status:
+    get:
+      operationId: status
+      summary: Whether it is busy, and its prompt cache's figures
+      tags:
+      - server
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /server/status:
+    get:
+      operationId: serverStatus
+      summary: 'The server in full: the model, its cards, the requests running, the cache (its socket only)'
+      tags:
+      - control
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerStatus'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /server/requests:
+    get:
+      operationId: requests
+      summary: The requests running and the last ones done (its socket only)
+      tags:
+      - control
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Requests'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /server/requests/{id}:
+    get:
+      operationId: request
+      summary: A request, running or among the last done (its socket only)
+      tags:
+      - control
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: 'its id (a leading # is allowed)'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestRow'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /server/cache:
+    get:
+      operationId: cache
+      summary: The prompt cache's entries (its socket only); 409 while a prompt is being read with it
+      tags:
+      - control
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheList'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /server/cache/clear:
+    post:
+      operationId: cacheClear
+      summary: Empties the prompt cache (its socket only); 409 while a prompt is being read with it
+      tags:
+      - control
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cleared'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /server/shutdown:
+    post:
+      operationId: shutdown
+      summary: Ends the server once the requests running end (its socket only)
+      tags:
+      - control
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stopping'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/models:
+    get:
+      operationId: models
+      summary: The model served, as OpenAI lists models
+      tags:
+      - openai
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LlmModels'
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /models
+  /v1/chat/completions:
+    post:
+      operationId: chat
+      summary: 'A chat (OpenAI''s chat completions: stream for server-sent events; tools); the answer is OpenAI''s chat.completion, or its chunks'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {}
+            text/event-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /chat/completions
+  /api/chat:
+    post:
+      operationId: chatLines
+      summary: 'A chat for the page: the answer streamed as lines of JSON (effort, thinking as /api/chat names them)'
+      tags:
+      - page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/x-ndjson:
+              schema: {}
+        default:
+          description: 'an error: the body''s `error` says what'
+components:
+  schemas:
+    CacheEntry:
+      type: object
+      properties:
+        tokens:
+          type: integer
+        bytes:
+          type: integer
+        disk:
+          type: boolean
+          description: kept on disk (not on the card)
+      required:
+      - tokens
+      - bytes
+      - disk
+      description: A prompt kept in the cache
+    CacheFigures:
+      type: object
+      properties:
+        entries:
+          type: integer
+        bytes:
+          type: integer
+        budget:
+          type: integer
+        evictions:
+          type: integer
+        live_tokens:
+          type: integer
+          description: the tokens the sessions running hold
+        sessions:
+          type: array
+          items:
+            type: integer
+          description: each running session's tokens
+        disk:
+          anyOf:
+          - $ref: '#/components/schemas/DiskCache'
+          - type: 'null'
+      required:
+      - entries
+      - bytes
+      - budget
+      - evictions
+      - live_tokens
+      - sessions
+      description: 'The prompt cache: prompts read before, kept on the card (and on disk) to be reused'
+    CacheList:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/CacheEntry'
+        bytes:
+          type: integer
+        budget:
+          type: integer
+        evictions:
+          type: integer
+        disk:
+          anyOf:
+          - $ref: '#/components/schemas/DiskCache'
+          - type: 'null'
+      required:
+      - entries
+      - bytes
+      - budget
+      - evictions
+      description: The prompt cache's entries
+    ChatBody:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            type: object
+          description: '[{role, content}]: content a string or OpenAI''s parts (text, image_url); an assistant''s reasoning_content (/api/chat: thinking) and tool_calls'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id (any: the one served)'
+        stream:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'as server-sent events (default false; /api/chat: true, as lines)'
+        max_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        max_completion_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        temperature:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: 1.0
+        top_p:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: 0.95
+        tools:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          description: OpenAI tool definitions
+        tool_choice:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'none: no tools'
+        reasoning_effort:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'none, low, medium, high or max (/api/chat: effort)'
+        chat_template_kwargs:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: 'llama.cpp''s: enable_thinking (false answers without thinking), reasoning_effort'
+      required:
+      - messages
+      additionalProperties: true
+      description: 'A chat: OpenAI''s chat completions body (and /api/chat''s: effort, thinking)'
+    Cleared:
+      type: object
+      properties:
+        dropped:
+          type: integer
+          description: entries dropped
+      required:
+      - dropped
+      description: The cache emptied
+    DiskCache:
+      type: object
+      properties:
+        entries:
+          type: integer
+        bytes:
+          type: integer
+        budget:
+          type: integer
+      required:
+      - entries
+      - bytes
+      - budget
+      description: The disk tier of the prompt cache
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          description: ok, or loading (HTTP 503 then)
+      required:
+      - status
+      description: Whether the server answers (and has its model loaded)
+    LlmGpu:
+      type: object
+      properties:
+        index:
+          type: integer
+        name:
+          type: string
+        pci:
+          anyOf:
+          - type: string
+          - type: 'null'
+        total:
+          type: integer
+          description: bytes
+        free:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        layers:
+          type: array
+          items:
+            type: integer
+          description: the layers it runs [first, end)
+        expert_slots:
+          type: integer
+        host_slots:
+          type: integer
+        watts:
+          anyOf:
+          - type: number
+          - type: 'null'
+        temp_c:
+          anyOf:
+          - type: number
+          - type: 'null'
+        vram_temp_c:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - index
+      - name
+      - total
+      - layers
+      - expert_slots
+      - host_slots
+      description: A card the model runs on
+    LlmModel:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        owned_by:
+          type: string
+        created:
+          type: integer
+        status:
+          $ref: '#/components/schemas/ModelState'
+        context:
+          type: integer
+          description: its context
+      required:
+      - id
+      - object
+      - owned_by
+      - created
+      - status
+      - context
+      description: The model served, in OpenAI's list
+    LlmModels:
+      type: object
+      properties:
+        object:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/LlmModel'
+      required:
+      - object
+      - data
+      description: OpenAI's list of models
+    ModelState:
+      type: object
+      properties:
+        value:
+          type: string
+          description: loaded
+      required:
+      - value
+      description: The model's state in OpenAI's model list (llama.cpp's)
+    RequestId:
+      type: object
+      properties:
+        id:
+          type: string
+          description: 'its id (a leading # is allowed)'
+      required:
+      - id
+      description: A request by its id
+    RequestRow:
+      type: object
+      properties:
+        id:
+          type: integer
+        via:
+          type: string
+          description: web (the page), socket or tcp
+        state:
+          $ref: '#/components/schemas/RequestState'
+        started:
+          type: integer
+          description: unix seconds
+        prompt_tokens:
+          type: integer
+        max_tokens:
+          type: integer
+        generated:
+          type: integer
+        model:
+          type: string
+        api:
+          type: string
+          description: the route it came by
+        settings:
+          $ref: '#/components/schemas/RequestSettings'
+        messages:
+          type: integer
+        prompt_chars:
+          type: integer
+        last_user:
+          type: string
+          description: the last user message's start
+        read:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'reading: the tokens read so far, at what rate'
+        read_tok_s:
+          anyOf:
+          - type: number
+          - type: 'null'
+        reused:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the prompt's tokens found in the cache, and where (the card, the disk)
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+        read_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+        tok_s:
+          anyOf:
+          - type: number
+          - type: 'null'
+        finish:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'done: why it stopped (stop, length, tool_calls)'
+        generate_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+        drafts:
+          anyOf:
+          - type: array
+            items:
+              type: integer
+          - type: 'null'
+          description: the draft model's tokens [accepted, drafted]
+        checkpoints_saved:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        ended:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        energy_j:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the cards' energy over it, joules (other requests at the same time draw on the same counters)
+        avg_watts:
+          anyOf:
+          - type: number
+          - type: 'null'
+        answer:
+          anyOf:
+          - $ref: '#/components/schemas/Said'
+          - type: 'null'
+        thinking:
+          anyOf:
+          - $ref: '#/components/schemas/Said'
+          - type: 'null'
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'failed: why'
+      required:
+      - id
+      - via
+      - state
+      - started
+      - prompt_tokens
+      - max_tokens
+      - generated
+      - model
+      - api
+      - settings
+      - messages
+      - prompt_chars
+      - last_user
+      description: 'A request, running or done: what was asked, how far it is, what it came to'
+    RequestSettings:
+      type: object
+      properties:
+        effort:
+          type: string
+        temperature:
+          type: number
+        top_p:
+          type: number
+        stream:
+          type: boolean
+        max_tokens:
+          type: integer
+      required:
+      - effort
+      - temperature
+      - top_p
+      - stream
+      - max_tokens
+      description: A request's sampling as asked
+    RequestState:
+      type: string
+      enum:
+      - waiting
+      - reading
+      - generating
+      - done
+      - failed
+      description: Where a request is
+    Requests:
+      type: object
+      properties:
+        running:
+          anyOf:
+          - $ref: '#/components/schemas/RequestRow'
+          - type: 'null'
+        active:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequestRow'
+        done:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequestRow'
+          description: newest first
+        keep:
+          type: integer
+          description: how many done it keeps
+      required:
+      - active
+      - done
+      - keep
+      description: The requests running and the last ones done
+    Said:
+      type: object
+      properties:
+        chars:
+          type: integer
+        preview:
+          type: string
+      required:
+      - chars
+      - preview
+      description: 'What an answer (or its thinking) came to: its length and its start'
+    ServerStatus:
+      type: object
+      properties:
+        model:
+          type: string
+        version:
+          type: string
+        uptime_seconds:
+          type: number
+        context:
+          type: integer
+          description: the longest context a request may have
+        contexts:
+          type: array
+          items:
+            type: integer
+          description: each slot's context
+        mtp:
+          type: boolean
+          description: a draft model (multi-token prediction) is loaded
+        parallel:
+          type: integer
+          description: requests made at once
+        gpus:
+          type: array
+          items:
+            $ref: '#/components/schemas/LlmGpu'
+        busy:
+          type: boolean
+        running:
+          anyOf:
+          - $ref: '#/components/schemas/RequestRow'
+          - type: 'null'
+          description: the first running (as `active[0]`)
+        active:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequestRow'
+        waiting:
+          type: integer
+        served:
+          type: integer
+          description: requests served since it started
+        prompt_cache:
+          anyOf:
+          - $ref: '#/components/schemas/CacheFigures'
+          - type: 'null'
+        stopping:
+          type: boolean
+          description: shutting down once the requests running end
+      required:
+      - model
+      - version
+      - uptime_seconds
+      - context
+      - contexts
+      - mtp
+      - parallel
+      - gpus
+      - busy
+      - active
+      - waiting
+      - served
+      - stopping
+      description: 'The server in full: the model, its cards, the requests running, the cache'
+    Status:
+      type: object
+      properties:
+        busy:
+          type: boolean
+        prompt_cache:
+          anyOf:
+          - $ref: '#/components/schemas/CacheFigures'
+          - type: 'null'
+      required:
+      - busy
+      description: 'Whether it is busy, and its prompt cache (none while a prompt is being read with it: a status never waits)'
+    Stopping:
+      type: object
+      properties:
+        stopping:
+          type: boolean
+        running:
+          type: boolean
+          description: 'a request is running: the server ends after it'
+      required:
+      - stopping
+      - running
+      description: A shutdown asked for

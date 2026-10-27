@@ -1648,7 +1648,8 @@ fn facts_of_typescript(ts: &str) -> Facts {
                         f.insert(format!("{name}: tag: {tag}"));
                     }
                 } else if let Some(v) = t.strip_prefix("produces ") {
-                    for ct in v.split(", ") {
+                    // as the document's facts: the default media types say nothing
+                    for ct in v.split(", ").filter(|ct| *ct != "application/json" && *ct != "application/octet-stream") {
                         f.insert(format!("{name}: produces: {ct}"));
                     }
                 } else if let Some(v) = t.strip_prefix("example ") {
