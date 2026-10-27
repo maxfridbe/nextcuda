@@ -68,6 +68,9 @@ pub struct SpeechInfo {
     pub events: Vec<String>,
     /// what a request must carry besides the text: voice, instructions or reference; none: nothing
     pub requires: Option<String>,
+    /// the speakers a script may have, each its own saved voice ("Speaker 1: ...", "Speaker 2: ...": VibeVoice); 0: one voice
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speakers: Option<i64>,
 }
 
 /// The model and what it takes; while a request runs, the model and `busy` only
@@ -82,6 +85,9 @@ pub struct Info {
     /// it sings words
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lyrics: Option<bool>,
+    /// `cfg` changes the sound (false: a distilled checkpoint runs unguided)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<bool>,
     /// it serves its page
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wfe: Option<bool>,

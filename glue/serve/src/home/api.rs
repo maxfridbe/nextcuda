@@ -809,7 +809,8 @@ impl Home {
                 // what a request may send, known without the model loaded
                 let limits = if m.kind == "image" {
                     json!({"steps": super::precheck::steps_of(&e), "max_pictures": 8, "max_picture_pixels": crate::image::MAX_PICTURE_PIXELS,
-                           "max_request_bytes": 256u64 << 20, "size_multiple": 16})
+                           "max_request_bytes": 256u64 << 20, "size_multiple": 16,
+                           "min_side": super::precheck::size_range(&e).0, "max_side": super::precheck::size_range(&e).1})
                 } else {
                     json!({"max_request_bytes": 256u64 << 20})
                 };
@@ -1142,7 +1143,12 @@ impl Home {
         let id = self.pick("image", b, all)?;
         let hist = call_for(&self.file_target("image"), "GET", "/api/history", None, 10).unwrap_or(json!({"data": []}));
         let def = all.iter().find(|m| m["id"] == id.as_str()).and_then(|m| m["defaults"]["size"].as_str().map(str::to_string)).unwrap_or_else(|| "1024x1024".into());
-        let list: Vec<Value> = IMAGE_CANVASES.iter().map(|(w, h, a, note)| {
+        let model = all.iter().find(|m| m["id"] == id.as_str()).cloned().unwrap_or(Value::Null);
+        let (lo, hi) = super::precheck::size_range(&model);
+        let qwen = model["arch"].as_str().is_some_and(|a| a.starts_with("qwen-image"));
+        let list: Vec<Value> = IMAGE_CANVASES.iter().filter(|(w, h, _, _)| (lo..=hi).contains(w) && (lo..=hi).contains(h)).map(|(w, h, a, note)| {
+            // the notes on "the model's own" sizes are Qwen-Image's
+            let note = if qwen || *note == "the default" || note.is_empty() { *note } else { "" };
             // seconds per step of the pictures of this size (several to a request: its time over them)
             let made: Vec<f64> = hist["data"].as_array().into_iter().flatten()
                 .filter(|e| e["width"] == *w && e["height"] == *h && e["kind"] != "ocr")
@@ -1152,8 +1158,12 @@ impl Home {
                    "seconds": if made.is_empty() { Value::Null } else { json!((made.iter().sum::<f64>() / made.len() as f64 * 100.0).round() / 100.0) },
                    "made": made.len()})
         }).collect();
-        Ok(json!({"model": id, "rule": "any width and height that are multiples of 16; the model was trained up to about 1.8 megapixels (1328 x 1328) - larger works, slower and less sure",
-                  "canvases": list}))
+        let rule = match model["arch"].as_str() {
+            Some("moss-image") => "any width and height that are multiples of 16, 256 to 2048; 1024 x 1024 is the default and 2048 x 2048 works (no tiling), several times the time".to_string(),
+            Some("ming-image") => "any width and height from 64 to 4096; the model draws at the 1024 or 2048 bucket nearest the size and its ratio".to_string(),
+            _ => "any width and height that are multiples of 16; the model was trained up to about 1.8 megapixels (1328 x 1328) - larger works, slower and less sure".to_string(),
+        };
+        Ok(json!({"model": id, "rule": rule, "canvases": list}))
     }
 
     /// A file into the studio's output (its upload route takes the raw bytes)

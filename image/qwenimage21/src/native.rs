@@ -141,6 +141,9 @@ impl ImageEngine for Native {
     fn guidance(&self) -> bool {
         true
     }
+    fn transparent(&self) -> bool {
+        true
+    }
 
     fn options(&self) -> &'static [EngineOption] {
         OPTIONS

@@ -796,6 +796,57 @@ components:
           - type: boolean
           - type: 'null'
           description: 'it takes guidance: cfg above 1 and a negative prompt'
+        grid:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the grid the picture's sides are multiples of
+        transparent:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: '"transparent" gives an alpha channel'
+        shift:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: the schedule's shift can be set
+        sizes:
+          anyOf:
+          - $ref: '#/components/schemas/SizesInfo'
+          - type: 'null'
+          description: the aspect ratios and pixel budgets it offers for a size (a size is a budget at a ratio)
+        negative:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it takes a negative prompt
+        steps_free:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'the step count changes the picture (false: a few-step entry runs its own)'
+        takes_loras:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it merges per-request LoRAs
+        ocr_takes:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: 'what a reading takes besides the pages and the instruction: tiles, figures, columns, guard, each_page; boxes when it writes them'
+        min_side:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the shortest and longest side it draws
+        max_side:
+          anyOf:
+          - type: integer
+          - type: 'null'
         max_pictures:
           anyOf:
           - type: integer
@@ -1121,6 +1172,21 @@ components:
       - url
       - b64_json
       description: 'How a picture comes back: a URL, or the bytes as base64 (OpenAI''s names): url | b64_json'
+    SizesInfo:
+      type: object
+      properties:
+        ratios:
+          type: array
+          items:
+            type: string
+        pixels:
+          type: array
+          items:
+            type: integer
+      required:
+      - ratios
+      - pixels
+      description: 'The sizes an engine offers: aspect ratios ("W:H") and pixel budgets'
     Svg:
       type: object
       properties:

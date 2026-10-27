@@ -582,7 +582,7 @@ impl AudioEngine for VibeVoice {
     }
     fn speech(&self) -> Option<Speech> {
         Some(Speech { voices: Vec::new(), languages: vec!["en".into(), "zh".into()], instructions: false, design: false, clone: true, clone_needs_text: false,
-                      clone_takes_text: false, direction: false, events: Vec::new(), requires: Some("a recording to clone (one a speaker for Speaker N: lines)".into()) })
+                      clone_takes_text: false, direction: false, events: Vec::new(), requires: Some("reference"), speakers: 4 })
     }
     fn options(&self) -> &'static [EngineOption] {
         OPTIONS

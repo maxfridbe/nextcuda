@@ -845,6 +845,10 @@ impl AudioEngine for AceStep {
         ARCH
     }
 
+    /// the turbo is distilled: its guidance is 1 whatever is asked
+    fn guidance(&self) -> bool {
+        !self.dit.cfg.turbo
+    }
     fn defaults(&self) -> Defaults {
         if self.dit.cfg.turbo {
             Defaults { seconds: 30.0, max_seconds: MAX_SECONDS, steps: 8, cfg: 1.0, rate: RATE }

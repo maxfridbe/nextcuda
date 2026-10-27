@@ -228,6 +228,13 @@ impl LoadOptions {
     }
 }
 
+/// The aspect ratios and pixel budgets an engine offers for choosing a size
+#[derive(Clone, Debug)]
+pub struct SizePresets {
+    pub ratios: &'static [&'static str],
+    pub pixels: &'static [u32],
+}
+
 /// The runtime one image architecture brings
 pub trait ImageEngine: Send + Sync {
     /// its architecture (the registry entry's "arch")
@@ -248,6 +255,39 @@ pub trait ImageEngine: Send + Sync {
     /// whether it takes guidance (cfg above 1, a negative prompt)
     fn guidance(&self) -> bool {
         true
+    }
+    /// the grid a picture's sides are multiples of (a page snaps its size fields to it)
+    fn grid(&self) -> u32 {
+        16
+    }
+    /// whether `ImageRequest::rgba` gives a picture with an alpha channel (a page offers the box only then)
+    fn transparent(&self) -> bool {
+        false
+    }
+    /// the sizes a page can compute for it: aspect ratios ("W:H") and pixel budgets (a size is a budget at a ratio,
+    /// each side rounded to the grid; MOSS-Image's: its Gradio app's)
+    fn size_presets(&self) -> Option<SizePresets> {
+        None
+    }
+    /// whether it takes `ImageRequest::shift` (the schedule's shift; else the model's own is used)
+    fn shift(&self) -> bool {
+        true
+    }
+    /// whether it takes a negative prompt (guidance against it; else against an empty or zero condition)
+    fn negative(&self) -> bool {
+        self.guidance()
+    }
+    /// whether `steps` changes anything (a few-step entry runs its own count)
+    fn steps_free(&self) -> bool {
+        true
+    }
+    /// whether it merges per-request LoRAs (the server reloads it with them)
+    fn takes_loras(&self) -> bool {
+        true
+    }
+    /// the shortest and longest side it draws (a request outside them is refused)
+    fn sides(&self) -> (u32, u32) {
+        (256, 4096)
     }
     /// the options it takes beyond the request's fields (its kind's `options`)
     fn options(&self) -> &'static [EngineOption] {
@@ -272,6 +312,11 @@ pub trait ImageEngine: Send + Sync {
     /// the instructions it reads by (the first is its default), for a page to offer
     fn ocr_prompts(&self) -> Vec<OcrPrompt> {
         Vec::new()
+    }
+    /// what of an `OcrRequest` it takes beyond the pages, the prompt, max_tokens and temperature (the rest it ignores):
+    /// "tiles", "figures", "columns", "guard" (ngram), "each_page"; "boxes" when it writes them (`<|det|>`)
+    fn ocr_takes(&self) -> &'static [&'static str] {
+        &[]
     }
     /// read the request's pages, each piece of text as it is written to `text`
     fn ocr(&self, _req: &OcrRequest, _text: &mut dyn FnMut(&str)) -> Result<OcrOutput> {

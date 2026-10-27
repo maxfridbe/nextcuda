@@ -31,7 +31,7 @@ pub const SETTINGS: &[Setting] = &[
     // read on every request (pulls.rs): the page's checkbox takes effect without a restart, so no reader restarts
     st("NS_AUTO_PULL", "box", "0", "1: a request for a model a card offers that is not downloaded starts its download and waits for it (a job says downloading <model>: N%); 0: it is refused 409 model_not_downloaded, with the call that fetches it (system.models.pull)", &[]),
     st("NS_SOCKET_DIR", "box", "$XDG_RUNTIME_DIR/nextcuda", "where the control sockets live", &["serve", "llm", "video", "studio"]),
-    st("NS_IMAGE", "box", "localhost/nextcuda-build", "the container image with the oneAPI runtime", &["llm", "image", "audio", "video", "model3d"]),
+    st("NS_IMAGE", "box", "localhost/nextcuda-build", "the container image the servers run in", &["llm", "image", "audio", "video", "model3d"]),
     st("NS_CONTAINER_ENGINE", "box", "podman", "podman or docker", &["llm", "image", "audio", "video", "model3d"]),
     st("NS_MOUNTS", "box", "", "more read-only directories for the containers, host:inside[,...]", &["llm"]),
     st("NS_CORS", "box", "", "web pages that may call the servers from a browser, beyond the loopback ones", &["llm", "image", "audio", "model3d"]),

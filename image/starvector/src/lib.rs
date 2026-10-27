@@ -143,6 +143,9 @@ impl ImageEngine for StarVector {
     fn guidance(&self) -> bool {
         false
     }
+    fn takes_loras(&self) -> bool {
+        false
+    }
     fn load_seconds(&self) -> f64 {
         self.load_s
     }

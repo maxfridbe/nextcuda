@@ -129,6 +129,8 @@ pub struct Speech {
     /// what a request must carry: "voice" (a built-in one), "instructions" (the voice to make up), "reference" (a
     /// recording, or a saved voice); none: nothing besides the text
     pub requires: Option<&'static str>,
+    /// the speakers a script may have ("Speaker N: words" lines, `AudioRequest::speakers` a voice each); 0 or 1: one voice
+    pub speakers: u32,
 }
 
 /// The engine's own defaults, shown by `engines` and used for the request's `None` fields
@@ -405,6 +407,10 @@ pub trait AudioEngine: Send + Sync {
     /// whether it sings words (`AudioRequest::lyrics`)
     fn lyrics(&self) -> bool {
         false
+    }
+    /// whether `AudioRequest::cfg` changes the sound (a distilled checkpoint runs unguided)
+    fn guidance(&self) -> bool {
+        true
     }
     /// whether it makes a song from a recording (`AudioRequest::source`: a cover, a repaint, an extension)
     fn sources(&self) -> bool {

@@ -623,6 +623,11 @@ components:
           - type: boolean
           - type: 'null'
           description: it sings words
+        guidance:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: '`cfg` changes the sound (false: a distilled checkpoint runs unguided)'
         wfe:
           anyOf:
           - type: boolean
@@ -968,6 +973,11 @@ components:
           - type: string
           - type: 'null'
           description: 'what a request must carry besides the text: voice, instructions or reference; none: nothing'
+        speakers:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'the speakers a script may have, each its own saved voice ("Speaker 1: ...", "Speaker 2: ...": VibeVoice); 0: one voice'
       required:
       - voices
       - languages

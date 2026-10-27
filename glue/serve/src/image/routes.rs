@@ -53,6 +53,13 @@ pub struct LoraInfo {
     pub loaded: Option<f64>,
 }
 
+/// The sizes an engine offers: aspect ratios ("W:H") and pixel budgets
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct SizesInfo {
+    pub ratios: Vec<String>,
+    pub pixels: Vec<i64>,
+}
+
 /// A variant an upscaler offers
 #[derive(Serialize, Deserialize, Rpc)]
 pub struct UpscaleInfo {
@@ -80,6 +87,35 @@ pub struct Info {
     /// it takes guidance: cfg above 1 and a negative prompt
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guidance: Option<bool>,
+    /// the grid the picture's sides are multiples of
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<i64>,
+    /// "transparent" gives an alpha channel
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparent: Option<bool>,
+    /// the schedule's shift can be set
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shift: Option<bool>,
+    /// the aspect ratios and pixel budgets it offers for a size (a size is a budget at a ratio)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sizes: Option<SizesInfo>,
+    /// it takes a negative prompt
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub negative: Option<bool>,
+    /// the step count changes the picture (false: a few-step entry runs its own)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps_free: Option<bool>,
+    /// it merges per-request LoRAs
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takes_loras: Option<bool>,
+    /// what a reading takes besides the pages and the instruction: tiles, figures, columns, guard, each_page; boxes when it writes them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_takes: Option<Vec<String>>,
+    /// the shortest and longest side it draws
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_side: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_side: Option<i64>,
     /// the most pictures an edit takes
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_pictures: Option<i64>,

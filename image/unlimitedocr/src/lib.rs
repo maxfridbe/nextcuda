@@ -462,6 +462,9 @@ impl ImageEngine for UnlimitedOcr {
     fn guidance(&self) -> bool {
         false
     }
+    fn takes_loras(&self) -> bool {
+        false
+    }
     fn load_seconds(&self) -> f64 {
         self.load_s
     }
@@ -473,6 +476,9 @@ impl ImageEngine for UnlimitedOcr {
     }
     fn ocr(&self, req: &OcrRequest, text: &mut dyn FnMut(&str)) -> Result<OcrOutput> {
         self.read(req, text)
+    }
+    fn ocr_takes(&self) -> &'static [&'static str] {
+        &["tiles", "figures", "columns", "guard", "each_page", "boxes"]
     }
     fn ocr_prompts(&self) -> Vec<OcrPrompt> {
         vec![

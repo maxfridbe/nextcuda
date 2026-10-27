@@ -42,6 +42,17 @@ fn whole(b: &Value, k: &str, lo: u64, hi: u64) -> Result<Option<u64>, Fail> {
     }
 }
 
+/// The shortest and longest side an image model draws: MOSS-Image's engine refuses outside 256 to 2048, the others take 64 to 4096
+pub fn size_range(m: &Value) -> (u32, u32) {
+    if m["arch"] == "moss-image" { (256, 2048) } else { (64, 4096) }
+}
+
+/// Whether a guidance scale above 1 needs a negative prompt: Qwen-Image's true_cfg_scale does (its engine refuses
+/// without one); MOSS-Image's guidance runs against an empty one, and Ming-Image's against a zero condition
+pub fn cfg_needs_negative(m: &Value) -> bool {
+    m["arch"].as_str().is_some_and(|a| a.starts_with("qwen-image"))
+}
+
 /// The steps an image model takes (image.info's steps): its default, and the only count a few-step model runs
 pub fn steps_of(m: &Value) -> Value {
     let own = m["env"]["NS_QI_SIGMAS"].as_str().map(|v| v.split(',').filter(|x| !x.trim().is_empty()).count());
@@ -129,8 +140,8 @@ impl Home {
             Some(sz) => {
                 let wh = sz.split_once('x').and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
                 match wh {
-                    Some((w, h)) if w >= 64 && h >= 64 && w % 16 == 0 && h % 16 == 0 => {}
-                    Some(_) => return Err(bad(format!("size {sz}: both sides multiples of 16, at least 64"))),
+                    Some((w, h)) if w >= size_range(&m).0 && h >= size_range(&m).0 && w <= size_range(&m).1 && h <= size_range(&m).1 && w % 16 == 0 && h % 16 == 0 => {}
+                    Some(_) => return Err(bad(format!("size {sz}: both sides multiples of 16, {} to {}", size_range(&m).0, size_range(&m).1))),
                     None => return Err(bad(format!("size {sz}: WIDTHxHEIGHT"))),
                 }
             }
@@ -156,7 +167,7 @@ impl Home {
             }
         }
         let cfg = number(b, "cfg", 0.0, 30.0)?.unwrap_or(1.0);
-        if cfg > 1.0 && s(b, "negative_prompt").trim().is_empty() {
+        if cfg > 1.0 && cfg_needs_negative(&m) && s(b, "negative_prompt").trim().is_empty() {
             return Err(bad(format!("cfg {cfg}: guidance above 1 needs a negative_prompt (the model's true_cfg_scale)")));
         }
         let strength = number(b, "strength", 0.05, 1.0)?.unwrap_or(1.0);
@@ -282,8 +293,19 @@ pub fn speech_lists(m: &Value) -> (Vec<String>, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{number, speech_lists, steps_of, whole};
+    use super::{cfg_needs_negative, number, size_range, speech_lists, steps_of, whole};
     use serde_json::json;
+
+    #[test]
+    fn each_engine_has_its_own_sides_and_guidance_rule() {
+        assert_eq!(size_range(&json!({"arch": "moss-image"})), (256, 2048));
+        assert_eq!(size_range(&json!({"arch": "qwen-image-2.1"})), (64, 4096));
+        assert!(cfg_needs_negative(&json!({"arch": "qwen-image-2.1"})));
+        assert!(cfg_needs_negative(&json!({"arch": "qwen-image-2512"})));
+        // MOSS-Image's guidance (cfg 3 by default) runs against an empty negative prompt, Ming-Image's has none
+        assert!(!cfg_needs_negative(&json!({"arch": "moss-image"})));
+        assert!(!cfg_needs_negative(&json!({"arch": "ming-image"})));
+    }
 
     #[test]
     fn a_few_step_model_locks_its_steps() {

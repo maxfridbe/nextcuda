@@ -205,6 +205,23 @@ impl ImageEngine for MingImage {
     fn guidance(&self) -> bool {
         true
     }
+    fn negative(&self) -> bool {
+        false
+    }
+    /// the prompt gets the RGBA phrase and the VAE's alpha is kept
+    fn transparent(&self) -> bool {
+        true
+    }
+    /// the scheduler's shift is fixed (6)
+    fn shift(&self) -> bool {
+        false
+    }
+    fn takes_loras(&self) -> bool {
+        false
+    }
+    fn sides(&self) -> (u32, u32) {
+        (64, 4096)
+    }
     fn load_seconds(&self) -> f64 {
         self.load_s
     }

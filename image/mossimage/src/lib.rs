@@ -30,7 +30,7 @@ use nextcuda_core::{DevBuf, Gpu};
 use nextcuda_diffusion::kernels::Nsd;
 use nextcuda_gguf::Gguf;
 use nextcuda_diffusion::lora;
-use nextcuda_image::{Defaults, Error, ImageEngine, ImageKind, ImageRequest, LoadOptions, LoraUse, ModelFiles, Picture, Result, Sampler, Schedule, Step};
+use nextcuda_image::{Defaults, Error, ImageEngine, ImageKind, ImageRequest, LoadOptions, LoraUse, ModelFiles, Picture, Result, Sampler, Schedule, SizePresets, Step};
 
 pub const ARCH: &str = "moss-image";
 /// the transformer GGUF, the text encoder GGUF (Qwen3.5-9B), the VAE (diffusers' safetensors)
@@ -42,6 +42,18 @@ const SHIFT: f32 = 5.0;
 const TRAIN_STEPS: usize = 1000;
 /// the block the unconditional branch leaves out (uncond_skip_layers=(22,))
 pub const UNCOND_SKIP: usize = 22;
+
+/// The aspect ratios and pixel budgets of OpenMOSS's Gradio app (gradio_presets.py): 0.25 M (512 x 512), 1 M, 1.5 M,
+/// 2 M and 4 M pixels, from 1:8 to 8:1; a size is `fit_size` of one at the other. This engine draws 256 to 2048 a side,
+/// so the page offers only the combinations inside that
+const RATIOS: &[&str] = &["1:8", "1:4", "1:3", "1:2", "9:16", "2:3", "3:4", "1:1", "4:3", "3:2", "16:9", "2:1", "3:1", "4:1", "8:1"];
+const PIXELS: &[u32] = &[262_144, 1_048_576, 1_572_864, 2_097_152, 4_194_304];
+
+/// OpenMOSS's `fit_size`: the budget's root at the ratio (W / H), each side rounded to 16 (halves up), at least 16
+pub fn fit_size(pixels: u32, ratio: f64) -> (u32, u32) {
+    let side = |e: f64| (((e / 16.0 + 0.5).floor() as u32) * 16).max(16);
+    (side((pixels as f64 * ratio).sqrt()), side((pixels as f64 / ratio).sqrt()))
+}
 
 pub fn kind() -> ImageKind {
     ImageKind { archs: &[ARCH], name: "MOSS-Image SFT (5.1B single-stream DiT, Qwen3.5-9B text encoder, FLUX.2 VAE; Rust + CUDA)", roles: ROLES, load, options: &[] }
@@ -76,7 +88,12 @@ fn grid(n: usize, shift: f32) -> Vec<f32> {
 /// MOSSImageScheduler's levels for `steps` (its V2 nearest-grid schedule): the shifted grid snapped to the training
 /// grid's nearest level (the lower on a tie), repeats dropped, then 0. May be fewer than steps + 1.
 pub fn sigmas(steps: usize) -> Vec<f32> {
-    let want = grid(steps.max(1), SHIFT);
+    sigmas_shift(steps, SHIFT)
+}
+
+/// `sigmas` at another shift (a request's)
+pub fn sigmas_shift(steps: usize, shift: f32) -> Vec<f32> {
+    let want = grid(steps.max(1), shift);
     let mut train = grid(TRAIN_STEPS, 1.0);
     train.reverse();
     let mut out: Vec<f32> = Vec::with_capacity(want.len() + 1);
@@ -235,12 +252,22 @@ impl ImageEngine for MossImage {
     fn samplers(&self) -> Vec<Sampler> {
         vec![Sampler::Euler]
     }
+    fn size_presets(&self) -> Option<SizePresets> {
+        Some(SizePresets { ratios: RATIOS, pixels: PIXELS })
+    }
+    fn sides(&self) -> (u32, u32) {
+        (256, 2048)
+    }
+    /// a turbo entry's LoRA distilled the scheduler's own levels: another shift would leave them
+    fn shift(&self) -> bool {
+        !self.turbo
+    }
     fn schedules(&self) -> Vec<Schedule> {
         vec![Schedule::Shift]
     }
-    /// cfg not 1: the pipeline's guidance against the negative prompt (empty by default), its branch leaving out block 22
+    /// cfg not 1 (a turbo entry runs at 1): the pipeline's guidance against the negative prompt (empty by default), its branch leaving out block 22
     fn guidance(&self) -> bool {
-        true
+        !self.turbo
     }
     fn load_seconds(&self) -> f64 {
         self.load_s
@@ -259,7 +286,7 @@ impl ImageEngine for MossImage {
         }
         let steps = req.steps.unwrap_or(d.steps).max(1) as usize;
         let cfg = req.cfg.filter(|c| *c >= 0.0).unwrap_or(d.cfg);
-        let sig = sigmas(steps);
+        let sig = sigmas_shift(steps, req.shift.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(SHIFT));
         let of = (sig.len() - 1) as u32;
         progress(Step { picture: 0, at: 0, of, seconds: t0.elapsed().as_secs_f64() })?;
         let pre = self.dit.prefix(&self.nsd, &self.hidden(req.prompt.trim())?)?;
@@ -289,6 +316,25 @@ impl ImageEngine for MossImage {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sizes_from_a_budget_and_a_ratio_are_openmoss_s() {
+        // values from gradio_presets.fit_size
+        assert_eq!(super::fit_size(262_144, 1.0), (512, 512));
+        assert_eq!(super::fit_size(1_048_576, 16.0 / 9.0), (1360, 768));
+        assert_eq!(super::fit_size(1_572_864, 2.0 / 3.0), (1024, 1536));
+        assert_eq!(super::fit_size(2_097_152, 1.0), (1456, 1456));
+        assert_eq!(super::fit_size(4_194_304, 1.0), (2048, 2048));
+        assert!(super::RATIOS.contains(&"16:9") && super::PIXELS.contains(&1_048_576));
+    }
+
+    #[test]
+    fn a_shift_moves_the_levels_and_the_default_is_the_models() {
+        assert_eq!(super::sigmas_shift(8, super::SHIFT), super::sigmas(8));
+        let (a, b) = (super::sigmas_shift(8, 3.0), super::sigmas(8));
+        assert_ne!(a, b);
+        assert!(a.windows(2).all(|w| w[0] > w[1]) && a[0] == 1.0 && *a.last().unwrap() == 0.0);
+    }
+
     #[test]
     fn the_levels_are_the_schedulers() {
         // MOSSImageScheduler().set_timesteps(8).sigmas, from the reference (pipeline_moss_image.py), bit for bit

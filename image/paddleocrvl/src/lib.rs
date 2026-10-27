@@ -387,6 +387,9 @@ impl ImageEngine for PaddleOcrVl {
     fn guidance(&self) -> bool {
         false
     }
+    fn takes_loras(&self) -> bool {
+        false
+    }
     fn load_seconds(&self) -> f64 {
         self.load_s
     }
@@ -398,6 +401,9 @@ impl ImageEngine for PaddleOcrVl {
     }
     fn ocr(&self, req: &OcrRequest, text: &mut dyn FnMut(&str)) -> Result<OcrOutput> {
         self.read(req, text)
+    }
+    fn ocr_takes(&self) -> &'static [&'static str] {
+        &["columns", "guard"]
     }
     fn ocr_prompts(&self) -> Vec<OcrPrompt> {
         vec![

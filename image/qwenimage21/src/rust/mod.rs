@@ -312,6 +312,9 @@ impl ImageEngine for RustQwenImage21 {
     fn guidance(&self) -> bool {
         true
     }
+    fn transparent(&self) -> bool {
+        true
+    }
     fn options(&self) -> &'static [EngineOption] {
         OPTIONS
     }
