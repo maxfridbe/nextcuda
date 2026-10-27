@@ -684,6 +684,7 @@ fn serve_here(cfg: &Config, m: &Value, files: ModelFiles, args: &[String], out: 
     let addr = format!("{}:{}", opt(args, "--host").unwrap_or("127.0.0.1"), opt(args, "--port").unwrap_or("8086"));
     let mut srv = ImageServer::new(m["id"].as_str().unwrap_or("image").to_string(), gpu, loader, first.merge_loras, known, Some(out), wfe, cors)?;
     srv.idle = crate::served::idle_exit(args)?;
+    srv.license = nextcuda_serve::page::licence_of(m);
     std::sync::Arc::new(srv).run(&addr)
 }
 

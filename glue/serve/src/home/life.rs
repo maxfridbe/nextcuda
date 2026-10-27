@@ -477,7 +477,7 @@ impl Home {
         let video = if need("video") { self.video_daemon() } else { None };
         // the model cards, read once: for the headroom of entries registered before cards carried it
         // and whether a chat model spans every card
-        let mc = if all.iter().all(|m| m.get("headroom_gib").is_some()) && !need("llm") { Vec::new() } else { self.o.cfg.cards() };
+        let mc = if all.iter().all(|m| m.get("headroom_gib").is_some() && m.get("license").is_some()) && !need("llm") { Vec::new() } else { self.o.cfg.cards() };
         all.iter().filter(|m| registry::kind_of(m) != "lora").map(|m| {
             let (id, kind) = (s(m, "id"), registry::kind_of(m).to_string());
             let enabled = m["enabled"] != false;
@@ -519,7 +519,10 @@ impl Home {
                 state = "disabled";
             }
             let (caps, methods) = capabilities(m);
-            json!({"id": id, "kind": kind, "title": m["title"], "arch": m["arch"], "enabled": enabled, "gpus": gpus, "state": state,
+            // its licence: the entry's own, else its card's (an entry registered before cards carried it)
+            let card = mc.iter().find(|c| [s(m, "catalog"), s(m, "id")].iter().any(|i| !i.is_empty() && c["id"] == i.as_str()));
+            let licence = registry::licence(if m.get("license").is_some() { m } else { card.unwrap_or(m) });
+            let mut row = json!({"id": id, "kind": kind, "title": m["title"], "arch": m["arch"], "enabled": enabled, "gpus": gpus, "state": state,
                    "spans": spans_all(m, &mc),
                    "capabilities": caps, "methods": methods,
                    "vouch_mb": vouch.iter().map(|(g, mb)| (g.to_string(), json!(mb))).collect::<serde_json::Map<String, Value>>(),
@@ -528,7 +531,9 @@ impl Home {
                    "headroom_given": headroom_given,
                    "page": match kind.as_str() { "image" | "audio" | "model3d" => json!(slots_of(&kind).iter()
                                                       .find(|x| x.model.as_deref() == Some(id.as_str())).map_or(self.port_of(&kind), |x| x.port)),
-                                                  "video" => json!(self.o.ports.video), _ => json!(self.o.ports.chat_ui) }})
+                                                  "video" => json!(self.o.ports.video), _ => json!(self.o.ports.chat_ui) }});
+            row.as_object_mut().unwrap().extend(licence);
+            row
         }).collect()
     }
 

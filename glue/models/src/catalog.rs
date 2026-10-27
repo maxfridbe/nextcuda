@@ -24,6 +24,9 @@ use crate::config::Config;
 /// The kinds of model, in the order `search` lists them
 pub const KINDS: &[&str] = &["llm", "image", "video", "audio", "model3d", "lora"];
 
+/// What a card says of its weights' licence: its name, whether it allows commercial use, the conditions it puts on it
+pub const LICENSE_KEYS: &[&str] = &["license", "commercial", "license_note"];
+
 /// The catalog: its files by key, its models (each card as JSON, its files as role -> key)
 pub struct Catalog {
     pub files: Map<String, Value>,
@@ -128,6 +131,19 @@ impl Catalog {
         self.models.iter().find(|m| m["id"] == id)
     }
 
+    /// The licence of every entry that has none, from the card its `catalog` names (an entry registered before cards
+    /// carried it): `license`, `commercial`, `license_note`. The registry's file is not rewritten.
+    pub fn fill_license(&self, entries: &mut [Value]) {
+        for e in entries.iter_mut().filter(|e| e.get("license").is_none()) {
+            let Some(card) = self.model(&s(e, "catalog")) else { continue };
+            for k in LICENSE_KEYS {
+                if let Some(v) = card.get(k) {
+                    e[k] = v.clone();
+                }
+            }
+        }
+    }
+
     /// A model's files: (role, key, the file's entry)
     fn files_of<'a>(&'a self, m: &'a Value) -> Vec<(&'a str, &'a str, &'a Value)> {
         m["files"].as_object().map_or_else(Vec::new, |o| {
@@ -160,11 +176,17 @@ fn gib(b: u64) -> f64 {
     b as f64 / (1u64 << 30) as f64
 }
 
+/// A card's licence as `search` shows it: its name, then "[non-commercial]" when it forbids commercial use
+fn licence_of(m: &Value) -> String {
+    let name = s(m, "license");
+    if m["commercial"] == false { format!("{name} [non-commercial]") } else { name }
+}
+
 /// `nextcuda models search [TEXT] [--kind K]`
 pub fn search(cfg: &Config, installed: &[Value], text: Option<&str>, kind: Option<&str>) -> Result<(), String> {
     let cat = Catalog::load(cfg)?;
     let want = text.map(str::to_lowercase);
-    println!("{:<44} {:<6} {:>8}  {:<6} {:<10} {:<18} TITLE", "ID", "KIND", "SIZE", "GPUS", "INSTALLED", "SILO");
+    println!("{:<44} {:<6} {:>8}  {:<6} {:<10} {:<18} {:<60} TITLE", "ID", "KIND", "SIZE", "GPUS", "INSTALLED", "SILO", "LICENSE");
     for m in &cat.models {
         let id = s(m, "id");
         if kind.is_some_and(|k| s(m, "kind") != k) {
@@ -177,7 +199,7 @@ pub fn search(cfg: &Config, installed: &[Value], text: Option<&str>, kind: Optio
             }
         }
         let have = if installed.iter().any(|x| x["id"] == id.as_str()) { "yes" } else { "-" };
-        println!("{:<44} {:<6} {:>7.1}G  {:<6} {:<10} {:<18} {}", id, s(m, "kind"), gib(cat.bytes(m)), s(m, "gpus"), have, silo_of(cfg, m), s(m, "title"));
+        println!("{:<44} {:<6} {:>7.1}G  {:<6} {:<10} {:<18} {:<60} {}", id, s(m, "kind"), gib(cat.bytes(m)), s(m, "gpus"), have, silo_of(cfg, m), licence_of(m), s(m, "title"));
     }
     Ok(())
 }
@@ -439,7 +461,7 @@ fn entry(m: &Value, paths: &BTreeMap<String, PathBuf>, local: &BTreeMap<String, 
         "files": files, "gpus": m.get("gpus").cloned().unwrap_or(json!("0")), "env": env, "enabled": true,
         "catalog": m["id"],
     });
-    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "does", "silo", "vram_gib", "headroom_gib", "streams", "split"] {
+    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "does", "silo", "vram_gib", "headroom_gib", "streams", "split"].iter().chain(LICENSE_KEYS) {
         if let Some(v) = m.get(k) {
             e[k] = v.clone();
         }
@@ -521,6 +543,10 @@ mod tests {
         for m in &cat.models {
             let id = s(m, "id");
             assert!(!s(m, "title").is_empty() && !s(m, "arch").is_empty(), "{id}: a title and an architecture");
+            // its weights' licence, and whether it allows commercial use (a note says the conditions it puts on it)
+            assert!(!s(m, "license").is_empty(), "{id}: a license");
+            assert!(m["commercial"].is_boolean(), "{id}: commercial: true or false");
+            assert!(m.get("license_note").is_none_or(|n| n.as_str().is_some_and(|n| !n.is_empty())), "{id}: license_note is a sentence");
             // a model's guide is a file beside the cards (loras have none: they ride on a model)
             if s(m, "kind") != "lora" {
                 assert!(cat.dir.join(s(m, "guide")).is_file(), "{id}: its guide {}", s(m, "guide"));
@@ -560,6 +586,24 @@ mod tests {
         assert_eq!(tts, std::fs::read_to_string(cat.dir.join("guides/qwen3-tts.md")).unwrap());
         let chat = cat.guide(&json!({"id": "mine", "kind": "llm", "arch": "new"})).unwrap();
         assert_eq!(chat, std::fs::read_to_string(cat.dir.join("guides/chat.md")).unwrap());
+    }
+
+    #[test]
+    fn an_entry_carries_its_cards_licence_and_an_old_one_is_filled_in() {
+        let cat = repo_cards();
+        let card = cat.model("breeze-tts-2").unwrap();
+        let e = entry(card, &BTreeMap::new(), &BTreeMap::new());
+        assert_eq!((e["license"].as_str(), e["commercial"].as_bool()), (card["license"].as_str(), Some(false)));
+        assert_eq!(e["license_note"], card["license_note"]);
+        // an entry registered before: filled from the card its catalog names, its own licence kept, a card-less one left
+        let mut old = vec![json!({"id": "mine", "catalog": "whisper-large-v3-turbo"}), json!({"id": "x", "catalog": "breeze-tts-2", "license": "mine", "commercial": true}),
+                           json!({"id": "y"}), json!({"id": "z", "catalog": "none-such"})];
+        cat.fill_license(&mut old);
+        assert_eq!((old[0]["license"].as_str(), old[0]["commercial"].as_bool()), (Some("mit"), Some(true)));
+        assert_eq!((old[1]["license"].as_str(), old[1]["commercial"].as_bool()), (Some("mine"), Some(true)));
+        assert!(old[2].get("license").is_none() && old[3].get("license").is_none());
+        assert_eq!(licence_of(card), format!("{} [non-commercial]", s(card, "license")));
+        assert_eq!(licence_of(cat.model("whisper-large-v3-turbo").unwrap()), "mit");
     }
 
     #[test]

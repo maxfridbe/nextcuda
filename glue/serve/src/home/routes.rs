@@ -150,6 +150,13 @@ pub struct ModelView {
     pub headroom_given: bool,
     /// the port its page is on
     pub page: i64,
+    /// the licence of its weights, whether it allows commercial use (false: the pages tag it non-commercial), the conditions it puts on it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commercial: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license_note: Option<String>,
 }
 
 /// A front end or helper beside the models
@@ -321,6 +328,13 @@ pub struct Available {
     pub pull: Option<PullView>,
     pub runs_here: bool,
     pub why_not: Option<String>,
+    /// the licence of its weights, whether it allows commercial use (false: the pages tag it non-commercial), the conditions it puts on it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commercial: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license_note: Option<String>,
 }
 
 /// The box at a glance (the page polls it)

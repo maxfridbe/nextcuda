@@ -25,5 +25,24 @@ ui.state = {
 };
 sc.show("status", App())
   .has(/RTX 3060/).lacks(/NVIDIA GeForce/).has(/Images/).has(/Audio/).has(/Chat/).has(/\b3D\b/).has(/trellis2-q8/).has(/1 of 1 enabled/);
+
+// a model whose licence forbids commercial use wears a "non-commercial" tag (the licence in its tooltip); one that allows it
+// does not, nor does one conditioned (a note) or one with no licence known
+{
+  const qwen = { license: "qwen-research", commercial: false, license_note: "non-commercial purposes only" };
+  ui.state.models = [model("qwen-image-2.1-q8", "image", qwen), model("trellis2-q8", "model3d", { license: "mit", commercial: true }),
+                     model("minimax-h3", "video", { license: "minimax-h3-community", commercial: true, license_note: "not licensed in the EU" }), model("qwen3-8b", "llm")];
+  const v = sc.show("status-licences", App());
+  const tagged = v.lines.filter((l) => /non-commercial\s*$/.test(l));
+  sc.check("status-licences", tagged.length === 1 && /^qwen-image-2\.1-q8/.test(tagged[0]) && /qwen-research: no commercial use - non-commercial purposes only/.test(tagged[0]),
+    `only the Qwen-Image row is tagged, its licence in the tooltip (${JSON.stringify(tagged)})`);
+  v.has(/trellis2-q8/).has(/minimax-h3/);
+  // a model a card offers and is not downloaded: tagged before it is fetched
+  const avail = (id, o) => ({ id, kind: "audio", title: id, about: "", gpus: "0", bytes: 3e9, downloaded: false, drive: "/m", folder: "/m", fits: true, free: 1e11, pull: null, runs_here: true, why_not: null, ...o });
+  ui.state.available = [avail("breeze-tts-2", { license: "breezeblue-research-and-non-commercial-1.1", commercial: false }), avail("voxcpm2", { license: "apache-2.0", commercial: true })];
+  const w = sc.show("status-licences-available", App());
+  const nc = w.lines.filter((l) => /non-commercial\s*$/.test(l) && /^(breeze-tts-2|voxcpm2)/.test(l));
+  sc.check("status-licences-available", nc.length === 1 && /^breeze-tts-2/.test(nc[0]), `only the Breeze card is tagged (${JSON.stringify(nc)})`);
+}
 sc.done();
 process.exit(process.exitCode ?? 0);

@@ -3,6 +3,9 @@
 id: minimax-music3
 kind: audio
 arch: minimax-music3
+license: minimax-music3-community
+commercial: true
+license_note: 'Show MiniMax-Music3 prominently on the interface of a commercial product that uses it; written authorization from MiniMax is needed above US$20 million yearly revenue; its Acceptable Use Policy applies.'
 title: MiniMax Music 3 (songs from lyrics and a description, up to 6 minutes, 44.1 kHz stereo)
 about: the 8B semantic language model (Qwen3-8B's shape) and RVQ depth decoder, the 2.4B flow-matching transformer, the Flow-VAE decoder (MiniMax's diffusers checkpoint)
 gpus: '0'

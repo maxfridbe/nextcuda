@@ -157,3 +157,6 @@ body{max-width:1200px}
   .view{width:calc(50% - 5px);box-sizing:border-box}
   .view img{width:100%;height:auto;aspect-ratio:1}
 }
+
+/* the "non-commercial" tag of a model whose licence forbids commercial use (components/Licence.tsx) */
+.tag.nc{font-size:10px;text-transform:uppercase;letter-spacing:.05em;padding:1px 6px;border-radius:4px;background:#78350f;color:#fde68a;margin-left:8px;vertical-align:middle;white-space:nowrap;font-weight:normal}

@@ -103,4 +103,13 @@ open(breeze, { voice: "anna", instructions: "calm" });
 open(breeze, { voice: "", refAudio: "data:audio/wav;base64,AAAA", refName: "me.wav", refText: "" });
 sc.show("breeze-recording", App()).has(/what the recording says/).has(/required/).has(/save as voice/);
 
+// the licence: Breeze TTS 2's card forbids commercial use (research and non-commercial): its header wears the tag with the
+// licence in the tooltip; a model that allows commercial use does not
+open({ ...breeze, model: "breeze-tts-2", license: "breezeblue-research-and-non-commercial-1.1", commercial: false });
+sc.show("licence-non-commercial", App()).has(/breeze-tts-2 \(breezeblue-research-and-non-commercial-1\.1: no commercial use\) non-commercial/);
+open({ ...vibe, model: "vibevoice-1.5b", license: "mit", commercial: true });
+sc.show("licence-commercial", App()).has(/vibevoice-1\.5b/).lacks(/non-commercial/).lacks(/no commercial use/);
+open({ ...mm3, license: "minimax-music3-community", commercial: true, license_note: "show the name" });
+sc.show("licence-conditioned", App()).has(/minimax-music3-int8/).lacks(/non-commercial/);
+
 sc.done();

@@ -5,6 +5,8 @@
 id: nemotron-3.5-super-iq1m
 kind: llm
 arch: nemotron_h_moe
+license: openmdw-1.1
+commercial: true
 title: Nemotron 3.5 Super 120B-A12B UD-IQ1_M (one card, experts streamed)
 about: 'unsloth''s dynamic 1-bit quant of NVIDIA''s hybrid Mamba-2 / latent-MoE / attention model (43 GiB; IQ1_S / IQ2 / IQ3_XXS ups, Q2_0 downs). On one 12 GB card: dense weights and hot experts in VRAM, 22 GiB of experts in pinned host memory, the rest from the disk. Text only'
 gpus: '0'

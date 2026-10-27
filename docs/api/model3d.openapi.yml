@@ -352,6 +352,19 @@ components:
       properties:
         model:
           type: string
+        license:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the licence of its weights, whether it allows commercial use (false: the page tags it non-commercial), the conditions it puts on it'
+        commercial:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        license_note:
+          anyOf:
+          - type: string
+          - type: 'null'
         busy:
           anyOf:
           - type: boolean

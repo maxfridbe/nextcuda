@@ -4,6 +4,9 @@
 id: qwen-image-2.1-q6k
 kind: image
 arch: qwen-image-2.1
+license: qwen-research
+commercial: false
+license_note: 'Qwen Research Licence: the weights may be used for non-commercial purposes only (research or evaluation); commercial use needs a separate licence from Qwen.'
 title: 'Qwen-Image 2.1 Q6_K (text to image, RGBA, edits; stable-diffusion.cpp on CUDA)'
 about: 'The same model with a Q6_K transformer (6.0 GB): for the 12 GB cards that also hold the text encoder'
 gpus: '0'

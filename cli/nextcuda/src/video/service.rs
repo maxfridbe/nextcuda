@@ -422,6 +422,9 @@ pub fn studio(raw: &[String]) -> Result<(), String> {
         gpustat: super::opt(raw, "--gpustat").unwrap_or("/run/gpustat.json").into(),
         llm_modes: super::opt(raw, "--llm-modes").map(PathBuf::from),
         engines,
+        // each video model's licence (the registry's entries, an old one's from its card): the denoiser picker tags a non-commercial one
+        licenses: models::all(&Config::load()).unwrap_or_default().iter().filter(|m| models::kind_of(m) == "video")
+            .map(|m| (m["id"].as_str().unwrap_or("").to_string(), nextcuda_serve::page::licence_of(m))).collect(),
     })
     .map_err(|e| e.0)
 }

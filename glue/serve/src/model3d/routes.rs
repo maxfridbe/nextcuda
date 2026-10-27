@@ -53,6 +53,13 @@ pub struct EngineOptionInfo {
 #[derive(Serialize, Deserialize, Rpc)]
 pub struct Info {
     pub model: String,
+    /// the licence of its weights, whether it allows commercial use (false: the page tags it non-commercial), the conditions it puts on it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commercial: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license_note: Option<String>,
     /// the engine is running a request: what changes is not reported
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub busy: Option<bool>,
@@ -206,7 +213,7 @@ fn models(s: &Model3dServer, _cx: &mut Cx) -> Result<ModelList, Fail> {
 /// The model and what it does: its abilities, defaults, options
 #[route(get = "/api/info", tags = "page")]
 fn info(s: &Model3dServer, _cx: &mut Cx) -> Result<Checked<Info>, Fail> {
-    Ok(Checked::new(s.info()))
+    Ok(Checked::new(crate::page::with_license(s.info(), &s.license)))
 }
 
 /// What the server is doing now (the page polls it)

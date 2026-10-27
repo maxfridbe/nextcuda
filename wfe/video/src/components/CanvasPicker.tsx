@@ -7,6 +7,7 @@
  */
 import { jsx } from "../jsx.js";
 import { render, state } from "../state.js";
+import { NonCommercial } from "./Licence.js";
 import type { Canvas, EngineInfo, GpuPlan, Plan } from "../types.js";
 import { fmtT, gpuName } from "../util.js";
 
@@ -124,7 +125,7 @@ export function CanvasPicker(props: CanvasPickerProps) {
           attrs={{ title: `${e.file} · ${e.gib} GiB of weights${all.some((g) => g.gpu === card && eng(g) === e.quant) ? "" : " · not measured on this GPU"}` +
             (e.quant === "INT8" ? " · the fastest steps" : " · a GGUF k-quant: less of the card, so longer clips fit; slower steps, and a different take on the same prompt") }}
           on={{ click: () => props.onPick(props.width, props.height, e.quant, props.seconds) }}
-        >{`${e.quant} ${e.gib}G`}</button>
+        >{`${e.quant} ${e.gib}G`}{NonCommercial(e)}</button>
       ))}
       {cardInfo && !gpu ? <span class="hint">{`${engine.quant} not measured on this GPU: estimates`}</span> : null}
     </div>

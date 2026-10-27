@@ -13,6 +13,21 @@ use crate::http::{self, Conn, Request};
 /// A route's failure: the status and the words.
 pub type Fail = (u16, String);
 
+/// The card's licence of a server's model (`license`, `commercial`, `license_note`: an object, or null for none) in
+/// the answer of its `/api/info`, which the page names the model from
+pub fn with_license(mut info: Value, licence: &Value) -> Value {
+    if let (Some(o), Some(l)) = (info.as_object_mut(), licence.as_object()) {
+        o.extend(l.clone());
+    }
+    info
+}
+
+/// The licence keys of a registry entry, for a server's `license` (null: the entry has none)
+pub fn licence_of(entry: &Value) -> Value {
+    let l: serde_json::Map<String, Value> = ["license", "commercial", "license_note"].iter().filter_map(|k| Some((k.to_string(), entry.get(*k)?.clone()))).collect();
+    if l.is_empty() { Value::Null } else { Value::Object(l) }
+}
+
 /// What a route's handler gets besides its server: the connection (a handler that writes its own answer, a file),
 /// the request as read (its head for a Range, its body for a multipart form) and the CORS headers to send.
 pub struct Cx {

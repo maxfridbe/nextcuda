@@ -3,6 +3,8 @@
 id: vibevoice-1.5b-int8
 kind: audio
 arch: vibevoice
+license: mit
+commercial: true
 title: VibeVoice 1.5B, its language model in int8 (less VRAM)
 about: 'Microsoft''s VibeVoice 1.5B (the bf16 GGUF, as vibevoice-1.5b), its Qwen2.5-1.5B''s matrices int8 with a scale a row'
 gpus: '0'

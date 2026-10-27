@@ -206,6 +206,10 @@ export interface EngineInfo {
   default?: boolean | null;
   /** what it takes (video.generate's keys): takes, not, chosen, ignored */
   inputs: unknown;
+  /** the licence of its weights, whether it allows commercial use (false: the picker tags it non-commercial), the conditions it puts on it */
+  license?: string | null;
+  commercial?: boolean | null;
+  license_note?: string | null;
 }
 
 /** The denoisers */

@@ -163,3 +163,6 @@ figure.pic .acts .tbtn{margin-left:0;text-decoration:none}
 }
 .drop{border:1px dashed #2a2f3a;border-radius:8px;padding:8px;margin:6px 0}
 .drop .pics.small figure.pic img{cursor:default}
+
+/* the "non-commercial" tag of a model whose licence forbids commercial use (components/Licence.tsx) */
+.tag.nc{font-size:10px;text-transform:uppercase;letter-spacing:.05em;padding:1px 6px;border-radius:4px;background:#78350f;color:#fde68a;margin-left:8px;vertical-align:middle;white-space:nowrap;font-weight:normal}

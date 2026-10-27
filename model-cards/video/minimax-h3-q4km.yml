@@ -3,6 +3,9 @@
 id: minimax-h3-q4km
 kind: video
 arch: minimax-h3
+license: minimax-h3-community
+commercial: true
+license_note: 'Not licensed in the European Union, the United Kingdom, South Korea or the United States; written authorization from MiniMax is needed above US$20 million yearly revenue; show MiniMax H3 on the interface of a commercial product; its Acceptable Use Policy applies; its outputs may not train another model.'
 title: 'MiniMax H3 Q4_K_M (the denoiser in 10.6 GiB: the longest clips)'
 about: the denoiser as a Q4_K_M GGUF
 gpus: '0,1'

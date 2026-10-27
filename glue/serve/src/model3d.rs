@@ -67,6 +67,8 @@ pub struct Model3dServer {
     history: Mutex<VecDeque<Value>>,
     /// ends the process after an idle stretch (`--idle-exit`; none: never)
     pub idle: Option<&'static crate::idle::Idle>,
+    /// its registry entry's licence (`license`, `commercial`, `license_note`; null: none): /api/info says it
+    pub license: Value,
 }
 
 fn f(x: f32) -> Value {
@@ -126,7 +128,7 @@ impl Model3dServer {
         let tele = Telemetry::start(std::slice::from_ref(&gpu.pci));
         let history = Mutex::new(out_dir.as_deref().map(earlier).unwrap_or_default());
         Ok(Model3dServer { model, out_dir, wfe, cors, gpu, tele, engine: Mutex::new(engine), progress: Mutex::new(json!({"busy": false})),
-                           idle: None, waiting: AtomicUsize::new(0), cancel: Default::default(), history })
+                           idle: None, license: Value::Null, waiting: AtomicUsize::new(0), cancel: Default::default(), history })
     }
 
     /// Answers on `addr` until the process ends
