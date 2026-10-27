@@ -24,6 +24,8 @@ int ns_gpu_count(void);
 int ns_gpu_name(int index, char* buf, size_t len);
 int ns_gpu_pci(int index, char* buf, size_t len);
 int ns_gpu_units(int index, int* units, int* mhz);
+/* the compute capability of GPU `index` as one number: 86 (an RTX 3060), 120 (an RTX 5070) */
+int ns_gpu_cc(int index, int* cc);
 /* opens GPU `index`: its stream, its two copy streams */
 int ns_gpu_open(int index, ns_gpu** out);
 void ns_gpu_close(ns_gpu* g);

@@ -35,6 +35,7 @@ struct Api {
     linear_q: unsafe extern "C" fn(M, P, c_int, i64, i64, P, c_int, i64, *const f32, M, c_int, i64) -> c_int,
     int8_linear: unsafe extern "C" fn(M, P, c_int, i64, i64, *const i8, i64, *const f32, *const f32, M, c_int, c_int, i64) -> c_int,
     int8_prepare: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, c_int, *mut i8, *mut f32) -> c_int,
+    int8_product: unsafe extern "C" fn(M, P, c_int, i64, i64, *const i8, i64, c_int, *mut i32, *mut f32) -> c_int,
     dequant: unsafe extern "C" fn(M, P, c_int, i64, M, c_int) -> c_int,
     rms_norm_mod: unsafe extern "C" fn(M, P, c_int, i64, i64, *const f32, f32, *const i32, *const f32, *const f32, M, c_int) -> c_int,
     rms_rope: unsafe extern "C" fn(M, M, c_int, i64, i64, i64, i64, *const f32, f32, *const f32, c_int) -> c_int,
@@ -89,6 +90,7 @@ fn api() -> Result<&'static Api> {
             linear_q: sym!("nsd_linear_q"),
             int8_linear: sym!("nsd_int8_linear"),
             int8_prepare: sym!("nsd_int8_prepare"),
+            int8_product: sym!("nsd_int8_product"),
             dequant: sym!("nsd_dequant"),
             rms_norm_mod: sym!("nsd_rms_norm_mod"),
             rms_rope: sym!("nsd_rms_rope"),
@@ -202,6 +204,16 @@ impl Nsd {
         // SAFETY: the caller's buffers hold the sizes named.
         self.ok(unsafe { (self.k.int8_linear)(self.ctx, x, x_dt as c_int, m as i64, k as i64, w.cast(), n as i64, wscale.cast(), bias.cast(), out, out_dt as c_int,
                                                group as c_int, ldo as i64) }, "int8 linear")
+    }
+
+    /// `int8_linear` without its epilogue, for an engine that fuses its own: acc int32 [m, n] the int8 product (x's rows
+    /// quantized, rotated by H when `group` > 0), xs float32 [m] their scales; out = acc * xs[r] * wscale[c]. m a
+    /// multiple of 4
+    #[allow(clippy::too_many_arguments)]
+    pub fn int8_product(&self, x: P, x_dt: Dt, m: usize, k: usize, w: P, n: usize, group: usize, acc: M, xs: M) -> Result<()> {
+        // SAFETY: the caller's buffers hold the sizes named.
+        self.ok(unsafe { (self.k.int8_product)(self.ctx, x, x_dt as c_int, m as i64, k as i64, w.cast(), n as i64, group as c_int, acc.cast(), xs.cast()) },
+                "int8 product")
     }
 
     /// Rows [row0, row0 + n) of a [_, K] matrix of GGUF type `qtype` as int8 rows (rotated by H when `group` > 0) with

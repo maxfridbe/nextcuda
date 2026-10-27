@@ -55,13 +55,19 @@ pub fn api() -> Result<&'static Api> {
 /// A model's silo (`kernels/<kind>/<arch>/silo/`: its tuned kernels, `dist/silo/libnextcuda-<arch>.so`), opened on
 /// the first ask and kept: None when there is none (or NS_SILO=0) - the engine then uses the shared kernels
 pub fn silo(arch: &str) -> Result<Option<&'static nextcuda_sys::Silo>> {
-    static SILOS: std::sync::Mutex<Vec<(String, Option<&'static nextcuda_sys::Silo>)>> = std::sync::Mutex::new(Vec::new());
+    silo_for(arch, 0)
+}
+
+/// A model's silo for a card: the one built for its compute capability (`cc`: Gpu::cc) when the silo is built a card
+/// at a time, else the one for every card - two cards of two kinds run two silos side by side
+pub fn silo_for(arch: &str, cc: u32) -> Result<Option<&'static nextcuda_sys::Silo>> {
+    static SILOS: std::sync::Mutex<Vec<(String, u32, Option<&'static nextcuda_sys::Silo>)>> = std::sync::Mutex::new(Vec::new());
     let mut m = SILOS.lock().unwrap();
-    if let Some((_, s)) = m.iter().find(|(a, _)| a == arch) {
+    if let Some((_, _, s)) = m.iter().find(|(a, c, _)| a == arch && *c == cc) {
         return Ok(*s);
     }
-    let s = api()?.silo(arch).map_err(Error)?.map(|s| &*Box::leak(Box::new(s)));
-    m.push((arch.to_string(), s));
+    let s = api()?.silo_for(arch, cc).map_err(Error)?.map(|s| &*Box::leak(Box::new(s)));
+    m.push((arch.to_string(), cc, s));
     Ok(s)
 }
 
@@ -157,6 +163,8 @@ pub struct Gpu {
     pub name: String,
     /// its PCI address ("0000:03:00.0"), where its sensors are (sysfs hwmon)
     pub pci: Option<String>,
+    /// its compute capability as one number (86: an RTX 3060, 120: an RTX 5070); 0 without the library
+    pub cc: u32,
 }
 
 // SAFETY: the library's GPU handle is a context and streams; CUDA's are thread-safe.
@@ -187,10 +195,13 @@ impl Gpu {
             let pci = (unsafe { (api.gpu_pci)(index as i32, pb.as_mut_ptr(), pb.len()) } == 0)
                 .then(|| unsafe { std::ffi::CStr::from_ptr(pb.as_ptr()) }.to_string_lossy().into_owned())
                 .filter(|s| !s.is_empty());
-            return Ok(Arc::new(Gpu { dev: Some((api, raw)), index, name, pci }));
+            let mut cc: std::ffi::c_int = 0;
+            // SAFETY: an out-pointer to a local.
+            check(api, unsafe { (api.gpu_cc)(index as i32, &mut cc) }, &format!("GPU {index}'s compute capability"))?;
+            return Ok(Arc::new(Gpu { dev: Some((api, raw)), index, name, pci, cc: cc as u32 }));
         }
         let r = smi()?.into_iter().find(|r| r.0 == index).ok_or_else(|| Error(format!("no GPU {index}")))?;
-        Ok(Arc::new(Gpu { dev: None, index, name: r.1, pci: Some(r.2).filter(|s| !s.is_empty()) }))
+        Ok(Arc::new(Gpu { dev: None, index, name: r.1, pci: Some(r.2).filter(|s| !s.is_empty()), cc: 0 }))
     }
 
     /// The library's handle of this GPU (`ns_gpu*`), for an engine's own ABI; null without the library

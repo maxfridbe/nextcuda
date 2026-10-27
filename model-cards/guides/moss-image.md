@@ -12,3 +12,7 @@ A general text-to-image model: photographs, illustration, product shots, scenes 
   default) with one block left out; cfg 1 turns it off and halves the time, at a cost in detail and prompt-following.
   Fewer steps (20-30) are faster and usually close.
 - **Seed:** the same seed, prompt and settings make the same picture.
+- **Time:** a 1024 x 1024 picture at the defaults takes about 48 s on an RTX 5070 (0.93 s a step), about 2.3 s a step
+  with the DiT on an RTX 3060; loading takes about a minute. Each card runs its own build of the model's kernels
+  (dist/silo/libnextcuda-mossimage.sm86.so / .sm120.so). `NS_MOSS_ATTN=fp8` (5070 only) is offered but no faster and
+  less exact; `NS_MOSS_INT8=0` keeps the stored weights (half again as long).

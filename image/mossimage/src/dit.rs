@@ -116,6 +116,15 @@ struct TextBlock {
 
 pub struct Dit {
     gpu: Arc<Gpu>,
+    /// this card's silo (its attention, the int8 products' fused epilogues), when built; NS_SILO=0: the shared kernels
+    silo: Option<&'static ffi::Silo>,
+    /// the silo's attention: warps a block (0: its default; NS_MOSS_ATTN_WARPS) and how (NS_MOSS_ATTN: half - the
+    /// scores accumulated in half, the default -, float, fp8 - the scores from FP8 copies of q and k -, fp8v - the
+    /// values too; FP8 on a card with FP8 tensor cores, sm_89 and up), as the silo's code -1 / 0 / 1 / 2
+    warps: i32,
+    fp8: i32,
+    /// the int8 products' fused epilogues (NS_MOSS_FUSED=0: nsd's epilogue, then the step's own kernels)
+    fused: bool,
     video_w: DevBuf,
     video_b: DevBuf,
     text_proj: Part,
@@ -256,8 +265,26 @@ impl Dit {
         if nl == 0 || f.tensor("shared_block_modulation.weight").is_none() {
             return Err(Error(format!("{}: not MOSS-Image's DiT (no layers / shared_block_modulation)", f.paths[0].display())));
         }
+        let silo = ffi::silo(gpu.cc);
+        let env = |k: &str| std::env::var(k).ok().and_then(|v| v.trim().parse::<i32>().ok());
+        let how = std::env::var("NS_MOSS_ATTN").unwrap_or_default();
+        let fp8 = match how.trim() {
+            "" | "half" => -1,
+            "float" => 0,
+            "fp8" => 1,
+            "fp8v" => 2,
+            other => return Err(Error(format!("NS_MOSS_ATTN={other}: half (the default), float, fp8 or fp8v"))),
+        };
+        if fp8 > 0 && !silo.is_some_and(|s| s.fp8) {
+            return Err(Error(format!("NS_MOSS_ATTN={how}: {} has no FP8 attention ({}; FP8 needs sm_89 and up)", gpu.name,
+                                     silo.map_or("no MOSS-Image silo built".to_string(), |s| format!("its silo is for sm_{}", s.sm)))));
+        }
         let dit = Dit {
             gpu: gpu.clone(),
+            silo,
+            warps: env("NS_MOSS_ATTN_WARPS").unwrap_or(0),
+            fp8,
+            fused: env("NS_MOSS_FUSED").unwrap_or(1) != 0,
             video_w: vecd("video_embedder.weight")?,
             video_b: vecd("video_embedder.bias")?,
             text_proj: part("text_embedder.proj.weight")?,
@@ -277,8 +304,12 @@ impl Dit {
             return Err(Error(format!("{}: {} rope bands and text width {}: MOSS-Image's DiT has 16 and 4096", f.paths[0].display(), dit.bands.len(),
                                      dit.text_proj.k)));
         }
-        log(format!("moss-image dit: {nl} blocks, {nt} text blocks on {} ({}) in {:.1} s", gpu.name, if int8 { "int8 ConvRot" } else { "as stored" },
-                    t0.elapsed().as_secs_f64()));
+        let silo_words = match dit.silo {
+            Some(s) => format!("its silo for sm_{}, attention {}", s.sm, ["half", "float", "fp8", "fp8v"][(dit.fp8 + 1) as usize]),
+            None => "the shared kernels".into(),
+        };
+        log(format!("moss-image dit: {nl} blocks, {nt} text blocks on {} ({}, {silo_words}) in {:.1} s", gpu.name,
+                    if int8 { "int8 ConvRot" } else { "as stored" }, t0.elapsed().as_secs_f64()));
         Ok(dit)
     }
 
@@ -333,17 +364,67 @@ impl Dit {
                 ffi::check(unsafe { (k.to_half_rows)(gpu.raw(), t.of.fp(), m as i64, DIM as i64, ffi::ACT_SCALE, half_at(&t.qkv, i * DIM), qw as i64) }, "q k v")?;
             }
         }
+        self.rope_attend(nsd, qn, kn, m, cs, t)
+    }
+
+    /// t.qkv's q and k normed and rotated, the attention over the m rows into t.att: the card's silo (its tile, FP8
+    /// when asked), else the shared fused kernel
+    fn rope_attend(&self, nsd: &Nsd, qn: &DevBuf, kn: &DevBuf, m: usize, cs: &DevBuf, t: &Tmp) -> Result<()> {
+        let qw = 3 * DIM;
+        let half_at = |buf: &DevBuf, n: usize| -> *mut std::ffi::c_void { buf.ptr().cast::<u16>().wrapping_add(n).cast() };
         // (the norm of q s with eps s^2 is the norm of q with eps: the scale is exact)
         let eps = EPS * ffi::ACT_SCALE * ffi::ACT_SCALE;
         nsd.rms_rope(t.qkv.ptr(), Dt::F16, m, HEADS, HEAD, qw, qn.ptr(), eps, cs.ptr(), HEAD)?;
         nsd.rms_rope(half_at(&t.qkv, DIM), Dt::F16, m, HEADS, HEAD, qw, kn.ptr(), eps, cs.ptr(), HEAD)?;
-        nsd.flash_attention(t.qkv.ptr(), m, qw, half_at(&t.qkv, DIM), half_at(&t.qkv, 2 * DIM), m, qw, HEADS, HEADS, t.att.ptr())
+        let (q, k, v) = (t.qkv.ptr().cast_const(), half_at(&t.qkv, DIM).cast_const(), half_at(&t.qkv, 2 * DIM).cast_const());
+        if let Some(si) = self.silo {
+            // SAFETY: qkv holds m rows of 9216 halves, att m rows of 3072.
+            return ffi::check(unsafe { (si.attention)(self.gpu.raw(), q, m as i64, qw as i64, k, v, m as i64, qw as i64, HEADS as i64, t.att.ptr(),
+                                                      self.warps, self.fp8) }, "attention (silo)");
+        }
+        nsd.flash_attention(q, m, qw, k, v, m, qw, HEADS, HEADS, t.att.ptr())
+    }
+
+    /// One block with its matrices int8 and the card's silo: each product's int32 results taken by a fused epilogue
+    /// straight to what comes next (q k v in half, the MLP's activation, the gated residual into x)
+    #[allow(clippy::too_many_arguments)]
+    fn block_fused(&self, nsd: &Nsd, si: &ffi::Silo, b: &Block, qkv: &Part, x: &DevBuf, m: usize, cs: &DevBuf, md: &StepMod, t: &Tmp) -> Result<()> {
+        let g = self.gpu.raw();
+        // the int8 product's rows a multiple of 4: t's buffers have the rows past m, whose results nothing reads
+        let m4 = (m + 3) & !3;
+        let acc = t.big.fp().cast::<i32>();
+        let xs = t.xs.fp();
+        let int8 = |p: &Part| p.int8.as_ref().map(|(w, s)| (w.ptr().cast_const(), s.fp().cast_const())).ok_or_else(|| Error("a matrix not int8".into()));
+        let gate = |i: usize| md.at(i).cast::<f32>();
+        let rows = t.rows.ptr();
+        nsd.rms_norm_mod(x.ptr(), Dt::F32, m, DIM, b.norm1.ptr(), EPS, rows, md.at(1), md.at(0), t.h.ptr(), Dt::F16)?;
+        let (w, ws) = int8(qkv)?;
+        nsd.int8_product(t.h.ptr(), Dt::F16, m4, DIM, w, 3 * DIM, GROUP, acc.cast(), xs.cast())?;
+        // SAFETY (each epilogue): acc holds m4 x N int32, xs m4 floats, ws N, the outputs m rows.
+        ffi::check(unsafe { (si.epi_half)(g, acc, m as i64, (3 * DIM) as i64, xs, ws, ffi::ACT_SCALE, t.qkv.ptr(), (3 * DIM) as i64) }, "q k v")?;
+        self.rope_attend(nsd, &b.q_norm, &b.k_norm, m, cs, t)?;
+        let (w, ws) = int8(&b.o)?;
+        nsd.int8_product(t.att.ptr(), Dt::F16, m4, DIM, w, DIM, GROUP, acc.cast(), xs.cast())?;
+        // (the attention comes scaled by ACT_SCALE: its output linear's result is multiplied back)
+        ffi::check(unsafe { (si.epi_gate_add)(g, acc, m as i64, DIM as i64, xs, ws, 1.0 / ffi::ACT_SCALE, gate(2), x.fp()) }, "attention out")?;
+        nsd.rms_norm_mod(x.ptr(), Dt::F32, m, DIM, b.norm2.ptr(), EPS, rows, md.at(4), md.at(3), t.h.ptr(), Dt::F16)?;
+        let (w, ws) = int8(&b.up_gate)?;
+        nsd.int8_product(t.h.ptr(), Dt::F16, m4, DIM, w, 2 * FFN, GROUP, acc.cast(), xs.cast())?;
+        ffi::check(unsafe { (si.epi_situ)(g, acc, m as i64, FFN as i64, xs, ws, t.act.ptr()) }, "situ")?;
+        let (w, ws) = int8(&b.down)?;
+        nsd.int8_product(t.act.ptr(), Dt::F16, m4, FFN, w, DIM, GROUP, acc.cast(), xs.cast())?;
+        ffi::check(unsafe { (si.epi_gate_add)(g, acc, m as i64, DIM as i64, xs, ws, 1.0, gate(5), x.fp()) }, "mlp out")
     }
 
     /// One block over x float32 [m, 3072] in place, with step modulation `md`
     fn block(&self, nsd: &Nsd, b: &Block, x: &DevBuf, m: usize, cs: &DevBuf, md: &StepMod, t: &Tmp) -> Result<()> {
         let gpu = &self.gpu;
         let k = ffi::api()?;
+        if let (Some(si), [qkv]) = (self.silo, b.qkv.as_slice()) {
+            if qkv.int8.is_some() && self.fused {
+                return self.block_fused(nsd, si, b, qkv, x, m, cs, md, t);
+            }
+        }
         let rows = t.rows.ptr();
         nsd.rms_norm_mod(x.ptr(), Dt::F32, m, DIM, b.norm1.ptr(), EPS, rows, md.at(1), md.at(0), t.h.ptr(), Dt::F16)?;
         match b.qkv.as_slice() {
@@ -446,6 +527,8 @@ struct Tmp {
     of: DevBuf,
     big: DevBuf,
     act: DevBuf,
+    /// the int8 product's row scales
+    xs: DevBuf,
     /// zeros: every row takes the modulation's one row
     rows: DevBuf,
 }
@@ -454,6 +537,8 @@ impl Tmp {
     fn new(gpu: &Arc<Gpu>, rows: usize) -> Result<Tmp> {
         let r = DevBuf::new(gpu, rows * 4)?;
         r.write(0, &vec![0u8; rows * 4])?;
+        // rows a multiple of 4: the int8 product's (its rows past the m asked for are read, never used)
+        let rows = (rows + 3) & !3;
         Ok(Tmp {
             h: DevBuf::new(gpu, rows * DIM * 2)?,
             qkv: DevBuf::new(gpu, rows * 3 * DIM * 2)?,
@@ -461,6 +546,7 @@ impl Tmp {
             of: DevBuf::f32(gpu, rows * DIM)?,
             big: DevBuf::f32(gpu, rows * 2 * FFN)?,
             act: DevBuf::new(gpu, rows * FFN * 2)?,
+            xs: DevBuf::f32(gpu, rows)?,
             rows: r,
         })
     }

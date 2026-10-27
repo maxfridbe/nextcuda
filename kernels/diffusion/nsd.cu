@@ -649,6 +649,42 @@ int nsd_int8_linear(void* ctx, const void* x, int x_dt, int64_t M, int64_t K, co
     return 0;
 }
 
+int nsd_int8_product(void* ctx, const void* x, int x_dt, int64_t M, int64_t K, const int8_t* w, int64_t N, int group, int32_t* acc, float* xs) {
+    auto* c = (Ctx*) ctx;
+    CU(cudaSetDevice(c->dev));
+    if (K % 4 || N % 4) return fail("nsd_int8_product: K and N must be multiples of 4");
+    if (group && K % group) return fail("nsd_int8_product: group does not divide K");
+    if (M % 4) return fail("nsd_int8_product: M a multiple of 4 (the int8 product's every dimension)");
+    // the activations a pass: their int8 copy (and rotation) under ~256 MiB; the products straight into acc
+    int64_t rows = std::max<int64_t>(64, std::min<int64_t>(M, (256ll << 20) / (K * (group ? 3 : 1))));
+    rows = std::min<int64_t>((rows + 3) & ~3ll, M);
+    int8_t* xq = (int8_t*) scratch(c, 5, (size_t) rows * K);
+    void* rot = nullptr;
+    void* hmat = nullptr;
+    if (group) {
+        hmat = hadamard(c, group);
+        rot = scratch(c, 4, (size_t) rows * K * 2);
+        if (!hmat || !rot) return fail("nsd_int8_product: no Hadamard matrix for group " + std::to_string(group) + " (16, 64 or 256)");
+    }
+    if (!xq) return fail("nsd_int8_product: the activation buffer did not fit in memory");
+    for (int64_t r0 = 0; r0 < M; r0 += rows) {
+        const int64_t r = std::min(rows, M - r0);
+        const char* xr = (const char*) x + (size_t) r0 * K * esz(x_dt);
+        const void* src = xr;
+        int sdt = x_dt;
+        if (group) {
+            if (x_dt != NSD_F16) return fail("nsd_int8_product: the rotation takes half activations");
+            if (int rc = gemm_nt(c, xr, NSD_F16, r * K / group, group, hmat, NSD_F16, group, rot, NSD_F16, 0.0f)) return rc;
+            src = rot;
+            sdt = NSD_F16;
+        }
+        quant_rows_k<<<(unsigned) r, WG, 0, c->s>>>(src, sdt, K, xq, xs + r0);
+        LAUNCHED("int8 quantize");
+        if (int rc = imma(c, xq, r, K, w, N, acc + (size_t) r0 * N)) return rc;
+    }
+    return 0;
+}
+
 int nsd_int8_prepare(void* ctx, const void* src, int qtype, int64_t row0, int64_t n, int64_t K, int group, int8_t* q, float* scale) {
     auto* c = (Ctx*) ctx;
     CU(cudaSetDevice(c->dev));

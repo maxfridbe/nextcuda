@@ -3,7 +3,10 @@
 # memory, copies, the C ABI's core) and that kind's engines (kernels/<kind>/<arch>), built with nvcc (the image
 # library also holds the bridge to stable-diffusion.cpp, kernels/image/sd); and the silos,
 # a model's kernels tuned for it alone (kernels/<kind>/<arch>/silo/*.cu -> dist/silo/libnextcuda-<arch>.so), which its
-# engine opens at load. Runs where nvcc is (the GPU host; ../build.sh copies the sources there).
+# engine opens at load. A silo with a `per-card` file is built once a card instead (-> libnextcuda-<arch>.sm<NN>.so,
+# compiled for that card alone with NS_SILO_SM=NN): the 3060's kernels and the 5070's can differ (tile sizes, FP8
+# on the card that has it), and each card's engine opens its own. Runs where nvcc is (the GPU host; ../build.sh
+# copies the sources there).
 #   ARCHS="86 120" (default: the cards of the box: sm_86 3060, sm_120 5070; + PTX of the newest)   JOBS=4
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -33,7 +36,8 @@ sources() {
   for k in $KINDS; do ls $k/*/*.cu 2>/dev/null || true; done
   [ -f "$SDCPP/include/stable-diffusion.h" ] && ls image/sd/*.cpp 2>/dev/null || true
 }
-silo_sources() { for k in $KINDS; do ls $k/*/silo/*.cu 2>/dev/null || true; done; }
+silo_sources() { for k in $KINDS; do for d in $(ls -d $k/*/silo 2>/dev/null); do [ -f "$d/per-card" ] || ls $d/*.cu 2>/dev/null || true; done; done; }
+card_silos() { for k in $KINDS; do for d in $(ls -d $k/*/silo 2>/dev/null); do [ -f "$d/per-card" ] && echo "$d"; done; done; true; }
 
 compile() {
   f=$1; o="$OBJ/$(echo "$f" | tr / _).o"
@@ -51,6 +55,19 @@ export NVCC OBJ
 export FLAGS_STR="${FLAGS[*]}"
 fail=0
 for f in $(sources) $(silo_sources); do compile "$f" || fail=1; done
+# a per-card silo's sources once a card, for that card alone
+for d in $(card_silos); do
+  for a in $ARCHS; do
+    for f in $d/*.cu; do
+      o="$OBJ/card$a/$(echo "$f" | tr / _).o"
+      mkdir -p "$OBJ/card$a"
+      if [ ! -f "$o" ] || [ "$f" -nt "$o" ] || [ ns/ns_internal.hpp -nt "$o" ] || [ -n "$(find "$d" -name '*.h' -newer "$o" 2>/dev/null)" ]; then
+        "$NVCC" -std=c++17 -O3 -Xcompiler -fPIC -lineinfo -gencode "arch=compute_$a,code=sm_$a" -DNS_SILO_SM=$a -Ins -c "$f" -o "$o" \
+          && echo "ok   $f (sm_$a)" || { echo "FAIL $f (sm_$a)"; fail=1; }
+      else echo "cached $f (sm_$a)"; fi
+    done
+  done
+done
 [ "$fail" = 0 ] || { echo "==> compile failed"; exit 1; }
 
 for k in $KINDS; do
@@ -79,7 +96,18 @@ for k in $KINDS; do
   "$NVCC" -shared "${GEN[@]}" $objs "${extra[@]}" -lcublas -lcublasLt -o "$OUT/.libnextcuda-$k.so.new"
   mv -f "$OUT/.libnextcuda-$k.so.new" "$OUT/libnextcuda-$k.so"
 done
+for d in $(card_silos); do
+  arch=$(basename "$(dirname "$d")")
+  for a in $ARCHS; do
+    objs=$(ls "$OBJ"/card$a/$(echo "$d" | tr / _)_*.o 2>/dev/null || true)
+    [ -n "$objs" ] || continue
+    echo "==> linking silo/libnextcuda-$arch.sm$a.so"
+    "$NVCC" -shared -gencode "arch=compute_$a,code=sm_$a" $objs -o "$OUT/silo/.libnextcuda-$arch.sm$a.so.new"
+    mv -f "$OUT/silo/.libnextcuda-$arch.sm$a.so.new" "$OUT/silo/libnextcuda-$arch.sm$a.so"
+  done
+done
 for d in $(ls -d */*/silo 2>/dev/null); do
+  [ -f "$d/per-card" ] && continue
   arch=$(basename "$(dirname "$d")")
   objs=$(ls "$OBJ"/$(echo "$d" | tr / _)_*.o 2>/dev/null || true)
   [ -n "$objs" ] || continue
