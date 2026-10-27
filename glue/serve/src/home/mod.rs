@@ -61,6 +61,9 @@ pub fn route_tables() -> Vec<(&'static str, &'static str, Vec<rpcgen::RouteInfo>
         ("image", "nextcuda image server (nextcuda image serve)", crate::image::route_infos(), vec!["wfe/image/src/gen/routes.ts", "wfe/ocr/src/gen/routes.ts"]),
         ("audio", "nextcuda audio server (nextcuda audio serve)", crate::audio::route_infos(), vec!["wfe/audio/src/gen/routes.ts"]),
         ("model3d", "nextcuda 3D server (nextcuda model3d serve)", crate::model3d::route_infos(), vec!["wfe/model3d/src/gen/routes.ts"]),
+        ("video", "nextcuda video studio (nextcuda video serve)", crate::video::studio::routes::infos(), vec!["wfe/video/src/gen/routes.ts"]),
+        // the daemon's (its Unix socket; the studio passes /engine/... on): a document, no page
+        ("video-engine", "nextcuda video daemon (nextcuda video start: /engine/... on its socket)", crate::video::daemon::route_infos(), vec![]),
         ("llm", "nextcuda chat server (nextcuda serve FILE)", crate::serve::route_infos(), vec![]),
         ("home", "nextcuda's front door: its page's API and documents (nextcuda serve)", routes::infos(), vec!["wfe/home/src/gen/routes.ts"]),
         ("v1", "nextcuda's front door: the OpenAI-compatible routes and the files (Authorization: Bearer <token>)", api::openai::infos(), vec![]),

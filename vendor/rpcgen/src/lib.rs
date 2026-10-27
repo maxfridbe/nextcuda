@@ -563,14 +563,13 @@ pub const fn style_of(name: &str) -> u8 {
         return 1;
     }
     // dotted: each part starts lower case (system.ping, system.configSet)
-    let (mut i, mut dots, mut last_dot) = (0, 0, true);
+    let (mut i, mut last_dot) = (0, true);
     while i < b.len() {
         let c = b[i];
         if c == b'.' {
             if last_dot {
                 return 0;
             }
-            dots += 1;
             last_dot = true;
         } else if last_dot && !c.is_ascii_lowercase() {
             return 0;
@@ -581,7 +580,8 @@ pub const fn style_of(name: &str) -> u8 {
         }
         i += 1;
     }
-    if dots > 0 && !last_dot { 2 } else { 0 }
+    // one lower-case word (`status`) is of the dotted style: a dotted name with no dot yet (H3's studio)
+    if !last_dot { 2 } else { 0 }
 }
 
 /// Whether every name is of one style: `rpc_methods!` asserts it at compile time.
@@ -1506,6 +1506,11 @@ fn facts_of_openapi(doc: &str) -> Result<Facts, String> {
     Ok(f)
 }
 
+/// An array's `items` as the shape writes them: a bare type or $ref, or an array of such (nothing #[schema] added)
+fn plain_items(v: &Value) -> bool {
+    v.as_object().is_some_and(|o| o.iter().all(|(k, x)| k == "type" || k == "$ref" || (k == "items" && plain_items(x))))
+}
+
 /// What a document's named types say (descriptions, values, optional fields, `#[schema]` facts), as facts.
 fn schema_facts(v: &Value, f: &mut Facts) {
     let known = ["minimum", "maximum", "default", "minLength", "maxLength", "maxItems", "pattern", "format", "example"];
@@ -1532,7 +1537,7 @@ fn schema_facts(v: &Value, f: &mut Facts) {
                 // the shape writes `items` as a bare type or $ref and never inline `properties`; anything more is the
                 // field's own #[schema(json)], which the TypeScript carries as a tag
                 let own = match k.as_str() {
-                    "items" => val.as_object().is_some_and(|o| o.keys().any(|x| x != "type" && x != "$ref")),
+                    "items" => !plain_items(val),
                     "properties" => true,
                     _ => false,
                 };
@@ -1748,7 +1753,8 @@ mod tests {
     #[test]
     fn a_name_has_one_style_and_a_table_one() {
         assert_eq!((style_of("GetJob"), style_of("system.ping"), style_of("video.jobs.get")), (1, 2, 2));
-        assert_eq!((style_of("getJob"), style_of("system."), style_of(".x"), style_of("a..b"), style_of("Get-Job")), (0, 0, 0, 0, 0));
+        assert_eq!((style_of("getJob"), style_of("system."), style_of(".x"), style_of("a..b"), style_of("Get-Job")), (2, 0, 0, 0, 0));
+        assert_eq!((style_of("status"), style_of("engines.list"), style_of("Status.x")), (2, 2, 0));
         assert_eq!((style_of("system.configSet"), style_of("llm.describePromptGuideMD"), style_of("system.Ping")), (2, 2, 0));
         assert!(one_style(&["GetJob", "ListJobs"]) && one_style(&["system.ping", "video.status"]));
         assert!(!one_style(&["GetJob", "system.ping"]));

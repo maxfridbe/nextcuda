@@ -1,0 +1,1999 @@
+openapi: 3.1.0
+info:
+  title: nextcuda video studio (nextcuda video serve)
+  version: generated
+  description: 'A server''s own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextcuda gen-api`: do not edit.'
+servers:
+- url: /
+paths:
+  /api/gpu:
+    get:
+      operationId: gpu
+      summary: The card's telemetry
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gpu'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/summary:
+    get:
+      operationId: summary
+      summary: The rates of the last clips made, what the queue will take, the disk, the running project's totals
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Summary'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/engines:
+    get:
+      operationId: engines
+      summary: The denoisers the engine has
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Engines'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/canvases:
+    get:
+      operationId: canvases
+      summary: The canvases offered
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Canvases'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/plan:
+    get:
+      operationId: plan
+      summary: 'The canvas table''s model: the denoisers, canvases, defaults, what a card holds and each GPU''s measured step cost'
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/status:
+    get:
+      operationId: status
+      summary: The studio now (as POST /rpc/status)
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/list:
+    get:
+      operationId: list
+      summary: Every finished clip, newest first
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ListRow'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/templates:
+    get:
+      operationId: templates
+      summary: The prompt templates
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Template'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/films:
+    get:
+      operationId: films
+      summary: The joined films, newest first
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Film'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/join:
+    get:
+      operationId: joins
+      summary: The films being joined, and joined since the studio started
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Joins'
+        default:
+          description: 'an error: the body''s `error` says what'
+    post:
+      operationId: join
+      summary: 'Joins a project''s finished clips, in timeline order, into one film (in the background: GET /api/join follows it)'
+      tags:
+      - page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectRef'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinStarted'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/timeline:
+    get:
+      operationId: timeline
+      summary: 'A project''s clips in edit order: finished (the newest retry of each number), running, held, queued'
+      tags:
+      - page
+      parameters:
+      - name: project
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Timeline'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/types.ts:
+    get:
+      operationId: typesTs
+      summary: The RPC layer's TypeScript (its types and an rpc() helper)
+      tags:
+      - page
+      responses:
+        '200':
+          description: the file
+          content:
+            application/typescript:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/scene:
+    get:
+      operationId: scene
+      summary: A project as a portable scene file (pretty JSON)
+      tags:
+      - page
+      parameters:
+      - name: project
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scene'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/clip:
+    get:
+      operationId: clip
+      summary: 'A clip not made yet, by its label: running, held or queued, with the words it speaks'
+      tags:
+      - page
+      parameters:
+      - name: label
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Clip'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/job/{name}:
+    get:
+      operationId: job
+      summary: A finished clip's record
+      tags:
+      - page
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the link has it
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClipRecord'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /thumb/{name}:
+    get:
+      operationId: thumb
+      summary: A finished clip's 240-pixel still, 5 s in (made once, then kept)
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the link has it
+      responses:
+        '200':
+          description: the file
+          content:
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /out/{name}:
+    get:
+      operationId: out
+      summary: 'A clip (mp4, in byte ranges: the player seeks), or its preview while it samples (<clip>.preview.png) and its last frame (<clip>.last.png)'
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the link has it
+      - name: Range
+        in: header
+        required: false
+        schema:
+          type: string
+        description: 'bytes=a-b, bytes=a- or bytes=-n (one span): answered 206 with Content-Range'
+      responses:
+        '200':
+          description: the file
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+        '206':
+          description: the span asked for
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+  /api/upload:
+    post:
+      operationId: upload
+      summary: 'A reference picture, clip or sound, kept beside the clips (references are named by file there): the body is the file'
+      tags:
+      - page
+      parameters:
+      - name: name
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'the file''s own name (its extension says what it is: png, jpg, jpeg, webp, mp4, mov, webm, mkv, wav, mp3, flac, m4a, ogg)'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Uploaded'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/queue/pause:
+    post:
+      operationId: queuePause
+      summary: Holds the queue, a project or a batch (on), or releases it
+      tags:
+      - page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HoldReq'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Done'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/queue/clear:
+    post:
+      operationId: queueClear
+      summary: Empties the queue
+      tags:
+      - page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cleared'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/scene/import:
+    post:
+      operationId: sceneImport
+      summary: Queues a scene file's clips (all or nothing), as a project, held or not
+      tags:
+      - page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SceneImport'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Imported'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/gen:
+    post:
+      operationId: gen
+      summary: 'The oldest route: a clip made or queued, its seconds and steps clamped (the RPC refuses them instead) and an unknown te read as teacher; answers the queue position and label, or the job started'
+      tags:
+      - page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClipRequest'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Clip'
+        default:
+          description: 'an error: the body''s `error` says what'
+components:
+  schemas:
+    Batch:
+      type: object
+      properties:
+        batch:
+          type: string
+        clips:
+          type: integer
+        video_s:
+          type: number
+        paused:
+          type: boolean
+      required:
+      - batch
+      - clips
+      - video_s
+      - paused
+      description: A batch of a project's queued clips
+    Canvas:
+      type: object
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+        aspect:
+          type: string
+        note:
+          type: string
+        mpx:
+          type: number
+        cost:
+          type: number
+        default:
+          type: boolean
+      required:
+      - width
+      - height
+      - aspect
+      - note
+      - mpx
+      - cost
+      - default
+      description: A canvas the table offers, with its price against 640x480
+    Canvases:
+      type: object
+      properties:
+        canvases:
+          type: array
+          items:
+            $ref: '#/components/schemas/Canvas'
+      required:
+      - canvases
+      description: The canvases
+    Chain:
+      type: object
+      properties:
+        from:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the clip it follows: an anchor (prev, prev_cam, first, first_cam) or a clip''s name (default prev)'
+        context_frames:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: '0 or 17k + 5: the last N frames as a moving keyframe at frame 0 (trim N/2 each side when joining)'
+        sound:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'with context_frames: the last N/24 s of sound too (default true)'
+        still:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'from''s last frame as first_frame (default: when context_frames is 0)'
+        mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: video | png | latent
+        color_reanchor:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'exposure_ref: the carried pictures scaled to its brightness (an anchor, or true for from)'
+      additionalProperties: true
+      description: 'Chaining a clip onto another: what `chain` sets (guide_clip, first_audio(_s), first_frame, chain_mode, exposure_ref; a flat key of the request wins)'
+    Cleared:
+      type: object
+      properties:
+        cleared:
+          type: integer
+      required:
+      - cleared
+      description: A queue cleared
+    Clip:
+      type: object
+      properties:
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+        label:
+          anyOf:
+          - type: string
+          - type: 'null'
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the clip: h3_YYYYMMDD_HHMMSS (once it starts)'
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the engine's job id
+        started:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: unix seconds
+        project:
+          anyOf:
+          - type: string
+          - type: 'null'
+        seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+        energy_wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+        reentrant_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+        batch:
+          anyOf:
+          - type: string
+          - type: 'null'
+        frames:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        te:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: teacher | student
+        engine:
+          anyOf:
+          - type: string
+          - type: 'null'
+        width:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        height:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        first_frame:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: an anchor or a still's file
+        camera:
+          anyOf:
+          - type: string
+          - type: 'null'
+        upscale:
+          anyOf:
+          - type: number
+          - type: 'null'
+        loras:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: '"path:strength"'
+        dialogue:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: '/api/clip: the words spoken, and queued, held or running'
+        state:
+          anyOf:
+          - $ref: '#/components/schemas/ClipState'
+          - type: 'null'
+      additionalProperties: true
+      description: 'A clip''s record: a queue item, the running job, or what /api/gen and /api/clip answer - every generate key as the studio settled it, and what starting it added (the engine''s id, the clip''s name, when it started, its energy)'
+    ClipRecord:
+      type: object
+      properties:
+        job:
+          $ref: '#/components/schemas/Clip'
+        times:
+          anyOf:
+          - type: object
+            additionalProperties:
+              type: number
+          - type: 'null'
+        frames:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        wall:
+          anyOf:
+          - type: number
+          - type: 'null'
+        energy_wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - job
+      additionalProperties: true
+      description: 'A finished clip''s record (`<clip>.json`): the job as made, its stages'' times, frames, wall time, energy'
+    ClipRequest:
+      type: object
+      properties:
+        prompt:
+          type: string
+        seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 1-15.1, snapped up to 17k + 5 frames; the model is trained on 124-362 frames at 24 fps
+        frames:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'instead of seconds: exactly 17k + 5 (22-362), else 400 naming the nearest'
+        reentrant_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'idempotent submit: a clip of this id queued, running or made is answered instead'
+        chain:
+          anyOf:
+          - $ref: '#/components/schemas/Chain'
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 1-40; below 8 only with a turbo LoRA
+        seed:
+          anyOf:
+          - type: number
+          - type: 'null'
+        te:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: teacher | student (the text encoder)
+        label:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: '"Name NN/MM: ..." - the NN drives edit order'
+        width:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 256-1344, multiples of 32, width * height <= 1032192
+        height:
+          anyOf:
+          - type: number
+          - type: 'null'
+        engine:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the denoiser (engines'' quant): INT8 (default), Q6_K, Q4_K_M; REF2VA is chosen by itself for ref_images / ref_videos'
+        chain_mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: png | video | latent | none
+        first_frame:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'an anchor (prev, prev_cam, first, first_cam: the series'' previous clip or hub, *_cam the same camera only) or a still in the clips directory'
+        last_frame:
+          anyOf:
+          - {}
+          - type: 'null'
+        exposure_ref:
+          anyOf:
+          - {}
+          - type: 'null'
+        first_audio:
+          anyOf:
+          - {}
+          - type: 'null'
+        first_audio_s:
+          anyOf:
+          - {}
+          - type: 'null'
+        cond_noise_aug:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'harmful here: decodes as visible confetti'
+        camera:
+          anyOf:
+          - {}
+          - type: 'null'
+        upscale:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: latent upscale at decode, 1.5 = free resolution
+        upscaler:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: esrgan-general (default) | esrgan-anime | latent
+        loras:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          description: '"path:strength"'
+        ref_audios:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          description: 'at most 3; voices to speak in: <Audio 1>, <Audio 2> ... (files in the clips directory)'
+        ref_images:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          description: at most 9 (Ref2VA), named in the prompt as <Picture i>
+        ref_videos:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          description: at most 3 (Ref2VA), named as <Video k>
+        ref_image_size:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: match | max
+        ref_video_sound:
+          anyOf:
+          - {}
+          - type: 'null'
+        te_pictures:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: the keyframe pictures shown to the text encoder too (default on)
+        guide_clip:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'motion guide: "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe'
+        shift_video:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: flow shifts (12, 3)
+        shift_audio:
+          anyOf:
+          - {}
+          - type: 'null'
+        source:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'masked run: a clip whose latents are kept outside the regenerated part'
+        regen:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: '"from-to" seconds to regenerate; a source shorter than the clip is extended'
+        regen_box:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: '"x0,y0,x1,y1" pixels: regenerate only inside'
+        control_video:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'the Fun ControlNet: a control video (canny / depth / HED / MLSD / pose frames), a mask (white: regenerate) over a source video; files in the clips directory'
+        control_mask:
+          anyOf:
+          - {}
+          - type: 'null'
+        control_source:
+          anyOf:
+          - {}
+          - type: 'null'
+        control_strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+        control_start:
+          anyOf:
+          - type: number
+          - type: 'null'
+        control_end:
+          anyOf:
+          - type: number
+          - type: 'null'
+        sampler:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'ComfyUI''s sampler and schedule names (none: Euler on the shifted schedule)'
+        schedule:
+          anyOf:
+          - type: string
+          - type: 'null'
+        project:
+          anyOf:
+          - type: string
+          - type: 'null'
+        batch:
+          anyOf:
+          - type: string
+          - type: 'null'
+        queue:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'busy without it: 409 busy'
+        priority:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: '-9..9: a queued clip goes ahead of lower ones'
+      required:
+      - prompt
+      additionalProperties: true
+      description: 'A clip asked for (video.generate''s body, and the legacy /api/gen''s): the studio checks each value and its range'
+    ClipState:
+      type: string
+      enum:
+      - done
+      - running
+      - queued
+      - held
+      description: Where a clip is
+    Disk:
+      type: object
+      properties:
+        path:
+          type: string
+        total_gb:
+          type: number
+        used_gb:
+          type: number
+        free_gb:
+          type: number
+        pct:
+          type: number
+      required:
+      - path
+      - total_gb
+      - used_gb
+      - free_gb
+      - pct
+      description: The clips directory's disk
+    Done:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          description: 'true'
+      required:
+      - ok
+      description: the action was done
+    EngineInfo:
+      type: object
+      properties:
+        quant:
+          type: string
+          description: INT8, Q6_K, Q4_K_M, REF2VA
+        file:
+          type: string
+        path:
+          type: string
+        gib:
+          type: number
+        ready:
+          type: boolean
+        default:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        inputs:
+          description: 'what it takes (video.generate''s keys): takes, not, chosen, ignored'
+      required:
+      - quant
+      - file
+      - path
+      - gib
+      - ready
+      - inputs
+      description: A denoiser the engine has
+    Engines:
+      type: object
+      properties:
+        engines:
+          type: array
+          items:
+            $ref: '#/components/schemas/EngineInfo'
+      required:
+      - engines
+      description: The denoisers
+    Failure:
+      type: object
+      properties:
+        code:
+          $ref: '#/components/schemas/FailureCode'
+        retryable:
+          type: boolean
+          description: 'true only for engine_lost: the same request may work'
+        message:
+          type: string
+        hint:
+          type: string
+      required:
+      - code
+      - retryable
+      - message
+      - hint
+      description: A failed or cancelled clip's error, as data
+    FailureCode:
+      type: string
+      enum:
+      - out_of_memory
+      - engine_lost
+      - invalid_input
+      - engine_error
+      - cancelled
+      description: What kind of failure the last clip had
+    FileName:
+      type: object
+      properties:
+        name:
+          type: string
+          description: the file's name as the link has it
+      required:
+      - name
+      description: A file a link names
+    Film:
+      type: object
+      properties:
+        file:
+          type: string
+        mb:
+          type: number
+        seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+        mtime:
+          type: number
+      required:
+      - file
+      - mb
+      - mtime
+      description: A joined film (an mp4 that is not a single clip)
+    Gpu:
+      type: object
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+        pci:
+          anyOf:
+          - type: string
+          - type: 'null'
+        ts:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: unix seconds sampled, and seconds since
+        age:
+          anyOf:
+          - type: number
+          - type: 'null'
+        vram_used_mb:
+          anyOf:
+          - type: number
+          - type: 'null'
+        vram_total_mb:
+          anyOf:
+          - type: number
+          - type: 'null'
+        busy_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+        temp_pkg:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: °C
+        temp_vram:
+          anyOf:
+          - type: number
+          - type: 'null'
+        temp_vram_max:
+          anyOf:
+          - type: number
+          - type: 'null'
+        temp_pcie:
+          anyOf:
+          - type: number
+          - type: 'null'
+        temp_mctrl:
+          anyOf:
+          - type: number
+          - type: 'null'
+        power_w:
+          anyOf:
+          - type: number
+          - type: 'null'
+        pkg_power_w:
+          anyOf:
+          - type: number
+          - type: 'null'
+        power_cap_w:
+          anyOf:
+          - type: number
+          - type: 'null'
+        pcie:
+          anyOf:
+          - $ref: '#/components/schemas/Pcie'
+          - type: 'null'
+        host_load1:
+          anyOf:
+          - type: number
+          - type: 'null'
+        host_cpus:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        energy_j:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the card's energy counter, joules (a clip's energy is its rise)
+        fan_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+        fan_rpm:
+          anyOf:
+          - type: number
+          - type: 'null'
+        freq_mhz:
+          anyOf:
+          - type: number
+          - type: 'null'
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: no telemetry to read
+      additionalProperties: true
+      description: 'The card''s telemetry (the gpustat file, or the first card sampled here, as `nextcuda gpustat` writes it), with how old it is; no telemetry: `error` alone'
+    GpuPlan:
+      type: object
+      properties:
+        gpu:
+          type: integer
+        engine:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the denoiser measured (INT8 when absent: a plan from before engines)'
+        name:
+          type: string
+        shared:
+          type: boolean
+        step_scale:
+          type: number
+        clip_tokens:
+          anyOf:
+          - type: number
+          - type: 'null'
+        points:
+          type: array
+          items: {}
+          description: '[tokens, seconds a step] measured, each a pair of numbers (rpcgen describes no array of arrays in parity yet)'
+        step_a:
+          type: number
+        step_b:
+          type: number
+        cells:
+          anyOf:
+          - type: object
+            additionalProperties:
+              $ref: '#/components/schemas/PlanCell'
+          - type: 'null'
+          description: the canvas table's cells measured on this GPU, keyed "WxH|seconds"
+      required:
+      - gpu
+      - name
+      - shared
+      - step_scale
+      - points
+      - step_a
+      - step_b
+      description: 'One GPU''s measured step cost (`nextcuda video plan measure`, plan.json as it wrote it): the 50 blocks at each token count, and the factor a real clip''s step is of them'
+    HoldReq:
+      type: object
+      properties:
+        on:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'true: hold; false: release (releasing the whole queue releases every project and batch too)'
+        project:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: this project only
+        batch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: this batch only
+      description: A hold on or off
+    Imported:
+      type: object
+      properties:
+        imported:
+          type: integer
+          description: clips queued from it
+        project:
+          type: string
+        queued:
+          type: integer
+          description: the queue's length now, and how many of it are held
+        held:
+          type: integer
+      required:
+      - imported
+      - project
+      - queued
+      - held
+      description: A scene imported
+    Join:
+      type: object
+      properties:
+        project:
+          type: string
+        clips:
+          type: integer
+        file:
+          type: string
+        state:
+          $ref: '#/components/schemas/JoinState'
+        started:
+          type: number
+        finished:
+          anyOf:
+          - type: number
+          - type: 'null'
+        message:
+          type: string
+          description: the join's last line
+      required:
+      - project
+      - clips
+      - file
+      - state
+      - started
+      - message
+      description: A film being joined, or joined since the studio started
+    JoinStarted:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        join:
+          $ref: '#/components/schemas/Join'
+      required:
+      - ok
+      - join
+      description: A join started
+    JoinState:
+      type: string
+      enum:
+      - running
+      - done
+      - failed
+      description: Where a join is
+    Joins:
+      type: object
+      properties:
+        joins:
+          type: array
+          items:
+            $ref: '#/components/schemas/Join'
+      required:
+      - joins
+      description: The joins
+    LabelRef:
+      type: object
+      properties:
+        label:
+          anyOf:
+          - type: string
+          - type: 'null'
+      description: A queued clip by its label
+    ListRow:
+      type: object
+      properties:
+        file:
+          type: string
+        size:
+          description: 'bytes; WxH when the clip has a record (its bytes in size2): the legacy page''s mixed key'
+        size2:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        mtime:
+          type: integer
+        total:
+          anyOf:
+          - type: number
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        te:
+          anyOf:
+          - type: string
+          - type: 'null'
+        label:
+          anyOf:
+          - type: string
+          - type: 'null'
+        seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+        energy_wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+        engine:
+          anyOf:
+          - type: string
+          - type: 'null'
+        speech_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+        camera:
+          anyOf:
+          - type: string
+          - type: 'null'
+        project:
+          anyOf:
+          - type: string
+          - type: 'null'
+      required:
+      - file
+      - size
+      - mtime
+      description: A finished clip in the clips directory, newest first, with its record's summary when it has one
+    LlmStatus:
+      type: object
+      properties:
+        mode:
+          type: string
+          description: a key of choices, or none
+        up:
+          type: boolean
+        running:
+          type: array
+          items:
+            type: string
+        starting:
+          anyOf:
+          - type: string
+          - type: 'null'
+        choices:
+          type: object
+          additionalProperties:
+            type: string
+          description: mode -> its title
+        urls:
+          type: object
+          additionalProperties:
+            type: string
+          description: mode -> its URL
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+      required:
+      - mode
+      - up
+      - running
+      - choices
+      - urls
+      description: Which language model owns the card when no render does
+    MeasuredCell:
+      type: object
+      properties:
+        peak:
+          type: number
+        resv:
+          anyOf:
+          - type: number
+          - type: 'null'
+        s_per_step:
+          anyOf:
+          - type: number
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        tokens:
+          type: number
+        name:
+          type: string
+      required:
+      - peak
+      - tokens
+      - name
+      description: A cell this box has run (the legacy table's)
+    Pcie:
+      type: object
+      properties:
+        cur:
+          $ref: '#/components/schemas/PcieLink'
+        card_max:
+          $ref: '#/components/schemas/PcieLink'
+        slot_max:
+          $ref: '#/components/schemas/PcieLink'
+      required:
+      - cur
+      - card_max
+      - slot_max
+      description: 'A card''s three links: now, the card''s best, the slot''s best'
+    PcieLink:
+      type: object
+      properties:
+        gen:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        gts:
+          anyOf:
+          - type: string
+          - type: 'null'
+        width:
+          type: integer
+      required:
+      - width
+      description: A PCIe link's generation and width
+    Plan:
+      type: object
+      properties:
+        engines:
+          type: array
+          items:
+            $ref: '#/components/schemas/EngineInfo'
+        canvases:
+          type: array
+          items:
+            $ref: '#/components/schemas/Canvas'
+        defaults:
+          $ref: '#/components/schemas/PlanDefaults'
+        cap_gib:
+          type: number
+          description: what the engine may hold of a card, GiB
+        gib_per_token:
+          type: number
+        margin_gib:
+          type: number
+        step_a:
+          type: number
+          description: 'the fastest GPU''s step time: a * tokens^2 + b * tokens'
+        step_b:
+          type: number
+        gpus:
+          type: array
+          items:
+            $ref: '#/components/schemas/GpuPlan'
+          description: measured per GPU; empty until `nextcuda video plan measure` has run on the box
+        chain_modes:
+          type: object
+          additionalProperties:
+            type: string
+          description: chain_mode -> what it does
+        measured:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/MeasuredCell'
+          description: cells this box has run, keyed "<engine>|<W>x<H>|<seconds>" (none yet)
+        samplers:
+          type: array
+          items:
+            type: string
+          description: the sampler and schedule names the engine takes
+        schedules:
+          type: array
+          items:
+            type: string
+      required:
+      - engines
+      - canvases
+      - defaults
+      - cap_gib
+      - gib_per_token
+      - margin_gib
+      - step_a
+      - step_b
+      - gpus
+      - chain_modes
+      - measured
+      - samplers
+      - schedules
+      description: Everything the canvas grid needs to price and disqualify a combination
+    PlanCell:
+      type: object
+      properties:
+        tokens:
+          type: number
+        s_per_step:
+          anyOf:
+          - type: number
+          - type: 'null'
+        gib:
+          anyOf:
+          - type: number
+          - type: 'null'
+        over:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+      required:
+      - tokens
+      description: 'A canvas table cell measured on one GPU: a clip step''s time and peak VRAM, or `over` when the engine refused the size'
+    PlanDefaults:
+      type: object
+      properties:
+        seconds:
+          type: integer
+        steps:
+          type: integer
+        width:
+          type: integer
+        height:
+          type: integer
+        engine:
+          type: string
+      required:
+      - seconds
+      - steps
+      - width
+      - height
+      - engine
+      description: The defaults a new clip starts from
+    Project:
+      type: object
+      properties:
+        project:
+          type: string
+        clips:
+          type: integer
+        video_s:
+          type: number
+        paused:
+          type: boolean
+        first_index:
+          type: integer
+          description: its first clip's place in the queue (0-based)
+        batches:
+          type: array
+          items:
+            $ref: '#/components/schemas/Batch'
+      required:
+      - project
+      - clips
+      - video_s
+      - paused
+      - first_index
+      - batches
+      description: A project of the queue
+    ProjectRef:
+      type: object
+      properties:
+        project:
+          anyOf:
+          - type: string
+          - type: 'null'
+      description: A project's timeline or scene
+    ProjectStats:
+      type: object
+      properties:
+        project:
+          type: string
+        clips:
+          type: integer
+        video_s:
+          type: number
+        gpu_s:
+          type: integer
+        ratio:
+          type: number
+          description: GPU seconds a second of video
+        wh:
+          type: integer
+      required:
+      - project
+      - clips
+      - video_s
+      - gpu_s
+      - ratio
+      - wh
+      description: The running clip's project, so far
+    QueueItem:
+      type: object
+      properties:
+        label:
+          type: string
+        seconds:
+          type: number
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        engine:
+          anyOf:
+          - type: string
+          - type: 'null'
+        size:
+          type: string
+          description: WxH
+        chain:
+          type: boolean
+          description: it starts on a first_frame
+        project:
+          type: string
+        batch:
+          type: string
+        held:
+          type: boolean
+          description: 'paused (queue, project or batch): not run until resumed'
+      required:
+      - label
+      - seconds
+      - size
+      - chain
+      - project
+      - batch
+      - held
+      description: A queued clip, as the queue panel shows it
+    Scene:
+      type: object
+      properties:
+        version:
+          type: integer
+          description: '1'
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+        project:
+          type: string
+        batch:
+          anyOf:
+          - type: string
+          - type: 'null'
+        notes:
+          anyOf:
+          - type: string
+          - type: 'null'
+        exported:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        defaults:
+          type: object
+          description: the settings every clip shares
+        clips:
+          type: array
+          items:
+            type: object
+          description: 'each clip: n (the edit order), prompt, and its own settings'
+      required:
+      - version
+      - project
+      - defaults
+      - clips
+      description: 'A portable scene document: prompts are final, a runner merges the defaults into each clip and posts it'
+    SceneImport:
+      type: object
+      properties:
+        scene:
+          anyOf:
+          - type: object
+          - type: 'null'
+        project:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the project to queue it as (default: the scene''s)'
+        paused:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: queue it held (its project paused)
+      additionalProperties: true
+      description: 'A scene to queue: the document as `scene`, or the body itself'
+    Status:
+      type: object
+      properties:
+        idle:
+          type: boolean
+          description: nothing running
+        job:
+          anyOf:
+          - $ref: '#/components/schemas/Clip'
+          - type: 'null'
+          description: 'the running or last clip; null: nothing made since the studio started'
+        pct:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+        done:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'failed or cancelled: what happened, and the engine''s last lines'
+        failure:
+          anyOf:
+          - $ref: '#/components/schemas/Failure'
+          - type: 'null'
+        gpu:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: the card the clip runs on
+        exited:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        rc:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 0 done, 1 failed (once it ended)
+        elapsed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        eta:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: seconds left, estimated
+        rms:
+          anyOf:
+          - type: number
+          - type: 'null'
+        times:
+          anyOf:
+          - type: object
+            additionalProperties:
+              type: number
+          - type: 'null'
+          description: the stages' seconds, by the legacy record's labels (TOTAL, video decoded ...)
+        frames:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps_done:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps_total:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        per_step:
+          anyOf:
+          - type: number
+          - type: 'null'
+        metrics:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+        file:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'done: the clip (/out/<name>.mp4)'
+        preview:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'while it samples: a picture of the shot so far (PNG URL, new each step)'
+        engine_log:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: the engine's last 12 lines
+        queue:
+          type: array
+          items:
+            type: string
+          description: the queue's labels, in order
+        queue_items:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueueItem'
+        paused:
+          type: boolean
+          description: the whole queue held
+        paused_projects:
+          type: array
+          items:
+            type: string
+        paused_batches:
+          type: array
+          items:
+            type: string
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+        all_projects:
+          type: array
+          items:
+            type: string
+          description: the queue's projects, then the finished clips', newest first
+        llm:
+          $ref: '#/components/schemas/LlmStatus'
+        version:
+          type: string
+          description: changes when the status does (video.wait waits for that)
+        queue_len:
+          type: integer
+        stale:
+          type: boolean
+      required:
+      - idle
+      - queue
+      - queue_items
+      - paused
+      - paused_projects
+      - paused_batches
+      - projects
+      - all_projects
+      - llm
+      - version
+      - queue_len
+      - stale
+      description: 'The studio now: the clip being made (or the last one) and how far it is, the queue and its holds, the projects, the language model; `version` changes when any of it does'
+    Summary:
+      type: object
+      properties:
+        rate_wall_per_video_s:
+          type: number
+          description: wall seconds a second of video, over the last 10 clips
+        rate_wh_per_video_s:
+          type: number
+        sample_clips:
+          type: integer
+          description: how many clips the rates are of
+        running:
+          type: boolean
+        current_eta_s:
+          type: number
+        current_video_s:
+          type: number
+        queued:
+          type: integer
+        queued_video_s:
+          type: number
+        remaining_wall_s:
+          type: number
+        eta_ts:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'unix seconds when the queue is done (null: nothing to do)'
+        remaining_kwh:
+          type: number
+        disk:
+          anyOf:
+          - $ref: '#/components/schemas/Disk'
+          - type: 'null'
+        project_stats:
+          anyOf:
+          - $ref: '#/components/schemas/ProjectStats'
+          - type: 'null'
+        done_total:
+          type: integer
+        done_video_s:
+          type: number
+        done_wall_s:
+          type: number
+        done_wh:
+          type: number
+      required:
+      - rate_wall_per_video_s
+      - rate_wh_per_video_s
+      - sample_clips
+      - running
+      - current_eta_s
+      - current_video_s
+      - queued
+      - queued_video_s
+      - remaining_wall_s
+      - remaining_kwh
+      - done_total
+      - done_video_s
+      - done_wall_s
+      - done_wh
+      description: The rates of the last clips made and what the queue will take
+    Template:
+      type: object
+      properties:
+        name:
+          type: string
+        text:
+          type: string
+      required:
+      - name
+      - text
+      description: A prompt template (the templates directory's .txt files)
+    Timeline:
+      type: object
+      properties:
+        clips:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimelineClip'
+      required:
+      - clips
+      description: A project's timeline
+    TimelineClip:
+      type: object
+      properties:
+        n:
+          type: integer
+          description: the label's clip number (the edit order)
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the clip (null: not made yet)'
+        state:
+          $ref: '#/components/schemas/ClipState'
+        seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+        camera:
+          anyOf:
+          - type: string
+          - type: 'null'
+        label:
+          type: string
+        dialogue:
+          type: string
+          description: spoken words only, for alt text
+        thumb:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: /thumb/<name>.webp
+      required:
+      - n
+      - state
+      - label
+      - dialogue
+      description: A clip of a project's timeline, in edit order
+    UploadName:
+      type: object
+      properties:
+        name:
+          type: string
+          description: 'the file''s own name (its extension says what it is: png, jpg, jpeg, webp, mp4, mov, webm, mkv, wav, mp3, flac, m4a, ogg)'
+      description: An upload's name
+    Uploaded:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        name:
+          type: string
+          description: 'its name in the clips directory (ref_<seconds>_<name>): what a request names it by'
+      required:
+      - ok
+      - name
+      description: A file kept

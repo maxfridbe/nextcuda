@@ -381,11 +381,11 @@ fn method(args: RpcArgs, f: ItemFn) -> syn::Result<TokenStream2> {
     let n = name.value();
     let pascal = n.starts_with(|c: char| c.is_ascii_uppercase()) && n.chars().all(|c| c.is_ascii_alphanumeric());
     // dotted: segments that start lower case (system.ping, system.configSet, llm.describePromptGuideMD)
+    // (one lower-case word, `status`, is a dotted name without its dot: H3's studio names its methods so)
     let dotted = !n.is_empty()
-        && n.split('.').count() > 1
         && n.split('.').all(|p| p.starts_with(|c: char| c.is_ascii_lowercase()) && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
     if !pascal && !dotted {
-        return Err(Error::new_spanned(&name, "a method name is one PascalCase word (GetJob) or dotted, each part starting lower case (system.ping)"));
+        return Err(Error::new_spanned(&name, "a method name is one PascalCase word (GetJob) or dotted, each part starting lower case (system.ping, or one word: status)"));
     }
     if pascal && !VERBS.iter().any(|v| n.starts_with(v) && n[v.len()..].chars().next().is_none_or(|c| c.is_ascii_uppercase())) {
         return Err(Error::new_spanned(&name, "a method name starts with what it does (Get, List, Set, Create, ...)"));

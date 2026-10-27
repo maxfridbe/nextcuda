@@ -11,6 +11,7 @@ pub mod http;
 pub mod library;
 pub mod llm;
 pub mod queue;
+pub mod routes;
 pub mod runner;
 pub mod speech;
 
@@ -177,7 +178,7 @@ impl Studio {
             let (state, message) = match r {
                 Ok(o) => {
                     let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-                    let last = text.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("").to_string();
+                    let last = text.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("").to_string();
                     (if o.status.success() { "done" } else { "failed" }, last)
                 }
                 Err(e) => ("failed", e.to_string()),
@@ -530,10 +531,6 @@ impl Studio {
 
     fn route(&self, stream: &TcpStream, req: http::Request) -> http::Result<()> {
         let path = req.path.clone();
-        let query = req.target.split_once('?').map(|q| q.1.to_string()).unwrap_or_default();
-        let qv = |k: &str| -> String {
-            query.split('&').filter_map(|kv| kv.split_once('=')).find(|(a, _)| *a == k).map(|(_, v)| unescape(v)).unwrap_or_default()
-        };
         if path.starts_with("/engine/") {
             if let Err(e) = http::forward(stream, &Target::Unix(self.socket.clone()), &req) {
                 let _ = http::respond(stream, 503, &json!({"error": format!("the engine is not running (nextcuda video start): {}", e.0)}));
@@ -556,130 +553,38 @@ impl Studio {
                     Err(e) => http::respond(stream, e.http, &json!({"ok": false, "error": {"code": e.code, "message": e.message}})),
                 };
             }
-            if path == "/api/upload" {
-                // a reference picture, clip or sound, saved beside the clips (references are named by file there)
-                return match self.upload(&qv("name"), &req.body) {
-                    Ok(name) => http::respond(stream, 200, &json!({"ok": true, "name": name})),
-                    Err(e) => http::respond(stream, 400, &json!({"ok": false, "error": e})),
-                };
-            }
-            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
-            return match path.as_str() {
-                "/api/queue/pause" => {
-                    let on = body["on"] == true;
-                    self.hold(on, body["project"].as_str().unwrap_or("").trim(), body["batch"].as_str().unwrap_or("").trim());
-                    http::respond(stream, 200, &json!({"ok": true}))
-                }
-                "/api/join" => match self.join(body["project"].as_str().unwrap_or("").trim()) {
-                    Ok(v) => http::respond(stream, 200, &v),
-                    Err(e) => http::respond(stream, 400, &json!({"ok": false, "error": e})),
-                },
-                "/api/queue/clear" => {
-                    let mut st = self.st.lock().unwrap();
-                    let n = st.q.items.len();
-                    st.q.items.clear();
-                    st.q.save(&self.dir);
-                    http::respond(stream, 200, &json!({"cleared": n}))
-                }
-                "/api/scene/import" => {
-                    let doc = if body["scene"].is_object() { &body["scene"] } else { &body };
-                    match self.scene_import(&mut self.st.lock().unwrap(), doc, body["project"].as_str(), body["paused"] == true) {
-                        Ok(v) => http::respond(stream, 200, &v),
-                        Err(e) => http::respond(stream, e.http, &json!({"error": e.message})),
-                    }
-                }
-                "/api/gen" => {
-                    // the oldest route: clamps where the RPC rejects
-                    let mut b = body.clone();
-                    let f = |v: &Value, d: f64| v.as_f64().or_else(|| v.as_str().and_then(|x| x.parse().ok())).unwrap_or(d);
-                    b["seconds"] = json!(f(&body["seconds"], 10.0).clamp(1.0, 15.1));
-                    b["steps"] = json!((f(&body["steps"], 10.0) as i64).clamp(1, 40));
-                    if !matches!(body["te"].as_str(), Some("teacher" | "student")) {
-                        b["te"] = json!("teacher");
-                    }
-                    match self.generate(&b) {
-                        Ok(v) if v["queued"] == true => http::respond(stream, 200, &json!({"queued": v["position"], "label": v["label"]})),
-                        Ok(v) => http::respond(stream, 200, &v["job"]),
-                        Err(e) => http::respond(stream, e.http, &json!({"error": e.message})),
-                    }
-                }
-                _ => http::respond(stream, 404, &json!({"error": format!("no route POST {path}")})),
-            };
         }
-        let respond_json = |v: &Value| http::respond(stream, 200, v);
-        match path.as_str() {
-            "/" | "/index.html" => {
-                // nextcuda: the built front ends' root (dist/wfe), this one's page in video/
-                let html = std::fs::read_to_string(self.ui.join("video/index.html"))?;
-                let css = std::fs::read_to_string(self.ui.join("video/style.css")).unwrap_or_default();
-                http::respond_bytes(stream, 200, "text/html; charset=utf-8", html.replace("__CSS__", &css).as_bytes())
-            }
-            "/api/gpu" => respond_json(&self.gpu()),
-            "/api/summary" => respond_json(&self.summary(&mut self.st.lock().unwrap())),
-            "/api/engines" => respond_json(&json!({"engines": self.engines()})),
-            "/api/canvases" => respond_json(&json!({"canvases": self.canvases()})),
-            "/api/plan" => respond_json(&self.plan()),
-            "/api/status" => respond_json(&self.versioned_status()),
-            "/api/list" => respond_json(&json!(self.listing())),
-            "/api/templates" => respond_json(&json!(self.templates())),
-            "/api/films" => respond_json(&json!(self.films())),
-            "/api/join" => respond_json(&json!({"joins": *self.joins.lock().unwrap()})),
-            "/api/timeline" => respond_json(&json!({"clips": self.timeline(&self.st.lock().unwrap(), &qv("project"))})),
-            "/api/types.ts" => http::respond_bytes(stream, 200, "application/typescript; charset=utf-8", TYPES_TS.as_bytes()),
-            "/api/scene" => {
-                let p = qv("project");
-                let doc = self.scene_export(&self.st.lock().unwrap(), &p);
-                http::respond_bytes(stream, 200, "application/json; charset=utf-8", serde_json::to_string_pretty(&doc).unwrap_or_default().as_bytes())
-            }
-            "/api/clip" => {
-                let label = qv("label");
-                let st = self.st.lock().unwrap();
-                let running = st.job.as_ref().filter(|j| !j.finished).map(|j| (j.rec.clone(), "running"));
-                let found = running.into_iter().chain(st.q.items.iter().map(|i| (i.clone(), if st.q.held(i) { "held" } else { "queued" }))).find(|(i, _)| s(i, "label") == label);
-                match found {
-                    Some((mut i, state)) => {
-                        i["dialogue"] = json!(queue::dialogue_of(&s(&i, "prompt")));
-                        i["state"] = json!(state);
-                        respond_json(&i)
-                    }
-                    None => http::respond(stream, 404, &json!({"error": "no queued clip with that label"})),
-                }
-            }
-            _ => {
-                if let Some(name) = path.strip_prefix("/api/job/") {
-                    let n = queue::basename(name);
-                    return match self.record(&n) {
-                        Some(v) => respond_json(&v),
-                        None => http::respond(stream, 404, &json!({"error": format!("no record for {n}")})),
+        if req.method != "POST" && (path == "/" || path == "/index.html") {
+            // nextcuda: the built front ends' root (dist/wfe), this one's page in video/
+            let html = std::fs::read_to_string(self.ui.join("video/index.html"))?;
+            let css = std::fs::read_to_string(self.ui.join("video/style.css")).unwrap_or_default();
+            return http::respond_bytes(stream, 200, "text/html; charset=utf-8", html.replace("__CSS__", &css).as_bytes());
+        }
+        if req.method != "POST" {
+            if let Some(rel) = path.strip_prefix("/ui/") {
+                if !rel.split('/').any(|c| c == ".." || c.is_empty()) {
+                    return match std::fs::read(self.ui.join(rel)) {
+                        Ok(b) => http::respond_bytes(stream, 200, http::content_type(rel), &b),
+                        Err(_) => http::respond(stream, 404, &json!({"error": format!("no front-end file {rel}")})),
                     };
                 }
-                if let Some(t) = path.strip_prefix("/thumb/") {
-                    let n = queue::basename(t);
-                    let n = n.strip_suffix(".webp").unwrap_or(&n);
-                    return match library::is_clip_name(n).then(|| self.thumb(n)).flatten() {
-                        Some(b) => http::respond_bytes(stream, 200, "image/webp", &b),
-                        None => http::respond(stream, 404, &json!({"error": "no thumbnail"})),
-                    };
+            }
+            if let Some(rel) = path.strip_prefix("/static/") {
+                if let Ok(b) = std::fs::read(self.ui.join("static").join(queue::basename(rel))) {
+                    return http::respond_bytes(stream, 200, http::content_type(rel), &b);
                 }
-                if let Some(f) = path.strip_prefix("/out/") {
-                    return self.file(stream, &req, &queue::basename(f));
-                }
-                if let Some(rel) = path.strip_prefix("/ui/") {
-                    if !rel.split('/').any(|c| c == ".." || c.is_empty()) {
-                        return match std::fs::read(self.ui.join(rel)) {
-                            Ok(b) => http::respond_bytes(stream, 200, http::content_type(rel), &b),
-                            Err(_) => http::respond(stream, 404, &json!({"error": format!("no front-end file {rel}")})),
-                        };
-                    }
-                }
-                if let Some(rel) = path.strip_prefix("/static/") {
-                    if let Ok(b) = std::fs::read(self.ui.join("static").join(queue::basename(rel))) {
-                        return http::respond_bytes(stream, 200, http::content_type(rel), &b);
-                    }
-                }
-                http::respond(stream, 404, &json!({"error": format!("no route {} {path}", req.method)}))
             }
         }
+        // the studio's API: what routes.rs declares
+        let method = req.method.clone();
+        let mut cx = routes::Cx { s: stream.try_clone()?, req };
+        if routes::serve(self, &mut cx) {
+            return Ok(());
+        }
+        if method == "POST" {
+            return http::respond(stream, 404, &json!({"error": format!("no route POST {path}")}));
+        }
+        http::respond(stream, 404, &json!({"error": format!("no route {method} {path}")}))
     }
 
     /// An mp4 of out/, with byte ranges (the video player seeks).
@@ -731,24 +636,6 @@ impl Studio {
         }
         Ok(())
     }
-}
-
-fn unescape(s: &str) -> String {
-    let b = s.replace('+', " ").into_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&String::from_utf8_lossy(&b[i + 1..i + 3]), 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 pub fn run(o: Options) -> http::Result<()> {

@@ -30,7 +30,8 @@ export interface Estimate {
 /** Seconds per step at `t` tokens on one GPU: linear between its measured points, the end segments' slope
  *  beyond them (mirrors plan::interp in the engine), times its clip factor. */
 export function gpuStep(g: GpuPlan, t: number): number {
-  const p = g.points;
+  // [tokens, seconds a step] pairs
+  const p = g.points.map((q): [number, number] => { const [t, s] = q as number[]; return [t ?? 0, s ?? 0]; });
   if (!p.length) return g.step_a * t * t + g.step_b * t;
   const p0 = p[0];
   if (p.length === 1 && p0) return (p0[1] * t / p0[0]) * g.step_scale;
