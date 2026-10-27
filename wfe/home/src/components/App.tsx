@@ -50,7 +50,7 @@ function CardView(c: Card) {
         {short(c.name)} <span class="idx">GPU {c.index} · {c.pci}</span>
       </h3>
       <div class="meter" attrs={{ title: `${gib(c.vram_used_mb)} of ${gib(c.vram_total_mb)} GiB in use` }}>
-        {c.procs.map((p) => <i style={{ width: `${(p.vram_mb / total) * 100}%`, background: color(p.kind) }} />)}
+        {c.procs.map((p) => <i style={{ width: `${(p.vram_mb / total) * 100}%`, background: color(p.kind ?? undefined) }} />)}
       </div>
       <div class="meter vouch" attrs={{ title: `${gib(c.vouched_mb)} GiB vouched for by the enabled models` }}>
         {/* each model's weights, then its headroom: the same color, the stripes the other way */}
@@ -79,7 +79,7 @@ function CardView(c: Card) {
           const v = c.vouched.find((x) => x.model === p.model_id && ["loaded", "busy"].includes(x.state));
           return (
           <li attrs={{ title: p.args ?? `pid ${p.pid}` }}>
-            <span class="sw" style={{ background: color(p.kind) }} />
+            <span class="sw" style={{ background: color(p.kind ?? undefined) }} />
             <span class="what">{procName(p)}{p.port ? <span class="hint"> :{p.port}</span> : null}
               {v && v.headroom_mb > 0 ? <span class="hint"> · vouched {Alloc(v.mb, v.headroom_mb, v.kind, v.headroom_given)}</span> : null}</span>
             <span class="mb">{gib(p.vram_mb)} GiB</span>
@@ -243,7 +243,7 @@ function AvailableRow(a: Available) {
         {going && d
           ? <div>
               <div class="meter" attrs={{ title: `${size(d.bytes_done)} of ${size(d.bytes_total)}` }}>
-                <i style={{ width: `${d.pct}%`, background: color(a.kind) }} />
+                <i style={{ width: `${d.pct}%`, background: color(a.kind ?? undefined) }} />
               </div>
               <div class="hint">{d.state === "queued" ? "queued behind another download to the same folder"
                 : d.state === "verifying" ? "checking its SHA-256…"

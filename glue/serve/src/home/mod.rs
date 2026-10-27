@@ -32,6 +32,7 @@ mod precheck;
 mod pulls;
 mod spec;
 pub mod registry;
+mod routes;
 
 /// What the #[rpc] methods make (methods.rs, rpcgen), as (path under the repo, content): the typed client of the
 /// front door's methods for the wfe pages. `nextcuda gen-api` writes them; a test fails when the committed ones
@@ -59,6 +60,7 @@ pub fn route_tables() -> Vec<(&'static str, &'static str, Vec<rpcgen::RouteInfo>
     vec![
         ("image", "nextcuda image server (nextcuda image serve)", crate::image::route_infos(), vec!["wfe/image/src/gen/routes.ts", "wfe/ocr/src/gen/routes.ts"]),
         ("llm", "nextcuda chat server (nextcuda serve FILE)", crate::serve::route_infos(), vec![]),
+        ("home", "nextcuda's front door: its page's API and documents (nextcuda serve)", routes::infos(), vec!["wfe/home/src/gen/routes.ts"]),
     ]
 }
 
@@ -399,33 +401,18 @@ impl Home {
         if let Some(rest) = p.strip_prefix("/open/") {
             return self.open(&mut s, &req, rest);
         }
-        match (req.method.as_str(), p) {
-            ("GET", "/") | ("GET", "/index.html") => self.page(&mut s),
-            ("GET", p) if p.starts_with("/ui/") || p.starts_with("/static/") => self.asset(&mut s, p),
-            ("GET", "/health") => http::respond(&mut s, 200, &json!({"status": "ok"})),
-            ("GET", "/openapi.yml") | ("GET", "/openapi.yaml") => {
-                let spec = self.openapi(&req, false);
-                http::respond_bytes(&mut s, 200, "application/yaml; charset=utf-8", yaml::to_yaml(&spec).as_bytes(), "Cache-Control: no-cache\r\n")
-            }
-            ("GET", "/openapi.json") => http::respond(&mut s, 200, &self.openapi(&req, false)),
-            ("GET", "/api/state") => http::respond(&mut s, 200, &self.state()),
-            ("GET", "/api/config") => http::respond(&mut s, 200, &self.config()),
-            ("GET", "/api/spec") => http::respond(&mut s, 200, &json!({"token": self.token, "spec": self.openapi(&req, true)})),
-            ("GET", p) if p.starts_with("/api/runs/") => {
-                let id: u64 = p["/api/runs/".len()..].parse().unwrap_or(0);
-                match self.run_json(id, 64 * 1024) {
-                    Some(v) => http::respond(&mut s, 200, &v),
-                    None => http::respond(&mut s, 404, &err(format!("no run {id}"))),
-                }
-            }
-            ("POST", "/api/action") => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-                match self.action(&body) {
-                    Ok(v) => http::respond(&mut s, 200, &v),
-                    Err((c, m)) => http::respond(&mut s, c, &err(m)),
-                }
-            }
-            _ => http::respond(&mut s, 404, &err(format!("no route {} {}", req.method, req.path))),
+        if req.method == "GET" && (p == "/" || p == "/index.html") {
+            return self.page(&mut s);
+        }
+        if req.method == "GET" && (p.starts_with("/ui/") || p.starts_with("/static/")) {
+            let p = p.to_string();
+            return self.asset(&mut s, &p);
+        }
+        // the page's API and the documents: what routes.rs declares
+        let mut cx = crate::page::Cx { s, req, cors: String::new() };
+        if !crate::page::serve(routes::table(), self, &mut cx, routes::fail) {
+            let m = format!("no route {} {}", cx.req.method, cx.req.path);
+            cx.json(404, &err(m));
         }
     }
 
