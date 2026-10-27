@@ -133,6 +133,16 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
         "image" if arch.contains("ocr") => (vec!["ocr", "read_pages", "pdf"], vec!["image.ocr"]),
         "image" if arch == "realesrgan" || arch == "waifu2x" => (vec!["upscale", "upscale_video", "tiles"], vec!["image.upscale", "video.upscale"]),
         "image" if arch == "starvector" => (vec!["vectorize", "svg"], vec!["image.vectorize"]),
+        // text to image alone: no edits, references or starting picture (MOSS merges LoRAs at load; a turbo entry's
+        // is a few-step distillation)
+        "image" if arch == "ming-image" => (vec!["generate"], vec!["image.generate"]),
+        "image" if arch == "moss-image" => {
+            let mut c = vec!["generate", "loras"];
+            if m["files"]["turbo-lora"].is_string() {
+                c.push("few_step");
+            }
+            (c, vec!["image.generate"])
+        }
         "image" => {
             let mut c = vec!["generate", "edit", "compose", "img2img", "loras"];
             if m["env"]["NS_QI_SIGMAS"].is_string() {
