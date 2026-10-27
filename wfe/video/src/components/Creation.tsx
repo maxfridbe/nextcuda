@@ -4,6 +4,7 @@ import { api, rpc } from "../api.js";
 import { load, refresh, render, save, state } from "../state.js";
 import { navigate } from "../router.js";
 import type { Canvas, Engine, GenerateRequest } from "../types.js";
+import type { Upscaler } from "../gen/studio.js";
 import { CanvasPicker, estimate } from "./CanvasPicker.js";
 import { ClipProgress } from "./Progress.js";
 import { Panel } from "./Panel.js";
@@ -20,7 +21,7 @@ interface Form {
   engine: Engine;
   upscale: number;
   /** "latent" (default), or an ESRGAN-type network on the decoded frames */
-  upscaler: string;
+  upscaler: Upscaler;
   /** "" = the engine's own Euler / shifted schedule */
   sampler: string;
   schedule: string;
@@ -384,7 +385,7 @@ export function Creation() {
         {num("upscale", "upscale", 1, 4, 0.5)}
         <label attrs={{ title: "ESRGAN: decoded at the sampled size, the frames enlarged by a network on the GPU - about half the decode stage's time (a 5 s clip at 1152x864 on a B65: 19.6 s against 41.9). latent: the latents enlarged, then decoded at the larger size - the decoder's own fine texture." }}>
           upscaler
-          <select on={{ change: (e: Event) => { form.upscaler = (e.target as HTMLSelectElement).value; remember(); render(); } }}>
+          <select on={{ change: (e: Event) => { form.upscaler = (e.target as HTMLSelectElement).value as Upscaler; remember(); render(); } }}>
             <option attrs={{ value: "esrgan-general", selected: form.upscaler === "esrgan-general" }}>ESRGAN general-x4v3 (default)</option>
             <option attrs={{ value: "esrgan-anime", selected: form.upscaler === "esrgan-anime" }}>ESRGAN animevideov3 (sharper, drawn look)</option>
             <option attrs={{ value: "latent", selected: form.upscaler === "latent" }}>latent (slowest, most natural texture)</option>

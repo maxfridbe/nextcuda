@@ -1,7 +1,8 @@
 /** The only module that talks to the server: the routes' typed client (src/gen/routes.ts), and rpc() for the RPC
- *  layer, typed by Methods. */
+ *  layer, typed by its generated Methods (src/gen/studio.ts). */
 import { routes } from "./gen/routes.js";
-import type { Envelope, Methods, Scene } from "./types.js";
+import type { Envelope, Methods } from "./gen/studio.js";
+import type { Scene } from "./types.js";
 
 // relative: the page is served at the studio's root or under the front door's /open/<id>/
 const base = ".";
@@ -9,14 +10,14 @@ const r = routes();
 
 export async function rpc<M extends keyof Methods>(
   method: M,
-  params: Methods[M][0],
-): Promise<Methods[M][1]> {
+  params: Methods[M]["req"],
+): Promise<Methods[M]["resp"]> {
   const res = await fetch(`${base}/rpc/${String(method)}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(params ?? {}),
   });
-  const e = (await res.json()) as Envelope<Methods[M][1]>;
+  const e = (await res.json()) as Envelope<Methods[M]["resp"]>;
   if (!e.ok) throw new Error(`${e.error.code}: ${e.error.message}`);
   return e.result;
 }

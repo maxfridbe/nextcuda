@@ -10,6 +10,7 @@
 pub mod http;
 pub mod library;
 pub mod llm;
+pub mod methods;
 pub mod queue;
 pub mod routes;
 pub mod runner;
@@ -544,7 +545,11 @@ impl Studio {
                 }
                 let body = if req.body.is_empty() { Ok(json!({})) } else { serde_json::from_slice::<Value>(&req.body) };
                 let r = match body {
-                    Ok(b) if b.is_object() => self.rpc(m, &b),
+                    // the method its #[rpc] handler declares (methods.rs), its name in any case
+                    Ok(b) if b.is_object() => match methods::table().iter().find(|x| x.info.name.eq_ignore_ascii_case(m)) {
+                        Some(x) => (x.handler)(self, b),
+                        None => Err(RpcError::new("unknown_method", &format!("unknown method {m}"), 404)),
+                    },
                     Ok(_) => Err(RpcError::new("invalid_request", "body must be a JSON object", 400)),
                     Err(_) => Err(RpcError::new("invalid_request", "body must be valid JSON", 400)),
                 };
