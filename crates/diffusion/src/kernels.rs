@@ -54,6 +54,7 @@ struct Api {
     snake: unsafe extern "C" fn(M, *const f32, i64, i64, i64, *const f32, *mut f32) -> c_int,
     scale: unsafe extern "C" fn(M, *mut f32, i64, f32) -> c_int,
     conv3d_ex: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, i64, P, i64, i64, i64, i64, i64, i64, i64, *const f32, M) -> c_int,
+    group_norm_silu: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, i64, *const f32, *const f32, f32, *const f32, *const f32, M) -> c_int,
 }
 
 // SAFETY: function pointers into the library, which stays loaded for the process.
@@ -106,6 +107,7 @@ fn api() -> Result<&'static Api> {
             conv_transpose1d: sym!("nsd_conv_transpose1d"),
             snake: sym!("nsd_snake"),
             scale: sym!("nsd_scale"),
+            group_norm_silu: sym!("nsd_group_norm_silu"),
         })
     })
     .as_ref()
@@ -343,6 +345,18 @@ impl Nsd {
     pub fn snake(&self, x: P, b: usize, c: usize, l: usize, alpha: P, out: M) -> Result<()> {
         // SAFETY: the caller's buffers hold the sizes named.
         self.ok(unsafe { (self.k.snake)(self.ctx, x.cast(), b as i64, c as i64, l as i64, alpha.cast(), out.cast()) }, "snake")
+    }
+
+    /// silu(group norm(x) * weight + bias), statistics per frame and group: x, out [F, N, C] in dt (F frames of N
+    /// pixels), G groups; weight, bias float32 [C] (or null); then * (1 + scale) + shift when they are given
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_silu(&self, x: P, dt: Dt, f: usize, n: usize, c: usize, g: usize, weight: P, bias: P, eps: f32, out: M) -> Result<()> {
+        // SAFETY: f x n x c values each way, weight and bias c floats (the caller's sizes)
+        let rc = unsafe {
+            (self.k.group_norm_silu)(self.ctx, x, dt as c_int, f as i64, n as i64, c as i64, g as i64, weight.cast(), bias.cast(), eps, std::ptr::null(),
+                                     std::ptr::null(), out)
+        };
+        self.ok(rc, "group_norm_silu")
     }
 
     /// x *= s, float32

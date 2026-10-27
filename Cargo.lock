@@ -678,6 +678,7 @@ dependencies = [
  "nextcuda-gguf",
  "nextcuda-image",
  "nextcuda-image-mingimage",
+ "nextcuda-image-mossimage",
  "nextcuda-image-olmocr2",
  "nextcuda-image-paddleocrvl",
  "nextcuda-image-qwenimage21",
@@ -849,6 +850,19 @@ dependencies = [
  "nextcuda-diffusion",
  "nextcuda-gguf",
  "nextcuda-image",
+ "nextcuda-tok",
+]
+
+[[package]]
+name = "nextcuda-image-mossimage"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-image",
+ "nextcuda-llm",
+ "nextcuda-llm-qwen35",
  "nextcuda-tok",
 ]
 

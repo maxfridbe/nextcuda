@@ -62,11 +62,18 @@ for k in $KINDS; do
   objs="$objs $(ls "$OBJ"/diffusion_*.o 2>/dev/null || true)"
   extra=()
   sdso=$(ls "$SDLIB"/bin/libstable-diffusion.so "$SDLIB"/libstable-diffusion.so 2>/dev/null | head -1 || true)
+  if [ "$k" = image ]; then
+    # MOSS-Image's text encoder is Qwen3.5 (gated DeltaNet): the llm library's qwen35 and nemotronh kernels in the
+    # image library too. Their ggml-cuda copies share names with stable-diffusion.cpp's, so the library exports only
+    # its API (image.map: ns_*, nsd_* and ns_fail for the silos) - nothing of it can stand in for sd.cpp's own
+    objs="$objs $(ls "$OBJ"/llm_*.o 2>/dev/null | grep -v '_silo_' || true)"
+    extra+=(-Xlinker --version-script=image.map)
+  fi
   if [ "$k" = image ] && [ -n "$sdso" ]; then
     # beside the old one, then renamed over it: a running server keeps the library it mapped (writing over it in place
     # changes the code under it - it cost a running bench its process)
     cp -L "$sdso" "$OUT/.libstable-diffusion.so.new" && mv -f "$OUT/.libstable-diffusion.so.new" "$OUT/libstable-diffusion.so"
-    extra=(-L"$OUT" -lstable-diffusion -Xlinker -rpath -Xlinker '$ORIGIN')
+    extra+=(-L"$OUT" -lstable-diffusion -Xlinker -rpath -Xlinker '$ORIGIN')
   fi
   echo "==> linking libnextcuda-$k.so"
   "$NVCC" -shared "${GEN[@]}" $objs "${extra[@]}" -lcublas -lcublasLt -o "$OUT/.libnextcuda-$k.so.new"

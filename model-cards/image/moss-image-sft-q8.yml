@@ -1,0 +1,39 @@
+# MOSS-Image SFT Q8_0 (text to image; Rust + CUDA)
+# model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets.
+# The files are unsloth's GGUFs (the DiT Q8_0, the text encoder Qwen3.5-9B Q8_0) and OpenMOSS's VAE (FLUX.2's small
+# decoder, as the pipeline ships it).
+id: moss-image-sft-q8
+kind: image
+arch: moss-image
+title: 'MOSS-Image SFT Q8_0 (text to image: photographs, illustration, text in pictures; Rust + CUDA)'
+about: 'OpenMOSS''s MOSS-Image-SFT (Apache-2.0): a 5.1B single-stream DiT over Qwen3.5-9B''s text states and FLUX.2''s small VAE; 50 steps of flow-matching Euler, guidance 3 against the empty prompt with block 22 left out. 5.5 GiB DiT, 9.5 GiB text encoder, nothing streamed'
+gpus: '0,1'
+split: true                      # nextcuda: the DiT and the VAE on the first card, the text encoder (Qwen3.5-9B Q8_0) on the second
+vram_gib: 7.0                    # the first card's at 1024 x 1024 (6.6 GiB measured: weights 5.5, activations, the VAE's); the second's ~10.5
+defaults:
+  steps: 50
+  cfg: 3.0
+  sampler: euler
+  schedule: shift
+  size: 1024x1024
+env: {}
+files:
+  transformer:
+    key: moss-image-sft-q80
+    url: https://huggingface.co/unsloth/MOSS-Image-SFT-GGUF/resolve/a013f7442e672e67b21f485b4b4f369df5500847/MOSS-Image-SFT-Q8_0.gguf
+    size: 5482213536
+    sha256: f18beeb8c6101a3edaff379acce2bdf9fcc1272dfb4c40530c9070f7a0650458
+    path: moss-image-sft/MOSS-Image-SFT-Q8_0.gguf
+  text-encoder:
+    key: qwen35-9b-q80
+    url: https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q8_0.gguf
+    size: 9527502048
+    sha256: 809626574d0cb43d4becfa56169980da2bb448f2299270f7be443cb89d0a6ae4
+    path: moss-image-sft/Qwen3.5-9B-Q8_0.gguf
+  vae:
+    key: moss-image-sft-vae
+    url: https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/resolve/f972bd4b4b9e3852133cc5da954d87bc32cd8fb9/vae/diffusion_pytorch_model.safetensors
+    size: 249521372
+    sha256: c3bdf94dc67ec69b30ea9fe1fa8340085679cae64d019f7c7e4a9921f1a7f17a
+    path: moss-image-sft/vae/diffusion_pytorch_model.safetensors
+guide: guides/moss-image.md

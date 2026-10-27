@@ -1,0 +1,479 @@
+//! The denoiser: MOSS-Image's DiT (pipeline_moss_image.py `MOSSImageTransformer`): 42 single-stream blocks of 3,072
+//! features (24 heads x 128) over the image's tokens and the caption's, one modulation shared by every block, the
+//! matrices kept on the card in the GGUF's types (Q8_0: 5.5 GB).
+//!
+//! ```text
+//!   image tokens: each latent position's 128 channels -> video_embedder [N, 3072]
+//!   caption: Qwen3.5's last hidden state [L, 4096] -> linear -> 2 text blocks (no timestep: computed once a prompt)
+//!   [image | caption] -> 42 blocks -> the image's rows: rmsnorm * (1 + scale) + shift, linear -> [N, 128]
+//!   block: x += gate_a * o(attention(qk-normed, rotated q k v of h)),  h = rmsnorm(x) * (1 + scale_a) + shift_a
+//!          x += gate_f * down(situ(up_gate h')),                       h' = rmsnorm(x) * (1 + scale_f) + shift_f
+//!   situ(h, g) = (4 tanh(g / 4) sigmoid(g)) (25 tanh(h / 25))
+//! ```
+//!
+//! The six modulations are one linear of the timestep's embedding (no SiLU before it), the same for every block and
+//! token. Positions are four axes of 16 bands each (r, f, h, w): a caption token j at (0, j, 0, 0), an image token at
+//! (0, L, row - (H - 1) / 2, column - (W - 1) / 2); the rotation pairs features (i, 64 + i) - the shared kernel's own
+//! order, so nothing is permuted.
+
+use std::sync::Arc;
+
+use nextcuda_core::{DevBuf, Error, Gpu, Result};
+use nextcuda_diffusion::kernels::{none, Dt, Nsd};
+use nextcuda_gguf::{GType, Gguf};
+
+use crate::ffi;
+
+pub const DIM: usize = 3072;
+pub const HEADS: usize = 24;
+pub const HEAD: usize = 128;
+pub const FFN: usize = 8192;
+/// a token's latent channels (the VAE's 32 in 2 x 2 patches)
+pub const LATENT: usize = 128;
+pub const TEXT_DIM: usize = 4096;
+const FREQ: usize = 256;
+const EPS: f32 = 1e-6;
+const BANDS: usize = HEAD / 8;
+
+fn ge(e: nextcuda_gguf::Error) -> Error {
+    Error(e.0)
+}
+
+/// A matrix as stored, on the card
+struct Part {
+    w: DevBuf,
+    qtype: u32,
+    rows: usize,
+    k: usize,
+}
+
+impl Part {
+    fn apply(&self, nsd: &Nsd, x: *const std::ffi::c_void, m: usize, bias: *const std::ffi::c_void, out: *mut std::ffi::c_void, ldo: usize) -> Result<()> {
+        nsd.linear_q(x, Dt::F16, m, self.k, self.w.ptr(), self.qtype, self.rows, bias, out, Dt::F32, ldo)
+    }
+}
+
+struct Block {
+    q: Part,
+    k: Part,
+    v: Part,
+    o: Part,
+    up_gate: Part,
+    down: Part,
+    norm1: DevBuf,
+    norm2: DevBuf,
+    q_norm: DevBuf,
+    k_norm: DevBuf,
+}
+
+/// A text block: no modulation, biases on every linear
+struct TextBlock {
+    qkv: Part,
+    qkv_b: DevBuf,
+    proj: Part,
+    /// the output linear's bias times ACT_SCALE (its input, the attention, comes scaled)
+    proj_bs: DevBuf,
+    up: Part,
+    up_b: DevBuf,
+    gate: Part,
+    gate_b: DevBuf,
+    down: Part,
+    down_b: DevBuf,
+    norm1: DevBuf,
+    norm2: DevBuf,
+    q_norm: DevBuf,
+    k_norm: DevBuf,
+}
+
+pub struct Dit {
+    gpu: Arc<Gpu>,
+    video_w: DevBuf,
+    video_b: DevBuf,
+    text_proj: Part,
+    text_proj_b: DevBuf,
+    text_blocks: Vec<TextBlock>,
+    layers: Vec<Block>,
+    /// the timestep's MLP, the shared and the head modulation's linears: float32 on the host (a few products a step)
+    t1: (Vec<f32>, Vec<f32>),
+    t2: (Vec<f32>, Vec<f32>),
+    shared: (Vec<f32>, Vec<f32>),
+    head_mod: (Vec<f32>, Vec<f32>),
+    bands: Vec<f32>,
+    final_norm: DevBuf,
+    final_w: DevBuf,
+    pub bytes: u64,
+}
+
+/// A step's modulation on the card: shift_a, scale_a, gate_a, shift_f, scale_f, gate_f, then the head's shift and
+/// scale, float32 [3072] each, one after the other
+pub struct StepMod {
+    m: DevBuf,
+}
+
+impl StepMod {
+    fn at(&self, i: usize) -> *const std::ffi::c_void {
+        self.m.fp().wrapping_add(i * DIM).cast_const().cast()
+    }
+}
+
+/// The caption after the text embedder (float32 [L, 3072]) and its rotation table, once a prompt
+pub struct Prefix {
+    pub rows: usize,
+    pub x: DevBuf,
+    cs: Vec<f32>,
+}
+
+/// Intermediates kept for a check: the blocks' outputs asked for, image rows first
+#[derive(Default)]
+pub struct Grabs {
+    pub at: Vec<usize>,
+    pub outs: Vec<Vec<f32>>,
+}
+
+fn host_vec(f: &Gguf, name: &str) -> Result<Vec<f32>> {
+    let t = f.tensor(name).ok_or_else(|| Error(format!("{}: no tensor {name}", f.paths[0].display())))?;
+    let b = f.read(t).map_err(ge)?;
+    Ok(match t.ty {
+        GType::BF16 => b.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
+        GType::F32 => b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
+        GType::F16 => b.chunks_exact(2).map(|c| nextcuda_gguf::safetensors::f16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect(),
+        other => return Err(Error(format!("{name}: a {} tensor where float was expected", other.name()))),
+    })
+}
+
+/// y = W x + b on the host (W [n, k] row-major), in double
+fn host_linear(w: &[f32], b: &[f32], x: &[f64]) -> Vec<f64> {
+    let k = x.len();
+    w.chunks_exact(k).zip(b).map(|(row, bi)| row.iter().zip(x).map(|(a, c)| (*a as f64) * c).sum::<f64>() + *bi as f64).collect()
+}
+
+/// (cos, sin) per token and pair for positions (r, f, h, w): pair i turns by coordinate i / 16 times band i % 16
+pub fn rope_table(bands: &[f32], pos: &[[f64; 4]]) -> Vec<f32> {
+    let mut cs = vec![0f32; pos.len() * HEAD];
+    for (t, p) in pos.iter().enumerate() {
+        for i in 0..HEAD / 2 {
+            // the reference's phase: a float32 coordinate times a float32 band
+            let a = (p[i / BANDS] as f32 * bands[i % BANDS]) as f64;
+            cs[t * HEAD + 2 * i] = a.cos() as f32;
+            cs[t * HEAD + 2 * i + 1] = a.sin() as f32;
+        }
+    }
+    cs
+}
+
+/// The image's positions: row y, column x of an h x w grid after a caption of `l` tokens
+pub fn image_positions(h: usize, w: usize, l: usize) -> Vec<[f64; 4]> {
+    let (ch, cw) = ((h as f64 - 1.0) / 2.0, (w as f64 - 1.0) / 2.0);
+    (0..h * w).map(|i| [0.0, l as f64, (i / w) as f64 - ch, (i % w) as f64 - cw]).collect()
+}
+
+impl Dit {
+    pub fn load(f: &Gguf, nsd: &Nsd, log: &mut dyn FnMut(String)) -> Result<Dit> {
+        let gpu = nsd.gpu.clone();
+        let t0 = std::time::Instant::now();
+        let part = |name: &str| -> Result<Part> {
+            let t = f.tensor(name).ok_or_else(|| Error(format!("{}: no tensor {name}", f.paths[0].display())))?;
+            let code = t.ty.code();
+            if ![0, 1, 8, 12, 13, 14, 30].contains(&code) {
+                return Err(Error(format!("{name}: {} weights are not read yet (Q8_0, Q4_K, Q5_K, Q6_K, BF16, F16, F32)", t.ty.name())));
+            }
+            let (rows, k) = (t.shape[0] as usize, t.shape[1] as usize);
+            let bytes = f.read(t).map_err(ge)?;
+            let w = DevBuf::new(&gpu, bytes.len())?;
+            w.write(0, &bytes)?;
+            Ok(Part { w, qtype: code, rows, k })
+        };
+        let vecd = |name: &str| -> Result<DevBuf> { DevBuf::from_f32(&gpu, &host_vec(f, name)?) };
+        let scaled = |name: &str, s: f32| -> Result<DevBuf> { DevBuf::from_f32(&gpu, &host_vec(f, name)?.iter().map(|v| v * s).collect::<Vec<_>>()) };
+        let hv = |name: &str| host_vec(f, name);
+        let block = |p: &str| -> Result<Block> {
+            Ok(Block {
+                q: part(&format!("{p}proj.q.weight"))?,
+                k: part(&format!("{p}proj.k.weight"))?,
+                v: part(&format!("{p}proj.v.weight"))?,
+                o: part(&format!("{p}proj.o.weight"))?,
+                up_gate: part(&format!("{p}proj.ffn_up_gate.weight"))?,
+                down: part(&format!("{p}proj.ffn_down.weight"))?,
+                norm1: vecd(&format!("{p}norm1.weight"))?,
+                norm2: vecd(&format!("{p}norm2.weight"))?,
+                q_norm: vecd(&format!("{p}q_norm.weight"))?,
+                k_norm: vecd(&format!("{p}k_norm.weight"))?,
+            })
+        };
+        let text_block = |p: &str| -> Result<TextBlock> {
+            Ok(TextBlock {
+                qkv: part(&format!("{p}qkv.weight"))?,
+                qkv_b: vecd(&format!("{p}qkv.bias"))?,
+                proj: part(&format!("{p}proj.weight"))?,
+                proj_bs: scaled(&format!("{p}proj.bias"), ffi::ACT_SCALE)?,
+                up: part(&format!("{p}ffn_up.weight"))?,
+                up_b: vecd(&format!("{p}ffn_up.bias"))?,
+                gate: part(&format!("{p}ffn_gate.weight"))?,
+                gate_b: vecd(&format!("{p}ffn_gate.bias"))?,
+                down: part(&format!("{p}ffn_down.weight"))?,
+                down_b: vecd(&format!("{p}ffn_down.bias"))?,
+                norm1: vecd(&format!("{p}norm1.weight"))?,
+                norm2: vecd(&format!("{p}norm2.weight"))?,
+                q_norm: vecd(&format!("{p}q_norm.weight"))?,
+                k_norm: vecd(&format!("{p}k_norm.weight"))?,
+            })
+        };
+        let count = |pre: &str, probe: &str| (0..).take_while(|i| f.tensor(&format!("{pre}{i}.{probe}")).is_some()).count();
+        let (nl, nt) = (count("layers.", "proj.q.weight"), count("text_embedder.blocks.", "qkv.weight"));
+        if nl == 0 || f.tensor("shared_block_modulation.weight").is_none() {
+            return Err(Error(format!("{}: not MOSS-Image's DiT (no layers / shared_block_modulation)", f.paths[0].display())));
+        }
+        let dit = Dit {
+            gpu: gpu.clone(),
+            video_w: vecd("video_embedder.weight")?,
+            video_b: vecd("video_embedder.bias")?,
+            text_proj: part("text_embedder.proj.weight")?,
+            text_proj_b: vecd("text_embedder.proj.bias")?,
+            text_blocks: (0..nt).map(|i| text_block(&format!("text_embedder.blocks.{i}."))).collect::<Result<_>>()?,
+            layers: (0..nl).map(|i| block(&format!("layers.{i}."))).collect::<Result<_>>()?,
+            t1: (hv("time_embedding.0.weight")?, hv("time_embedding.0.bias")?),
+            t2: (hv("time_embedding.2.weight")?, hv("time_embedding.2.bias")?),
+            shared: (hv("shared_block_modulation.weight")?, hv("shared_block_modulation.bias")?),
+            head_mod: (hv("video_head_modulation.weight")?, hv("video_head_modulation.bias")?),
+            bands: hv("rope.bands")?,
+            final_norm: vecd("final_norm_video.weight")?,
+            final_w: vecd("final_linear_video.weight")?,
+            bytes: f.tensors.iter().map(|t| t.bytes).sum(),
+        };
+        if dit.bands.len() != BANDS || dit.text_proj.k != TEXT_DIM {
+            return Err(Error(format!("{}: {} rope bands and text width {}: MOSS-Image's DiT has 16 and 4096", f.paths[0].display(), dit.bands.len(),
+                                     dit.text_proj.k)));
+        }
+        log(format!("moss-image dit: {nl} blocks, {nt} text blocks on {} in {:.1} s", gpu.name, t0.elapsed().as_secs_f64()));
+        Ok(dit)
+    }
+
+    pub fn layers(&self) -> usize {
+        self.layers.len()
+    }
+
+    /// The modulations for timestep `t` (the scheduler's, sigma times 1000): the sinusoid [cos | sin] of 256 in
+    /// double, the time MLP (linear, SiLU, linear), then the shared linear [6, 3072] and the head's [2, 3072]
+    pub fn modulation(&self, t: f64) -> (Vec<f32>, Vec<f32>) {
+        let half = FREQ / 2;
+        let mut e = vec![0f64; FREQ];
+        for i in 0..half {
+            let a = t * 10000f64.powf(-(i as f64) / half as f64);
+            // the reference makes it float32 before its MLP
+            e[i] = a.cos() as f32 as f64;
+            e[half + i] = a.sin() as f32 as f64;
+        }
+        let mut h = host_linear(&self.t1.0, &self.t1.1, &e);
+        h.iter_mut().for_each(|x| *x /= 1.0 + (-*x).exp());
+        let time = host_linear(&self.t2.0, &self.t2.1, &h);
+        let m = host_linear(&self.shared.0, &self.shared.1, &time);
+        let hd = host_linear(&self.head_mod.0, &self.head_mod.1, &time);
+        (m.iter().map(|v| *v as f32).collect(), hd.iter().map(|v| *v as f32).collect())
+    }
+
+    /// A step's modulation on the card
+    pub fn step_mod(&self, t: f64) -> Result<StepMod> {
+        let (m, h) = self.modulation(t);
+        let mut all = m;
+        all.extend(h);
+        Ok(StepMod { m: DevBuf::from_f32(&self.gpu, &all)? })
+    }
+
+    /// q, k, v (or the attention's input) from h [m, 3072] half into t.qkv (half, scaled by ACT_SCALE), normed and
+    /// rotated; the attention over the m rows into t.att
+    #[allow(clippy::too_many_arguments)]
+    fn attend(&self, nsd: &Nsd, parts: [(&Part, *const std::ffi::c_void); 3], qn: &DevBuf, kn: &DevBuf, m: usize, cs: &DevBuf, t: &Tmp, fused: bool) -> Result<()> {
+        let gpu = &self.gpu;
+        let k = ffi::api()?;
+        let qw = 3 * DIM;
+        let half_at = |buf: &DevBuf, n: usize| -> *mut std::ffi::c_void { buf.ptr().cast::<u16>().wrapping_add(n).cast() };
+        if fused {
+            // one [3 * 3072, 3072] matrix and its bias: q | k | v side by side
+            parts[0].0.apply(nsd, t.h.ptr(), m, parts[0].1, t.big.ptr(), 0)?;
+            // SAFETY: big holds m x 9216 floats; qkv m x 9216 halves.
+            ffi::check(unsafe { (k.to_half_rows)(gpu.raw(), t.big.fp(), m as i64, qw as i64, ffi::ACT_SCALE, t.qkv.ptr(), qw as i64) }, "q k v")?;
+        } else {
+            for (i, (p, b)) in parts.iter().enumerate() {
+                p.apply(nsd, t.h.ptr(), m, *b, t.of.ptr(), 0)?;
+                // SAFETY: of holds m x 3072 floats; qkv m rows of 9216 halves.
+                ffi::check(unsafe { (k.to_half_rows)(gpu.raw(), t.of.fp(), m as i64, DIM as i64, ffi::ACT_SCALE, half_at(&t.qkv, i * DIM), qw as i64) }, "q k v")?;
+            }
+        }
+        // (the norm of q s with eps s^2 is the norm of q with eps: the scale is exact)
+        let eps = EPS * ffi::ACT_SCALE * ffi::ACT_SCALE;
+        nsd.rms_rope(t.qkv.ptr(), Dt::F16, m, HEADS, HEAD, qw, qn.ptr(), eps, cs.ptr(), HEAD)?;
+        nsd.rms_rope(half_at(&t.qkv, DIM), Dt::F16, m, HEADS, HEAD, qw, kn.ptr(), eps, cs.ptr(), HEAD)?;
+        nsd.attention_qk(t.qkv.ptr(), m, qw, half_at(&t.qkv, DIM), half_at(&t.qkv, 2 * DIM), m, qw, Dt::F16, HEADS, HEAD, t.att.ptr(), Dt::F16)
+    }
+
+    /// One block over x float32 [m, 3072] in place, with step modulation `md`
+    fn block(&self, nsd: &Nsd, b: &Block, x: &DevBuf, m: usize, cs: &DevBuf, md: &StepMod, t: &Tmp) -> Result<()> {
+        let gpu = &self.gpu;
+        let k = ffi::api()?;
+        let rows = t.rows.ptr();
+        nsd.rms_norm_mod(x.ptr(), Dt::F32, m, DIM, b.norm1.ptr(), EPS, rows, md.at(1), md.at(0), t.h.ptr(), Dt::F16)?;
+        self.attend(nsd, [(&b.q, none()), (&b.k, none()), (&b.v, none())], &b.q_norm, &b.k_norm, m, cs, t, false)?;
+        b.o.apply(nsd, t.att.ptr(), m, none(), t.of.ptr(), 0)?;
+        nsd.scale(t.of.ptr(), m * DIM, 1.0 / ffi::ACT_SCALE)?;
+        nsd.gate_add(x.ptr(), Dt::F32, m, DIM, t.of.ptr(), Dt::F32, rows, md.at(2))?;
+        nsd.rms_norm_mod(x.ptr(), Dt::F32, m, DIM, b.norm2.ptr(), EPS, rows, md.at(4), md.at(3), t.h.ptr(), Dt::F16)?;
+        b.up_gate.apply(nsd, t.h.ptr(), m, none(), t.big.ptr(), 0)?;
+        // SAFETY: big holds m x 2 * 8192 floats (hidden | gate), act m x 8192 halves.
+        ffi::check(unsafe { (k.situ)(gpu.raw(), t.big.fp(), m as i64, FFN as i64, (2 * FFN) as i64, t.act.ptr()) }, "situ")?;
+        b.down.apply(nsd, t.act.ptr(), m, none(), t.of.ptr(), 0)?;
+        nsd.gate_add(x.ptr(), Dt::F32, m, DIM, t.of.ptr(), Dt::F32, rows, md.at(5))
+    }
+
+    /// The caption's rows: Qwen3.5's last hidden state (float32 [L, 4096]) through the text embedder's linear and its
+    /// two blocks
+    pub fn prefix(&self, nsd: &Nsd, hidden: &[f32]) -> Result<Prefix> {
+        let gpu = &self.gpu;
+        let k = ffi::api()?;
+        let l = hidden.len() / TEXT_DIM;
+        if l == 0 {
+            return Err(Error("an empty caption".into()));
+        }
+        let hf = DevBuf::from_f32(gpu, hidden)?;
+        let hh = DevBuf::new(gpu, hidden.len() * 2)?;
+        // SAFETY: L x 4096 values each way.
+        ffi::check(unsafe { (k.to_half)(gpu.raw(), hf.fp(), hh.ptr(), hidden.len() as i64) }, "to half")?;
+        let x = DevBuf::f32(gpu, l * DIM)?;
+        self.text_proj.apply(nsd, hh.ptr(), l, self.text_proj_b.fp().cast(), x.ptr(), 0)?;
+        let pos: Vec<[f64; 4]> = (0..l).map(|j| [0.0, j as f64, 0.0, 0.0]).collect();
+        let cs = rope_table(&self.bands, &pos);
+        let csd = DevBuf::from_f32(gpu, &cs)?;
+        let t = Tmp::new(gpu, l)?;
+        for b in &self.text_blocks {
+            nsd.rms_norm_mod(x.ptr(), Dt::F32, l, DIM, b.norm1.ptr(), EPS, none(), none(), none(), t.h.ptr(), Dt::F16)?;
+            self.attend(nsd, [(&b.qkv, b.qkv_b.fp().cast()), (&b.qkv, none()), (&b.qkv, none())], &b.q_norm, &b.k_norm, l, &csd, &t, true)?;
+            b.proj.apply(nsd, t.att.ptr(), l, b.proj_bs.fp().cast(), t.of.ptr(), 0)?;
+            nsd.scale(t.of.ptr(), l * DIM, 1.0 / ffi::ACT_SCALE)?;
+            nsd.gate_add(x.ptr(), Dt::F32, l, DIM, t.of.ptr(), Dt::F32, none(), none())?;
+            nsd.rms_norm_mod(x.ptr(), Dt::F32, l, DIM, b.norm2.ptr(), EPS, none(), none(), none(), t.h.ptr(), Dt::F16)?;
+            b.up.apply(nsd, t.h.ptr(), l, b.up_b.fp().cast(), t.big.ptr(), 2 * FFN)?;
+            let gate_at: *mut std::ffi::c_void = t.big.fp().wrapping_add(FFN).cast();
+            b.gate.apply(nsd, t.h.ptr(), l, b.gate_b.fp().cast(), gate_at, 2 * FFN)?;
+            // SAFETY: as in a block.
+            ffi::check(unsafe { (k.situ)(gpu.raw(), t.big.fp(), l as i64, FFN as i64, (2 * FFN) as i64, t.act.ptr()) }, "situ")?;
+            b.down.apply(nsd, t.act.ptr(), l, b.down_b.fp().cast(), t.of.ptr(), 0)?;
+            nsd.gate_add(x.ptr(), Dt::F32, l, DIM, t.of.ptr(), Dt::F32, none(), none())?;
+        }
+        nsd.wait()?;
+        Ok(Prefix { rows: l, x, cs })
+    }
+
+    /// The model's velocity for latent tokens `lat` (float32 [h * w, 128]: a token a position, row-major) at a step:
+    /// float32 [h * w, 128]. `skip`: a block left out (the unconditional branch's 22)
+    #[allow(clippy::too_many_arguments)]
+    pub fn velocity(&self, nsd: &Nsd, pre: &Prefix, lat: &DevBuf, hw: (usize, usize), md: &StepMod, skip: Option<usize>, mut grabs: Option<&mut Grabs>)
+                    -> Result<DevBuf> {
+        let gpu = &self.gpu;
+        let n = hw.0 * hw.1;
+        let c = pre.rows;
+        let s = n + c;
+        let x = DevBuf::f32(gpu, s * DIM)?;
+        nsd.linear(lat.ptr(), Dt::F32, n, LATENT, self.video_w.ptr(), DIM, self.video_b.fp().cast(), x.ptr(), Dt::F32)?;
+        // [image | caption]
+        x.copy_within(n * DIM * 4, &pre.x, 0, c * DIM * 4)?;
+        let mut cs = rope_table(&self.bands, &image_positions(hw.0, hw.1, c));
+        cs.extend_from_slice(&pre.cs);
+        let cs = DevBuf::from_f32(gpu, &cs)?;
+        let t = Tmp::new(gpu, s)?;
+        for (i, b) in self.layers.iter().enumerate() {
+            if skip != Some(i) {
+                self.block(nsd, b, &x, s, &cs, md, &t)?;
+            }
+            if let Some(g) = grabs.as_deref_mut() {
+                if g.at.contains(&i) {
+                    nsd.wait()?;
+                    g.outs.push(x.to_f32()?);
+                }
+            }
+        }
+        // the head on the image's rows
+        let hf = DevBuf::f32(gpu, n * DIM)?;
+        nsd.rms_norm_mod(x.ptr(), Dt::F32, n, DIM, self.final_norm.ptr(), EPS, t.rows.ptr(), md.at(7), md.at(6), hf.ptr(), Dt::F32)?;
+        let v = DevBuf::f32(gpu, n * LATENT)?;
+        nsd.linear(hf.ptr(), Dt::F32, n, DIM, self.final_w.ptr(), LATENT, none(), v.ptr(), Dt::F32)?;
+        nsd.wait()?;
+        Ok(v)
+    }
+}
+
+/// A pass's buffers, for up to `rows` tokens
+struct Tmp {
+    h: DevBuf,
+    qkv: DevBuf,
+    att: DevBuf,
+    of: DevBuf,
+    big: DevBuf,
+    act: DevBuf,
+    /// zeros: every row takes the modulation's one row
+    rows: DevBuf,
+}
+
+impl Tmp {
+    fn new(gpu: &Arc<Gpu>, rows: usize) -> Result<Tmp> {
+        let r = DevBuf::new(gpu, rows * 4)?;
+        r.write(0, &vec![0u8; rows * 4])?;
+        Ok(Tmp {
+            h: DevBuf::new(gpu, rows * DIM * 2)?,
+            qkv: DevBuf::new(gpu, rows * 3 * DIM * 2)?,
+            att: DevBuf::new(gpu, rows * DIM * 2)?,
+            of: DevBuf::f32(gpu, rows * DIM)?,
+            big: DevBuf::f32(gpu, rows * 2 * FFN)?,
+            act: DevBuf::new(gpu, rows * FFN * 2)?,
+            rows: r,
+        })
+    }
+}
+
+/// Latents [128, h, w] as tokens [h * w, 128]
+pub fn tokens(lat: &[f32], n: usize) -> Vec<f32> {
+    let mut out = vec![0f32; lat.len()];
+    for c in 0..LATENT {
+        for p in 0..n {
+            out[p * LATENT + c] = lat[c * n + p];
+        }
+    }
+    out
+}
+
+/// The inverse: tokens [h * w, 128] to latents [128, h, w]
+pub fn planes(tok: &[f32], n: usize) -> Vec<f32> {
+    let mut out = vec![0f32; tok.len()];
+    for c in 0..LATENT {
+        for p in 0..n {
+            out[c * n + p] = tok[p * LATENT + c];
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tokens_go_and_come_back() {
+        let n = 6;
+        let lat: Vec<f32> = (0..128 * n).map(|i| i as f32).collect();
+        let t = super::tokens(&lat, n);
+        // token 1's channel 2 is plane 2's position 1
+        assert_eq!(t[128 + 2], (2 * n + 1) as f32);
+        assert_eq!(super::planes(&t, n), lat);
+    }
+
+    #[test]
+    fn rope_pairs_follow_the_axes() {
+        let bands: Vec<f32> = (0..16).map(|b| 1.0 / 10000f32.powf(b as f32 / 16.0)).collect();
+        let cs = super::rope_table(&bands, &[[0.0, 3.0, 0.0, 0.0], [0.0, 0.0, -1.5, 2.0]]);
+        // token 0: the r axis (pairs 0..16) does not turn; the f axis's first pair (16) by 3
+        assert!((cs[0] - 1.0).abs() < 1e-6 && cs[1].abs() < 1e-6);
+        assert!((cs[2 * 16] - 3f32.cos()).abs() < 1e-6 && (cs[2 * 16 + 1] - 3f32.sin()).abs() < 1e-6);
+        // token 1: h's first pair (32) by -1.5, w's (48) by 2
+        assert!((cs[128 + 2 * 32 + 1] - (-1.5f32).sin()).abs() < 1e-6);
+        assert!((cs[128 + 2 * 48] - 2f32.cos()).abs() < 1e-6);
+        let p = super::image_positions(2, 3, 7);
+        assert_eq!(p[0], [0.0, 7.0, -0.5, -1.0]);
+        assert_eq!(p[5], [0.0, 7.0, 0.5, 1.0]);
+    }
+}
