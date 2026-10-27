@@ -144,7 +144,9 @@ impl MossImage {
         // the text encoder first on its card: on one card, a full one says so before the DiT is read
         let te = te::TextEncoder::load(role(files, "text-encoder")?, &te_gpu, log)?;
         let nsd = Nsd::new(&gpu)?;
-        let dit = dit::Dit::load(&f, &nsd, log)?;
+        // the int8 tensor cores unless NS_MOSS_INT8=0 (the matrices as stored: slower, a hair closer to the reference)
+        let int8 = std::env::var("NS_MOSS_INT8").map_or(true, |v| v != "0");
+        let dit = dit::Dit::load(&f, &nsd, int8, log)?;
         let vae = vae::Vae::load(role(files, "vae")?, &nsd, log)?;
         Ok(MossImage { te, nsd, dit, vae, gpu, loaded: Instant::now(), load_s: t0.elapsed().as_secs_f64(), busy: Mutex::new(()), conds: Mutex::new(Vec::new()) })
     }

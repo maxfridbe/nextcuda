@@ -46,6 +46,7 @@ struct Api {
     attention_causal: unsafe extern "C" fn(M, P, P, P, c_int, i64, i64, i64, i64, i64, i64, M) -> c_int,
     attention_causal_rows: unsafe extern "C" fn(M, P, P, P, c_int, i64, i64, i64, i64, i64, i64, i64, M) -> c_int,
     attention_qk: unsafe extern "C" fn(M, P, i64, i64, P, P, i64, i64, c_int, i64, i64, M, c_int) -> c_int,
+    flash_attention: unsafe extern "C" fn(M, P, i64, i64, P, P, i64, i64, i64, i64, M) -> c_int,
     conv2d: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, i64, P, i64, i64, *const f32, M) -> c_int,
     attention: unsafe extern "C" fn(M, P, P, P, c_int, i64, i64, i64, i64, M, c_int) -> c_int,
     attention_batch: unsafe extern "C" fn(M, P, P, P, c_int, i64, i64, i64, i64, i64, M, c_int) -> c_int,
@@ -99,6 +100,7 @@ fn api() -> Result<&'static Api> {
             attention_causal: sym!("nsd_attention_causal"),
             attention_causal_rows: sym!("nsd_attention_causal_rows"),
             attention_qk: sym!("nsd_attention_qk"),
+            flash_attention: sym!("nsd_flash_attention"),
             conv2d: sym!("nsd_conv2d"),
             conv3d_ex: sym!("nsd_conv3d_ex"),
             attention: sym!("nsd_attention"),
@@ -288,6 +290,15 @@ impl Nsd {
         // SAFETY: the caller's buffers hold the sizes named.
         self.ok(unsafe { (self.k.attention_qk)(self.ctx, q, sq as i64, qs as i64, k, v, skv as i64, kvs as i64, dt as c_int, h as i64, d as i64, out, out_dt as c_int) },
                 "attention")
+    }
+
+    /// Attention for head size 128 in one fused kernel (FlashAttention-2's scheme): `sq` query rows (stride `qs`) over
+    /// `skv` key / value rows (stride `kvs`), `hq` heads over `hkv`, half in and out, out [sq, hq * 128]
+    #[allow(clippy::too_many_arguments)]
+    pub fn flash_attention(&self, q: P, sq: usize, qs: usize, k: P, v: P, skv: usize, kvs: usize, hq: usize, hkv: usize, out: M) -> Result<()> {
+        // SAFETY: the caller's buffers hold the sizes named.
+        self.ok(unsafe { (self.k.flash_attention)(self.ctx, q, sq as i64, qs as i64, k, v, skv as i64, kvs as i64, hq as i64, hkv as i64, out) },
+                "flash attention")
     }
 
     /// A k x k convolution of N channels-last frames, zero padded

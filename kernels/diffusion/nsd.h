@@ -104,6 +104,10 @@ int nsd_attention_causal(void* ctx, const void* q, const void* k, const void* v,
                          int64_t D, int64_t qs, int64_t kvs, void* out);
 int nsd_attention_causal_rows(void* ctx, const void* q, const void* k, const void* v, int dt, int64_t row0, int64_t rows,
                               int64_t Hq, int64_t Hkv, int64_t D, int64_t qs, int64_t kvs, void* out);
+/* Attention for head size 128 in one fused kernel (nsd_flash.inc): Sq query rows (stride qs) over Skv key / value rows
+ * (stride kvs), Hq heads over Hkv, half in and out, no mask, out [Sq, Hq * 128]. Strides multiples of 8. */
+int nsd_flash_attention(void* ctx, const void* q, int64_t Sq, int64_t qs, const void* k, const void* v, int64_t Skv, int64_t kvs,
+                        int64_t Hq, int64_t Hkv, void* out);
 int nsd_attention_qk(void* ctx, const void* q, int64_t Sq, int64_t qs, const void* k, const void* v, int64_t Skv, int64_t kvs,
                      int dt, int64_t H, int64_t D, void* out, int out_dt);
 

@@ -979,3 +979,4 @@ int nsd_scale(void* ctx, float* x, int64_t n, float s) {
 #ifndef NSD_SKIP_VIDEO
 #include "nsd_video.inc"
 #endif
+#include "nsd_flash.inc"

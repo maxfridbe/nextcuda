@@ -39,24 +39,53 @@ fn ge(e: nextcuda_gguf::Error) -> Error {
     Error(e.0)
 }
 
-/// A matrix as stored, on the card
+/// The ConvRot group: int8 matrices are rotated by the normalized 256 x 256 Hadamard matrix along their inputs
+const GROUP: usize = 256;
+
+/// A matrix on the card: as stored (dequantized a slice at a time for each product), or as int8 ConvRot rows with a
+/// scale each for the card's int8 tensor cores (`NS_MOSS_INT8`, the default: a 1024 x 1024 step in about half the
+/// time, 2026-10-26; 0: as stored)
 struct Part {
-    w: DevBuf,
+    w: Option<DevBuf>,
     qtype: u32,
     rows: usize,
     k: usize,
+    int8: Option<(DevBuf, DevBuf)>,
 }
 
 impl Part {
     fn apply(&self, nsd: &Nsd, x: *const std::ffi::c_void, m: usize, bias: *const std::ffi::c_void, out: *mut std::ffi::c_void, ldo: usize) -> Result<()> {
-        nsd.linear_q(x, Dt::F16, m, self.k, self.w.ptr(), self.qtype, self.rows, bias, out, Dt::F32, ldo)
+        match (&self.int8, &self.w) {
+            (Some((w, sc)), _) => nsd.int8_linear(x, Dt::F16, m, self.k, w.ptr(), self.rows, sc.ptr(), bias, out, Dt::F32, GROUP, ldo),
+            (None, Some(w)) => nsd.linear_q(x, Dt::F16, m, self.k, w.ptr(), self.qtype, self.rows, bias, out, Dt::F32, ldo),
+            (None, None) => Err(Error("a matrix with no weights".into())),
+        }
+    }
+
+    /// Parts stacked along their outputs as one int8 ConvRot matrix (one quantization of the activations serves
+    /// every row; one product), the stored copies let go
+    fn int8_of(nsd: &Nsd, parts: Vec<Part>) -> Result<Part> {
+        let k = parts[0].k;
+        if parts.iter().any(|p| p.k != k) || k % GROUP != 0 {
+            return Err(Error(format!("int8 parts of {k} inputs: the same width, a multiple of {GROUP}")));
+        }
+        let n: usize = parts.iter().map(|p| p.rows).sum();
+        let w = DevBuf::new(&nsd.gpu, n * k)?;
+        let sc = DevBuf::f32(&nsd.gpu, n)?;
+        let mut off = 0usize;
+        for p in &parts {
+            let src = p.w.as_ref().ok_or_else(|| Error("int8 from a matrix already int8".into()))?;
+            nsd.int8_prepare(src.ptr(), p.qtype, 0, p.rows, k, GROUP, w.ptr().cast::<u8>().wrapping_add(off * k).cast(), sc.fp().wrapping_add(off).cast())?;
+            off += p.rows;
+        }
+        nsd.wait()?;
+        Ok(Part { w: None, qtype: 0, rows: n, k, int8: Some((w, sc)) })
     }
 }
 
 struct Block {
-    q: Part,
-    k: Part,
-    v: Part,
+    /// q | k | v: three parts as stored, or (int8) one matrix of their rows
+    qkv: Vec<Part>,
     o: Part,
     up_gate: Part,
     down: Part,
@@ -168,7 +197,8 @@ pub fn image_positions(h: usize, w: usize, l: usize) -> Vec<[f64; 4]> {
 }
 
 impl Dit {
-    pub fn load(f: &Gguf, nsd: &Nsd, log: &mut dyn FnMut(String)) -> Result<Dit> {
+    /// The weights from `f`; `int8`: the blocks' matrices as int8 ConvRot rows (q, k and v as one)
+    pub fn load(f: &Gguf, nsd: &Nsd, int8: bool, log: &mut dyn FnMut(String)) -> Result<Dit> {
         let gpu = nsd.gpu.clone();
         let t0 = std::time::Instant::now();
         let part = |name: &str| -> Result<Part> {
@@ -181,19 +211,22 @@ impl Dit {
             let bytes = f.read(t).map_err(ge)?;
             let w = DevBuf::new(&gpu, bytes.len())?;
             w.write(0, &bytes)?;
-            Ok(Part { w, qtype: code, rows, k })
+            Ok(Part { w: Some(w), qtype: code, rows, k, int8: None })
         };
         let vecd = |name: &str| -> Result<DevBuf> { DevBuf::from_f32(&gpu, &host_vec(f, name)?) };
         let scaled = |name: &str, s: f32| -> Result<DevBuf> { DevBuf::from_f32(&gpu, &host_vec(f, name)?.iter().map(|v| v * s).collect::<Vec<_>>()) };
         let hv = |name: &str| host_vec(f, name);
+        let mat = |name: &str| -> Result<Part> {
+            let p = part(name)?;
+            if int8 { Part::int8_of(nsd, vec![p]) } else { Ok(p) }
+        };
         let block = |p: &str| -> Result<Block> {
+            let qkv = vec![part(&format!("{p}proj.q.weight"))?, part(&format!("{p}proj.k.weight"))?, part(&format!("{p}proj.v.weight"))?];
             Ok(Block {
-                q: part(&format!("{p}proj.q.weight"))?,
-                k: part(&format!("{p}proj.k.weight"))?,
-                v: part(&format!("{p}proj.v.weight"))?,
-                o: part(&format!("{p}proj.o.weight"))?,
-                up_gate: part(&format!("{p}proj.ffn_up_gate.weight"))?,
-                down: part(&format!("{p}proj.ffn_down.weight"))?,
+                qkv: if int8 { vec![Part::int8_of(nsd, qkv)?] } else { qkv },
+                o: mat(&format!("{p}proj.o.weight"))?,
+                up_gate: mat(&format!("{p}proj.ffn_up_gate.weight"))?,
+                down: mat(&format!("{p}proj.ffn_down.weight"))?,
                 norm1: vecd(&format!("{p}norm1.weight"))?,
                 norm2: vecd(&format!("{p}norm2.weight"))?,
                 q_norm: vecd(&format!("{p}q_norm.weight"))?,
@@ -244,7 +277,8 @@ impl Dit {
             return Err(Error(format!("{}: {} rope bands and text width {}: MOSS-Image's DiT has 16 and 4096", f.paths[0].display(), dit.bands.len(),
                                      dit.text_proj.k)));
         }
-        log(format!("moss-image dit: {nl} blocks, {nt} text blocks on {} in {:.1} s", gpu.name, t0.elapsed().as_secs_f64()));
+        log(format!("moss-image dit: {nl} blocks, {nt} text blocks on {} ({}) in {:.1} s", gpu.name, if int8 { "int8 ConvRot" } else { "as stored" },
+                    t0.elapsed().as_secs_f64()));
         Ok(dit)
     }
 
@@ -303,7 +337,7 @@ impl Dit {
         let eps = EPS * ffi::ACT_SCALE * ffi::ACT_SCALE;
         nsd.rms_rope(t.qkv.ptr(), Dt::F16, m, HEADS, HEAD, qw, qn.ptr(), eps, cs.ptr(), HEAD)?;
         nsd.rms_rope(half_at(&t.qkv, DIM), Dt::F16, m, HEADS, HEAD, qw, kn.ptr(), eps, cs.ptr(), HEAD)?;
-        nsd.attention_qk(t.qkv.ptr(), m, qw, half_at(&t.qkv, DIM), half_at(&t.qkv, 2 * DIM), m, qw, Dt::F16, HEADS, HEAD, t.att.ptr(), Dt::F16)
+        nsd.flash_attention(t.qkv.ptr(), m, qw, half_at(&t.qkv, DIM), half_at(&t.qkv, 2 * DIM), m, qw, HEADS, HEADS, t.att.ptr())
     }
 
     /// One block over x float32 [m, 3072] in place, with step modulation `md`
@@ -312,7 +346,11 @@ impl Dit {
         let k = ffi::api()?;
         let rows = t.rows.ptr();
         nsd.rms_norm_mod(x.ptr(), Dt::F32, m, DIM, b.norm1.ptr(), EPS, rows, md.at(1), md.at(0), t.h.ptr(), Dt::F16)?;
-        self.attend(nsd, [(&b.q, none()), (&b.k, none()), (&b.v, none())], &b.q_norm, &b.k_norm, m, cs, t, false)?;
+        match b.qkv.as_slice() {
+            [qkv] => self.attend(nsd, [(qkv, none()), (qkv, none()), (qkv, none())], &b.q_norm, &b.k_norm, m, cs, t, true)?,
+            [q, k, v] => self.attend(nsd, [(q, none()), (k, none()), (v, none())], &b.q_norm, &b.k_norm, m, cs, t, false)?,
+            _ => return Err(Error("a block's q k v".into())),
+        }
         b.o.apply(nsd, t.att.ptr(), m, none(), t.of.ptr(), 0)?;
         nsd.scale(t.of.ptr(), m * DIM, 1.0 / ffi::ACT_SCALE)?;
         nsd.gate_add(x.ptr(), Dt::F32, m, DIM, t.of.ptr(), Dt::F32, rows, md.at(2))?;
