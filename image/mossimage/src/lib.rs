@@ -14,7 +14,8 @@
 //!
 //! LoRAs (the blocks' q k v o ffn_up_gate ffn_down) are merged into the matrices at load, before they are made int8. A
 //! `turbo-lora` file is a few-step distillation (akhaliq's MOSS-Image-SFT-4-steps: DMD onto the scheduler's own 4-step
-//! levels, t = 1000 / 910 / 717 / 24): with it the defaults are 4 steps and no guidance.
+//! levels, t = 1000 / 910 / 717 / 24): with it the defaults are 4 steps and no guidance, or `NS_MOSS_STEPS` (an
+//! 8-step distillation's entry sets 8).
 
 pub mod check;
 pub mod dit;
@@ -47,7 +48,11 @@ pub fn kind() -> ImageKind {
 }
 
 fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<Box<dyn ImageEngine>> {
-    Ok(Box::new(MossImage::load(files, gpus, &o.merge_loras, log)?))
+    let mut e = MossImage::load(files, gpus, &o.merge_loras, log)?;
+    if let Some(v) = o.setting("NS_MOSS_STEPS") {
+        e.steps = Some(v.trim().parse().ok().filter(|n| (1..=200).contains(n)).ok_or_else(|| Error(format!("NS_MOSS_STEPS={v}: a step count, 1 to 200")))?);
+    }
+    Ok(Box::new(e))
 }
 
 /// torch.linspace(start, end, n) in float32, as torch makes it: the first half from the start, the rest from the end,
@@ -122,6 +127,8 @@ pub struct MossImage {
     pub(crate) vae: vae::Vae,
     /// a turbo LoRA merged: 4 steps and no guidance by default
     turbo: bool,
+    /// the default step count when set (NS_MOSS_STEPS); else 4 with a turbo LoRA, 50 without
+    pub steps: Option<u32>,
     gpu: Arc<Gpu>,
     loaded: Instant,
     load_s: f64,
@@ -165,7 +172,7 @@ impl MossImage {
         }
         let dit = dit::Dit::load(&f, &nsd, int8, deltas, log)?;
         let vae = vae::Vae::load(role(files, "vae")?, &nsd, log)?;
-        Ok(MossImage { te, nsd, dit, vae, turbo: turbo.is_some(), gpu, loaded: Instant::now(), load_s: t0.elapsed().as_secs_f64(), busy: Mutex::new(()), conds: Mutex::new(Vec::new()) })
+        Ok(MossImage { te, nsd, dit, vae, turbo: turbo.is_some(), steps: None, gpu, loaded: Instant::now(), load_s: t0.elapsed().as_secs_f64(), busy: Mutex::new(()), conds: Mutex::new(Vec::new()) })
     }
 
     /// The text encoder's last hidden state for a prompt, the last few kept
@@ -222,6 +229,7 @@ impl ImageEngine for MossImage {
     }
     fn defaults(&self) -> Defaults {
         let (steps, cfg) = if self.turbo { (4, 1.0) } else { (50, 3.0) };
+        let steps = self.steps.unwrap_or(steps);
         Defaults { width: 1024, height: 1024, steps, cfg, sampler: Sampler::Euler, schedule: Schedule::Shift, shift: SHIFT }
     }
     fn samplers(&self) -> Vec<Sampler> {

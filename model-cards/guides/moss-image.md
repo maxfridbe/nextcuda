@@ -15,6 +15,9 @@ A general text-to-image model: photographs, illustration, product shots, scenes 
   4 steps at cfg 1 (no guidance, so no negative prompt), a 1024 x 1024 picture in a few seconds. Use about 6 steps
   near 1536 wide and 8 at 2048 x 2048 (4 there come out hazy); its steps are the scheduler's own levels, so other
   counts work too. Fine detail and small text are a little softer than the full model's 50 guided steps.
+- **8-step turbos:** `moss-image-sft-turbo8-q8` (lodestones' SFT 8-step DMD: warm, contrasty, the crispest text)
+  and `moss-image-sft-dmd2-q8` (lodestones' DMD2 from Kromoss: more natural light and detail), about 5 s a
+  1024 x 1024 picture at 8 steps and cfg 1; 4 steps also work.
 - **Seed:** the same seed, prompt and settings make the same picture.
 - **Time:** a 1024 x 1024 picture at the defaults takes about 48 s on an RTX 5070 (0.93 s a step), about 2.3 s a step
   with the DiT on an RTX 3060; loading takes about a minute. Each card runs its own build of the model's kernels
