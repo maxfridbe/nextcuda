@@ -66,6 +66,9 @@ export function Create() {
   const d = info?.defaults;
   const max = d?.max_seconds ?? 360;
   const ready = !!d;
+  const guided = info?.guidance !== false;
+  // MiniMax Music 3 draws semantic frames, then the flow stage in windows
+  const windows = info?.arch === "minimax-music3";
   return (
     <div class="create">
       <div class="lab">description <span class="hint">genre, tempo and key, mood, the voice (say who sings), instruments, arrangement</span></div>
@@ -98,10 +101,12 @@ export function Create() {
           </span>
         </label>
       </div>
-      <Section id="advanced" title={`Advanced (${f.steps ?? d?.steps ?? "—"} steps · guidance ${f.cfg ?? d?.cfg ?? "—"})`}>
+      <Section id="advanced" title={`Advanced (${f.steps ?? d?.steps ?? "—"} steps · ${guided ? `guidance ${f.cfg ?? d?.cfg ?? "—"}` : "unguided"})`}>
         <div class="row">
-          <label>steps (each window) {num("steps", { min: 1, max: 100, placeholder: d ? String(d.steps) : "", nullable: true })}</label>
-          <label>guidance (cfg) {num("cfg", { min: 1, max: 10, step: 0.1, placeholder: d ? String(d.cfg) : "", nullable: true })}</label>
+          <label>{windows ? "steps (each window)" : "steps"} {num("steps", { min: 1, max: 100, placeholder: d ? String(d.steps) : "", nullable: true })}</label>
+          {guided
+            ? <label>guidance (cfg) {num("cfg", { min: 1, max: 10, step: 0.1, placeholder: d ? String(d.cfg) : "", nullable: true })}</label>
+            : <label>guidance (cfg) <span class="hint">off (this checkpoint is distilled)</span></label>}
         </div>
         {(info?.options ?? []).length
           ? <div class="row">
@@ -116,7 +121,9 @@ export function Create() {
               ))}
             </div>
           : null}
-        <div class="hint">{`The language model draws a frame 25 times a second of sound; the flow stage then makes ${mss(f.seconds)} in windows of 8 s, 4 s apart.`}</div>
+        {windows
+          ? <div class="hint">{`The language model draws a frame 25 times a second of sound; the flow stage then makes ${mss(f.seconds)} in windows of 8 s, 4 s apart.`}</div>
+          : null}
       </Section>
       <div class="row">
         <button type="button" attrs={{ id: "go", disabled: !ready || state.busy || !f.prompt.trim() }} on={{ click: () => void generate() }}>

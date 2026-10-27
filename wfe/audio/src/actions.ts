@@ -101,15 +101,32 @@ export function pickReference(file: File | null): void {
   r.readAsDataURL(file);
 }
 
+/** A multi-speaker script's voices: the saved voices picked for the first speakers, in order, up to the first gap */
+export function cast(sp: { speakers?: number | null }): string[] {
+  if ((sp.speakers ?? 0) < 2) return [];
+  const known = new Set(state.voices.map((v) => v.name));
+  const out: string[] = [];
+  for (const n of (state.form.voices ?? []).slice(0, sp.speakers ?? 0)) {
+    if (!n || !known.has(n)) break;
+    out.push(n);
+  }
+  return out.length >= 2 ? out : [];
+}
+
+/** Whether the voice picked is one of the model's own (a form kept from another model may hold any name) */
+const builtin = (v: string): boolean => (state.info?.speech?.voices ?? []).some((x) => x.toLowerCase() === v.toLowerCase());
+
 /** Whether the form can go: songs need a description, speech its text (and what the model needs besides). */
 export function canGo(): boolean {
   const f = state.form;
   const sp = state.info?.speech;
   if (!sp) return !!f.prompt.trim();
   if (!f.text.trim()) return false;
-  if (sp.requires === "voice" && !f.voice) return false;
+  if (sp.requires === "voice" && !builtin(f.voice)) return false;
   if (sp.requires === "instructions" && !f.instructions.trim()) return false;
-  if (sp.requires === "reference" && !f.refAudio && !state.voices.some((v) => v.name === f.voice)) return false;
+  if (sp.requires === "reference" && !f.refAudio && !state.voices.some((v) => v.name === f.voice) && cast(sp).length < 2) return false;
+  // a model that needs the recording's transcript is not sent one without it
+  if (sp.clone_needs_text && f.refAudio && !state.voices.some((v) => v.name === f.voice) && !f.refText.trim()) return false;
   return true;
 }
 
@@ -121,18 +138,22 @@ function body(): AudioSpeechBody {
     ? { model: state.info?.model, input: f.text.trim(), seconds: f.seconds, response_format: "url" }
     : { model: state.info?.model, instructions: f.prompt.trim(), input: f.lyrics.trim(), seconds: f.seconds, response_format: "url" };
   if (sp) {
-    if (sp.voices.length && f.voice) b.voice = f.voice;
-    if (f.language && sp.languages.length) b.language = f.language;
+    // only what the model takes: a voice or language left in the form from another model is not sent
+    if (builtin(f.voice)) b.voice = f.voice;
+    if (f.language && sp.languages.includes(f.language)) b.language = f.language;
     if ((sp.instructions || sp.design) && f.instructions.trim()) b.instructions = f.instructions.trim();
-    if (sp.clone && !sp.voices.length && state.voices.some((v) => v.name === f.voice)) b.voice = f.voice;
+    const script = cast(sp);
+    if (script.length) b.speakers = script;
+    else if (sp.clone && state.voices.some((v) => v.name === f.voice)) b.voice = f.voice;
     else if (sp.clone && f.refAudio) {
       b.ref_audio = f.refAudio;
-      if (f.refText.trim()) b.ref_text = f.refText.trim();
+      if (f.refText.trim() && (sp.clone_needs_text || sp.clone_takes_text)) b.ref_text = f.refText.trim();
     }
   }
   if (f.seed !== null) b.seed = f.seed;
-  if (f.steps !== null && f.steps !== d?.steps) b.steps = f.steps;
-  if (f.cfg !== null && f.cfg !== d?.cfg) b.cfg = f.cfg;
+  // a song's steps and guidance: speech has neither, and a distilled model runs unguided
+  if (!sp && f.steps !== null && f.steps !== d?.steps) b.steps = f.steps;
+  if (!sp && state.info?.guidance !== false && f.cfg !== null && f.cfg !== d?.cfg) b.cfg = f.cfg;
   const opts = Object.fromEntries(Object.entries(f.options).filter(([k, v]) =>
     v.trim() !== "" && (state.info?.options ?? []).some((o) => o.name === k)));
   if (Object.keys(opts).length) b.options = opts;

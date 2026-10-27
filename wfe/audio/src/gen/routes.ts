@@ -167,6 +167,8 @@ export interface Info {
   arch?: string | null;
   /** it sings words */
   lyrics?: boolean | null;
+  /** `cfg` changes the sound (false: a distilled checkpoint runs unguided) */
+  guidance?: boolean | null;
   /** it serves its page */
   wfe?: boolean | null;
   /** a recogniser: what it writes down (none: it makes sound) */
@@ -322,6 +324,8 @@ export interface SpeechInfo {
   events: string[];
   /** what a request must carry besides the text: voice, instructions or reference; none: nothing */
   requires?: string | null;
+  /** the speakers a script may have, each its own saved voice ("Speaker 1: ...", "Speaker 2: ...": VibeVoice); 0: one voice */
+  speakers?: number | null;
 }
 
 /** A stretch or a word of a transcript, timed */

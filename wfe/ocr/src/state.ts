@@ -111,6 +111,18 @@ export function restorePreferences(): void {
   state.view = load<View>("nsocr.view", "doc");
 }
 
+/** Whether the model reads by this option (the server's `ocr_takes`: tiles, figures, columns, guard, each_page, boxes);
+ *  until the model is known, all of them */
+export function takes(k: string): boolean {
+  const t = state.info?.ocr_takes;
+  return !t || t.includes(k);
+}
+
+/** Several pages read each on its own (always, for a model without its own multi-page reading) */
+export function eachPage(): boolean {
+  return !takes("each_page") || state.form.perPage !== false;
+}
+
 /** The instruction the form asks for */
 export function promptText(): string {
   const all = presets();

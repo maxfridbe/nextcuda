@@ -7,17 +7,18 @@ import { Api } from "./Api.js";
 import { ConfigView } from "./Config.js";
 
 const gib = (mb: number) => (mb / 1024).toFixed(1);
-const short = (n: string) => n.replace("Intel(R) Arc(TM) ", "").replace(" Graphics", "");
+const short = (n: string) => n.replace("Intel(R) Arc(TM) ", "").replace("NVIDIA GeForce ", "").replace(" Graphics", "");
 /** a link to a service on this box, as the browser reaches it */
 const at = (port: number, path = "/") => `${location.protocol}//${location.hostname}:${port}${path}`;
 
-const COLORS: Record<string, string> = { llm: "#06b6d4", image: "#f59e0b", video: "#ec4899", audio: "#8b5cf6" };
+const COLORS: Record<string, string> = { llm: "#06b6d4", image: "#f59e0b", video: "#ec4899", audio: "#8b5cf6", model3d: "#10b981" };
 const color = (k?: string) => COLORS[k ?? ""] ?? "#64748b";
 const KINDS: { kind: Model["kind"]; title: string; icon: string }[] = [
   { kind: "llm", title: "Chat", icon: "&#xf086;" },
   { kind: "image", title: "Images", icon: "&#xf03e;" },
   { kind: "audio", title: "Audio", icon: "&#xf001;" },
   { kind: "video", title: "Video", icon: "&#xf03d;" },
+  { kind: "model3d", title: "3D", icon: "&#xf1b2;" },
 ];
 
 /** A vouched figure: the weights, then the headroom - the working memory it needs to run without erroring (KV for its
@@ -110,7 +111,7 @@ function GpuPicker(m: Model) {
   const pick = m.enabled ? m.gpus : (ui.pick[m.id] ??= [...m.gpus]);
   const loaded = ["loaded", "busy", "loading"].includes(m.state);
   return (
-    <span class="gpus" attrs={{ title: (m.kind === "image" || m.kind === "audio" ? "the cards it may load on (the first with room)" : "the cards it may use")
+    <span class="gpus" attrs={{ title: (m.kind === "image" || m.kind === "audio" || m.kind === "model3d" ? "the cards it may load on (the first with room)" : "the cards it may use")
       + (m.enabled ? " - click to change (more than fit is allowed; a loaded model moved off its card unloads)" : "") }}>
       {cards.map((c) => (
         <label class={{ gpu: true, on: pick.includes(c.index) }}>

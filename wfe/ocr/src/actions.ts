@@ -1,7 +1,7 @@
 /** What the buttons do. */
 import { api } from "./api.js";
 import { isPdf, pdfPages } from "./pdf.js";
-import { promptText, render, state } from "./state.js";
+import { eachPage, promptText, render, state, takes } from "./state.js";
 import type { Page, Reading } from "./types.js";
 
 /** Pictures added as pages (PNG, JPEG, WebP), in the order given */
@@ -94,18 +94,19 @@ export async function read(): Promise<void> {
   state.resultPages = [...state.pages];
   render();
   const f = state.form;
+  // only what the model reads by: a setting left over from another model is not sent
   const body = (images: string[]) => ({
     images,
     prompt: promptText(),
-    tiles: f.tiles,
-    figures: f.figures !== false,
-    columns: f.columns !== false,
+    ...(takes("tiles") ? { tiles: f.tiles } : {}),
+    ...(takes("figures") ? { figures: f.figures !== false } : {}),
+    ...(takes("columns") ? { columns: f.columns !== false } : {}),
     max_tokens: f.maxTokens,
     temperature: f.temperature,
-    ...(f.guard ? {} : { ngram: 0 }),
+    ...(takes("guard") && !f.guard ? { ngram: 0 } : {}),
   });
   try {
-    if (state.pages.length > 1 && f.perPage !== false) {
+    if (state.pages.length > 1 && eachPage()) {
       // page by page: each read on its own (its tiles too), the readings joined with <PAGE> marks
       const all: Reading = { text: "", pages: state.pages.length, tokens: 0, prompt_tokens: 0, seconds: 0 };
       for (const [i, p] of state.pages.entries()) {
@@ -122,7 +123,7 @@ export async function read(): Promise<void> {
       all.tok_s = all.tokens / Math.max(all.seconds, 1e-9);
       state.result = all;
     } else {
-      state.result = await api.ocr({ ...body(state.pages.map((p) => p.url)), each_page: false });
+      state.result = await api.ocr({ ...body(state.pages.map((p) => p.url)), ...(takes("each_page") ? { each_page: false } : {}) });
     }
   } catch (e) {
     state.error = String(e instanceof Error ? e.message : e);

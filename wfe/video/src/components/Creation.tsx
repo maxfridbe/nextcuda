@@ -144,12 +144,15 @@ async function generate(): Promise<void> {
   }
   if (form.refAudios.length) body.ref_audios = form.refAudios;
   if (form.refImages.length && form.refImageMax) body.ref_image_size = "max";
-  if (form.controlVideo) body.control_video = form.controlVideo;
-  if (form.controlMask) {
-    body.control_mask = form.controlMask;
-    if (form.controlSource) body.control_source = form.controlSource;
+  // references and control do not mix (the server refuses): the one the form shows is the one sent
+  if (!hasRefs()) {
+    if (form.controlVideo) body.control_video = form.controlVideo;
+    if (form.controlMask) {
+      body.control_mask = form.controlMask;
+      if (form.controlSource) body.control_source = form.controlSource;
+    }
+    if (form.controlVideo || form.controlMask) body.control_strength = form.controlStrength;
   }
-  if (form.controlVideo || form.controlMask) body.control_strength = form.controlStrength;
   if (form.chain) body.first_frame = "prev";
   submitted = "sending…";
   render();
@@ -163,6 +166,10 @@ async function generate(): Promise<void> {
   }
   await refresh();
 }
+
+/** References chosen (a clip with them runs the Ref2VA denoiser, which takes no control) */
+const hasRefs = (): boolean => form.refImages.length + form.refVideos.length + form.refAudios.length > 0;
+const hasControl = (): boolean => !!(form.controlVideo || form.controlMask);
 
 /** What the last Generate did ("started", "queued at position 2"): the click answered on the page itself */
 let submitted = "";
@@ -376,21 +383,21 @@ export function Creation() {
       />
       <div class="hint">
         Dialogue: <code>{"(S1) says: <d>[English] line</d>"}</code> · no negations (cfg is 1.0,
-        so every word renders) · 4–15 s per clip
+        so every word renders) · up to 15 s per clip
       </div>
       <div class="row">
         {num("seconds", "seconds", 1, 15, 0.01)}
         {num("steps", "steps", 1, 40, 1)}
         {num("seed", "seed", 0, 2147483647, 1)}
         {num("upscale", "upscale", 1, 4, 0.5)}
-        <label attrs={{ title: "ESRGAN: decoded at the sampled size, the frames enlarged by a network on the GPU - about half the decode stage's time (a 5 s clip at 1152x864 on a B65: 19.6 s against 41.9). latent: the latents enlarged, then decoded at the larger size - the decoder's own fine texture." }}>
+        {form.upscale > 1 ? <label attrs={{ title: "ESRGAN: decoded at the sampled size, the frames enlarged by a network on the GPU - about half the decode stage's time. latent: the latents enlarged, then decoded at the larger size - the decoder's own fine texture." }}>
           upscaler
           <select on={{ change: (e: Event) => { form.upscaler = (e.target as HTMLSelectElement).value as Upscaler; remember(); render(); } }}>
             <option attrs={{ value: "esrgan-general", selected: form.upscaler === "esrgan-general" }}>ESRGAN general-x4v3 (default)</option>
             <option attrs={{ value: "esrgan-anime", selected: form.upscaler === "esrgan-anime" }}>ESRGAN animevideov3 (sharper, drawn look)</option>
             <option attrs={{ value: "latent", selected: form.upscaler === "latent" }}>latent (slowest, most natural texture)</option>
           </select>
-        </label>
+        </label> : null}
         <EffectPicker />
         {named("sampler", "sampler", state.plan?.samplers, "euler (default)",
           "ComfyUI's samplers on the flow model. euler is the distilled default; ancestral and sde samplers add fresh noise each step; the multistep ones (dpmpp_2m, uni_pc) reuse earlier steps. Some take two or three model calls a step.")}
@@ -418,15 +425,15 @@ export function Creation() {
           chain from previous clip
         </label>
       </div>
-      <Panel
+      {hasControl() ? null : <Panel
         id="refs"
         icon="&#xf03e;"
         title="References"
         hint={refTags().length ? refTags().map((t) => t.tag).join(" · ") : "pictures, clips, sounds the prompt names"}
       >
         <References />
-      </Panel>
-      <Panel
+      </Panel>}
+      {hasRefs() ? null : <Panel
         id="control"
         icon="&#xf1de;"
         title="Control"
@@ -434,7 +441,7 @@ export function Creation() {
           : "a pose / depth / edge video to follow, or a region to regenerate"}
       >
         <ControlNet />
-      </Panel>
+      </Panel>}
       <Panel
         id="canvas"
         icon="&#xf0b2;"

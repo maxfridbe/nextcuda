@@ -34,7 +34,7 @@ export function App() {
   return (
     <div id="app">
       <div class="top">
-        <h1><span class="i" props={{ innerHTML: "&#xf15c;" }} /> {info ? info.model : "nextsycl ocr"}</h1>
+        <h1><span class="i" props={{ innerHTML: "&#xf15c;" }} /> {info ? info.model : "nextcuda ocr"}</h1>
         <GpuPill />
       </div>
       <Stats />

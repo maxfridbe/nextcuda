@@ -2,7 +2,7 @@
  *  longest reading, temperature, the repetition guard. */
 import { jsx } from "../jsx.js";
 import { addFiles, movePage, read, removePage } from "../actions.js";
-import { presets, render, saveForm, state } from "../state.js";
+import { eachPage, presets, render, saveForm, state, takes } from "../state.js";
 import type { Form } from "../types.js";
 import { clamp } from "../util.js";
 
@@ -97,34 +97,34 @@ export function Read() {
         </div>
       </div>
       {state.note ? <div class="live">{state.note}</div> : null}
-      {state.pages.length > 1
+      {state.pages.length > 1 && takes("each_page")
         ? <div class="row">
             <div class="chips">
-              <button type="button" class={{ chip: true, on: f.perPage !== false }} on={{ click: () => set("perPage", true) }}>each page on its own</button>
-              <button type="button" class={{ chip: true, on: f.perPage === false }} on={{ click: () => set("perPage", false) }}>as one document</button>
+              <button type="button" class={{ chip: true, on: eachPage() }} on={{ click: () => set("perPage", true) }}>each page on its own</button>
+              <button type="button" class={{ chip: true, on: !eachPage() }} on={{ click: () => set("perPage", false) }}>as one document</button>
             </div>
-            <span class="hint">{f.perPage !== false
+            <span class="hint">{eachPage()
               ? "each page read in turn with the instruction below, its tiles too (finer print)"
               : "the model's own multi-page reading (\"Multi page parsing.\"): every page at 1024, in one pass - the instruction below is not used"}</span>
           </div>
         : null}
       {f.preset === "custom"
-        ? <textarea attrs={{ placeholder: "Your instruction (\"<|grounding|>\" first for boxes)" }} props={{ value: f.prompt }}
+        ? <textarea attrs={{ placeholder: takes("boxes") ? "Your instruction (\"<|grounding|>\" first for boxes)" : "Your instruction" }} props={{ value: f.prompt }}
                     on={{ input: (e: Event) => set("prompt", (e.target as HTMLTextAreaElement).value) }} />
         : null}
       <div class="row">
-        <label class="inline" attrs={{ title: "A single page: read its 640-pixel tiles too (more detail, more tokens). Several pages are read whole." }}>
-          <input attrs={{ type: "checkbox", disabled: !one && f.perPage === false }} props={{ checked: f.tiles && (one || f.perPage !== false) }} on={{ change: () => set("tiles", !f.tiles) }} /> tiles
-        </label>
-        <label class="inline" attrs={{ title: "Blocks set side by side (a gutter between them) are found first and each read on its own - else the model reads across them as one wide table" }}>
+        {takes("tiles") ? <label class="inline" attrs={{ title: "A single page: read its 640-pixel tiles too (more detail, more tokens). Several pages are read whole." }}>
+          <input attrs={{ type: "checkbox", disabled: !one && !eachPage() }} props={{ checked: f.tiles && (one || eachPage()) }} on={{ change: () => set("tiles", !f.tiles) }} /> tiles
+        </label> : null}
+        {takes("columns") ? <label class="inline" attrs={{ title: "Blocks set side by side (a gutter between them) are found first and each read on its own - else the model reads across them as one wide table" }}>
           <input attrs={{ type: "checkbox" }} props={{ checked: f.columns !== false }} on={{ change: () => set("columns", f.columns === false) }} /> split columns
-        </label>
-        <label class="inline" attrs={{ title: "The model marks pictures inside a page (screenshots, figures) without reading them: read each again on its own and put its text in" }}>
+        </label> : null}
+        {takes("figures") ? <label class="inline" attrs={{ title: "The model marks pictures inside a page (screenshots, figures) without reading them: read each again on its own and put its text in" }}>
           <input attrs={{ type: "checkbox" }} props={{ checked: f.figures !== false }} on={{ change: () => set("figures", f.figures === false) }} /> read inside pictures
-        </label>
-        <label class="inline" attrs={{ title: "The reference's rule: no 35 tokens repeated (a looping reading stops)" }}>
+        </label> : null}
+        {takes("guard") ? <label class="inline" attrs={{ title: "No run of tokens repeated within a window (a looping reading stops)" }}>
           <input attrs={{ type: "checkbox" }} props={{ checked: f.guard }} on={{ change: () => set("guard", !f.guard) }} /> repetition guard
-        </label>
+        </label> : null}
         <label>max tokens
           <input attrs={{ type: "number", min: 64, max: 32768, step: 64 }} props={{ value: String(f.maxTokens) }}
                  on={{ change: (e: Event) => set("maxTokens", clamp(Number((e.target as HTMLInputElement).value) || 8192, 64, 32768)) }} />

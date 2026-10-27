@@ -266,6 +266,25 @@ export interface Info {
   reads?: boolean | null;
   /** it takes guidance: cfg above 1 and a negative prompt */
   guidance?: boolean | null;
+  /** the grid the picture's sides are multiples of */
+  grid?: number | null;
+  /** "transparent" gives an alpha channel */
+  transparent?: boolean | null;
+  /** the schedule's shift can be set */
+  shift?: boolean | null;
+  /** the aspect ratios and pixel budgets it offers for a size (a size is a budget at a ratio) */
+  sizes?: SizesInfo | null;
+  /** it takes a negative prompt */
+  negative?: boolean | null;
+  /** the step count changes the picture (false: a few-step entry runs its own) */
+  steps_free?: boolean | null;
+  /** it merges per-request LoRAs */
+  takes_loras?: boolean | null;
+  /** what a reading takes besides the pages and the instruction: tiles, figures, columns, guard, each_page; boxes when it writes them */
+  ocr_takes?: string[] | null;
+  /** the shortest and longest side it draws */
+  min_side?: number | null;
+  max_side?: number | null;
   /** the most pictures an edit takes */
   max_pictures?: number | null;
   /** the most pages a reading takes */
@@ -396,6 +415,12 @@ export interface Reading {
 
 /** How a picture comes back: a URL, or the bytes as base64 (OpenAI's names): url | b64_json */
 export type ResponseFormat = "url" | "b64_json";
+
+/** The sizes an engine offers: aspect ratios ("W:H") and pixel budgets */
+export interface SizesInfo {
+  ratios: string[];
+  pixels: number[];
+}
 
 /** An SVG written */
 export interface Svg {

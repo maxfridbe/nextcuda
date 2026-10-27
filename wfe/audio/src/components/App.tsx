@@ -31,7 +31,7 @@ function GpuPill() {
 
 export function App() {
   const info = state.info;
-  const title = info ? `${info.model}` : "nextsycl audio";
+  const title = info ? `${info.model}` : "nextcuda audio";
   return (
     <div id="app">
       <div class="top">

@@ -47,5 +47,7 @@ export interface Form {
   refAudio: string;
   refName: string;
   refText: string;
+  /** speech by a script of several speakers: the saved voice of each, in order (empty: one voice speaks) */
+  voices?: string[];
 }
 

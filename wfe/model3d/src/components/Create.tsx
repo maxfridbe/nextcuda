@@ -1,7 +1,7 @@
 /** What to make: pictures of an object (one, or several views for a multi-view model) and the settings - or, for a
  *  rigging or animating model, the mesh and the motion. */
 import { jsx } from "../jsx.js";
-import { addPictures, cancel, chooseMesh, go } from "../actions.js";
+import { addPictures, cancel, chooseMesh, go, takesSteps } from "../actions.js";
 import { render, saveForm, state } from "../state.js";
 import { SIDES } from "../util.js";
 
@@ -107,8 +107,8 @@ export function Create() {
         {!make && ab?.animate ? num("frames", "frames", d?.frames) : null}
       </div>
       <div class="row">
-        {num("steps", "steps", d?.steps)}
-        {num("guidance", "cfg", d?.cfg, 0.1)}
+        {takesSteps() ? num("steps", "steps", d?.steps) : null}
+        {takesSteps() ? num("guidance", "cfg", d?.cfg, 0.1) : null}
         {make ? num("resolution", "resolution", d?.resolution) : null}
         {make && ab?.texture ? num("texture", "textureSize", d?.texture_size) : null}
       </div>
