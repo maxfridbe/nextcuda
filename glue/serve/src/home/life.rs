@@ -1218,6 +1218,14 @@ mod tests {
     }
 
     #[test]
+    fn a_clone_that_takes_a_style_is_voice_direction() {
+        let (caps, _) = capabilities(&json!({"id": "voxcpm2", "kind": "audio", "arch": "voxcpm2", "speech": ["design", "clone", "direction"]}));
+        assert!(caps.contains(&"voice_direction") && caps.contains(&"clone"));
+        let (caps, _) = capabilities(&json!({"id": "qwen3-tts-base", "kind": "audio", "arch": "qwen3-tts", "speech": ["clone"]}));
+        assert!(!caps.contains(&"voice_direction"));
+    }
+
+    #[test]
     fn a_chat_model_split_over_every_card_has_no_choice_of_cards() {
         let cards = vec![
             json!({"id": "glm-5.3-flash-uncensored", "kind": "llm", "gpus": "all"}),

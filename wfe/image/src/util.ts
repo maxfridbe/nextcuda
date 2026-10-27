@@ -32,3 +32,6 @@ export const clamp = (x: number, lo: number, hi: number): number => Math.max(lo,
 export const ASPECTS: [string, number, number][] = [
   ["1:1", 1, 1], ["4:3", 4, 3], ["3:4", 3, 4], ["3:2", 3, 2], ["2:3", 2, 3], ["16:9", 16, 9], ["9:16", 9, 16], ["21:9", 21, 9],
 ];
+
+/** A GPU as the pages show it: "NVIDIA GeForce RTX 5070" -> "RTX 5070", "Intel(R) Arc(TM) B70 Graphics" -> "B70" (the same in every app). */
+export const gpuName = (n: string) => n.replace(/^Intel\(R\) Arc\(TM\) /, "").replace(/^NVIDIA GeForce /, "").replace(/ Graphics$/, "");

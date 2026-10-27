@@ -21,7 +21,7 @@ const mm3 = song({ model: "minimax-music3-int8", arch: "minimax-music3", default
 const custom = speech("qwen3-tts", { voices: ["vivian", "ryan"], languages: ["english", "chinese"], instructions: true, requires: "voice" });
 const design = speech("qwen3-tts", { languages: ["english", "chinese"], instructions: true, design: true, requires: "instructions" });
 const base = speech("qwen3-tts", { languages: ["english", "chinese"], clone: true, clone_takes_text: true, requires: "reference" });
-const vox = speech("voxcpm2", { instructions: true, design: true, clone: true, clone_takes_text: true });
+const vox = speech("voxcpm2", { instructions: true, design: true, clone: true, clone_takes_text: true, direction: true });
 const vibe = speech("vibevoice", { languages: ["en", "zh"], clone: true, requires: "reference", speakers: 4 });
 const breeze = speech("breeze-tts-2", { languages: ["chinese", "english"], instructions: true, design: true, clone: true, clone_needs_text: true,
                                         clone_takes_text: true, direction: true, events: ["(laugh)", "(sigh)"] });
@@ -78,7 +78,7 @@ open(base, { voice: "anna" });
 open(vox, { voice: "anna", instructions: "warm" });
 {
   const v = sc.show("voxcpm2", App());
-  v.has(/the voice, or the style/).lacks(/or with a cloned voice its style/, "direction VoxCPM2 does not claim").lacks(/talker/).has(/This model has no options of its own/);
+  v.has(/the voice, or the style/).has(/or with a cloned voice its style/, "VoxCPM2 styles a cloned voice").lacks(/talker/).has(/This model has no options of its own/);
   const b = await go();
   sc.check("voxcpm2", b.voice === "anna" && b.instructions === "warm" && !("language" in b), `VoxCPM2: saved voice and its instructions (${JSON.stringify(b)})`);
 }

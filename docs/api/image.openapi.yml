@@ -811,6 +811,13 @@ components:
           - type: boolean
           - type: 'null'
           description: the schedule's shift can be set
+        shift_schedules:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: the schedules the shift changes (a page offers it only for those)
         sizes:
           anyOf:
           - $ref: '#/components/schemas/SizesInfo'

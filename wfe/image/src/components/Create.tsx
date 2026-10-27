@@ -255,7 +255,7 @@ export function Create() {
           {guided
             ? <label>guidance (cfg) {num("cfg", { min: 1, max: 20, step: 0.1, placeholder: d ? String(d.cfg) : "", nullable: true })}</label>
             : <label>guidance (cfg) <span class="hint">{d ? `${d.cfg} (this entry runs unguided)` : "off"}</span></label>}
-          {info?.shift === false ? null : <label>shift {num("shift", { min: 0, max: 20, step: 0.1, placeholder: d && d.shift > 0 ? String(d.shift) : "model's", nullable: true })}</label>}
+          {info?.shift === false || (info?.shift_schedules ?? [f.schedule]).indexOf(f.schedule) < 0 ? null : <label>shift {num("shift", { min: 0, max: 20, step: 0.1, placeholder: d && d.shift > 0 ? String(d.shift) : "model's", nullable: true })}</label>}
           {info?.transparent === false ? null : <label class="inline">
             <input attrs={{ type: "checkbox" }} props={{ checked: f.rgba }} on={{ change: () => set("rgba", !f.rgba) }} /> transparent (RGBA)
           </label>}

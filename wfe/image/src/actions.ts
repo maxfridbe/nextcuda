@@ -155,7 +155,7 @@ function body(): ImageGenerateBody & Partial<ImageEditBody> {
   if (f.seed !== null) b.seed = f.seed;
   if (state.info?.guidance !== false && f.cfg !== null && f.cfg !== d?.cfg) b.cfg = f.cfg;
   if (state.info?.negative !== false && state.info?.guidance !== false && f.negative.trim()) b.negative_prompt = f.negative.trim();
-  if (f.shift !== null && state.info?.shift !== false) b.shift = f.shift;
+  if (f.shift !== null && state.info?.shift !== false && (state.info?.shift_schedules ?? [f.schedule]).includes(f.schedule)) b.shift = f.shift;
   if (f.sampler && f.sampler !== d?.sampler) b.sampler = f.sampler;
   if (f.schedule && f.schedule !== d?.schedule) b.schedule = f.schedule;
   if (f.rgba && state.info?.transparent !== false) b.background = "transparent";

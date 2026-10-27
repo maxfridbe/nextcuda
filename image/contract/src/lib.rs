@@ -273,6 +273,11 @@ pub trait ImageEngine: Send + Sync {
     fn shift(&self) -> bool {
         true
     }
+    /// the schedules `ImageRequest::shift` changes (all it runs, where it takes a shift at all; Qwen-Image's Rust engine
+    /// runs the model's own schedule at the image size's shift and honours a request's on the others only)
+    fn shift_schedules(&self) -> Vec<Schedule> {
+        if self.shift() { self.schedules() } else { Vec::new() }
+    }
     /// whether it takes a negative prompt (guidance against it; else against an empty or zero condition)
     fn negative(&self) -> bool {
         self.guidance()

@@ -7,7 +7,8 @@ import { Api } from "./Api.js";
 import { ConfigView } from "./Config.js";
 
 const gib = (mb: number) => (mb / 1024).toFixed(1);
-const short = (n: string) => n.replace("Intel(R) Arc(TM) ", "").replace("NVIDIA GeForce ", "").replace(" Graphics", "");
+/** A GPU as the pages show it (the same function in every app's util.ts). */
+const short = (n: string) => n.replace(/^Intel\(R\) Arc\(TM\) /, "").replace(/^NVIDIA GeForce /, "").replace(/ Graphics$/, "");
 /** a link to a service on this box, as the browser reaches it */
 const at = (port: number, path = "/") => `${location.protocol}//${location.hostname}:${port}${path}`;
 

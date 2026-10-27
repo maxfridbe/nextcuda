@@ -14,7 +14,7 @@ const card = (icon: string, k: string, v: string, sub: string) => (
 export function Stats() {
   const info = state.info;
   const p = state.progress;
-  // an upscaler or a vectorizer draws nothing: no steps, size or cfg to report
+  // an upscaler or a vectorizer draws nothing: no steps, size or cfg to report; the sampler only where the engine has a choice of them
   const d = info?.vectorize || (info?.upscale ?? []).length ? undefined : info?.defaults;
   const h = state.history;
   const last = h[0];
@@ -28,7 +28,7 @@ export function Stats() {
   return (
     <div class="stats">
       {card("&#xf04b;", "engine", engine[0] ?? "", engine[1] ?? "")}
-      {card("&#xf013;", "defaults", d ? `${d.steps} steps` : "—", d ? `${d.width}×${d.height} · ${d.sampler}${info?.guidance === false ? "" : ` · cfg ${d.cfg}`}` : "")}
+      {card("&#xf013;", "defaults", d ? `${d.steps} steps` : "—", d ? `${d.width}×${d.height}${(info?.samplers ?? []).length > 1 ? ` · ${d.sampler}` : ""}${info?.guidance === false ? "" : ` · cfg ${d.cfg}`}` : "")}
       {info?.takes_loras === false ? null : card("&#xf0c5;", "LoRAs merged", loaded.length ? String(loaded.length) : "none",
             loaded.map((l) => `${l.id} ×${l.loaded}`).join(", ") || `${(info?.loras ?? []).length} available`)}
       {card("&#xf017;", "last picture", last ? fmtT(last.seconds) : "—",

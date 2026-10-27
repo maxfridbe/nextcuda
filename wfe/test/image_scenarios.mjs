@@ -63,7 +63,7 @@ open(qwen);
 sc.show("qwen-normal-generate", App())
   .has(/negative prompt/).has(/guidance \(cfg\)/).has(/\bsteps\b/).has(/transparent \(RGBA\)/).has(/LoRAs \(0 on\)/)
   .has(/Pictures to edit \(none: a new picture\)/).has(/a red fox in fresh snow/).lacks(/shift\b.*placeholder/)
-  .has(/\[button Generate\]/).lacks(/\[button Edit/);
+  .has(/\[button Generate\]/).lacks(/\[button Edit/).has(/1024×1024 · cfg 4/).lacks(/· euler ·/);
 {
   const { b } = await go();
   sc.check("qwen-normal-generate", b.size === "1024x1024" && b.prompt === "a fox" && !("negative_prompt" in b), "plain request: size and prompt only");
@@ -132,6 +132,22 @@ sc.show("ming", App())
   const { b } = await go();
   sc.check("ming", !("negative_prompt" in b) && !("shift" in b) && !("loras" in b) && b.background === "transparent",
     `Ming sends no negative / shift / loras; transparency yes (${JSON.stringify(b)})`);
+}
+
+// Qwen-Image in Rust: several samplers and schedules; a request's shift reaches every schedule but the model's own
+const qwenRust = { ...qwen, model: "qwen-image-2.1-rust", shift: true, samplers: ["euler", "heun"], schedules: ["shift", "karras", "simple"],
+  shift_schedules: ["karras", "simple"] };
+open(qwenRust, { shift: 3 });
+sc.show("qwen-rust-own-schedule", App()).lacks(/^shift$/m).has(/1024×1024 · euler · cfg 4/);
+{
+  const { b } = await go();
+  sc.check("qwen-rust-own-schedule", !("shift" in b), `the model's own schedule ignores a shift, so none is sent (${JSON.stringify(b)})`);
+}
+open(qwenRust, { shift: 3, schedule: "karras" });
+sc.show("qwen-rust-karras", App()).has(/^shift$/m);
+{
+  const { b } = await go();
+  sc.check("qwen-rust-karras", b.shift === 3 && b.schedule === "karras", `a shift with another schedule is sent (${JSON.stringify(b)})`);
 }
 
 // an upscaler and a vectorizer served on this page: it says what they are and offers no drawing form

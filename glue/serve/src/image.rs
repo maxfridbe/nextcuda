@@ -320,16 +320,17 @@ impl ImageServer {
         let g = self.engine.lock();
         let (arch, d, edits, loaded, samplers, schedules, guidance, opts, reads, prompts, caps) = match g.as_ref().ok().and_then(|g| {
             g.as_ref().map(|(e, l)| (e.arch(), e.defaults(), e.edits(), l.clone(), e.samplers(), e.schedules(), e.guidance(), e.options(), e.reads(),
-                                     e.ocr_prompts(), (e.grid(), e.transparent(), e.shift(), e.size_presets(), e.negative(), e.steps_free(), e.takes_loras(), e.sides(), e.ocr_takes())))
+                                     e.ocr_prompts(), (e.grid(), e.transparent(), e.shift_schedules(), e.size_presets(), e.negative(), e.steps_free(), e.takes_loras(), e.sides(), e.ocr_takes())))
         }) {
             Some(x) => x,
             None => return json!({"model": self.model, "loading": true}),
         };
         let max_pixels = g.as_ref().ok().and_then(|g| g.as_ref().map(|(e, _)| e.max_pixels())).flatten();
         drop(g);
-        let (grid, transparent, shift, sizes, negative, steps_free, takes_loras, sides, ocr_takes) = caps;
+        let (grid, transparent, shift_on, sizes, negative, steps_free, takes_loras, sides, ocr_takes) = caps;
         json!({
-            "model": self.model, "arch": arch, "edits": edits, "reads": reads, "guidance": guidance, "grid": grid, "transparent": transparent, "shift": shift,
+            "model": self.model, "arch": arch, "edits": edits, "reads": reads, "guidance": guidance, "grid": grid, "transparent": transparent, "shift": !shift_on.is_empty(),
+            "shift_schedules": shift_on.iter().map(|s| s.name()).collect::<Vec<_>>(),
             "sizes": sizes.map(|s| json!({"ratios": s.ratios, "pixels": s.pixels})), "negative": negative, "steps_free": steps_free, "takes_loras": takes_loras,
             "ocr_takes": ocr_takes, "min_side": sides.0, "max_side": sides.1, "max_pixels": max_pixels, "max_pictures": MAX_PICTURES,
             "max_pages": MAX_PAGES,

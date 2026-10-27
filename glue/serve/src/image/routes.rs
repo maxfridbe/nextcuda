@@ -96,6 +96,9 @@ pub struct Info {
     /// the schedule's shift can be set
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shift: Option<bool>,
+    /// the schedules the shift changes (a page offers it only for those)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shift_schedules: Option<Vec<String>>,
     /// the aspect ratios and pixel budgets it offers for a size (a size is a budget at a ratio)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sizes: Option<SizesInfo>,

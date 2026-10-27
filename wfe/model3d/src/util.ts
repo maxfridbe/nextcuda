@@ -16,3 +16,6 @@ export const bytes = (n: number | undefined): string =>
 
 /** The sides a view can show */
 export const SIDES = ["front", "back", "left", "right", "top", "bottom"];
+
+/** A GPU as the pages show it: "NVIDIA GeForce RTX 5070" -> "RTX 5070", "Intel(R) Arc(TM) B70 Graphics" -> "B70" (the same in every app). */
+export const gpuName = (n: string) => n.replace(/^Intel\(R\) Arc\(TM\) /, "").replace(/^NVIDIA GeForce /, "").replace(/ Graphics$/, "");

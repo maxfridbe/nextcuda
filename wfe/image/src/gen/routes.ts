@@ -272,6 +272,8 @@ export interface Info {
   transparent?: boolean | null;
   /** the schedule's shift can be set */
   shift?: boolean | null;
+  /** the schedules the shift changes (a page offers it only for those) */
+  shift_schedules?: string[] | null;
   /** the aspect ratios and pixel budgets it offers for a size (a size is a budget at a ratio) */
   sizes?: SizesInfo | null;
   /** it takes a negative prompt */

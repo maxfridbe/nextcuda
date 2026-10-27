@@ -1,4 +1,4 @@
-//! Qwen-Image 2.1 in Rust and CUDA, from nextsycl's engine: the pipeline is host code in Rust over the shared
+//! Qwen-Image 2.1 in Ru        shifted_schedules()t and CUDA, from nextsycl's engine: the pipeline is host code in Rust over the shared
 //! diffusion kernels (`kernels/diffusion/nsd.cu`, cuBLAS and CUDA), the transformer kept in the type its GGUF stores
 //! it in (7.3 GB at Q8_0: it fits a 12 GB card beside its activations), the text encoder streamed layer by layer
 //! from its GGUF, the VAE in half. No Python and no ggml.
@@ -62,6 +62,11 @@ pub const OPTIONS: &[EngineOption] = &[
 pub struct Preset {
     pub nodes: Vec<f64>,
     pub dynamic: bool,
+}
+
+/// The schedules a request's shift reaches: every one but the model's own (`levels` below shifts that by the image size)
+fn shifted_schedules() -> Vec<Schedule> {
+    Schedule::ALL.iter().copied().filter(|s| *s != Schedule::Shift).collect()
 }
 
 fn preset_of(sigmas: Option<String>, shift: Option<String>) -> Result<Option<Preset>> {
@@ -298,6 +303,10 @@ impl ImageEngine for RustQwenImage21 {
     fn schedules(&self) -> Vec<Schedule> {
         Schedule::ALL.to_vec()
     }
+    /// a request's shift reaches the sigmas of the other schedules (the model's own is shifted by the image size)
+    fn shift_schedules(&self) -> Vec<Schedule> {
+        shifted_schedules()
+    }
     /// a picture (and references) with instructions: the pictures through the vision tower and the VAE
     fn edits(&self) -> bool {
         true
@@ -516,5 +525,17 @@ impl ImageEngine for RustQwenImage21 {
 
     fn report(&self) -> Vec<String> {
         vec![format!("{ARCH} in Rust and CUDA on {} (loaded {:.0} s ago)", self.gpu_name, self.loaded.elapsed().as_secs_f64())]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_requests_shift_is_for_the_schedules_but_the_models_own() {
+        let s = shifted_schedules();
+        assert!(!s.contains(&Schedule::Shift), "the model's own schedule takes the image size's shift: {s:?}");
+        assert!(s.contains(&Schedule::Karras) && s.len() + 1 == Schedule::ALL.len());
     }
 }

@@ -8,9 +8,9 @@
 import { jsx } from "../jsx.js";
 import { render, state } from "../state.js";
 import type { Canvas, EngineInfo, GpuPlan, Plan } from "../types.js";
-import { fmtT } from "../util.js";
+import { fmtT, gpuName } from "../util.js";
 
-/** Latent tokens for a canvas at a clip length. Mirrors tokens_for() in wfe/server.py. */
+/** Latent tokens for a canvas at a clip length: the frame grid and latent frames mirror temporal_shape() in video/h3/src/jobs.rs. */
 export function tokensFor(width: number, height: number, seconds: number): number {
   let n = Math.max(5, Math.round(seconds * 24));
   while (n % 17 !== 5) n += 1;
@@ -103,7 +103,6 @@ export function CanvasPicker(props: CanvasPickerProps) {
   const card = state.pickGpu ?? fastest?.gpu ?? cards[0]?.gpu;
   const gpu = all.find((g) => g.gpu === card && eng(g) === engine.quant);
   const cardInfo = cards.find((g) => g.gpu === card);
-  const short = (n: string) => n.replace(/^Intel\(R\) Arc\(TM\) /, "").replace(/ Graphics$/, "");
   const sw = (
     <div class="gpusw">
       <span class="k"><span class="i dim" props={{ innerHTML: "&#xf2db;" }} /> gpu</span>
@@ -114,7 +113,7 @@ export function CanvasPicker(props: CanvasPickerProps) {
             class={{ on: g.gpu === card }}
             attrs={{ title: `GPU ${g.gpu}${g.shared ? ", shared with the chat model" : ""}` }}
             on={{ click: () => { state.pickGpu = g.gpu; render(); } }}
-          >{`${short(g.name)}${g.shared ? " (shared)" : ""}`}</button>
+          >{`${gpuName(g.name)}${g.shared ? " (shared)" : ""}`}</button>
         ))
         : <span class="hint">not measured yet (nextcuda video plan measure)</span>}
       <span class="k"><span class="i dim" props={{ innerHTML: "&#xf1c0;" }} /> denoiser</span>
@@ -173,7 +172,7 @@ export function CanvasPicker(props: CanvasPickerProps) {
                   disabled: !est.fits,
                   title: est.fits
                     ? `${est.tokens.toLocaleString()} tokens · ~${est.gib} GiB peak · ${est.secondsPerStep.toFixed(1)} s/step` +
-                      (gpu ? ` on ${short(gpu.name)}` : "") + ` · est. ${fmtT(est.total)} of sampling`
+                      (gpu ? ` on ${gpuName(gpu.name)}` : "") + ` · est. ${fmtT(est.total)} of sampling`
                     : `needs ~${est.gib} GiB, over the ${plan.cap_gib} GiB cap`,
                 }}
                 on={{ click: () => props.onPick(c.width, c.height, engine.quant, sec) }}
@@ -195,7 +194,7 @@ export function CanvasPicker(props: CanvasPickerProps) {
     <div class={{ picksum: true, bad: !cur.fits }}>
       <span class="i" props={{ innerHTML: cur.fits ? "&#xf00c;" : "&#xf00d;" }} />
       <b>{`${props.width}x${props.height}`}</b>
-      {` · ${props.seconds}s · ${props.steps} steps · ${engine.quant}${gpu ? ` · ${short(gpu.name)}` : ""} · `}
+      {` · ${props.seconds}s · ${props.steps} steps · ${engine.quant}${gpu ? ` · ${gpuName(gpu.name)}` : ""} · `}
       <b>{cur.tokens.toLocaleString()}</b>{" tokens · VRAM "}<b>{`${cur.gib}`}</b>{`/${plan.cap_gib} GiB`}
       <span class="vbar"><span style={{ width: `${pct}%` }} /></span>
       <b>{`${cur.secondsPerStep.toFixed(1)}s`}</b>{"/step · est. total "}<b>{fmtT(cur.total)}</b>
@@ -215,7 +214,7 @@ export function CanvasPicker(props: CanvasPickerProps) {
         <span class="best-key">dashed</span>
         {" = best ratio in that row. "}
         {gpu
-          ? `* = measured on the ${short(gpu.name)} (nextcuda video plan measure), everything else from its measured step curve. Sampling only - the text encoder, decode and upscale come on top. `
+          ? `* = measured on the ${gpuName(gpu.name)} (nextcuda video plan measure), everything else from its measured step curve. Sampling only - the text encoder, decode and upscale come on top. `
           : "* = measured, everything else extrapolated from those. "}
         {`Greyed = past the ${plan.cap_gib} GiB cap.`}
       </div>

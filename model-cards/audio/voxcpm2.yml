@@ -10,6 +10,7 @@ vram_gib: 5.5                   # its memory on the card when it runs (measured 
 speech:
 - design
 - clone
+- direction
 defaults:
   seconds: 60.0
   steps: 10

@@ -14,7 +14,6 @@ interface Form {
   seconds: number;
   steps: number;
   seed: number;
-  te: "teacher" | "student";
   label: string;
   width: number;
   height: number;
@@ -48,7 +47,6 @@ export const form: Form = {
   seconds: 10,
   steps: 8,
   seed: 0,
-  te: "teacher",
   label: "",
   width: 768,
   height: 576,
@@ -71,7 +69,7 @@ export const form: Form = {
 
 /** The settings a reload keeps (canvas, length, steps, engine, ...): the last ones used, in localStorage. References and
  *  controls are left out - they name uploads that may be gone. */
-const KEPT = ["prompt", "seconds", "steps", "seed", "te", "width", "height", "engine", "upscale", "upscaler", "sampler",
+const KEPT = ["prompt", "seconds", "steps", "seed", "width", "height", "engine", "upscale", "upscaler", "sampler",
               "schedule"] as const;
 
 function remember(): void {
@@ -92,7 +90,6 @@ export function useSettings(j: GenerateRequest): void {
   if (j.seconds) form.seconds = j.seconds;
   if (j.steps) form.steps = j.steps;
   if (j.seed != null) form.seed = j.seed;
-  if (j.te) form.te = j.te;
   if (j.width) form.width = j.width;
   if (j.height) form.height = j.height;
   if (j.engine) form.engine = j.engine === "Q8_0" ? "INT8" : j.engine;
@@ -125,7 +122,6 @@ async function generate(): Promise<void> {
     seconds: form.seconds,
     steps: form.steps,
     seed: form.seed,
-    te: form.te,
     label: form.label,
     width: form.width,
     height: form.height,
@@ -405,10 +401,7 @@ export function Creation() {
           "The sigma schedule. shifted is the model's own; karras and exponential suit noise-prediction models and do poorly here.")}
         <label>
           encoder
-          <select on={{ change: (e: Event) => { form.te = (e.target as HTMLSelectElement).value as "teacher" | "student"; remember(); render(); } }}>
-            <option attrs={{ value: "teacher", selected: form.te === "teacher" }}>teacher 32B</option>
-            <option attrs={{ value: "student", selected: form.te === "student" }}>student 4B</option>
-          </select>
+          <span class="hint">Qwen3-VL 32B, Q4_K_M (the only one the box has)</span>
         </label>
         <label>
           label

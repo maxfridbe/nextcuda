@@ -320,7 +320,7 @@ impl Home {
         loaded.into_iter().find(|l| can.contains(l)).or_else(|| can.first().cloned()).ok_or_else(|| {
             (409, match need {
                 "clone" => "no enabled speech model clones a voice (system.enable qwen3-tts-base)".to_string(),
-                "direction" => "no enabled speech model directs a cloned voice by instructions (system.enable breeze-tts-2)".to_string(),
+                "direction" => "no enabled speech model directs a cloned voice by instructions (system.enable breeze-tts-2 or voxcpm2)".to_string(),
                 "design" => "no enabled speech model designs a voice (system.enable qwen3-tts-design)".to_string(),
                 "voices" => "no enabled speech model has built-in voices (system.enable qwen3-tts-custom)".to_string(),
                 _ => "no speech model is enabled (system.enable qwen3-tts-custom ...)".to_string(),

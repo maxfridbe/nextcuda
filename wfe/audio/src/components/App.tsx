@@ -2,6 +2,7 @@
  *  used - what to make, its progress, the song it made, the songs made here. */
 import { jsx } from "../jsx.js";
 import { state } from "../state.js";
+import { gpuName } from "../util.js";
 import { Create } from "./Create.js";
 import { Panel } from "./Panel.js";
 import { Progress } from "./Progress.js";
@@ -16,7 +17,7 @@ function GpuPill() {
   const busy = !!state.progress?.busy;
   const chip = (k: string, v: string) => <span class="gc"><span class="gk">{k}</span> <b>{v}</b></span>;
   const parts = [
-    chip("GPU", g.name.replace("Intel(R) Arc(TM) ", "").replace(" Graphics", "")),
+    chip("GPU", gpuName(g.name)),
     g.power_w != null ? chip("power", `${Math.round(g.power_w)} W`) : null,
     chip("VRAM", `${(g.vram_used_mb / 1024).toFixed(1)}/${(g.vram_total_mb / 1024).toFixed(0)} GB (${used}%)`),
     g.temp_pkg != null ? chip("temp", `${Math.round(g.temp_pkg)}°C` + (g.temp_vram != null ? ` · mem ${Math.round(g.temp_vram)}°C` : "")) : null,
