@@ -1021,47 +1021,24 @@ pub struct ImageDescribePromptGuideMdReq {
     pub rest: serde_json::Map<String, serde_json::Value>,
 }
 
-/// What audio.generate takes.
+/// What a song takes beyond the sound's common fields (audio.generate, and /v1/audio/speech for a song model)
 #[derive(Deserialize, Serialize, Rpc)]
-pub struct AudioGenerateReq {
-    #[serde(flatten)]
-    pub job: JobOpts,
-    #[serde(flatten)]
-    pub body: AudioGenerateBody,
-}
-
-/// What audio.generate makes from: the body its kind's server takes.
-#[derive(Deserialize, Serialize, Rpc)]
-#[allow(non_snake_case)]
-pub struct AudioGenerateBody {
+pub struct SongFields {
     /// acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<String>,
     /// acestep-1.5: the tempo (else the planner's, or none said)
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub bpm: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cfg: Option<f64>,
     /// cover: how close the start is to the recording, 0 (from noise) to 1 (0)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover_noise: Option<f64>,
     /// cover / repaint: the share of the steps conditioned on the recording, 0 to 1 (0.5)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover_strength: Option<f64>,
-    /// the lyrics, [verse] / [chorus] tags on lines of their own (empty: instrumental)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
-    /// the music: genre, mood, tempo, instruments, voice (with audio it may be left out: the recording's sound is kept)
-    pub instructions: String,
     /// acestep-1.5: key and scale, "C major", "F# minor"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
-    /// acestep-1.5: the lyrics' language as a code (en, zh, ja, es ...; default unknown)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
-    /// the model's id; none: the loaded one, else the first enabled
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
     /// acestep-1.5 text2music: the 5 Hz planner LM writes the metas, the caption and the song's audio codes first (true, as the platform's use_lm)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner: Option<bool>,
@@ -1077,21 +1054,74 @@ pub struct AudioGenerateBody {
     /// repaint, balanced: 0 keeps the most, 1 the least (0.5)
     #[serde(rename = "repaint_strength", default, skip_serializing_if = "Option::is_none")]
     pub repaint_strength: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seconds: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
-    pub seed: Option<i64>,
     /// edit: the words the recording sings now
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_lyrics: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
-    pub steps: Option<i64>,
     /// acestep-1.5: text2music (default: from the words alone); with audio - cover (the recording performed anew: input its words, instructions its sound), repaint (repaint_start to repaint_end made again; an end past the recording extends it), edit (new words sung over the recording: source_lyrics the words it sings now), lego (a vocal track over an instrumental: acestep-1.5-base)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<AudioTask>,
     /// acestep-1.5: beats a bar: "4", "3", "6"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_signature: Option<String>,
+}
+
+/// What speech takes beyond the sound's common fields (audio.speak, and /v1/audio/speech for a speech model)
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct SpeechFields {
+    /// carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice's sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_length = 200)]
+    pub continue_from: Option<String>,
+    /// a recording of the voice to clone: WAV as base64 or a data: URL, or upload:<name> (audio.upload, any format it takes) - the Base model
+    #[serde(rename = "ref_audio", default, skip_serializing_if = "Option::is_none")]
+    pub ref_audio: Option<String>,
+    /// what the recording says: the closer, in-context clone (Breeze TTS 2: required, the exact transcript)
+    #[serde(rename = "ref_text", default, skip_serializing_if = "Option::is_none")]
+    pub ref_text: Option<String>,
+    /// several speakers (VibeVoice: input a script of "Speaker N: words" lines): each speaker's voice, Speaker 1's first - a saved voice's name, a recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL) or upload:<name>, or {ref_audio | voice, ref_text}; a model that takes them is picked when model is not given
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_items = 4)]
+    pub speakers: Option<Vec<serde_json::Value>>,
+    /// a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+}
+
+/// What audio.generate takes.
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct AudioGenerateReq {
+    #[serde(flatten)]
+    pub job: JobOpts,
+    #[serde(flatten)]
+    pub body: AudioGenerateBody,
+}
+
+/// What audio.generate makes from: the body its kind's server takes.
+#[derive(Deserialize, Serialize, Rpc)]
+#[allow(non_snake_case)]
+pub struct AudioGenerateBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<f64>,
+    /// the lyrics, [verse] / [chorus] tags on lines of their own (empty: instrumental)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    /// the music: genre, mood, tempo, instruments, voice (with audio it may be left out: the recording's sound is kept)
+    pub instructions: String,
+    /// acestep-1.5: the lyrics' language as a code (en, zh, ja, es ...; default unknown)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// the model's id; none: the loaded one, else the first enabled
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    pub seed: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    pub steps: Option<i64>,
+    /// a song's own: what acestep-1.5 takes (a recording to work on, tempo, key, a repaint ...)
+    #[serde(flatten)]
+    pub song: SongFields,
     /// what else the caller sent: passed on as it came
     #[serde(flatten)]
     pub rest: serde_json::Map<String, serde_json::Value>,
@@ -1113,10 +1143,6 @@ pub struct AudioSpeakBody {
     /// guidance with instructions (Breeze TTS 2: 4 by default for design and direction; 1 turns it off)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cfg: Option<f64>,
-    /// carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice's sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(max_length = 200)]
-    pub continue_from: Option<String>,
     /// the text to say (Breeze TTS 2: vocal events inline - English (laugh) (sigh) (cough) (clears throat), Chinese [笑] [叹气] [咳嗽] [清嗓子])
     pub input: String,
     /// how to say it (CustomVoice), or the voice to make up (VoiceDesign, Breeze TTS 2: write it in the language of the text); with a cloned voice (ref_audio or a saved voice) the direction of its tone, emotion, pace (Breeze TTS 2: voice direction - picked for you when model is not given)
@@ -1131,24 +1157,14 @@ pub struct AudioSpeakBody {
     /// the engine's own: greedy, temperature, top-k, streaming
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<serde_json::Map<String, serde_json::Value>>,
-    /// a recording of the voice to clone: WAV as base64 or a data: URL, or upload:<name> (audio.upload, any format it takes) - the Base model
-    #[serde(rename = "ref_audio", default, skip_serializing_if = "Option::is_none")]
-    pub ref_audio: Option<String>,
-    /// what the recording says: the closer, in-context clone (Breeze TTS 2: required, the exact transcript)
-    #[serde(rename = "ref_text", default, skip_serializing_if = "Option::is_none")]
-    pub ref_text: Option<String>,
     /// the most to make
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub seed: Option<i64>,
-    /// several speakers (VibeVoice: input a script of "Speaker N: words" lines): each speaker's voice, Speaker 1's first - a saved voice's name, a recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL) or upload:<name>; a model that takes them is picked when model is not given
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(max_items = 4)]
-    pub speakers: Option<Vec<String>>,
-    /// a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voice: Option<String>,
+    /// speech's own: the voice, a recording to clone, several speakers, carrying on
+    #[serde(flatten)]
+    pub speech: SpeechFields,
     /// what else the caller sent: passed on as it came
     #[serde(flatten)]
     pub rest: serde_json::Map<String, serde_json::Value>,
@@ -1167,8 +1183,9 @@ pub struct AudioTranscribeReq {
 #[derive(Deserialize, Serialize, Rpc)]
 #[allow(non_snake_case)]
 pub struct AudioTranscribeBody {
-    /// the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono
-    pub audio: String,
+    /// the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono (or file: the same, OpenAI's name; one of them is required)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<String>,
     /// a code or a name (en, english, de, german ...); none or auto: detected on the first 30 s
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
@@ -1465,9 +1482,9 @@ pub struct Model3dGenerateBody {
     /// or a GLB made here to paint (its file name or url), as mesh
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
-    /// the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (model3d.upload); a transparent background is the object's outline, an opaque one is cut out (remove_background)
+    /// the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (model3d.upload); a transparent background is the object's outline, an opaque one is cut out (remove_background) (or {image, side}, as an item of images)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
+    pub image: Option<serde_json::Value>,
     /// several views of the object (a multi-view model: model3d.info's abilities.views); each a picture or {image, side}
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(max_items = 8, json = r#"{"items": {"oneOf": [{"type": "string"}, {"properties": {"image": {"type": "string"}, "side": {"description": "front, back, left, right, top, bottom, or an azimuth in degrees", "type": "string"}}, "type": "object"}]}}"#)]

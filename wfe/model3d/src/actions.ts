@@ -1,6 +1,7 @@
 /** What the buttons do. */
 import { api } from "./api.js";
 import { render, saveForm, state } from "./state.js";
+import type { Model3dGenerateBody } from "./gen/routes.js";
 import type { Made } from "./types.js";
 
 export async function refreshHistory(): Promise<void> {
@@ -52,7 +53,7 @@ export function show(m: Made): void {
 /** The request: generate from the pictures, or rig the mesh */
 export async function go(): Promise<void> {
   const f = state.form;
-  const body: Record<string, unknown> = { response_format: "url" };
+  const body: Model3dGenerateBody = { response_format: "url" };
   if (f.seed !== null) body["seed"] = f.seed;
   if (f.steps !== null) body["steps"] = f.steps;
   if (f.cfg !== null) body["cfg"] = f.cfg;

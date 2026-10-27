@@ -1,6 +1,7 @@
 /** What the buttons do: build the request from the form, send it, keep the result. */
-import { api } from "./api.js";
+import { api, song } from "./api.js";
 import { render, saveForm, state } from "./state.js";
+import type { AudioSpeechBody, VoiceAdd } from "./gen/routes.js";
 import type { Song } from "./types.js";
 
 export function randomSeed(): void {
@@ -47,7 +48,7 @@ export async function saveVoice(from: { sample?: string; text?: string; file?: s
   const name = (window.prompt("Save this voice as (lowercase letters, digits, - and _):") ?? "").trim();
   if (!name) return;
   try {
-    const body: Record<string, unknown> = { name };
+    const body: VoiceAdd = { name };
     if (from.sample) body.sample = from.sample;
     if (from.file) body.file = from.file;
     if (from.text) body.text = from.text;
@@ -112,11 +113,11 @@ export function canGo(): boolean {
   return true;
 }
 
-function body(): Record<string, unknown> {
+function body(): AudioSpeechBody {
   const f = state.form;
   const d = state.info?.defaults;
   const sp = state.info?.speech;
-  const b: Record<string, unknown> = sp
+  const b: AudioSpeechBody = sp
     ? { model: state.info?.model, input: f.text.trim(), seconds: f.seconds, response_format: "url" }
     : { model: state.info?.model, instructions: f.prompt.trim(), input: f.lyrics.trim(), seconds: f.seconds, response_format: "url" };
   if (sp) {
@@ -147,7 +148,7 @@ export async function generate(): Promise<void> {
   render();
   try {
     const j = await api.generate(body());
-    state.result = j.data[0] ?? null;
+    state.result = j.data[0] ? song(j.data[0]) : null;
     const n = j.nextsycl;
     const wh = n.wh != null ? ` · ${n.wh.toFixed(2)} Wh` : "";
     state.status = `done: ${n.seconds.toFixed(1)} s of sound in ${n.took.toFixed(1)} s (${(n.seconds / n.took).toFixed(2)}× real time)${wh}`;
