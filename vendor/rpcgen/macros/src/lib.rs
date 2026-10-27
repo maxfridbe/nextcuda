@@ -552,3 +552,275 @@ pub fn rpc_methods(input: TokenStream) -> TokenStream {
     }
     .into()
 }
+
+/// The arguments of `#[route(...)]`.
+struct RouteArgs {
+    method: &'static str,
+    path: Option<LitStr>,
+    tags: Vec<String>,
+    aliases: Vec<String>,
+    body: Option<String>,
+    form: Option<Type>,
+    produces: Vec<String>,
+    ranges: bool,
+    example: Option<LitStr>,
+}
+
+impl Parse for RouteArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut a = RouteArgs { method: "", path: None, tags: Vec::new(), aliases: Vec::new(), body: None, form: None, produces: Vec::new(), ranges: false, example: None };
+        let metas = Punctuated::<Meta, Token![,]>::parse_terminated(input)?;
+        for m in metas {
+            let Meta::NameValue(nv) = &m else { return Err(Error::new_spanned(m, "expected get = \"/path\", post = \"/path\", tags = \"a, b\", ...")) };
+            let key = nv.path.get_ident().map(|i| i.to_string()).unwrap_or_default();
+            if key == "ranges" {
+                let Expr::Lit(syn::ExprLit { lit: Lit::Bool(b), .. }) = &nv.value else { return Err(Error::new_spanned(&nv.value, "ranges = true")) };
+                a.ranges = b.value;
+                continue;
+            }
+            let Expr::Lit(syn::ExprLit { lit: Lit::Str(s), .. }) = &nv.value else {
+                return Err(Error::new_spanned(&nv.value, "a string"));
+            };
+            let list = |s: &LitStr| s.value().split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect::<Vec<_>>();
+            match key.as_str() {
+                "get" | "post" => {
+                    if a.path.is_some() {
+                        return Err(Error::new_spanned(&nv.path, "a route has one method and path: get = \"...\" or post = \"...\""));
+                    }
+                    let p = s.value();
+                    let segs_ok = p.split('/').skip(1).all(|seg| {
+                        let param = seg.strip_prefix('{').and_then(|x| x.strip_suffix('}'));
+                        match param {
+                            Some(n) => !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                            None => !seg.contains(['{', '}', '?', '#']),
+                        }
+                    });
+                    if !p.starts_with('/') || !segs_ok {
+                        return Err(Error::new_spanned(s, "a route's path starts with / and names its parameters as whole segments: /v1/files/{name}"));
+                    }
+                    a.method = if key == "get" { "GET" } else { "POST" };
+                    a.path = Some(s.clone());
+                }
+                "tags" => a.tags = list(s),
+                "alias" => {
+                    a.aliases = list(s);
+                    if a.aliases.iter().any(|x| !x.starts_with('/')) {
+                        return Err(Error::new_spanned(s, "an alias is another path: \"/models, /old/models\""));
+                    }
+                }
+                "body" => {
+                    let b = s.value();
+                    if !["none", "json", "multipart", "bytes", "json, multipart"].contains(&b.as_str()) {
+                        return Err(Error::new_spanned(s, "body = \"none\" | \"json\" | \"multipart\" | \"bytes\" | \"json, multipart\""));
+                    }
+                    a.body = Some(b);
+                }
+                "form" => a.form = Some(s.parse::<Type>()?),
+                "produces" => {
+                    a.produces = list(s);
+                    if a.produces.is_empty() || a.produces.iter().any(|t| !t.contains('/') || t.contains(' ')) {
+                        return Err(Error::new_spanned(s, "produces is the answer's media types: \"image/png, image/webp\""));
+                    }
+                }
+                "example" => {
+                    if !s.value().trim_start().starts_with('{') {
+                        return Err(Error::new_spanned(s, "example is a JSON object: the body a caller sends"));
+                    }
+                    a.example = Some(s.clone());
+                }
+                _ => return Err(Error::new_spanned(&nv.path, "#[route] takes get or post, tags, alias, body, form, produces, ranges and example")),
+            }
+        }
+        if a.path.is_none() {
+            return Err(Error::new(Span::call_site(), "#[route] needs get = \"/path\" or post = \"/path\""));
+        }
+        Ok(a)
+    }
+}
+
+fn camel(snake: &str) -> String {
+    let mut out = String::new();
+    let mut up = false;
+    for c in snake.trim_start_matches('_').chars() {
+        if c == '_' {
+            up = true;
+        } else if up {
+            out.extend(c.to_uppercase());
+            up = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `#[route(get = "/api/info", tags = "page")]` on a route's handler: `fn(&State, &mut Cx) -> Result<Answer, E>` or
+/// `fn(&State, &mut Cx, Request) -> Result<Answer, E>`. The doc comment is its summary and description; the request
+/// (path and query parameters, or a JSON body) and the answer are Rpc types; `Sent` is an answer the handler wrote
+/// itself (a file: `produces`), `Checked<T>` one it made as JSON, held to T.
+#[proc_macro_attribute]
+pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as RouteArgs);
+    let f = parse_macro_input!(item as ItemFn);
+    route_fn(args, f).unwrap_or_else(|e| e.to_compile_error()).into()
+}
+
+fn route_fn(args: RouteArgs, f: ItemFn) -> syn::Result<TokenStream2> {
+    let fname = &f.sig.ident;
+    if f.sig.asyncness.is_some() {
+        return Err(Error::new_spanned(&f.sig, "#[route] handlers are sync for now (nextcuda's servers)"));
+    }
+    let inputs: Vec<&FnArg> = f.sig.inputs.iter().collect();
+    let ty_of = |a: &FnArg| match a {
+        FnArg::Typed(p) => Ok((*p.ty).clone()),
+        FnArg::Receiver(r) => Err(Error::new_spanned(r, "a #[route] handler is a free fn")),
+    };
+    let (state, cx, req) = match inputs.as_slice() {
+        [s, c] => (ty_of(s)?, ty_of(c)?, None),
+        [s, c, r] => (ty_of(s)?, ty_of(c)?, Some(ty_of(r)?)),
+        _ => return Err(Error::new_spanned(&f.sig.inputs, "a #[route] handler takes (&state, &mut cx) or (&state, &mut cx, request)")),
+    };
+    let ReturnType::Type(_, ret) = &f.sig.output else {
+        return Err(Error::new_spanned(&f.sig, "a #[route] handler answers Result<Answer, Error>"));
+    };
+    let docs = doc_lines(&f.attrs);
+    let summary = docs.first().cloned().unwrap_or_default();
+    if summary.is_empty() {
+        return Err(Error::new_spanned(fname, "a #[route] handler has a doc comment: its first line is the route's summary"));
+    }
+    let description = docs.split(|l| l.is_empty()).map(|p| p.join(" ")).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
+    let method = args.method;
+    let path = args.path.unwrap();
+    let key = format!("{method} {}", path.value().to_ascii_lowercase());
+    let tags = &args.tags;
+    let aliases = &args.aliases;
+    let produces = &args.produces;
+    let ranges = args.ranges;
+    let example = match &args.example {
+        Some(e) => quote! { Some(#e) },
+        None => quote! { None },
+    };
+    let body = match args.body.as_deref() {
+        Some("none") => quote! { .with_body(::rpcgen::Body::None) },
+        Some("json") => quote! { .with_body(::rpcgen::Body::Json) },
+        Some("multipart") => quote! { .with_body(::rpcgen::Body::Multipart) },
+        Some("bytes") => quote! { .with_body(::rpcgen::Body::Bytes) },
+        Some("json, multipart") => quote! { .with_body(::rpcgen::Body::JsonOrForm) },
+        _ => quote! {},
+    };
+    let form = match &args.form {
+        Some(t) => quote! { .with_form::<#t>() },
+        None => quote! {},
+    };
+    let name = camel(&fname.to_string());
+    let req_ty = req.clone().unwrap_or_else(|| syn::parse_quote!(::rpcgen::NoParams));
+    let resp: Type = syn::parse_quote!(<#ret as ::rpcgen::RouteResult>::Ok);
+    let info = format_ident!("__route_info_{}", fname);
+    let handler = format_ident!("__route_handler_{}", fname);
+    let const_name = format_ident!("__ROUTE_NAME_{}", fname);
+    let const_key = format_ident!("__ROUTE_KEY_{}", fname);
+    let call = if req.is_some() {
+        quote! { #fname(__state, __cx, ::rpcgen::decode_route::<#req_ty, <#ret as ::rpcgen::RouteResult>::Err>(__input)?) }
+    } else {
+        quote! { { let _ = __input; #fname(__state, __cx) } }
+    };
+    let vis = &f.vis;
+    Ok(quote! {
+        #f
+
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
+        #vis const #const_name: &str = #name;
+
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
+        #vis const #const_key: &str = #key;
+
+        #[doc(hidden)]
+        #vis fn #info() -> ::rpcgen::RouteInfo {
+            ::rpcgen::RouteInfo::new::<#req_ty, #resp>(#name, #method, #path, #summary, #description, &[#(#tags),*])
+                #body #form .with_aliases(&[#(#aliases),*]).with_produces(&[#(#produces),*]).with_ranges(#ranges).with_example(#example)
+        }
+
+        #[doc(hidden)]
+        #vis fn #handler(__state: #state, __cx: #cx, __input: ::rpcgen::serde_json::Value) -> ::rpcgen::RouteReplyOf<#ret> {
+            ::rpcgen::RouteResult::into_route(#call)
+        }
+    })
+}
+
+/// `routes![sync State, Cx, Error; a, b]`: a server's routes table.
+struct RouteTable {
+    state: Type,
+    cx: Type,
+    error: Type,
+    fns: Vec<Path>,
+}
+
+impl Parse for RouteTable {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let kw: Ident = input.parse()?;
+        if kw != "sync" {
+            return Err(Error::new_spanned(kw, "routes![sync State, Cx, Error; a, b]: sync tables only for now"));
+        }
+        let state: Type = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let cx: Type = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let error: Type = input.parse()?;
+        input.parse::<Token![;]>()?;
+        let fns = Punctuated::<Path, Token![,]>::parse_terminated(input)?.into_iter().collect();
+        Ok(RouteTable { state, cx, error, fns })
+    }
+}
+
+/// The lifetimes a type names (`Cx<'r>`): the table's function is generic over them.
+fn lifetimes_of(t: &Type, out: &mut Vec<syn::Lifetime>) {
+    fn walk(ts: TokenStream2, out: &mut Vec<syn::Lifetime>) {
+        let toks: Vec<proc_macro2::TokenTree> = ts.into_iter().collect();
+        let mut i = 0;
+        while i < toks.len() {
+            match &toks[i] {
+                proc_macro2::TokenTree::Punct(p) if p.as_char() == '\'' => {
+                    if let Some(proc_macro2::TokenTree::Ident(id)) = toks.get(i + 1) {
+                        let lt = syn::Lifetime::new(&format!("'{id}"), id.span());
+                        if id != "static" && !out.contains(&lt) {
+                            out.push(lt);
+                        }
+                        i += 1;
+                    }
+                }
+                proc_macro2::TokenTree::Group(g) => walk(g.stream(), out),
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    walk(quote! { #t }, out);
+}
+
+/// A server's table of routes: `pub fn routes() -> Vec<SyncRoute<State, Cx, Error>>`, the client names and the
+/// methods and paths checked distinct at compile time.
+#[proc_macro]
+pub fn routes(input: TokenStream) -> TokenStream {
+    let t = parse_macro_input!(input as RouteTable);
+    let (state, cx, err) = (&t.state, &t.cx, &t.error);
+    let infos: Vec<Path> = t.fns.iter().map(|p| with_prefix(p, "__route_info_", false)).collect();
+    let handlers: Vec<Path> = t.fns.iter().map(|p| with_prefix(p, "__route_handler_", false)).collect();
+    let names: Vec<Path> = t.fns.iter().map(|p| with_prefix(p, "__ROUTE_NAME_", true)).collect();
+    let keys: Vec<Path> = t.fns.iter().map(|p| with_prefix(p, "__ROUTE_KEY_", true)).collect();
+    let mut lts = Vec::new();
+    lifetimes_of(state, &mut lts);
+    lifetimes_of(cx, &mut lts);
+    lifetimes_of(err, &mut lts);
+    let generics = if lts.is_empty() { quote! {} } else { quote! { <#(#lts),*> } };
+    quote! {
+        /// The table's routes, from their #[route] handlers (rpcgen).
+        pub fn routes #generics () -> Vec<::rpcgen::SyncRoute<#state, #cx, #err>> {
+            vec![#(::rpcgen::SyncRoute { info: #infos(), handler: #handlers }),*]
+        }
+        const _: () = assert!(::rpcgen::distinct(&[#(#names),*]), "two #[route] handlers in this table share a name (the client's)");
+        const _: () = assert!(::rpcgen::distinct(&[#(#keys),*]), "two #[route]s in this table share a method and path");
+    }
+    .into()
+}

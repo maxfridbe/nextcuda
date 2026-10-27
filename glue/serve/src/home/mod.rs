@@ -27,7 +27,7 @@ mod disks;
 mod jobs;
 mod life;
 mod maint;
-mod methods;
+pub(crate) mod methods;
 mod precheck;
 mod pulls;
 mod spec;
@@ -39,7 +39,24 @@ pub mod registry;
 pub fn api_files() -> Vec<(&'static str, String)> {
     let ts = rpcgen::typescript("nextcuda's front door (POST /rpc/<kind>.<method>; the answer in {ok, result | error})", &methods::infos())
         .expect("the methods describe consistent types");
-    vec![("wfe/home/src/gen/nextcuda.ts", ts)]
+    let mut out = vec![("wfe/home/src/gen/nextcuda.ts", ts)];
+    // each server's own routes (#[route]): its page's client and its document
+    for (name, title, infos, pages) in route_tables() {
+        let ts = rpcgen::routes_typescript(title, &infos).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for p in pages {
+            out.push((p, ts.clone()));
+        }
+        let info = serde_json::json!({"title": title, "version": "generated",
+            "description": "A server's own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextcuda gen-api`: do not edit."});
+        let doc = rpcgen::routes_openapi(info, "/", &infos).unwrap_or_else(|e| panic!("{name}: {e}"));
+        out.push((Box::leak(format!("docs/api/{name}.openapi.yml").into_boxed_str()), doc));
+    }
+    out
+}
+
+/// Every server's route table: (its name, its title, its routes, the pages whose client it is)
+pub fn route_tables() -> Vec<(&'static str, &'static str, Vec<rpcgen::RouteInfo>, Vec<&'static str>)> {
+    vec![("image", "nextcuda image server (nextcuda image serve)", crate::image::route_infos(), vec!["wfe/image/src/gen/routes.ts", "wfe/ocr/src/gen/routes.ts"])]
 }
 
 #[cfg(test)]
@@ -65,6 +82,11 @@ mod api_files_tests {
     fn the_document_and_the_client_agree() {
         if let Err(e) = rpcgen::parity(&super::methods::infos()) {
             panic!("{e}");
+        }
+        for (name, _, infos, _) in super::route_tables() {
+            if let Err(e) = rpcgen::route_parity(&infos) {
+                panic!("{name}: {e}");
+            }
         }
     }
 

@@ -22,42 +22,21 @@ export interface AudioDescribePromptGuideMdReq {
 
 /** What audio.generate takes. */
 export interface AudioGenerateReq {
-  /** acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end) */
-  audio?: string | null;
   /**
    * a group inside the project
    * @maxLength 60
    */
   batch?: string | null;
-  /** acestep-1.5: the tempo (else the planner's, or none said) */
-  bpm?: number | null;
-  cfg?: number | null;
-  /** cover: how close the start is to the recording, 0 (from noise) to 1 (0) */
-  cover_noise?: number | null;
-  /** cover / repaint: the share of the steps conditioned on the recording, 0 to 1 (0.5) */
-  cover_strength?: number | null;
   /**
    * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
    * @default false
    */
   held?: boolean | null;
-  /** the lyrics, [verse] / [chorus] tags on lines of their own (empty: instrumental) */
-  input?: string | null;
-  /** the music: genre, mood, tempo, instruments, voice (with audio it may be left out: the recording's sound is kept) */
-  instructions: string;
-  /** acestep-1.5: key and scale, "C major", "F# minor" */
-  key?: string | null;
   /**
    * names the job for <kind>.status and <kind>.cancel (default: its id)
    * @maxLength 120
    */
   label?: string | null;
-  /** acestep-1.5: the lyrics' language as a code (en, zh, ja, es ...; default unknown) */
-  language?: string | null;
-  /** the model's id; none: the loaded one, else the first enabled */
-  model?: string | null;
-  /** acestep-1.5 text2music: the 5 Hz planner LM writes the metas, the caption and the song's audio codes first (true, as the platform's use_lm) */
-  planner?: boolean | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -80,6 +59,32 @@ export interface AudioGenerateReq {
    * @maxLength 200
    */
   reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /** acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end) */
+  audio?: string | null;
+  /** acestep-1.5: the tempo (else the planner's, or none said) */
+  bpm?: number | null;
+  cfg?: number | null;
+  /** cover: how close the start is to the recording, 0 (from noise) to 1 (0) */
+  cover_noise?: number | null;
+  /** cover / repaint: the share of the steps conditioned on the recording, 0 to 1 (0.5) */
+  cover_strength?: number | null;
+  /** the lyrics, [verse] / [chorus] tags on lines of their own (empty: instrumental) */
+  input?: string | null;
+  /** the music: genre, mood, tempo, instruments, voice (with audio it may be left out: the recording's sound is kept) */
+  instructions: string;
+  /** acestep-1.5: key and scale, "C major", "F# minor" */
+  key?: string | null;
+  /** acestep-1.5: the lyrics' language as a code (en, zh, ja, es ...; default unknown) */
+  language?: string | null;
+  /** the model's id; none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** acestep-1.5 text2music: the 5 Hz planner LM writes the metas, the caption and the song's audio codes first (true, as the platform's use_lm) */
+  planner?: boolean | null;
   /** repaint: seconds; -1 or none: the recording's end; past it: the song extended to it */
   repaint_end?: number | null;
   /** repaint: how much of the recording is kept at the span's edges (balanced) */
@@ -97,11 +102,6 @@ export interface AudioGenerateReq {
   task?: AudioTask | null;
   /** acestep-1.5: beats a bar: "4", "3", "6" */
   time_signature?: string | null;
-  /**
-   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
-   * @default true
-   */
-  wait?: boolean | null;
   /** other keys */
   [key: string]: unknown;
 }
@@ -200,33 +200,16 @@ export interface AudioSpeakReq {
    * @maxLength 60
    */
   batch?: string | null;
-  /** guidance with instructions (Breeze TTS 2: 4 by default for design and direction; 1 turns it off) */
-  cfg?: number | null;
-  /**
-   * carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice's sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped
-   * @maxLength 200
-   */
-  continue_from?: string | null;
   /**
    * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
    * @default false
    */
   held?: boolean | null;
-  /** the text to say (Breeze TTS 2: vocal events inline - English (laugh) (sigh) (cough) (clears throat), Chinese [笑] [叹气] [咳嗽] [清嗓子]) */
-  input: string;
-  /** how to say it (CustomVoice), or the voice to make up (VoiceDesign, Breeze TTS 2: write it in the language of the text); with a cloned voice (ref_audio or a saved voice) the direction of its tone, emotion, pace (Breeze TTS 2: voice direction - picked for you when model is not given) */
-  instructions?: string | null;
   /**
    * names the job for <kind>.status and <kind>.cancel (default: its id)
    * @maxLength 120
    */
   label?: string | null;
-  /** english, chinese, japanese ... or auto (default). Checked when submitted against the model's list (Qwen3-TTS: chinese, english, german, italian, portuguese, spanish, japanese, korean, french, russian); VoxCPM2 has no list and takes any */
-  language?: string | null;
-  /** the model's id; none: the loaded one, else the first enabled */
-  model?: string | null;
-  /** the engine's own: greedy, temperature, top-k, streaming */
-  options?: Record<string, unknown> | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -249,6 +232,28 @@ export interface AudioSpeakReq {
    * @maxLength 200
    */
   reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /** guidance with instructions (Breeze TTS 2: 4 by default for design and direction; 1 turns it off) */
+  cfg?: number | null;
+  /**
+   * carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice's sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped
+   * @maxLength 200
+   */
+  continue_from?: string | null;
+  /** the text to say (Breeze TTS 2: vocal events inline - English (laugh) (sigh) (cough) (clears throat), Chinese [笑] [叹气] [咳嗽] [清嗓子]) */
+  input: string;
+  /** how to say it (CustomVoice), or the voice to make up (VoiceDesign, Breeze TTS 2: write it in the language of the text); with a cloned voice (ref_audio or a saved voice) the direction of its tone, emotion, pace (Breeze TTS 2: voice direction - picked for you when model is not given) */
+  instructions?: string | null;
+  /** english, chinese, japanese ... or auto (default). Checked when submitted against the model's list (Qwen3-TTS: chinese, english, german, italian, portuguese, spanish, japanese, korean, french, russian); VoxCPM2 has no list and takes any */
+  language?: string | null;
+  /** the model's id; none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** the engine's own: greedy, temperature, top-k, streaming */
+  options?: Record<string, unknown> | null;
   /** a recording of the voice to clone: WAV as base64 or a data: URL, or upload:<name> (audio.upload, any format it takes) - the Base model */
   ref_audio?: string | null;
   /** what the recording says: the closer, in-context clone (Breeze TTS 2: required, the exact transcript) */
@@ -263,11 +268,6 @@ export interface AudioSpeakReq {
   speakers?: string[] | null;
   /** a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices) */
   voice?: string | null;
-  /**
-   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
-   * @default true
-   */
-  wait?: boolean | null;
   /** other keys */
   [key: string]: unknown;
 }
@@ -287,8 +287,6 @@ export type AudioTask = "text2music" | "cover" | "repaint" | "edit" | "lego";
 
 /** What audio.transcribe takes. */
 export interface AudioTranscribeReq {
-  /** the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono */
-  audio: string;
   /**
    * a group inside the project
    * @maxLength 60
@@ -304,12 +302,6 @@ export interface AudioTranscribeReq {
    * @maxLength 120
    */
   label?: string | null;
-  /** a code or a name (en, english, de, german ...); none or auto: detected on the first 30 s */
-  language?: string | null;
-  /** the model's id; none: the loaded one, else the first enabled */
-  model?: string | null;
-  /** the engine's own: condition (each window prompted with the text before it), no-speech (the silence threshold), fallback (decode an unsure window again, warmer) */
-  options?: Record<string, unknown> | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -322,8 +314,6 @@ export interface AudioTranscribeReq {
    * @maxLength 60
    */
   project?: string | null;
-  /** text that leads the first window: names, spelling, style (Whisper's initial_prompt) */
-  prompt?: string | null;
   /**
    * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
    * @default true
@@ -334,13 +324,23 @@ export interface AudioTranscribeReq {
    * @maxLength 200
    */
   reentrant_id?: string | null;
-  /** into English instead of the language spoken */
-  translate?: boolean | null;
   /**
    * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
    * @default true
    */
   wait?: boolean | null;
+  /** the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono */
+  audio: string;
+  /** a code or a name (en, english, de, german ...); none or auto: detected on the first 30 s */
+  language?: string | null;
+  /** the model's id; none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** the engine's own: condition (each window prompted with the text before it), no-speech (the silence threshold), fallback (decode an unsure window again, warmer) */
+  options?: Record<string, unknown> | null;
+  /** text that leads the first window: names, spelling, style (Whisper's initial_prompt) */
+  prompt?: string | null;
+  /** into English instead of the language spoken */
+  translate?: boolean | null;
   /**
    * each word's start and end (and the model's probability for it)
    * @default true
@@ -464,15 +464,11 @@ export interface ImageEditReq {
    * @default false
    */
   held?: boolean | null;
-  /** up to 8, base64, data: URLs or upload:<name> (image.upload) - PNG, JPEG, WebP; each at most 40 MP, the request at most 256 MiB; each is resized to about 1 MP, so 2048 px on the long side is plenty */
-  images: string[];
   /**
    * names the job for <kind>.status and <kind>.cancel (default: its id)
    * @maxLength 120
    */
   label?: string | null;
-  /** the model's id; none: the loaded one, else the first enabled */
-  model?: string | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -485,8 +481,6 @@ export interface ImageEditReq {
    * @maxLength 60
    */
   project?: string | null;
-  /** the instructions */
-  prompt: string;
   /**
    * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
    * @default true
@@ -497,6 +491,17 @@ export interface ImageEditReq {
    * @maxLength 200
    */
   reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /** up to 8, base64, data: URLs or upload:<name> (image.upload) - PNG, JPEG, WebP; each at most 40 MP, the request at most 256 MiB; each is resized to about 1 MP, so 2048 px on the long side is plenty */
+  images: string[];
+  /** the model's id; none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** the instructions */
+  prompt: string;
   /**
    * true (default): the pictures condition the model as an edit's references (its vision tower reads them) as well as being where strength starts; false: a plain img2img - the denoise starts from the first picture and the prompt alone guides it, comparable with other tools' img2img (needs strength below 1)
    * @default true
@@ -515,11 +520,6 @@ export interface ImageEditReq {
    * @default 1
    */
   strength?: number | null;
-  /**
-   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
-   * @default true
-   */
-  wait?: boolean | null;
   /** other keys */
   [key: string]: unknown;
 }
@@ -531,27 +531,16 @@ export interface ImageGenerateReq {
    * @maxLength 60
    */
   batch?: string | null;
-  /** true guidance (needs negative_prompt) */
-  cfg?: number | null;
   /**
    * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
    * @default false
    */
   held?: boolean | null;
-  /** an init picture (base64, a data: URL, or upload:<name> from image.upload; at most 40 MP): a plain img2img - the denoise starts from it at strength and the prompt guides it (it is no reference: for an edit that reads the picture use image.edit). Needs strength below 1 */
-  image?: string | null;
   /**
    * names the job for <kind>.status and <kind>.cancel (default: its id)
    * @maxLength 120
    */
   label?: string | null;
-  /** name:scale */
-  loras?: string[] | null;
-  /** the model's id; none: the loaded one, else the first enabled */
-  model?: string | null;
-  /** pictures */
-  n?: number | null;
-  negative_prompt?: string | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -564,7 +553,6 @@ export interface ImageGenerateReq {
    * @maxLength 60
    */
   project?: string | null;
-  prompt: string;
   /**
    * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
    * @default true
@@ -575,6 +563,23 @@ export interface ImageGenerateReq {
    * @maxLength 200
    */
   reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /** true guidance (needs negative_prompt) */
+  cfg?: number | null;
+  /** an init picture (base64, a data: URL, or upload:<name> from image.upload; at most 40 MP): a plain img2img - the denoise starts from it at strength and the prompt guides it (it is no reference: for an edit that reads the picture use image.edit). Needs strength below 1 */
+  image?: string | null;
+  /** each "name:scale" (a registered LoRA's id or a file) or {"name", "scale"}; [] unloads them */
+  loras?: unknown[] | null;
+  /** the model's id; none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** pictures */
+  n?: number | null;
+  negative_prompt?: string | null;
+  prompt: string;
   /** url (default) or b64_json */
   response_format?: string | null;
   /** ComfyUI's names (euler, euler_ancestral, dpmpp_2m ...) */
@@ -591,11 +596,6 @@ export interface ImageGenerateReq {
    * @maximum 1
    */
   strength?: number | null;
-  /**
-   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
-   * @default true
-   */
-  wait?: boolean | null;
   /** other keys */
   [key: string]: unknown;
 }
@@ -745,21 +745,11 @@ export interface ImageUpscaleReq {
    * @default false
    */
   held?: boolean | null;
-  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload) */
-  image: string;
   /**
    * names the job for <kind>.status and <kind>.cancel (default: its id)
    * @maxLength 120
    */
   label?: string | null;
-  /** the model's id; none: the loaded one, else the first enabled */
-  model?: string | null;
-  /**
-   * waifu2x's denoise level (-1: none)
-   * @minimum -1
-   * @maximum 3
-   */
-  noise?: number | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -778,10 +768,25 @@ export interface ImageUpscaleReq {
    */
   queue?: boolean | null;
   /**
-   * idempotent submit (as image.generate)
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
    * @maxLength 200
    */
   reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload) */
+  image: string;
+  /** the model's id; none: the loaded one, else the first enabled */
+  model?: string | null;
+  /**
+   * waifu2x's denoise level (-1: none)
+   * @minimum -1
+   * @maximum 3
+   */
+  noise?: number | null;
   response_format?: ResponseFormat | null;
   /** the factor: Real-ESRGAN 2, 3 (animevideov3) or 4; waifu2x 1 (denoise only), 2, 4 ... 32 (its 2x model again each time) */
   scale?: number | null;
@@ -792,11 +797,6 @@ export interface ImageUpscaleReq {
   tile?: number | null;
   /** the upscaler's model (image.info's upscale list): realesrgan-x4plus (default at 4x), realesr-animevideov3 (default at 2x / 3x), ..., models-cunet (waifu2x's default) */
   variant?: string | null;
-  /**
-   * true: answer when it ends; false: answer at once with the job
-   * @default true
-   */
-  wait?: boolean | null;
   /** other keys */
   [key: string]: unknown;
 }
@@ -809,33 +809,15 @@ export interface ImageVectorizeReq {
    */
   batch?: string | null;
   /**
-   *
-   * @minimum 1
-   * @maximum 8
-   * @default 2
-   */
-  beams?: number | null;
-  /**
    * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
    * @default false
    */
   held?: boolean | null;
-  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload) */
-  image: string;
   /**
-   * names the job for image.status and image.cancel
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
    * @maxLength 120
    */
   label?: string | null;
-  /**
-   * the sequence at most as the model counts it (the picture's 257 rows and the prompt first: 5000 leaves 4741 tokens of SVG)
-   * @minimum 260
-   * @maximum 8192
-   * @default 5000
-   */
-  max_length?: number | null;
-  /** the model's id; none: the loaded one, else the first enabled */
-  model?: string | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -854,10 +836,33 @@ export interface ImageVectorizeReq {
    */
   queue?: boolean | null;
   /**
-   * idempotent submit (as image.generate)
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
    * @maxLength 200
    */
   reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /**
+   *
+   * @minimum 1
+   * @maximum 8
+   * @default 2
+   */
+  beams?: number | null;
+  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload) */
+  image: string;
+  /**
+   * the sequence at most as the model counts it (the picture's 257 rows and the prompt first: 5000 leaves 4741 tokens of SVG)
+   * @minimum 260
+   * @maximum 8192
+   * @default 5000
+   */
+  max_length?: number | null;
+  /** the model's id; none: the loaded one, else the first enabled */
+  model?: string | null;
   /**
    *
    * @default 1.0
@@ -879,11 +884,6 @@ export interface ImageVectorizeReq {
    * @default 0.9
    */
   top_p?: number | null;
-  /**
-   * true: answer when it ends; false: answer at once with the job
-   * @default true
-   */
-  wait?: boolean | null;
   /** other keys */
   [key: string]: unknown;
 }
@@ -956,36 +956,16 @@ export interface Model3dGenerateReq {
    * @maxLength 60
    */
   batch?: string | null;
-  /** guidance */
-  cfg?: number | null;
-  /** at most this many triangles (decimated to it) */
-  faces?: number | null;
-  /** or a GLB made here to paint (its file name or url), as mesh */
-  file?: string | null;
   /**
    * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
    * @default false
    */
   held?: boolean | null;
-  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (model3d.upload); a transparent background is the object's outline, an opaque one is cut out (remove_background) */
-  image?: string | null;
-  /**
-   * several views of the object (a multi-view model: model3d.info's abilities.views); each a picture or {image, side}
-   * @maxItems 8
-   * @items {"oneOf":[{"type":"string"},{"properties":{"image":{"type":"string"},"side":{"description":"front, back, left, right, top, bottom, or an azimuth in degrees","type":"string"}},"type":"object"}]}
-   */
-  images?: unknown[] | null;
   /**
    * names the job for <kind>.status and <kind>.cancel (default: its id)
    * @maxLength 120
    */
   label?: string | null;
-  /** a mesh to paint instead of making one (a model that textures: Hunyuan3D 2.1, hunyuan3d-2.1-paint): a GLB or OBJ as base64 or a data: URL; image says how it is painted */
-  mesh?: string | null;
-  /** the model's id; none: the loaded one, else the first enabled */
-  model?: string | null;
-  /** the engine's own (model3d.info lists them) */
-  options?: Record<string, unknown> | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -1009,6 +989,31 @@ export interface Model3dGenerateReq {
    */
   reentrant_id?: string | null;
   /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /** guidance */
+  cfg?: number | null;
+  /** at most this many triangles (decimated to it) */
+  faces?: number | null;
+  /** or a GLB made here to paint (its file name or url), as mesh */
+  file?: string | null;
+  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (model3d.upload); a transparent background is the object's outline, an opaque one is cut out (remove_background) */
+  image?: string | null;
+  /**
+   * several views of the object (a multi-view model: model3d.info's abilities.views); each a picture or {image, side}
+   * @maxItems 8
+   * @items {"oneOf":[{"type":"string"},{"properties":{"image":{"type":"string"},"side":{"description":"front, back, left, right, top, bottom, or an azimuth in degrees","type":"string"}},"type":"object"}]}
+   */
+  images?: unknown[] | null;
+  /** a mesh to paint instead of making one (a model that textures: Hunyuan3D 2.1, hunyuan3d-2.1-paint): a GLB or OBJ as base64 or a data: URL; image says how it is painted */
+  mesh?: string | null;
+  /** the model's id; none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** the engine's own (model3d.info lists them) */
+  options?: Record<string, unknown> | null;
+  /**
    * cut the background out of an opaque picture
    * @default true
    */
@@ -1022,11 +1027,6 @@ export interface Model3dGenerateReq {
   texture?: boolean | null;
   /** the texture's side in texels */
   texture_size?: number | null;
-  /**
-   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
-   * @default true
-   */
-  wait?: boolean | null;
   /** other keys */
   [key: string]: unknown;
 }
@@ -1125,12 +1125,6 @@ export interface Model3dRigReq {
    * @maxLength 60
    */
   batch?: string | null;
-  cfg?: number | null;
-  /** or a GLB made here (model3d.generate's file name or url) */
-  file?: string | null;
-  fps?: number | null;
-  /** an animating model: frames to make */
-  frames?: number | null;
   /**
    * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
    * @default false
@@ -1141,12 +1135,6 @@ export interface Model3dRigReq {
    * @maxLength 120
    */
   label?: string | null;
-  /** the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload) */
-  mesh?: string | null;
-  /** the model's id; none: the loaded one, else the first enabled */
-  model?: string | null;
-  /** the engine's own */
-  options?: Record<string, unknown> | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -1159,25 +1147,37 @@ export interface Model3dRigReq {
    * @maxLength 60
    */
   project?: string | null;
-  /** an animating model: the motion, in words ("a dragon flapping its wings") */
-  prompt?: string | null;
   /**
    * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
    * @default true
    */
   queue?: boolean | null;
   /**
-   * idempotent submit (as model3d.generate)
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
    * @maxLength 200
    */
   reentrant_id?: string | null;
-  seed?: number | null;
-  steps?: number | null;
   /**
-   * true: answer when it ends; false: answer at once with the job
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
    * @default true
    */
   wait?: boolean | null;
+  cfg?: number | null;
+  /** or a GLB made here (model3d.generate's file name or url) */
+  file?: string | null;
+  fps?: number | null;
+  /** an animating model: frames to make */
+  frames?: number | null;
+  /** the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload) */
+  mesh?: string | null;
+  /** the model's id; none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** the engine's own */
+  options?: Record<string, unknown> | null;
+  /** an animating model: the motion, in words ("a dragon flapping its wings") */
+  prompt?: string | null;
+  seed?: number | null;
+  steps?: number | null;
   /** other keys */
   [key: string]: unknown;
 }
@@ -1780,28 +1780,15 @@ export interface VideoUpscaleReq {
    */
   batch?: string | null;
   /**
-   * the H.264 encode's quality (lower: better, bigger)
-   * @minimum 0
-   * @maximum 40
-   * @default 16
-   */
-  crf?: number | null;
-  /** or a clip made here (a video.generate clip's name, h3_..., with or without .mp4) */
-  file?: string | null;
-  /**
    * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
    * @default false
    */
   held?: boolean | null;
   /**
-   * names the job for image.status and image.cancel
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
    * @maxLength 120
    */
   label?: string | null;
-  /** the model's id; none: the loaded one, else the first enabled */
-  model?: string | null;
-  /** as image.upscale */
-  noise?: number | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -1820,10 +1807,28 @@ export interface VideoUpscaleReq {
    */
   queue?: boolean | null;
   /**
-   * idempotent submit (as image.generate)
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
    * @maxLength 200
    */
   reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /**
+   * the H.264 encode's quality (lower: better, bigger)
+   * @minimum 0
+   * @maximum 40
+   * @default 16
+   */
+  crf?: number | null;
+  /** or a clip made here (a video.generate clip's name, h3_..., with or without .mp4) */
+  file?: string | null;
+  /** the model's id; none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** as image.upscale */
+  noise?: number | null;
   /** url (default): the server keeps the MP4 and links it */
   response_format?: ResponseFormat | null;
   /** as image.upscale */
@@ -1834,11 +1839,6 @@ export interface VideoUpscaleReq {
   variant?: string | null;
   /** the clip: MP4 / WebM / MOV ... as base64 or a data: URL */
   video?: string | null;
-  /**
-   * true: answer when it ends; false: answer at once with the job
-   * @default true
-   */
-  wait?: boolean | null;
   /** other keys */
   [key: string]: unknown;
 }

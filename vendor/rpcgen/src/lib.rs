@@ -173,12 +173,15 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
-pub use rpcgen_macros::{rpc, rpc_methods, Rpc};
+pub use rpcgen_macros::{route, routes, rpc, rpc_methods, Rpc};
 #[doc(hidden)]
 pub use serde_json;
 
 #[cfg(feature = "axum")]
 pub use web::*;
+
+mod route;
+pub use route::*;
 
 /// The async methods of an axum server (the platform): a handler answers a Response.
 #[cfg(feature = "axum")]
@@ -1366,7 +1369,11 @@ fn ts_jsdoc(out: &mut String, indent: &str, doc: &str, tags: &[(String, String)]
         out.push_str(&format!("{indent} *{}{}\n", if line.is_empty() { "" } else { " " }, clean(line)));
     }
     for (t, v) in tags {
-        out.push_str(&format!("{indent} * @{t} {}\n", clean(v)));
+        if v.is_empty() {
+            out.push_str(&format!("{indent} * @{t}\n"));
+        } else {
+            out.push_str(&format!("{indent} * @{t} {}\n", clean(v)));
+        }
     }
     out.push_str(&format!("{indent} */\n"));
 }
@@ -1495,6 +1502,12 @@ fn facts_of_openapi(doc: &str) -> Result<Facts, String> {
             f.insert(format!("{name}: example {k}: {}", e["value"]));
         }
     }
+    schema_facts(&v, &mut f);
+    Ok(f)
+}
+
+/// What a document's named types say (descriptions, values, optional fields, `#[schema]` facts), as facts.
+fn schema_facts(v: &Value, f: &mut Facts) {
     let known = ["minimum", "maximum", "default", "minLength", "maxLength", "maxItems", "pattern", "format", "example"];
     for (tname, t) in v["components"]["schemas"].as_object().into_iter().flatten() {
         if let Some(d) = t["description"].as_str() {
@@ -1529,7 +1542,6 @@ fn facts_of_openapi(doc: &str) -> Result<Facts, String> {
             }
         }
     }
-    Ok(f)
 }
 
 /// The JSDoc block just before line `i`: its text (paragraphs kept) and its `@tag value` lines.
@@ -1614,14 +1626,24 @@ fn facts_of_typescript(ts: &str) -> Facts {
             }
             let vals: Vec<String> = vals.trim_end_matches(';').split(" | ").map(|v| v.trim_matches('"').to_string()).collect();
             f.insert(format!("{tname}: values: {}", vals.join(" | ")));
-        } else if l.starts_with("export function client(") {
+        } else if l.starts_with("export function client(") || l.starts_with("export function routes(") {
             in_client = true;
         } else if in_client && l.starts_with("    ") && !l.trim_start().starts_with(['/', '*']) && l.contains(": (") {
-            let name = l.trim().split(": (").next().unwrap_or("").trim_matches('"').to_string();
             let (d, tags) = jsdoc_before(&lines, i);
+            // a route is named by its method and path (`@route GET /api/info`), as the document keys it
+            let name = match tags.iter().find_map(|t| t.strip_prefix("route ")) {
+                Some(r) => r.to_string(),
+                None => l.trim().split(": (").next().unwrap_or("").trim_matches('"').to_string(),
+            };
             f.insert(format!("{name}: text: {d}"));
             for t in tags {
-                if let Some(v) = t.strip_prefix("tags ") {
+                if let Some(v) = t.strip_prefix("alias ") {
+                    f.insert(format!("{name}: alias: {v}"));
+                } else if let Some(v) = t.strip_prefix("body ") {
+                    f.insert(format!("{name}: body: {v}"));
+                } else if t == "ranges" {
+                    f.insert(format!("{name}: ranges"));
+                } else if let Some(v) = t.strip_prefix("tags ") {
                     for tag in v.split(", ") {
                         f.insert(format!("{name}: tag: {tag}"));
                     }

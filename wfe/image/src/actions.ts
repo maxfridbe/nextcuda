@@ -1,6 +1,7 @@
 /** What the buttons do: build the request from the form, send it, keep the results. */
 import { api } from "./api.js";
 import { render, saveForm, state } from "./state.js";
+import type { ImageEditBody, ImageGenerateBody } from "./gen/routes.js";
 import type { Picture } from "./types.js";
 import { r16 } from "./util.js";
 
@@ -15,7 +16,7 @@ export function adoptDefaults(): void {
   const known = new Set((state.info?.loras ?? []).map((l) => l.id));
   for (const id of Object.keys(f.loras)) if (!known.has(id)) delete f.loras[id];
   if (!Object.keys(f.loras).length) {
-    for (const l of state.info?.loras ?? []) if (l.loaded !== null) f.loras[l.id] = l.loaded;
+    for (const l of state.info?.loras ?? []) if (l.loaded != null) f.loras[l.id] = l.loaded;
   }
 }
 
@@ -96,11 +97,11 @@ export async function refreshHistory(): Promise<void> {
   }
 }
 
-function body(): Record<string, unknown> {
+function body(): ImageGenerateBody & Partial<ImageEditBody> {
   const f = state.form;
   const d = state.info?.defaults;
   const editing = state.pictures.length > 0;
-  const b: Record<string, unknown> = {
+  const b: ImageGenerateBody & Partial<ImageEditBody> = {
     model: state.info?.model, prompt: f.prompt.trim(), n: f.n, response_format: "url",
   };
   if (!editing || !state.sizeFromPictures) b.size = `${f.width}x${f.height}`;

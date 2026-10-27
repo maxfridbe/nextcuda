@@ -35,6 +35,10 @@
 //! than those merged in reloads the engine with them (the old one is dropped first: its VRAM is the new one's) - until
 //! the engines take a LoRA per request on a side path.
 
+mod routes;
+
+pub use routes::infos as route_infos;
+
 use std::collections::VecDeque;
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -47,6 +51,7 @@ use nextcuda_image::{ImageEngine, ImageRequest, LoraUse, Sampler, Schedule};
 use serde_json::{json, Value};
 
 use crate::http::{self, Conn};
+use crate::page::{self, Cx};
 use crate::serve::cors_headers;
 use crate::telemetry::Telemetry;
 
@@ -249,105 +254,24 @@ impl ImageServer {
             Err(e) => return http::respond(&mut s, 400, &err(e)),
         };
         let cors = cors_headers(req.origin.as_deref(), &self.cors);
-        match (req.method.as_str(), req.path.as_str()) {
-            ("OPTIONS", _) => {
-                let h = format!("{cors}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\n");
-                http::respond_bytes(&mut s, 204, "text/plain", b"", &h)
+        let mut cx = Cx { s, req, cors };
+        if cx.req.method == "OPTIONS" {
+            let h = "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\n";
+            return cx.bytes(204, "text/plain", b"", h);
+        }
+        if self.wfe.is_some() && cx.req.method == "GET" {
+            let p = cx.req.path.clone();
+            if p == "/" || p == "/index.html" {
+                return self.page(&mut cx.s, &cx.cors);
             }
-            ("GET", "/") | ("GET", "/index.html") if self.wfe.is_some() => self.page(&mut s, &cors),
-            ("GET", p) if self.wfe.is_some() && (p.starts_with("/ui/") || p.starts_with("/static/")) => self.asset(&mut s, p, &cors),
-            ("GET", "/api/gpu") => http::respond_with(&mut s, 200, &self.gpu_json(), &cors),
-            ("GET", "/health") => {
-                let loaded = self.engine.try_lock().map(|e| e.is_some()).unwrap_or(true);
-                http::respond_with(&mut s, if loaded { 200 } else { 503 }, &json!({"status": if loaded { "ok" } else { "loading" }}), &cors)
+            if p.starts_with("/ui/") || p.starts_with("/static/") {
+                return self.asset(&mut cx.s, &p, &cx.cors);
             }
-            ("GET", "/v1/models") | ("GET", "/models") => http::respond_with(&mut s, 200, &json!({"object": "list", "data": [
-                {"id": self.model, "object": "model", "owned_by": "nextcuda", "created": 0}]}), &cors),
-            ("GET", "/api/info") => http::respond_with(&mut s, 200, &self.info(), &cors),
-            ("GET", "/api/progress") => {
-                let mut p = self.progress.lock().unwrap().clone();
-                p["waiting"] = json!(self.waiting.load(Ordering::Relaxed));
-                p["request_id"] = json!(self.cancel.current());
-                http::respond_with(&mut s, 200, &p, &cors)
-            }
-            ("GET", "/api/history") => {
-                // files deleted since (system.files.delete) drop out
-                let mut h = self.history.lock().unwrap();
-                if let Some(d) = &self.out_dir {
-                    h.retain(|e| e["url"].as_str().and_then(|u| u.rsplit('/').next()).is_none_or(|f| d.join(f).exists()));
-                }
-                http::respond_with(&mut s, 200, &json!({"data": h.iter().collect::<Vec<_>>()}), &cors)
-            }
-            ("POST", "/api/cancel") => {
-                // {"id"}: that request only (the front door's job), running or waiting; none: the one running
-                let busy = self.progress.lock().unwrap()["busy"] == true;
-                let id = serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v["id"].as_str().map(str::to_string));
-                let running = self.cancel.request(id.as_deref(), busy);
-                http::respond_with(&mut s, 200, &json!({"cancelled": running, "id": id}), &cors)
-            }
-            ("GET", p) if p.starts_with("/v1/images/files/") => self.file(&mut s, &p["/v1/images/files/".len()..], &cors),
-            ("POST", "/v1/images/generations") | ("POST", "/images/generations") => {
-                let body: Value = match serde_json::from_slice(&req.body) {
-                    Ok(v) => v,
-                    Err(e) => return http::respond_with(&mut s, 400, &err(format!("the body is not JSON: {e}")), &cors),
-                };
-                let base = req.host.as_deref().map(|h| format!("http://{h}")).unwrap_or_default();
-                // an init picture: a plain img2img (the denoise starts from it; it is no edit's reference)
-                let mut body = body;
-                let mut pics = Vec::new();
-                if let Some(i) = ["image", "init_image"].iter().find_map(|k| body[*k].as_str().filter(|v| !v.is_empty())).map(str::to_string) {
-                    match init_picture(&i) {
-                        Ok(p) => pics.push(p),
-                        Err(m) => return http::respond_with(&mut s, 400, &err(m), &cors),
-                    }
-                    body["reference"] = json!(false);
-                }
-                match self.generate(&body, &base, pics) {
-                    Ok(v) => http::respond_with(&mut s, 200, &v, &cors),
-                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
-                }
-            }
-            ("POST", "/v1/images/vectorize") => {
-                let body: Value = match serde_json::from_slice(&req.body) {
-                    Ok(v) => v,
-                    Err(e) => return http::respond_with(&mut s, 400, &err(format!("the body is not JSON: {e}")), &cors),
-                };
-                match self.vectorize(&body) {
-                    Ok(v) => http::respond_with(&mut s, 200, &v, &cors),
-                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
-                }
-            }
-            ("POST", "/v1/images/upscale") | ("POST", "/v1/videos/upscale") => {
-                let body: Value = match serde_json::from_slice(&req.body) {
-                    Ok(v) => v,
-                    Err(e) => return http::respond_with(&mut s, 400, &err(format!("the body is not JSON: {e}")), &cors),
-                };
-                let base = req.host.as_deref().map(|h| format!("http://{h}")).unwrap_or_default();
-                let r = if req.path == "/v1/images/upscale" { self.upscale(&body, &base) } else { self.upscale_video(&body, &base) };
-                match r {
-                    Ok(v) => http::respond_with(&mut s, 200, &v, &cors),
-                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
-                }
-            }
-            ("POST", "/v1/ocr") => {
-                let body: Value = match serde_json::from_slice(&req.body) {
-                    Ok(v) => v,
-                    Err(e) => return http::respond_with(&mut s, 400, &err(format!("the body is not JSON: {e}")), &cors),
-                };
-                match self.ocr(&body) {
-                    Ok(v) => http::respond_with(&mut s, 200, &v, &cors),
-                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
-                }
-            }
-            ("POST", "/v1/images/edits") | ("POST", "/images/edits") => {
-                let base = req.host.as_deref().map(|h| format!("http://{h}")).unwrap_or_default();
-                let r = edit_body(&req).map_err(|m| (400u16, m)).and_then(|(body, pics)| self.generate(&body, &base, pics));
-                match r {
-                    Ok(v) => http::respond_with(&mut s, 200, &v, &cors),
-                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
-                }
-            }
-            _ => http::respond_with(&mut s, 404, &err(format!("no route {} {}", req.method, req.path)), &cors),
+        }
+        // the API: what routes.rs declares
+        if !page::serve(routes::table(), self, &mut cx, routes::fail) {
+            let m = format!("no route {} {}", cx.req.method, cx.req.path);
+            cx.json(404, &err(m));
         }
     }
 
@@ -385,12 +309,11 @@ impl ImageServer {
         }
     }
 
-    fn gpu_json(&self) -> Value {
+    fn gpu_json(&self) -> page::Gpu {
         let (total, free) = self.gpu.memory().unwrap_or((0, None));
         let used = free.map(|f| total.saturating_sub(f)).unwrap_or(0);
         let r = self.tele.readings().first().copied().unwrap_or_default();
-        json!({"name": self.gpu.name, "vram_used_mb": used >> 20, "vram_total_mb": total >> 20,
-               "power_w": r.watts, "temp_pkg": r.temp_c, "temp_vram": r.vram_c})
+        page::Gpu { name: self.gpu.name.clone(), vram_used_mb: used >> 20, vram_total_mb: total >> 20, power_w: r.watts, temp_pkg: r.temp_c, temp_vram: r.vram_c }
     }
 
     fn info(&self) -> Value {
@@ -422,16 +345,16 @@ impl ImageServer {
         })
     }
 
-    fn file(&self, s: &mut Conn, name: &str, cors: &str) {
+    fn file(&self, cx: &mut Cx, name: &str) {
         let ok = !name.is_empty() && (name.ends_with(".png") || name.ends_with(".mp4")) && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
             && !name.contains("..");
         let kind = if name.ends_with(".mp4") { "video/mp4" } else { "image/png" };
         match (&self.out_dir, ok) {
             (Some(d), true) => match std::fs::read(d.join(name)) {
-                Ok(b) => http::respond_bytes(s, 200, kind, &b, &format!("{cors}Cache-Control: max-age=31536000, immutable\r\n")),
-                Err(_) => http::respond_with(s, 404, &err(format!("no picture {name}")), cors),
+                Ok(b) => cx.bytes(200, kind, &b, "Cache-Control: max-age=31536000, immutable\r\n"),
+                Err(_) => cx.json(404, &err(format!("no picture {name}"))),
             },
-            _ => http::respond_with(s, 404, &err(format!("no picture {name}")), cors),
+            _ => cx.json(404, &err(format!("no picture {name}"))),
         }
     }
 

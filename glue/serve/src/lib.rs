@@ -14,6 +14,7 @@ pub mod home;
 pub mod idle;
 pub mod maintenance;
 pub mod model3d;
+pub mod page;
 pub mod http;
 pub mod image;
 pub mod serve;
