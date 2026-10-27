@@ -176,10 +176,17 @@ fn gib(b: u64) -> f64 {
     b as f64 / (1u64 << 30) as f64
 }
 
-/// A card's licence as `search` shows it: its name, then "[non-commercial]" when it forbids commercial use
+/// A card's licence as `search` shows it: its name, then "[non-commercial]" when it forbids commercial use, or
+/// "[conditional]" when it allows it only on the conditions its note gives
 fn licence_of(m: &Value) -> String {
     let name = s(m, "license");
-    if m["commercial"] == false { format!("{name} [non-commercial]") } else { name }
+    if m["commercial"] == false {
+        format!("{name} [non-commercial]")
+    } else if m["commercial"] == true && !s(m, "license_note").is_empty() {
+        format!("{name} [conditional]")
+    } else {
+        name
+    }
 }
 
 /// `nextcuda models search [TEXT] [--kind K]`
@@ -604,6 +611,8 @@ mod tests {
         assert!(old[2].get("license").is_none() && old[3].get("license").is_none());
         assert_eq!(licence_of(card), format!("{} [non-commercial]", s(card, "license")));
         assert_eq!(licence_of(cat.model("whisper-large-v3-turbo").unwrap()), "mit");
+        let h3 = cat.model("minimax-h3").unwrap();
+        assert_eq!(licence_of(h3), format!("{} [conditional]", s(h3, "license")));
     }
 
     #[test]
