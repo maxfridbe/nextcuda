@@ -1,5 +1,7 @@
-/** The only module that talks to the server. */
-import type { GenAnswer, Gpu, Info, Progress, SavedVoice, Song } from "./types.js";
+/** The only module that talks to the server: its routes' typed client (src/gen/routes.ts). */
+import { routes } from "./gen/routes.js";
+import type { AudioSpeechBody, SoundItem, VoiceAdd } from "./gen/routes.js";
+import type { GenAnswer, SavedVoice, Song } from "./types.js";
 
 /** A server path made relative to the page, so the page works on its server's own port and through the front door
  *  (`/open/<id>/`) alike; a link the server made absolute (from the Host it was asked on) keeps only its path. */
@@ -9,42 +11,34 @@ export function here(u: string): string {
   return p.startsWith("/") ? p.slice(1) : p;
 }
 
-async function getJSON<T>(path: string): Promise<T> {
-  const r = await fetch(path);
-  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
-  return (await r.json()) as T;
-}
+const r = routes();
+
+/** A sound the server made, as the page keeps it */
+export const song = (s: SoundItem): Song => ({
+  url: here(s.url), prompt: s.prompt, lyrics: s.lyrics, seed: s.seed ?? 0, steps: s.steps ?? undefined, cfg: s.cfg ?? undefined, seconds: s.seconds,
+  took: s.took ?? undefined, wh: s.wh, model: s.model ?? undefined, created: s.created, voice: s.voice, language: s.language,
+  instructions: s.instructions, cloned: s.cloned ?? undefined,
+});
 
 export const api = {
-  info: () => getJSON<Info>("api/info"),
-  progress: () => getJSON<Progress>("api/progress"),
-  gpu: () => getJSON<Gpu>("api/gpu"),
-  history: async () => (await getJSON<{ data: Song[] }>("api/history")).data.map((s) => ({ ...s, url: here(s.url) })),
-  cancel: async () => { await fetch("api/cancel", { method: "POST" }); },
-  voices: async () => (await getJSON<{ data: SavedVoice[] }>("api/voices")).data,
+  info: r.info,
+  progress: r.progress,
+  gpu: r.gpu,
+  history: async (): Promise<Song[]> => (await r.history()).data.map(song),
+  cancel: async (): Promise<void> => { await r.cancel(); },
+  voices: async (): Promise<SavedVoice[]> => (await r.voices()).data,
 
   /** Save a voice: a recording (sample, a data: URL) or a file made here; an error carries the server's message. */
-  async addVoice(body: Record<string, unknown>): Promise<SavedVoice> {
-    const r = await fetch("api/voices/add", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    const j = (await r.json()) as SavedVoice & { error?: { message: string } };
-    if (!r.ok) throw new Error(j.error?.message ?? `HTTP ${r.status}`);
-    return j;
-  },
+  addVoice: (body: VoiceAdd): Promise<SavedVoice> => r.voiceAdd(body),
   async removeVoice(name: string): Promise<void> {
-    const r = await fetch("api/voices/remove", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
-    if (!r.ok) throw new Error(((await r.json()) as { error?: { message: string } }).error?.message ?? `HTTP ${r.status}`);
+    await r.voiceRemove({ name });
   },
 
   /** The speech endpoint (the reference server's), its answer as JSON with the song's link; an error carries the
    *  server's message. */
-  async generate(body: Record<string, unknown>): Promise<GenAnswer> {
-    const r = await fetch("v1/audio/speech", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const j = (await r.json()) as GenAnswer & { error?: { message: string } };
-    if (!r.ok) throw new Error(j.error?.message ?? `HTTP ${r.status}`);
+  async generate(body: AudioSpeechBody): Promise<GenAnswer> {
+    const j = await r.speech({ ...body, response_format: "url" });
+    if (j instanceof Blob) throw new Error("the server answered the WAV itself, not its link");
     for (const d of j.data ?? []) if (d.url) d.url = here(d.url);
     return j;
   },

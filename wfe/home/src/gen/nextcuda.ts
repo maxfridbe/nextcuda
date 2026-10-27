@@ -64,25 +64,28 @@ export interface AudioGenerateReq {
    * @default true
    */
   wait?: boolean | null;
-  /** acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end) */
-  audio?: string | null;
-  /** acestep-1.5: the tempo (else the planner's, or none said) */
-  bpm?: number | null;
   cfg?: number | null;
-  /** cover: how close the start is to the recording, 0 (from noise) to 1 (0) */
-  cover_noise?: number | null;
-  /** cover / repaint: the share of the steps conditioned on the recording, 0 to 1 (0.5) */
-  cover_strength?: number | null;
   /** the lyrics, [verse] / [chorus] tags on lines of their own (empty: instrumental) */
   input?: string | null;
   /** the music: genre, mood, tempo, instruments, voice (with audio it may be left out: the recording's sound is kept) */
   instructions: string;
-  /** acestep-1.5: key and scale, "C major", "F# minor" */
-  key?: string | null;
   /** acestep-1.5: the lyrics' language as a code (en, zh, ja, es ...; default unknown) */
   language?: string | null;
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
+  seconds?: number | null;
+  seed?: number | null;
+  steps?: number | null;
+  /** acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end) */
+  audio?: string | null;
+  /** acestep-1.5: the tempo (else the planner's, or none said) */
+  bpm?: number | null;
+  /** cover: how close the start is to the recording, 0 (from noise) to 1 (0) */
+  cover_noise?: number | null;
+  /** cover / repaint: the share of the steps conditioned on the recording, 0 to 1 (0.5) */
+  cover_strength?: number | null;
+  /** acestep-1.5: key and scale, "C major", "F# minor" */
+  key?: string | null;
   /** acestep-1.5 text2music: the 5 Hz planner LM writes the metas, the caption and the song's audio codes first (true, as the platform's use_lm) */
   planner?: boolean | null;
   /** repaint: seconds; -1 or none: the recording's end; past it: the song extended to it */
@@ -93,11 +96,8 @@ export interface AudioGenerateReq {
   repaint_start?: number | null;
   /** repaint, balanced: 0 keeps the most, 1 the least (0.5) */
   repaint_strength?: number | null;
-  seconds?: number | null;
-  seed?: number | null;
   /** edit: the words the recording sings now */
   source_lyrics?: string | null;
-  steps?: number | null;
   /** acestep-1.5: text2music (default: from the words alone); with audio - cover (the recording performed anew: input its words, instructions its sound), repaint (repaint_start to repaint_end made again; an end past the recording extends it), edit (new words sung over the recording: source_lyrics the words it sings now), lego (a vocal track over an instrumental: acestep-1.5-base) */
   task?: AudioTask | null;
   /** acestep-1.5: beats a bar: "4", "3", "6" */
@@ -239,11 +239,6 @@ export interface AudioSpeakReq {
   wait?: boolean | null;
   /** guidance with instructions (Breeze TTS 2: 4 by default for design and direction; 1 turns it off) */
   cfg?: number | null;
-  /**
-   * carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice's sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped
-   * @maxLength 200
-   */
-  continue_from?: string | null;
   /** the text to say (Breeze TTS 2: vocal events inline - English (laugh) (sigh) (cough) (clears throat), Chinese [笑] [叹气] [咳嗽] [清嗓子]) */
   input: string;
   /** how to say it (CustomVoice), or the voice to make up (VoiceDesign, Breeze TTS 2: write it in the language of the text); with a cloned voice (ref_audio or a saved voice) the direction of its tone, emotion, pace (Breeze TTS 2: voice direction - picked for you when model is not given) */
@@ -254,18 +249,23 @@ export interface AudioSpeakReq {
   model?: string | null;
   /** the engine's own: greedy, temperature, top-k, streaming */
   options?: Record<string, unknown> | null;
-  /** a recording of the voice to clone: WAV as base64 or a data: URL, or upload:<name> (audio.upload, any format it takes) - the Base model */
-  ref_audio?: string | null;
-  /** what the recording says: the closer, in-context clone (Breeze TTS 2: required, the exact transcript) */
-  ref_text?: string | null;
   /** the most to make */
   seconds?: number | null;
   seed?: number | null;
   /**
-   * several speakers (VibeVoice: input a script of "Speaker N: words" lines): each speaker's voice, Speaker 1's first - a saved voice's name, a recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL) or upload:<name>; a model that takes them is picked when model is not given
+   * carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice's sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped
+   * @maxLength 200
+   */
+  continue_from?: string | null;
+  /** a recording of the voice to clone: WAV as base64 or a data: URL, or upload:<name> (audio.upload, any format it takes) - the Base model */
+  ref_audio?: string | null;
+  /** what the recording says: the closer, in-context clone (Breeze TTS 2: required, the exact transcript) */
+  ref_text?: string | null;
+  /**
+   * several speakers (VibeVoice: input a script of "Speaker N: words" lines): each speaker's voice, Speaker 1's first - a saved voice's name, a recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL) or upload:<name>, or {ref_audio | voice, ref_text}; a model that takes them is picked when model is not given
    * @maxItems 4
    */
-  speakers?: string[] | null;
+  speakers?: unknown[] | null;
   /** a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices) */
   voice?: string | null;
   /** other keys */
@@ -329,8 +329,8 @@ export interface AudioTranscribeReq {
    * @default true
    */
   wait?: boolean | null;
-  /** the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono */
-  audio: string;
+  /** the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono (or file: the same, OpenAI's name; one of them is required) */
+  audio?: string | null;
   /** a code or a name (en, english, de, german ...); none or auto: detected on the first 30 s */
   language?: string | null;
   /** the model's id; none: the loaded one, else the first enabled */
@@ -999,8 +999,8 @@ export interface Model3dGenerateReq {
   faces?: number | null;
   /** or a GLB made here to paint (its file name or url), as mesh */
   file?: string | null;
-  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (model3d.upload); a transparent background is the object's outline, an opaque one is cut out (remove_background) */
-  image?: string | null;
+  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (model3d.upload); a transparent background is the object's outline, an opaque one is cut out (remove_background) (or {image, side}, as an item of images) */
+  image?: unknown | null;
   /**
    * several views of the object (a multi-view model: model3d.info's abilities.views); each a picture or {image, side}
    * @maxItems 8

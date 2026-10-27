@@ -59,6 +59,8 @@ pub fn api_files() -> Vec<(&'static str, String)> {
 pub fn route_tables() -> Vec<(&'static str, &'static str, Vec<rpcgen::RouteInfo>, Vec<&'static str>)> {
     vec![
         ("image", "nextcuda image server (nextcuda image serve)", crate::image::route_infos(), vec!["wfe/image/src/gen/routes.ts", "wfe/ocr/src/gen/routes.ts"]),
+        ("audio", "nextcuda audio server (nextcuda audio serve)", crate::audio::route_infos(), vec!["wfe/audio/src/gen/routes.ts"]),
+        ("model3d", "nextcuda 3D server (nextcuda model3d serve)", crate::model3d::route_infos(), vec!["wfe/model3d/src/gen/routes.ts"]),
         ("llm", "nextcuda chat server (nextcuda serve FILE)", crate::serve::route_infos(), vec![]),
         ("home", "nextcuda's front door: its page's API and documents (nextcuda serve)", routes::infos(), vec!["wfe/home/src/gen/routes.ts"]),
     ]

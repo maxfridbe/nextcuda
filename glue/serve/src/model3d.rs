@@ -21,6 +21,10 @@
 //!
 //! One request runs at a time (one engine on its GPU); the others wait their turn.
 
+mod routes;
+
+pub use routes::infos as route_infos;
+
 use std::collections::VecDeque;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -33,6 +37,7 @@ use nextcuda_model3d::{MeshRequest, Model3dEngine, RigRequest, View};
 use serde_json::{json, Value};
 
 use crate::http::{self, Conn};
+use crate::page::{self, Cx};
 use crate::serve::cors_headers;
 use crate::telemetry::Telemetry;
 
@@ -154,52 +159,24 @@ impl Model3dServer {
             Err(e) => return http::respond(&mut s, 400, &err(e)),
         };
         let cors = cors_headers(req.origin.as_deref(), &self.cors);
-        match (req.method.as_str(), req.path.as_str()) {
-            ("OPTIONS", _) => {
-                let h = format!("{cors}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\n");
-                http::respond_bytes(&mut s, 204, "text/plain", b"", &h)
+        let mut cx = Cx { s, req, cors };
+        if cx.req.method == "OPTIONS" {
+            let h = "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\n";
+            return cx.bytes(204, "text/plain", b"", h);
+        }
+        if self.wfe.is_some() && cx.req.method == "GET" {
+            let p = cx.req.path.clone();
+            if p == "/" || p == "/index.html" {
+                return self.page(&mut cx.s, &cx.cors);
             }
-            ("GET", "/") | ("GET", "/index.html") if self.wfe.is_some() => self.page(&mut s, &cors),
-            ("GET", p) if self.wfe.is_some() && (p.starts_with("/ui/") || p.starts_with("/static/")) => self.asset(&mut s, p, &cors),
-            ("GET", "/api/gpu") => http::respond_with(&mut s, 200, &self.gpu_json(), &cors),
-            ("GET", "/health") => http::respond_with(&mut s, 200, &json!({"status": "ok"}), &cors),
-            ("GET", "/v1/models") | ("GET", "/models") => http::respond_with(&mut s, 200, &json!({"object": "list", "data": [
-                {"id": self.model, "object": "model", "owned_by": "nextcuda", "created": 0}]}), &cors),
-            ("GET", "/api/info") => http::respond_with(&mut s, 200, &self.info(), &cors),
-            ("GET", "/api/progress") => {
-                let mut p = self.progress.lock().unwrap().clone();
-                p["waiting"] = json!(self.waiting.load(Ordering::Relaxed));
-                p["request_id"] = json!(self.cancel.current());
-                http::respond_with(&mut s, 200, &p, &cors)
+            if p.starts_with("/ui/") || p.starts_with("/static/") {
+                return self.asset(&mut cx.s, &p, &cx.cors);
             }
-            ("GET", "/api/history") => {
-                // read again: the front door's model3d.tool writes meshes here too, and deleted ones drop out
-                let mut h = self.history.lock().unwrap();
-                if let Some(d) = &self.out_dir {
-                    *h = earlier(d);
-                }
-                http::respond_with(&mut s, 200, &json!({"data": h.iter().collect::<Vec<_>>()}), &cors)
-            }
-            ("POST", "/api/cancel") => {
-                let busy = self.progress.lock().unwrap()["busy"] == true;
-                let id = serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v["id"].as_str().map(str::to_string));
-                let running = self.cancel.request(id.as_deref(), busy);
-                http::respond_with(&mut s, 200, &json!({"cancelled": running, "id": id}), &cors)
-            }
-            ("GET", p) if p.starts_with("/v1/model3d/files/") => self.file(&mut s, &p["/v1/model3d/files/".len()..], &cors),
-            ("POST", p @ ("/v1/model3d/generate" | "/v1/model3d/rig")) => {
-                let body: Value = match serde_json::from_slice(&req.body) {
-                    Ok(v) => v,
-                    Err(e) => return http::respond_with(&mut s, 400, &err(format!("the body is not JSON: {e}")), &cors),
-                };
-                let base = req.host.as_deref().map(|h| format!("http://{h}")).unwrap_or_default();
-                match self.run_request(p.ends_with("/rig"), &body, &base) {
-                    Ok((Some(v), _)) => http::respond_with(&mut s, 200, &v, &cors),
-                    Ok((None, glb)) => http::respond_bytes(&mut s, 200, "model/gltf-binary", &glb, &cors),
-                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
-                }
-            }
-            _ => http::respond_with(&mut s, 404, &err(format!("no route {} {}", req.method, req.path)), &cors),
+        }
+        // the API: what routes.rs declares
+        if !page::serve(routes::table(), self, &mut cx, routes::fail) {
+            let m = format!("no route {} {}", cx.req.method, cx.req.path);
+            cx.json(404, &err(m));
         }
     }
 
@@ -224,12 +201,11 @@ impl Model3dServer {
         }
     }
 
-    fn gpu_json(&self) -> Value {
+    fn gpu_json(&self) -> page::Gpu {
         let (total, free) = self.gpu.memory().unwrap_or((0, None));
         let used = free.map(|f| total.saturating_sub(f)).unwrap_or(0);
         let r = self.tele.readings().first().copied().unwrap_or_default();
-        json!({"name": self.gpu.name, "vram_used_mb": used >> 20, "vram_total_mb": total >> 20,
-               "power_w": r.watts, "temp_pkg": r.temp_c, "temp_vram": r.vram_c})
+        page::Gpu { name: self.gpu.name.clone(), vram_used_mb: used >> 20, vram_total_mb: total >> 20, power_w: r.watts, temp_pkg: r.temp_c, temp_vram: r.vram_c }
     }
 
     fn info(&self) -> Value {
@@ -250,7 +226,7 @@ impl Model3dServer {
     }
 
     /// A file made here: the GLB, its picture (.png) or its settings (.json)
-    fn file(&self, s: &mut Conn, name: &str, cors: &str) {
+    fn file(&self, cx: &mut Cx, name: &str) {
         let kind = match name.rsplit('.').next() {
             Some("glb") => "model/gltf-binary",
             Some("png") => "image/png",
@@ -262,8 +238,8 @@ impl Model3dServer {
             _ => None,
         };
         match b {
-            Some(b) => http::respond_bytes(s, 200, kind, &b, &format!("{cors}Cache-Control: max-age=31536000, immutable\r\n")),
-            None => http::respond_with(s, 404, &err(format!("no file {name}")), cors),
+            Some(b) => cx.bytes(200, kind, &b, "Cache-Control: max-age=31536000, immutable\r\n"),
+            None => cx.json(404, &err(format!("no file {name}"))),
         }
     }
 

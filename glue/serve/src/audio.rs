@@ -27,6 +27,10 @@
 //!
 //! One request runs at a time (one engine on its GPU); the others wait their turn.
 
+mod routes;
+
+pub use routes::infos as route_infos;
+
 use std::collections::VecDeque;
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -39,6 +43,7 @@ use nextcuda_core::Gpu;
 use serde_json::{json, Value};
 
 use crate::http::{self, Conn};
+use crate::page::{self, Cx};
 use crate::serve::cors_headers;
 use crate::telemetry::Telemetry;
 
@@ -172,80 +177,24 @@ impl AudioServer {
             Err(e) => return http::respond(&mut s, 400, &err(e)),
         };
         let cors = cors_headers(req.origin.as_deref(), &self.cors);
-        match (req.method.as_str(), req.path.as_str()) {
-            ("OPTIONS", _) => {
-                let h = format!("{cors}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, Range\r\n");
-                http::respond_bytes(&mut s, 204, "text/plain", b"", &h)
+        let mut cx = Cx { s, req, cors };
+        if cx.req.method == "OPTIONS" {
+            let h = "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, Range\r\n";
+            return cx.bytes(204, "text/plain", b"", h);
+        }
+        if self.wfe.is_some() && cx.req.method == "GET" {
+            let p = cx.req.path.clone();
+            if p == "/" || p == "/index.html" {
+                return self.page(&mut cx.s, &cx.cors);
             }
-            ("GET", "/") | ("GET", "/index.html") if self.wfe.is_some() => self.page(&mut s, &cors),
-            ("GET", p) if self.wfe.is_some() && (p.starts_with("/ui/") || p.starts_with("/static/")) => self.asset(&mut s, p, &cors),
-            ("GET", "/api/gpu") => http::respond_with(&mut s, 200, &self.gpu_json(), &cors),
-            ("GET", "/health") => http::respond_with(&mut s, 200, &json!({"status": "ok"}), &cors),
-            ("GET", "/v1/models") | ("GET", "/models") => http::respond_with(&mut s, 200, &json!({"object": "list", "data": [
-                {"id": self.model, "object": "model", "owned_by": "nextcuda", "created": 0}]}), &cors),
-            ("GET", "/api/info") => http::respond_with(&mut s, 200, &self.info(), &cors),
-            ("GET", "/api/progress") => {
-                let mut p = self.progress.lock().unwrap().clone();
-                p["waiting"] = json!(self.waiting.load(Ordering::Relaxed));
-                p["request_id"] = json!(self.cancel.current());
-                http::respond_with(&mut s, 200, &p, &cors)
+            if p.starts_with("/ui/") || p.starts_with("/static/") {
+                return self.asset(&mut cx.s, &p, &cx.cors);
             }
-            ("GET", "/api/history") => {
-                // files deleted since (system.files.delete) drop out
-                let mut h = self.history.lock().unwrap();
-                if let Some(d) = &self.out_dir {
-                    h.retain(|e| e["url"].as_str().and_then(|u| u.rsplit('/').next()).is_none_or(|f| d.join(f).exists()));
-                }
-                http::respond_with(&mut s, 200, &json!({"data": h.iter().collect::<Vec<_>>()}), &cors)
-            }
-            ("POST", "/api/cancel") => {
-                // {"id"}: that request only (the front door's job), running or waiting; none: the one running
-                let busy = self.progress.lock().unwrap()["busy"] == true;
-                let id = serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v["id"].as_str().map(str::to_string));
-                let running = self.cancel.request(id.as_deref(), busy);
-                http::respond_with(&mut s, 200, &json!({"cancelled": running, "id": id}), &cors)
-            }
-            ("GET", p) if p.starts_with("/v1/audio/files/") => self.file(&mut s, &p["/v1/audio/files/".len()..], &req.head, &cors),
-            ("GET", "/api/voices") => http::respond_with(&mut s, 200, &json!({"data": self.voices().map(|l| l.list()).unwrap_or_default()}), &cors),
-            ("GET", p) if p.starts_with("/v1/audio/voices/") => {
-                let name = p["/v1/audio/voices/".len()..].trim_end_matches(".wav");
-                match self.voices().and_then(|l| l.sample_path(name)).and_then(|p| std::fs::read(p).ok()) {
-                    Some(b) => http::respond_bytes(&mut s, 200, "audio/wav", &b, &format!("{cors}Cache-Control: no-cache\r\n")),
-                    None => http::respond_with(&mut s, 404, &err(format!("no saved voice {name}")), &cors),
-                }
-            }
-            ("POST", "/api/voices/add") | ("POST", "/api/voices/remove") => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-                match self.voice_op(&req.path, &body) {
-                    Ok(v) => http::respond_with(&mut s, 200, &v, &cors),
-                    Err(m) => http::respond_with(&mut s, 400, &err(m), &cors),
-                }
-            }
-            ("POST", "/v1/audio/transcriptions") | ("POST", "/audio/transcriptions") => {
-                let body: Value = match serde_json::from_slice(&req.body) {
-                    Ok(v) => v,
-                    Err(e) => return http::respond_with(&mut s, 400, &err(format!("the body is not JSON (a multipart form is not read here): {e}")), &cors),
-                };
-                match self.transcribe(&body) {
-                    Ok(v) => http::respond_with(&mut s, 200, &v, &cors),
-                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
-                }
-                self.maybe_retire();
-            }
-            ("POST", "/v1/audio/speech") | ("POST", "/audio/speech") => {
-                let body: Value = match serde_json::from_slice(&req.body) {
-                    Ok(v) => v,
-                    Err(e) => return http::respond_with(&mut s, 400, &err(format!("the body is not JSON: {e}")), &cors),
-                };
-                let base = req.host.as_deref().map(|h| format!("http://{h}")).unwrap_or_default();
-                match self.generate(&body, &base) {
-                    Ok((Some(v), _)) => http::respond_with(&mut s, 200, &v, &cors),
-                    Ok((None, wav)) => http::respond_bytes(&mut s, 200, "audio/wav", &wav, &cors),
-                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
-                }
-                self.maybe_retire();
-            }
-            _ => http::respond_with(&mut s, 404, &err(format!("no route {} {}", req.method, req.path)), &cors),
+        }
+        // the API: what routes.rs declares
+        if !page::serve(routes::table(), self, &mut cx, routes::fail) {
+            let m = format!("no route {} {}", cx.req.method, cx.req.path);
+            cx.json(404, &err(m));
         }
     }
 
@@ -291,12 +240,11 @@ impl AudioServer {
         }
     }
 
-    fn gpu_json(&self) -> Value {
+    fn gpu_json(&self) -> page::Gpu {
         let (total, free) = self.gpu.memory().unwrap_or((0, None));
         let used = free.map(|f| total.saturating_sub(f)).unwrap_or(0);
         let r = self.tele.readings().first().copied().unwrap_or_default();
-        json!({"name": self.gpu.name, "vram_used_mb": used >> 20, "vram_total_mb": total >> 20,
-               "power_w": r.watts, "temp_pkg": r.temp_c, "temp_vram": r.vram_c})
+        page::Gpu { name: self.gpu.name.clone(), vram_used_mb: used >> 20, vram_total_mb: total >> 20, power_w: r.watts, temp_pkg: r.temp_c, temp_vram: r.vram_c }
     }
 
     fn info(&self) -> Value {
@@ -320,17 +268,17 @@ impl AudioServer {
     }
 
     /// A song made here, whole or the byte range asked for
-    fn file(&self, s: &mut Conn, name: &str, head: &[u8], cors: &str) {
+    fn file(&self, cx: &mut Cx, name: &str) {
         let ok = !name.is_empty() && name.ends_with(".wav") && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) && !name.contains("..");
         let b = match (&self.out_dir, ok) {
             (Some(d), true) => std::fs::read(d.join(name)).ok(),
             _ => None,
         };
-        let Some(b) = b else { return http::respond_with(s, 404, &err(format!("no song {name}")), cors) };
+        let Some(b) = b else { return cx.json(404, &err(format!("no song {name}"))) };
         let cache = "Cache-Control: max-age=31536000, immutable\r\nAccept-Ranges: bytes\r\n";
-        match range(head, b.len()) {
-            Some((a, z)) => http::respond_bytes(s, 206, "audio/wav", &b[a..=z], &format!("{cors}{cache}Content-Range: bytes {a}-{z}/{}\r\n", b.len())),
-            None => http::respond_bytes(s, 200, "audio/wav", &b, &format!("{cors}{cache}")),
+        match range(&cx.req.head, b.len()) {
+            Some((a, z)) => cx.bytes(206, "audio/wav", &b[a..=z], &format!("{cache}Content-Range: bytes {a}-{z}/{}\r\n", b.len())),
+            None => cx.bytes(200, "audio/wav", &b, cache),
         }
     }
 
