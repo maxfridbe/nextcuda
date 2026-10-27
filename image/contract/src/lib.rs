@@ -289,6 +289,11 @@ pub trait ImageEngine: Send + Sync {
     fn sides(&self) -> (u32, u32) {
         (256, 4096)
     }
+    /// the most pixels it draws in one picture, when its card's room sets a limit below its longest sides squared
+    /// (MOSS-Image: 4 M, as 2048 x 2048; a 4096 x 1024 picture is the same); None: the sides alone
+    fn max_pixels(&self) -> Option<u32> {
+        None
+    }
     /// the options it takes beyond the request's fields (its kind's `options`)
     fn options(&self) -> &'static [EngineOption] {
         &[]

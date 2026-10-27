@@ -6,7 +6,7 @@ A general text-to-image model: photographs, illustration, product shots, scenes 
   "watercolour"). The prompt reaches the model through Qwen3.5-9B's chat template as it is: no quality tags are
   added, and none are needed.
 - **Text in the picture:** quote the words ("a shop sign that reads "OPEN"").
-- **Size:** 1024 x 1024 is the default and the recommended size; any multiple of 16 from 256 to 2048 a side works
+- **Size:** 1024 x 1024 is the default and the recommended size; any multiple of 16 from 64 to 4096 a side works, up to 4 megapixels in all (2048 x 2048, 4096 x 1024, 1:8 to 8:1 ratios as OpenMOSS's app offers them)
   (larger is slower: the attention runs over every position).
 - **Steps 50, cfg 3** (the pipeline's own). Guidance runs a second pass a step against the negative prompt (empty by
   default) with one block left out; cfg 1 turns it off and halves the time, at a cost in detail and prompt-following.

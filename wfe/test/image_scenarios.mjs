@@ -22,7 +22,7 @@ const mossSizes = {
   ratios: ["1:8", "1:4", "1:3", "1:2", "9:16", "2:3", "3:4", "1:1", "4:3", "3:2", "16:9", "2:1", "3:1", "4:1", "8:1"],
   pixels: [262144, 1048576, 1572864, 2097152, 4194304],
 };
-const moss = { ...base, model: "moss-image-sft-q8", arch: "moss-image", sizes: mossSizes, max_side: 2048,
+const moss = { ...base, model: "moss-image-sft-q8", arch: "moss-image", sizes: mossSizes, min_side: 64, max_side: 4096, max_pixels: 4220160,
   defaults: { ...base.defaults, steps: 50, cfg: 3, shift: 5 } };
 const mossTurbo = { ...moss, model: "moss-image-sft-turbo4-q8", guidance: false, negative: false, shift: false,
   defaults: { ...moss.defaults, steps: 4, cfg: 1 } };
@@ -90,12 +90,12 @@ sc.show("qwen-turbo-generate", App())
   sc.check("qwen-turbo-generate", !("steps" in b) && !("cfg" in b) && !("negative_prompt" in b), `turbo sends no steps / cfg / negative (${JSON.stringify(b)})`);
 }
 
-// MOSS-Image full: sizes as OpenMOSS's presets inside 256..2048, no alpha, a shift, a negative prompt
+// MOSS-Image full: sizes as OpenMOSS's presets inside 64..4096 and its pixel limit, no alpha, a shift, a negative prompt
 open(moss, stale);
 sc.show("moss-full", App())
   .has(/negative prompt/).has(/placeholder="3"/, "cfg default 3").has(/shift/).lacks(/transparent/).lacks(/Pictures to edit/).has(/LoRAs/)
   .has(/\[button 1:1\]/).has(/\[button 16:9\]/).has(/\[button 1M /).has(/\[button 2M /).has(/\[button 512² /)
-  .lacks(/\[button 21:9\]/).lacks(/\[button 1:8\]/, "a ratio whose sides pass 2048 at 1M")
+  .lacks(/\[button 21:9\]/).has(/\[button 1:8\]/, "1:8 fits 4096 a side at 1M").has(/up to 4 megapixels a picture/)
   .has(/width .*step|\[input number/);
 {
   const { b } = await go();
@@ -104,11 +104,15 @@ sc.show("moss-full", App())
   setBudget(2097152, null);
   sc.check("moss-full", state.form.width === 1456 && state.form.height === 1456, `2M at 1:1 is 1456x1456 (${state.form.width}x${state.form.height})`);
   setBudget(4194304, 16 / 9);
-  sc.check("moss-full", state.form.width === 1456, "4M at 16:9 would pass 2048: not applied");
+  sc.check("moss-full", state.form.width === 2736 && state.form.height === 1536, `4M at 16:9 is 2736x1536 (${state.form.width}x${state.form.height})`);
+  setBudget(4194304, 8);
+  sc.check("moss-full", state.form.width === 2736, "4M at 8:1 would pass 4096 a side: not applied");
 }
-// a size left by another model is brought inside this one's sides
+// a size left by another model is brought inside this one's sides and pixel limit
 open(moss, { width: 3072, height: 2048 });
-sc.check("moss-full", state.form.width === 2048, `a 3072 wide form comes in to 2048 (${state.form.width})`);
+sc.check("moss-full", state.form.width * state.form.height <= 4220160, `a 3072x2048 form comes inside 4.2 M pixels (${state.form.width}x${state.form.height})`);
+open(moss, { width: 8192, height: 512 });
+sc.check("moss-full", state.form.width === 4096, `an 8192 wide form comes in to 4096 (${state.form.width})`);
 
 // MOSS-Image turbo (a LoRA merged at load): unguided, the scheduler's own levels
 open(mossTurbo, stale);

@@ -116,6 +116,9 @@ pub struct Info {
     pub min_side: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_side: Option<i64>,
+    /// the most pixels a picture may have, when the card's room limits it below the longest sides squared
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_pixels: Option<i64>,
     /// the most pictures an edit takes
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_pictures: Option<i64>,

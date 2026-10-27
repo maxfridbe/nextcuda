@@ -5,6 +5,15 @@ import type { ImageEditBody, ImageGenerateBody } from "./gen/routes.js";
 import type { Picture } from "./types.js";
 import { fitSize, ratioOf, snap } from "./util.js";
 
+/** A side of the form held to the engine's pixel budget (MOSS-Image: 4 M) against the other side: the largest grid
+ *  step that keeps width x height inside it. */
+export function capSide(x: number, other: number): number {
+  const most = state.info?.max_pixels;
+  const g = state.info?.grid ?? 16;
+  if (!most || x * other <= most) return x;
+  return Math.max(state.info?.min_side ?? g, Math.floor(most / other / g) * g);
+}
+
 /** The first time the model is known: the form's empty fields take its defaults. */
 export function adoptDefaults(): void {
   const d = state.info?.defaults;
@@ -17,7 +26,7 @@ export function adoptDefaults(): void {
   const [lo, hi] = [state.info?.min_side ?? 256, state.info?.max_side ?? 4096];
   const g = state.info?.grid ?? 16;
   f.width = Math.min(hi, snap(f.width, g, lo));
-  f.height = Math.min(hi, snap(f.height, g, lo));
+  f.height = capSide(Math.min(hi, snap(f.height, g, lo)), f.width);
   const known = new Set((state.info?.loras ?? []).map((l) => l.id));
   for (const id of Object.keys(f.loras)) if (!known.has(id)) delete f.loras[id];
   if (!Object.keys(f.loras).length) {
@@ -32,7 +41,7 @@ export function setAspect(a: number, b: number): void {
   const g = state.info?.grid ?? 16;
   const [lo, hi] = [state.info?.min_side ?? 256, state.info?.max_side ?? 4096];
   state.form.width = Math.min(hi, snap((h * a) / b, g, lo));
-  state.form.height = Math.min(hi, snap(h, g, lo));
+  state.form.height = capSide(Math.min(hi, snap(h, g, lo)), state.form.width);
   saveForm();
   render();
 }
@@ -51,7 +60,7 @@ export function sizeNow(): { pixels: number; ratio: number } {
 /** Whether a size is one the engine draws (its sides within its range). */
 export function sizeFits(w: number, h: number): boolean {
   const [lo, hi] = [state.info?.min_side ?? 256, state.info?.max_side ?? 4096];
-  return w >= lo && h >= lo && w <= hi && h <= hi;
+  return w >= lo && h >= lo && w <= hi && h <= hi && (!state.info?.max_pixels || w * h <= state.info.max_pixels);
 }
 
 /** A size from a budget at a ratio (either may be kept from the form's own). */

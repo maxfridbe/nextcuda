@@ -285,6 +285,8 @@ export interface Info {
   /** the shortest and longest side it draws */
   min_side?: number | null;
   max_side?: number | null;
+  /** the most pixels a picture may have, when the card's room limits it below the longest sides squared */
+  max_pixels?: number | null;
   /** the most pictures an edit takes */
   max_pictures?: number | null;
   /** the most pages a reading takes */

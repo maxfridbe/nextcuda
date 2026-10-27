@@ -42,9 +42,15 @@ fn whole(b: &Value, k: &str, lo: u64, hi: u64) -> Result<Option<u64>, Fail> {
     }
 }
 
-/// The shortest and longest side an image model draws: MOSS-Image's engine refuses outside 256 to 2048, the others take 64 to 4096
-pub fn size_range(m: &Value) -> (u32, u32) {
-    if m["arch"] == "moss-image" { (256, 2048) } else { (64, 4096) }
+/// The shortest and longest side an image model draws: 64 to 4096 (MOSS-Image's engine as well, within `max_pixels`)
+pub fn size_range(_m: &Value) -> (u32, u32) {
+    (64, 4096)
+}
+
+/// The most pixels an image model draws in one picture, when its card's room sets a limit: MOSS-Image's (its
+/// engine's MAX_PIXELS: the largest of OpenMOSS's 4 M presets, 2512 x 1680)
+pub fn max_pixels(m: &Value) -> Option<u32> {
+    (m["arch"] == "moss-image").then_some(4_220_160)
 }
 
 /// Whether a guidance scale above 1 needs a negative prompt: Qwen-Image's true_cfg_scale does (its engine refuses
@@ -140,8 +146,10 @@ impl Home {
             Some(sz) => {
                 let wh = sz.split_once('x').and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
                 match wh {
-                    Some((w, h)) if w >= size_range(&m).0 && h >= size_range(&m).0 && w <= size_range(&m).1 && h <= size_range(&m).1 && w % 16 == 0 && h % 16 == 0 => {}
-                    Some(_) => return Err(bad(format!("size {sz}: both sides multiples of 16, {} to {}", size_range(&m).0, size_range(&m).1))),
+                    Some((w, h)) if w >= size_range(&m).0 && h >= size_range(&m).0 && w <= size_range(&m).1 && h <= size_range(&m).1 && w % 16 == 0 && h % 16 == 0
+                        && max_pixels(&m).is_none_or(|p| w * h <= p) => {}
+                    Some(_) => return Err(bad(format!("size {sz}: both sides multiples of 16, {} to {}{}", size_range(&m).0, size_range(&m).1,
+                                                      max_pixels(&m).map_or(String::new(), |p| format!(", at most {p} pixels"))))),
                     None => return Err(bad(format!("size {sz}: WIDTHxHEIGHT"))),
                 }
             }
@@ -298,7 +306,9 @@ mod tests {
 
     #[test]
     fn each_engine_has_its_own_sides_and_guidance_rule() {
-        assert_eq!(size_range(&json!({"arch": "moss-image"})), (256, 2048));
+        assert_eq!(size_range(&json!({"arch": "moss-image"})), (64, 4096));
+        assert_eq!(super::max_pixels(&json!({"arch": "moss-image"})), Some(2512 * 1680));
+        assert_eq!(super::max_pixels(&json!({"arch": "qwen-image-2.1"})), None);
         assert_eq!(size_range(&json!({"arch": "qwen-image-2.1"})), (64, 4096));
         assert!(cfg_needs_negative(&json!({"arch": "qwen-image-2.1"})));
         assert!(cfg_needs_negative(&json!({"arch": "qwen-image-2512"})));

@@ -847,6 +847,11 @@ components:
           anyOf:
           - type: integer
           - type: 'null'
+        max_pixels:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the most pixels a picture may have, when the card's room limits it below the longest sides squared
         max_pictures:
           anyOf:
           - type: integer

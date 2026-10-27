@@ -1,7 +1,7 @@
 /** The request, every option the engine has: prompt, negative, size (aspect presets), steps, pictures, seed, the
  *  sampler and schedule, guidance, shift, transparency, LoRAs. Each field writes straight into state.form. */
 import { jsx } from "../jsx.js";
-import { addPicture, generate, movePicture, randomSeed, removePicture, setAspect, setBudget, sizeFits, sizeNow } from "../actions.js";
+import { addPicture, capSide, generate, movePicture, randomSeed, removePicture, setAspect, setBudget, sizeFits, sizeNow } from "../actions.js";
 import { panelOpen, render, saveForm, state, togglePanel } from "../state.js";
 import type { Form } from "../types.js";
 import { ASPECTS, clamp, fitSize, pixelLabel, ratioOf, snap } from "../util.js";
@@ -29,6 +29,9 @@ const num = (k: Key, opts: { min?: number; max?: number; step?: number; placehol
           if (!Number.isFinite(x)) return render();
           if (opts.min !== undefined || opts.max !== undefined) x = clamp(x, opts.min ?? -Infinity, opts.max ?? Infinity);
           if (opts.snap) x = snap(x, state.info?.grid ?? 16, state.info?.min_side ?? 256);
+          // a side that would take the picture past the engine's pixel budget is held to it
+          if (k === "width") x = capSide(x, state.form.height);
+          if (k === "height") x = capSide(x, state.form.width);
           set(k, x as Form[typeof k]);
         },
       }}
@@ -227,6 +230,7 @@ export function Create() {
       <div class="row">
         {followsPictures ? null : <label>width {num("width", { min: lo, max: hi, step: grid, snap: true })}</label>}
         {followsPictures ? null : <label>height {num("height", { min: lo, max: hi, step: grid, snap: true })}</label>}
+        {followsPictures || !info?.max_pixels ? null : <span class="hint">{`up to ${Math.round(info.max_pixels / 1048576)} megapixels a picture`}</span>}
         {info?.steps_free === false
           ? <label>steps <span class="hint">{d ? `${d.steps} (this entry's own)` : "its own"}</span></label>
           : <label>steps {num("steps", { min: 1, max: 200, placeholder: d ? String(d.steps) : "", nullable: true })}</label>}

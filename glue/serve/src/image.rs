@@ -325,12 +325,13 @@ impl ImageServer {
             Some(x) => x,
             None => return json!({"model": self.model, "loading": true}),
         };
+        let max_pixels = g.as_ref().ok().and_then(|g| g.as_ref().map(|(e, _)| e.max_pixels())).flatten();
         drop(g);
         let (grid, transparent, shift, sizes, negative, steps_free, takes_loras, sides, ocr_takes) = caps;
         json!({
             "model": self.model, "arch": arch, "edits": edits, "reads": reads, "guidance": guidance, "grid": grid, "transparent": transparent, "shift": shift,
             "sizes": sizes.map(|s| json!({"ratios": s.ratios, "pixels": s.pixels})), "negative": negative, "steps_free": steps_free, "takes_loras": takes_loras,
-            "ocr_takes": ocr_takes, "min_side": sides.0, "max_side": sides.1, "max_pictures": MAX_PICTURES,
+            "ocr_takes": ocr_takes, "min_side": sides.0, "max_side": sides.1, "max_pixels": max_pixels, "max_pictures": MAX_PICTURES,
             "max_pages": MAX_PAGES,
             "prompts": prompts.iter().map(|p| json!({"id": p.id, "prompt": p.prompt, "title": p.title})).collect::<Vec<_>>(),
             "defaults": {"width": d.width, "height": d.height, "steps": d.steps, "cfg": d.cfg, "sampler": d.sampler.name(),

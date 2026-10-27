@@ -44,10 +44,13 @@ const TRAIN_STEPS: usize = 1000;
 pub const UNCOND_SKIP: usize = 22;
 
 /// The aspect ratios and pixel budgets of OpenMOSS's Gradio app (gradio_presets.py): 0.25 M (512 x 512), 1 M, 1.5 M,
-/// 2 M and 4 M pixels, from 1:8 to 8:1; a size is `fit_size` of one at the other. This engine draws 256 to 2048 a side,
-/// so the page offers only the combinations inside that
+/// 2 M and 4 M pixels, from 1:8 to 8:1; a size is `fit_size` of one at the other. This engine draws 64 to 4096 a side
+/// (as nextsycl's) and at most `MAX_PIXELS`, so every combination is offered
 const RATIOS: &[&str] = &["1:8", "1:4", "1:3", "1:2", "9:16", "2:3", "3:4", "1:1", "4:3", "3:2", "16:9", "2:1", "3:1", "4:1", "8:1"];
 const PIXELS: &[u32] = &[262_144, 1_048_576, 1_572_864, 2_097_152, 4_194_304];
+/// The largest picture: the largest of OpenMOSS's 4 M presets inside 4096 a side, 2512 x 1680 (each side rounded to 16
+/// takes 3:2 a little past 4 M; 2048 x 2048 and these fit a 12 GB card beside the DiT, four times that would not)
+pub const MAX_PIXELS: u32 = 4_220_160;
 
 /// OpenMOSS's `fit_size`: the budget's root at the ratio (W / H), each side rounded to 16 (halves up), at least 16
 pub fn fit_size(pixels: u32, ratio: f64) -> (u32, u32) {
@@ -256,7 +259,10 @@ impl ImageEngine for MossImage {
         Some(SizePresets { ratios: RATIOS, pixels: PIXELS })
     }
     fn sides(&self) -> (u32, u32) {
-        (256, 2048)
+        (64, 4096)
+    }
+    fn max_pixels(&self) -> Option<u32> {
+        Some(MAX_PIXELS)
     }
     /// a turbo entry's LoRA distilled the scheduler's own levels: another shift would leave them
     fn shift(&self) -> bool {
@@ -281,8 +287,9 @@ impl ImageEngine for MossImage {
             return Err(Error(format!("{ARCH}: text to image only")));
         }
         let (rw, rh) = (req.width.unwrap_or(d.width) as usize, req.height.unwrap_or(d.height) as usize);
-        if rw < 256 || rh < 256 || rw > 2048 || rh > 2048 || rw % 16 != 0 || rh % 16 != 0 {
-            return Err(Error(format!("{rw}x{rh}: multiples of 16 from 256 to 2048 a side (1024 x 1024 recommended)")));
+        if rw < 64 || rh < 64 || rw > 4096 || rh > 4096 || rw % 16 != 0 || rh % 16 != 0 || rw * rh > MAX_PIXELS as usize {
+            return Err(Error(format!("{rw}x{rh}: multiples of 16 from 64 to 4096 a side, at most {MAX_PIXELS} pixels (2512 x 1680, 2048 x 2048, \
+                                      4096 x 1024; 1024 x 1024 recommended)")));
         }
         let steps = req.steps.unwrap_or(d.steps).max(1) as usize;
         let cfg = req.cfg.filter(|c| *c >= 0.0).unwrap_or(d.cfg);
@@ -325,6 +332,12 @@ mod tests {
         assert_eq!(super::fit_size(2_097_152, 1.0), (1456, 1456));
         assert_eq!(super::fit_size(4_194_304, 1.0), (2048, 2048));
         assert!(super::RATIOS.contains(&"16:9") && super::PIXELS.contains(&1_048_576));
+        // every 4 M preset whose sides fit 4096 is inside the engine's pixel limit
+        for r in super::RATIOS {
+            let (a, b) = r.split_once(':').unwrap();
+            let (w, h) = super::fit_size(4_194_304, a.parse::<f64>().unwrap() / b.parse::<f64>().unwrap());
+            assert!(w > 4096 || h > 4096 || w * h <= super::MAX_PIXELS, "{r}: {w}x{h}");
+        }
     }
 
     #[test]
