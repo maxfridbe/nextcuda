@@ -462,7 +462,7 @@ impl AudioServer {
             return Err((499, "cancelled".into()));
         };
         if source.is_some() && !engine.sources() {
-            return Err(bad(format!("audio: {} makes no song from a recording (acestep-1.5 does: task cover, repaint, edit)", self.model)));
+            return Err(bad(format!("audio: {} makes no song from a recording (acestep-1.5 does: task cover, repaint, edit; yue2-3b-q8 with its sheetsage file: a cover)", self.model)));
         }
         // a song's request option may come as a field of its own (bpm, key, time_signature, task, repaint_start ...):
         // the engine's option of that name, underscores for its dashes (`options` says it first)
