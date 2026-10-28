@@ -146,7 +146,8 @@ impl UniMate {
         let names = o.setting("NS_M3D_UNIMATE_NAMES").map(|v| rig::NameMode::parse(&v)).transpose()?.unwrap_or(rig::NameMode::Auto);
         gpu.sync()?;
         let load_s = t0.elapsed().as_secs_f64();
-        log(format!("{ARCH}: loaded on {} in {load_s:.1} s (flan-T5-base, the graph_adaln denoiser; float32)", gpu.name));
+        let silo = ops.k.silo().map_or("no silo: the engine's own kernels".to_string(), |s| format!("silo {}", s.path.display()));
+        log(format!("{ARCH}: loaded on {} in {load_s:.1} s (flan-T5-base, the graph_adaln denoiser; float32; {silo})", gpu.name));
         Ok(UniMate { ops, tok, t5, net, stats, work: Mutex::new(work), facing, names, load_s })
     }
 
