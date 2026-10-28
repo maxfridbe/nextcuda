@@ -88,6 +88,8 @@ pub struct ImageServer {
     cancel: crate::cancel::Cancel,
     /// ends the process after an idle stretch (`--idle-exit`; none: never)
     pub idle: Option<&'static crate::idle::Idle>,
+    /// its registry entry's licence (`license`, `commercial`, `license_note`; null: none): /api/info says it
+    pub license: Value,
 }
 
 fn now() -> u64 {
@@ -220,7 +222,7 @@ impl ImageServer {
         let tele = Telemetry::start(std::slice::from_ref(&gpu.pci));
         let history = Mutex::new(out_dir.as_deref().map(earlier).unwrap_or_default());
         Ok(ImageServer { model, loras_known, out_dir, wfe, cors, gpu, tele, load, engine: Mutex::new(Some((e, loras))), progress: Mutex::new(json!({"busy": false})),
-                         idle: None, waiting: AtomicUsize::new(0), history, cancel: Default::default() })
+                         idle: None, license: Value::Null, waiting: AtomicUsize::new(0), history, cancel: Default::default() })
     }
 
     /// Answers on `addr` until the process ends

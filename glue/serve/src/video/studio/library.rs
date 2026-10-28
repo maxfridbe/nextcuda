@@ -334,8 +334,12 @@ impl Studio {
             .iter()
             .filter_map(|e| {
                 let path = e["path"].as_str()?;
-                Some(json!({"quant": super::queue::engine_quant(e["name"].as_str().unwrap_or("")), "file": path.rsplit('/').next().unwrap_or(path), "path": path,
-                            "gib": (e["gib"].as_f64().unwrap_or(0.0) * 100.0).round() / 100.0, "ready": true, "default": e["default"]}))
+                let mut row = json!({"quant": super::queue::engine_quant(e["name"].as_str().unwrap_or("")), "file": path.rsplit('/').next().unwrap_or(path), "path": path,
+                                     "gib": (e["gib"].as_f64().unwrap_or(0.0) * 100.0).round() / 100.0, "ready": true, "default": e["default"]});
+                if let Some(l) = super::queue::licence_of(e["name"].as_str().unwrap_or("")) {
+                    row.as_object_mut()?.extend(l.as_object().cloned().unwrap_or_default());
+                }
+                Some(row)
             })
             .collect();
         if listed.is_empty() {

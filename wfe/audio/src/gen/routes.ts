@@ -169,6 +169,10 @@ export interface History {
 /** The model and what it takes; while a request runs, the model and `busy` only */
 export interface Info {
   model: string;
+  /** the licence of its weights, whether it allows commercial use (false: the page tags it non-commercial), the conditions it puts on it */
+  license?: string | null;
+  commercial?: boolean | null;
+  license_note?: string | null;
   /** the engine is running a request: what changes is not reported */
   busy?: boolean | null;
   arch?: string | null;

@@ -156,4 +156,15 @@ sc.show("upscaler", App()).has(/enlarges pictures/).has(/does not draw from a pr
 open(starvector);
 sc.show("starvector", App()).has(/writes pictures as SVG/).has(/does not draw from a prompt/).lacks(/guidance/).lacks(/LoRAs/);
 
+// the licence: a model whose card says commercial: false wears a "non-commercial" tag in the header (the licence in its
+// tooltip); one that allows commercial use on conditions a "conditional licence" tag; a plain or unknown one neither
+open({ ...qwen, license: "qwen-research", commercial: false, license_note: "non-commercial purposes only" });
+sc.show("licence-non-commercial", App()).has(/qwen-image-2\.1-q8 \(qwen-research: no commercial use - non-commercial purposes only\) non-commercial/);
+open({ ...moss, license: "apache-2.0", commercial: true });
+sc.show("licence-commercial", App()).has(/moss-image-sft-q8/).lacks(/non-commercial/).lacks(/no commercial use/).lacks(/conditional licence/);
+open({ ...moss, license: "x", commercial: true, license_note: "a territory" });
+sc.show("licence-conditioned", App()).lacks(/non-commercial/).has(/conditional licence/).has(/commercial use on conditions - a territory/);
+open(moss);
+sc.show("licence-unknown", App()).lacks(/non-commercial/).lacks(/conditional licence/);
+
 sc.done();

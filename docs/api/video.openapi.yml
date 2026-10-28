@@ -976,6 +976,19 @@ components:
           - type: 'null'
         inputs:
           description: 'what it takes (video.generate''s keys): takes, not, chosen, ignored'
+        license:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the licence of its weights, whether it allows commercial use (false: the picker tags it non-commercial), the conditions it puts on it'
+        commercial:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        license_note:
+          anyOf:
+          - type: string
+          - type: 'null'
       required:
       - quant
       - file

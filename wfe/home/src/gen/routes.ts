@@ -42,6 +42,10 @@ export interface Available {
   pull?: PullView | null;
   runs_here: boolean;
   why_not?: string | null;
+  /** the licence of its weights, whether it allows commercial use (false: the pages tag it non-commercial), the conditions it puts on it */
+  license?: string | null;
+  commercial?: boolean | null;
+  license_note?: string | null;
 }
 
 /** A card: its readings, its processes, the memory vouched for */
@@ -194,6 +198,10 @@ export interface ModelView {
   headroom_given: boolean;
   /** the port its page is on */
   page: number;
+  /** the licence of its weights, whether it allows commercial use (false: the pages tag it non-commercial), the conditions it puts on it */
+  license?: string | null;
+  commercial?: boolean | null;
+  license_note?: string | null;
 }
 
 /** Whether a model's files may move to a drive: what they need there, or why not */

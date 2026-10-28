@@ -1,9 +1,11 @@
 # ACE-Step 1.5 base (lego: a track - the vocals - made in the context of a recording; 48 kHz stereo)
 # model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets
-# License: Apache-2.0 (ACE-Step's weights and code; Qwen3-Embedding: Apache-2.0)
+# License: MIT (ACE-Step's weights and code; Qwen3-Embedding: Apache-2.0)
 id: acestep-1.5-base
 kind: audio
 arch: acestep
+license: mit
+commercial: true
 title: 'ACE-Step 1.5 base (a track made in a recording''s context - the platform''s vocalize: vocals over an instrumental; 50 steps, real guidance; Apache-2.0)'
 about: 'ACE-Step''s 1.5 base DiT (not distilled: 50 steps, guidance 7 through APG) with the turbo''s text encoder and VAE, for lego: audio.generate task lego with audio (an instrumental), the track (vocals) sung to input over it; the planner LM not loaded'
 gpus: '1'

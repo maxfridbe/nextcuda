@@ -315,9 +315,11 @@ impl Home {
         // a video model loads stage by stage (its text encoder, then the denoiser...): its largest file is what a card holds
         let held = if card["kind"] == "video" { files.iter().map(|f| f.1).max().unwrap_or(bytes) } else { bytes };
         let (runs_here, why_not) = self.runs_here(&card, held);
-        Some(json!({"id": id, "kind": card["kind"], "title": card["title"], "about": card["about"], "gpus": card["gpus"], "bytes": bytes,
-                    "downloaded": false, "drive": drive, "folder": folder, "fits": fits, "free": free, "pull": pull,
-                    "runs_here": runs_here, "why_not": why_not}))
+        let mut row = json!({"id": id, "kind": card["kind"], "title": card["title"], "about": card["about"], "gpus": card["gpus"], "bytes": bytes,
+                             "downloaded": false, "drive": drive, "folder": folder, "fits": fits, "free": free, "pull": pull,
+                             "runs_here": runs_here, "why_not": why_not});
+        row.as_object_mut()?.extend(registry::licence(&card));
+        Some(row)
     }
 
     /// Whether a card's model can run on this box's cards: what it needs on each card (its `vram_gib`, else its files:

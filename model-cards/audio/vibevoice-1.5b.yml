@@ -3,6 +3,8 @@
 id: vibevoice-1.5b
 kind: audio
 arch: vibevoice
+license: mit
+commercial: true
 title: 'VibeVoice 1.5B (long-form multi-speaker speech: a script of Speaker N: lines, each speaker cloned from a recording)'
 about: 'Microsoft''s VibeVoice 1.5B: a Qwen2.5-1.5B reading the script after the speakers'' recordings, a diffusion head for its 7.5 Hz acoustic latents, the acoustic and semantic tokenizers (24 kHz) - gguf-org''s bf16 GGUF of it, the platform''s file'
 gpus: '0'

@@ -4,6 +4,7 @@ import { jsx } from "../jsx.js";
 import { state } from "../state.js";
 import { gpuName } from "../util.js";
 import { Create } from "./Create.js";
+import { NonCommercial } from "./Licence.js";
 import { Panel } from "./Panel.js";
 import { Progress } from "./Progress.js";
 import { SongCard, Songs } from "./Songs.js";
@@ -36,7 +37,7 @@ export function App() {
   return (
     <div id="app">
       <div class="top">
-        <h1><span class="i" props={{ innerHTML: info?.speech ? "&#xf130;" : "&#xf001;" }} /> {title}</h1>
+        <h1><span class="i" props={{ innerHTML: info?.speech ? "&#xf130;" : "&#xf001;" }} /> {title}{NonCommercial(info)}</h1>
         <GpuPill />
       </div>
       <Stats />

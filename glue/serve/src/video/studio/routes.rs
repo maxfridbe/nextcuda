@@ -591,6 +591,13 @@ pub struct EngineInfo {
     pub default: Option<bool>,
     /// what it takes (video.generate's keys): takes, not, chosen, ignored
     pub inputs: Value,
+    /// the licence of its weights, whether it allows commercial use (false: the picker tags it non-commercial), the conditions it puts on it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commercial: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license_note: Option<String>,
 }
 
 /// The denoisers

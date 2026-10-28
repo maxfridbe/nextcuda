@@ -258,6 +258,10 @@ export interface ImageVectorizeBody {
 /** The model and what it takes; while it loads, the model and `loading` only */
 export interface Info {
   model: string;
+  /** the licence of its weights, whether it allows commercial use (false: the page tags it non-commercial), the conditions it puts on it */
+  license?: string | null;
+  commercial?: boolean | null;
+  license_note?: string | null;
   loading?: boolean | null;
   arch?: string | null;
   /** it takes pictures (edits) */

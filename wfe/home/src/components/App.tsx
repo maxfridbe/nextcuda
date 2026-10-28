@@ -5,6 +5,7 @@ import { act, autoPull, copy, maintenance, render, setTab, ui } from "../main.js
 import type { Available, Card, Model, Proc, Service } from "../types.js";
 import { Api } from "./Api.js";
 import { ConfigView } from "./Config.js";
+import { NonCommercial } from "./Licence.js";
 
 const gib = (mb: number) => (mb / 1024).toFixed(1);
 /** A GPU as the pages show it (the same function in every app's util.ts). */
@@ -161,7 +162,7 @@ function ModelRow(m: Model) {
     <div class={{ mrow: true, off: !m.enabled }}>
       <span class={{ dot: true, off: !loaded, busy: m.state === "busy" || m.state === "loading" }} />
       <div class="mname">
-        <div class="name">{m.title ?? m.id}</div>
+        <div class="name">{m.title ?? m.id}{NonCommercial(m)}</div>
         <div class="sub">{m.id} · <span attrs={{ title: m.measured ? "as seen while it ran" : "an estimate from its files, until it has run" }}>{vouch}{m.measured ? "" : " (est.)"}</span></div>
       </div>
       <div class="mstate"><span class={{ tag: true, [m.state]: true }}>{STATE_TEXT[m.state] ?? m.state}</span></div>
@@ -239,7 +240,7 @@ function AvailableRow(a: Available) {
     <div class="mrow off">
       <span class={{ dot: true, off: !going, busy: going }} />
       <div class="mname">
-        <div class="name">{a.title ?? a.id}</div>
+        <div class="name">{a.title ?? a.id}{NonCommercial(a)}</div>
         <div class="sub">{a.id} · {size(a.bytes)} · to {a.drive}{a.fits ? "" : <span class="bad"> - not enough room ({size(a.free)} free)</span>}</div>
         {a.runs_here === false ? <div class="hint bad">won't run here: {a.why_not}</div> : null}
         {going && d

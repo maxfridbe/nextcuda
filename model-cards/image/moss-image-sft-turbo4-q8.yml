@@ -5,6 +5,8 @@
 id: moss-image-sft-turbo4-q8
 kind: image
 arch: moss-image
+license: apache-2.0
+commercial: true
 title: 'MOSS-Image SFT Turbo Q8_0 (4 steps, no guidance; text to image; Rust + CUDA)'
 about: 'MOSS-Image-SFT with akhaliq''s MOSS-Image-SFT-4-steps LoRA v2.0 (Apache-2.0; DMD from the 50-step guided model onto the scheduler''s own 4 levels) merged at load: 4 steps at cfg 1, about a twentieth of the full model''s time. 6 steps near 1536 wide, 8 at 2048 x 2048'
 gpus: '0,1'

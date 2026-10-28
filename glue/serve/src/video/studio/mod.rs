@@ -143,6 +143,8 @@ pub struct Options {
     pub logs: PathBuf,
     /// nextcuda: the front end's denoiser names and the daemon's model ids (INT8 -> minimax-h3, ...)
     pub engines: Vec<(String, String)>,
+    /// nextcuda: each video model's licence (`license`, `commercial`, `license_note`) by its registry id
+    pub licenses: Vec<(String, Value)>,
 }
 
 impl Studio {
@@ -678,6 +680,7 @@ pub fn run(o: Options) -> http::Result<()> {
     });
     let listener = TcpListener::bind(&o.listen).map_err(|e| http::Error(format!("cannot listen on {}: {e}", o.listen)))?;
     let _ = queue::ENGINES.set(o.engines.clone());
+    let _ = queue::LICENSES.set(o.licenses.clone());
     eprintln!("nextcuda video studio {} on http://{}/ - clips in {}, engine via {}", crate::VERSION, o.listen, studio.out.display(), studio.socket.display());
     let sched = studio.clone();
     std::thread::spawn(move || sched.scheduler());

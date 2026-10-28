@@ -4,6 +4,7 @@ import { jsx } from "../jsx.js";
 import { state } from "../state.js";
 import { gpuName } from "../util.js";
 import { History } from "./History.js";
+import { NonCommercial } from "./Licence.js";
 import { Output } from "./Output.js";
 import { Panel } from "./Panel.js";
 import { Read } from "./Read.js";
@@ -35,7 +36,7 @@ export function App() {
   return (
     <div id="app">
       <div class="top">
-        <h1><span class="i" props={{ innerHTML: "&#xf15c;" }} /> {info ? info.model : "nextcuda ocr"}</h1>
+        <h1><span class="i" props={{ innerHTML: "&#xf15c;" }} /> {info ? info.model : "nextcuda ocr"}{NonCommercial(info)}</h1>
         <GpuPill />
       </div>
       <Stats />

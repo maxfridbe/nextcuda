@@ -232,6 +232,14 @@ pub fn engine_name(e: Option<&str>) -> String {
 /// (`--model`, `--engine`), set once by the studio's start
 pub static ENGINES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
 
+/// nextcuda: each video model's licence by its registry id, set once by the studio's start
+pub static LICENSES: std::sync::OnceLock<Vec<(String, Value)>> = std::sync::OnceLock::new();
+
+/// A video model's licence keys (`license`, `commercial`, `license_note`), none when the registry has no such model
+pub fn licence_of(id: &str) -> Option<Value> {
+    LICENSES.get()?.iter().find(|(i, _)| i == id).map(|(_, l)| l.clone()).filter(|l| l.is_object())
+}
+
 /// Models the daemon lists that the start did not name (named by their suffix: `quant_of`)
 static LEARNED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 

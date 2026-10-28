@@ -54,4 +54,13 @@ sc.show("animateanymesh", Create()).has(/the motion/).has(/frames/).has(/\bsteps
 await go();
 sc.check("animateanymesh", body().steps === 30 && body().cfg === 4 && body().prompt === "a dragon flapping its wings", "an animator takes steps, cfg and the motion");
 
+// the licence: a model whose card forbids commercial use wears the tag in the header; one that allows it, with conditions or not, does not
+const { App } = await mod("model3d", "components/App.js");
+open({ ...trellis, license: "mit", commercial: true }, "generate");
+sc.show("licence-commercial", App()).has(/trellis2-q8/).lacks(/non-commercial/).lacks(/no commercial use/);
+open({ ...hunyuan, license: "tencent-hunyuan-community", commercial: true, license_note: "not licensed in the EU" }, "generate");
+sc.show("licence-conditioned", App()).has(/hunyuan3d-2\.1-shape/).lacks(/non-commercial/);
+open({ ...unirig, license: "made-up-research", commercial: false, license_note: "research only" }, "rig");
+sc.show("licence-non-commercial", App()).has(/unirig \(made-up-research: no commercial use - research only\) non-commercial/);
+
 sc.done();

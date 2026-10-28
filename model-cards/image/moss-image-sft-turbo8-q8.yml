@@ -5,6 +5,8 @@
 id: moss-image-sft-turbo8-q8
 kind: image
 arch: moss-image
+license: apache-2.0
+commercial: true
 title: 'MOSS-Image SFT Turbo 8 Q8_0 (8 steps, no guidance; text to image; Rust + CUDA)'
 about: 'MOSS-Image-SFT with lodestones'' MOSS-Image-SFT-8-steps-dmd LoRA (Apache-2.0; data-space DMD of the 50-step guided SFT model, update 2600) merged at load: 8 steps at cfg 1, about 5 s a 1024 x 1024 picture; warm, contrasty, crisp text'
 gpus: '0,1'

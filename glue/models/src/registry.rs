@@ -64,9 +64,15 @@ fn save(cfg: &Config, path: &Path, models: &[Value]) -> Result<(), String> {
     sync_modes(cfg, models)
 }
 
-/// Every entry
+/// Every entry, one registered before cards carried a licence with its card's (read from the cards, never written back)
 pub fn all(cfg: &Config) -> Result<Vec<Value>, String> {
-    load(&registry(cfg))
+    let mut models = load(&registry(cfg))?;
+    if models.iter().any(|m| m.get("license").is_none() && m.get("catalog").is_some()) {
+        if let Ok(cat) = crate::catalog::Catalog::load(cfg) {
+            cat.fill_license(&mut models);
+        }
+    }
+    Ok(models)
 }
 
 /// Changes the entry `id` (and keeps the studio's chat modes in step): the entry as saved
@@ -82,7 +88,7 @@ pub fn update(cfg: &Config, id: &str, f: impl FnOnce(&mut Value)) -> Result<Valu
 
 /// The entry `id`
 pub fn find(cfg: &Config, id: &str) -> Result<Option<Value>, String> {
-    Ok(load(&registry(cfg))?.into_iter().find(|m| m["id"] == id))
+    Ok(all(cfg)?.into_iter().find(|m| m["id"] == id))
 }
 
 fn s(m: &Value, k: &str) -> String {

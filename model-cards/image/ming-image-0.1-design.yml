@@ -5,6 +5,8 @@
 id: ming-image-0.1-design
 kind: image
 arch: ming-image
+license: mit
+commercial: true
 title: 'Ming-Image 0.1 Design (text to image: UI, posters, infographics; RGBA; Rust + CUDA)'
 about: 'inclusionAI''s Ming-Image-0.1-Design (MIT): Z-Image''s 6B single-stream DiT conditioned by Ling-Mini-2.0 (a 16B MoE, 1.4B active) through a 1.5B connector, an RGBA VAE; text-heavy designs; RGBA decoded (with these GGUFs its alpha comes back opaque). 6.8 GiB DiT, 9.2 GiB text encoder, nothing streamed'
 gpus: '0,1'

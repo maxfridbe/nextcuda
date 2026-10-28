@@ -5,6 +5,8 @@
 id: moss-image-sft-q8
 kind: image
 arch: moss-image
+license: apache-2.0
+commercial: true
 title: 'MOSS-Image SFT Q8_0 (text to image: photographs, illustration, text in pictures; Rust + CUDA)'
 about: 'OpenMOSS''s MOSS-Image-SFT (Apache-2.0): a 5.1B single-stream DiT over Qwen3.5-9B''s text states and FLUX.2''s small VAE; 50 steps of flow-matching Euler, guidance 3 against the empty prompt with block 22 left out. 5.5 GiB DiT, 9.5 GiB text encoder, nothing streamed'
 gpus: '0,1'

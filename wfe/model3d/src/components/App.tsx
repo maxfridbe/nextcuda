@@ -5,6 +5,7 @@ import { state } from "../state.js";
 import { gpuName } from "../util.js";
 import { Create } from "./Create.js";
 import { Gallery } from "./Gallery.js";
+import { NonCommercial } from "./Licence.js";
 import { Panel } from "./Panel.js";
 import { Progress } from "./Progress.js";
 import { Stage } from "./Stage.js";
@@ -37,7 +38,7 @@ export function App() {
   return (
     <div id="app">
       <div class="top">
-        <h1><span class="i" props={{ innerHTML: "&#xf1b2;" }} /> {info ? info.model : "nextcuda 3D"}</h1>
+        <h1><span class="i" props={{ innerHTML: "&#xf1b2;" }} /> {info ? info.model : "nextcuda 3D"}{NonCommercial(info)}</h1>
         <GpuPill />
       </div>
       {state.error && !state.busy ? <pre class="err">{state.error}</pre> : null}

@@ -66,4 +66,10 @@ sc.show("unlimited-reading-with-boxes", App()).has(/\[button Boxes\]/);
 open(drawing);
 sc.show("image-model-here", App()).has(/makes pictures; this page reads them/).has(/\[button Read the page disabled\]/);
 
+// the licence: a reader whose card forbids commercial use wears the tag in the header; one that allows it does not
+open({ ...unlimited, license: "mit", commercial: true });
+sc.show("licence-commercial", App()).has(/unlimited-ocr-q8/).lacks(/non-commercial/).lacks(/no commercial use/);
+open({ ...paddle, license: "made-up-research", commercial: false });
+sc.show("licence-non-commercial", App()).has(/paddleocr-vl-1\.6 \(made-up-research: no commercial use\) non-commercial/);
+
 sc.done();

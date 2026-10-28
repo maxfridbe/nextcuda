@@ -5,6 +5,8 @@
 id: moss-image-sft-dmd2-q8
 kind: image
 arch: moss-image
+license: apache-2.0
+commercial: true
 title: 'MOSS-Image SFT DMD2 Q8_0 (8 steps, no guidance; text to image; Rust + CUDA)'
 about: 'MOSS-Image-SFT with lodestones'' 8-steps-dmd2 LoRA from Kromoss (Apache-2.0; DMD from MOSS-Image-Base, then the DMD2 GAN stage against real images; transfers to SFT) merged at load: 8 steps at cfg 1, about 5 s a 1024 x 1024 picture; natural light and detail'
 gpus: '0,1'
