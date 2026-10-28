@@ -1,0 +1,2 @@
+YuE2's silo is built once a card (kernels/build.sh): the 3060 (sm_86) and the 5070 (sm_120) each get their own attention
+kernel - the flow's, MOSS-Image's tiles with grouped-query heads.

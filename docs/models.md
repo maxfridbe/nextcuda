@@ -36,6 +36,7 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 | songs | `minimax-music3-int8` | MiniMax Music 3, its language model in int8: songs from lyrics and a description, up to 6 minutes, 44.1 kHz stereo | (music3's) | served, both cards |
 | songs | `minimax-music3` | MiniMax Music 3 in half | 26.6 GiB | too big (23 GB a card) |
 | songs | `acestep-1.5` | ACE-Step 1.5 turbo: songs in 50 languages from a description and lyrics, covers, repaints, lyric edits; 48 kHz stereo | 9.4 GiB | served |
+| songs | `yue2-3b-q8` | YuE2-3B Q8_0 (non-commercial, CC BY-NC 4.0): songs with vocals from a style and lyrics, English and Mandarin, a melody / chords score first (sung again with new words over the same score), up to 6 minutes, 48 kHz stereo | 4.2 GiB | served, both cards |
 | songs | `acestep-1.5-base` | ACE-Step 1.5 base: a vocal track made in a recording's context (lego) | 9.4 GiB | served |
 | video | `minimax-h3-q4km` | MiniMax H3 Q4_K_M: text, pictures and a voice to video with sound; the denoiser in 10.6 GiB | 10.6 GiB | served, both cards |
 | video | `minimax-h3-q6k` | MiniMax H3 Q6_K: the denoiser in 15.4 GiB | 15.4 GiB | download |

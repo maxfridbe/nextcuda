@@ -674,6 +674,7 @@ dependencies = [
  "nextcuda-audio-vibevoice",
  "nextcuda-audio-voxcpm2",
  "nextcuda-audio-whisper",
+ "nextcuda-audio-yue2",
  "nextcuda-core",
  "nextcuda-gguf",
  "nextcuda-image",
@@ -798,6 +799,19 @@ dependencies = [
  "nextcuda-gguf",
  "nextcuda-tok",
  "serde_json",
+]
+
+[[package]]
+name = "nextcuda-audio-yue2"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-audio",
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-tok",
+ "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]

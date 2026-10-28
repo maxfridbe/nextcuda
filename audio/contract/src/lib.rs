@@ -293,8 +293,12 @@ pub fn read_audio(b: &[u8]) -> std::result::Result<Audio, String> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::errors::Error as E;
     let mss = symphonia::core::io::MediaSourceStream::new(Box::new(std::io::Cursor::new(b.to_vec())), Default::default());
+    // gapless: an MP3's encoder delay and padding (its LAME / Xing header) trimmed, as FFmpeg's demuxer trims them - the
+    // recording starts where its sound starts (the 1105 or so samples of a typical encoder's delay would shift
+    // every time a model reads in it: SheetSage2's beats and notes, a cover's source)
+    let fo = symphonia::core::formats::FormatOptions { enable_gapless: true, ..Default::default() };
     let probed = symphonia::default::get_probe()
-        .format(&Default::default(), mss, &Default::default(), &Default::default())
+        .format(&Default::default(), mss, &fo, &Default::default())
         .map_err(|e| format!("not a recording this reads (WAV, MP3, FLAC, Ogg Vorbis, M4A): {e}"))?;
     let mut format = probed.format;
     let track = format.default_track().ok_or("no audio track")?;
@@ -435,6 +439,11 @@ pub trait AudioEngine: Send + Sync {
     /// write a recording down (a recogniser), reporting as it goes; an error from `progress` stops it
     fn transcribe(&self, _req: &TranscribeRequest, _progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Transcript> {
         Err(Error(format!("{} makes sound; it does not transcribe (audio.transcribe needs a recogniser: whisper)", self.arch())))
+    }
+    /// the score (ABC) the last song was sung over, for an engine that writes one first (YuE2): given back with the
+    /// same seed and style and new words, the song keeps its melody
+    fn score(&self) -> Option<String> {
+        None
     }
     /// lines for `status`: its GPUs, memory, what is loaded where
     fn report(&self) -> Vec<String> {

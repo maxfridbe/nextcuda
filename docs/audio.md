@@ -73,3 +73,43 @@ the metas, the caption and the audio codes first; `NS_ACE_PLANNER=0` at load lea
 
 - **Through the platform** (2026-10-21): a 30 s song with lyrics rendered on the box in 27.2 s and was listened back by
   its own Whisper.
+
+## Songs: YuE2-3B
+
+`audio.generate` with `model: yue2-3b-q8`: M-A-P's YuE2 (non-commercial, CC BY-NC 4.0) in Rust and CUDA
+(`audio/yue2`, `kernels/audio/yue2`; the plan and the port's record: [ports/yue2.md](ports/yue2.md)). One AR-NAR
+Mixture-of-Transformers writes a score (ABC: melody and chords for `cot: full`, the default; a melody for `melody`; none
+for `off`) and the semantic codes, then the acoustic latents by flow matching (32 midpoint steps); YuE2-Vae decodes 48 kHz
+stereo. scragnog's GGUFs: the language model Q8_0 (every matrix in its blocks on the card), the VAE float32. A song's
+score comes back with it (`score`, and the WAV's comment): sung again with the same seed and style and new lyrics
+(`abc`), the melody stays. The guide: `model-cards/guides/yue2.md`.
+
+- **Checked** (2026-10-27) against upstream's yue2_infer 0.1.5 on the CPU in float32 with the same Q8_0 file
+  (`reference/yue2/ref.py`): the prompts identical in every cot mode; the whole sequence teacher-forced (prompt, a
+  160-token score, 225 codes), the logits cosine 1.000000 (rel 3e-4 to 2e-3) and the argmax the same on every row checked;
+  the twin's prefill 1.000000; torch.randn's noise to 5e-7; the first velocity 0.999996, every midpoint step from the
+  reference's state 1.000000, 8 steps from the noise 0.99998; the VAE 1.000000 (rel 1.6e-6).
+- **Against upstream as it runs** (the bf16 checkpoint in bf16 on the 5070, `ref.py --device cuda:0 --dtype bf16
+  --weights bf16`): the teacher-forced logits cosine 0.99998 to 0.999998 (rel 2.5e-3 to 9e-3), the argmax the same on
+  every row; the twin's prefill 0.99996; the first velocity 0.99982 (int8 flow; Q8_0 0.99991), 8 steps 0.99979 (0.99987):
+  the Q8_0 file's own distance (HOT-Step measures its NAR rel-L2 0.019 against bf16's 0.013).
+- **Sung** (Whisper large-v3-turbo on the takes): English folk in each cot mode (full 77.6 s, melody 103 s, off 103 s)
+  word for word; upstream's Mandarin demo (今晚不眠, seed 12300) 222.6 s, its choruses and bridge as written; the
+  English song again over its own score with new lyrics (same seed and style): every new line sung, each line starting
+  within 0.2 s of the first take's - the melody kept. The same request and seed make the same WAV, byte for byte.
+- **Speed** (RTX 5070 the language model, RTX 3060 the VAE): 223.8 s of song (the Mandarin demo) in 72.5 s - the score
+  11.7 s, 5594 codes at 190 a second, 32 flow steps in 26.8 s, the VAE 4.2 s (as ported, the flow on the Q8_0 matrices
+  and nsd's attention: 88.1 s, its steps 41.6 s; int8 matrices 33.5 s; the silo's attention, scores in float32, 30.7 s); a 30 s song in 12 s (224 codes a second). 21 s to load from the HDD. Peak 7.2 GiB on the
+  5070, 1.4 GiB on the 3060. The flow's (NAR path's) matrices are int8 ConvRot rows by default (`NS_YUE2_INT8=0`: Q8_0 as
+  stored): the first velocity cosine 0.99991 against the reference (Q8_0: 0.999996), 8 steps from the noise 0.99985
+  (0.99998) - bf16's own distance from float32 by HOT-Step's measure; the silo's attention with its scores in half (the
+  default; `NS_YUE2_ATTN=float`) 0.99989 and 0.99978; the takes transcribe as before.
+- **Covers** (2026-10-27): a recording given is transcribed by SheetSage2 on the 3060 (`audio/yue2/src/sheet`, checked
+  against upstream: [ports/yue2.md](ports/yue2.md)) and its score sung in the new style. The test recording is the USAF
+  Band of Mid-America's Jingle Bells (2020, public domain, an instrumental: `/mnt/hdd/nextcuda-models/yue2/test` on the
+  box). Its lead line is in SheetSage2's `Ins` voice; the engine moves it to the `Vocal` voice YuE2 sings, because with
+  the score as transcribed all three styles came out instrumental and Whisper heard no words. With lyrics tagged to the
+  score's sections (`[Intro]`, a long `[Verse]`, `[Outro]`), all three styles sing the traditional words over the
+  transcribed tune (Whisper hears the verse and the choruses): jazz 135.7 s in 39.4 s, metal 117.1 s in 34.5 s,
+  synthwave 138.4 s in 40.4 s. The whole song with new words ("Rolling on, rolling on ...") is sung line for line,
+  163.2 s in 47.1 s. Each run spends 7.2 s on the transcription; peaks are 7.0 GiB on the 5070 and 3.1 GiB on the 3060.
