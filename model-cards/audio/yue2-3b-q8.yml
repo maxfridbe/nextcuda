@@ -12,8 +12,8 @@ license: cc-by-nc-4.0
 commercial: false
 gpus: '0,1'
 split: true                      # nextcuda: the language model, the song's caches and the flow on the first card, the VAE on the second
-vram_gib: 8.5                    # the first card's: 3.6 GiB of weights, a six-minute song's caches (~2 GiB) and its flow rows;
-headroom_gib: 4.9                #   the second holds the VAE and a tile's activations (~1.3 GiB)
+vram_gib: 7.6                    # the first card's: 3.5 GiB of weights, a six-minute song's caches (~2 GiB) and its flow rows
+headroom_gib: 4.1                #   (7.1 GiB measured for a 224 s song); the second holds the VAE and a tile's (1.2 GiB)
 defaults:
   seconds: 360.0
   steps: 32

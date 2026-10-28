@@ -89,6 +89,10 @@ score comes back with it (`score`, and the WAV's comment): sung again with the s
   160-token score, 225 codes), the logits cosine 1.000000 (rel 3e-4 to 2e-3) and the argmax the same on every row checked;
   the twin's prefill 1.000000; torch.randn's noise to 5e-7; the first velocity 0.999996, every midpoint step from the
   reference's state 1.000000, 8 steps from the noise 0.99998; the VAE 1.000000 (rel 1.6e-6).
+- **Against upstream as it runs** (the bf16 checkpoint in bf16 on the 5070, `ref.py --device cuda:0 --dtype bf16
+  --weights bf16`): the teacher-forced logits cosine 0.99998 to 0.999998 (rel 2.5e-3 to 9e-3), the argmax the same on
+  every row; the twin's prefill 0.99996; the first velocity 0.99982 (int8 flow; Q8_0 0.99991), 8 steps 0.99979 (0.99987):
+  the Q8_0 file's own distance (HOT-Step measures its NAR rel-L2 0.019 against bf16's 0.013).
 - **Sung** (Whisper large-v3-turbo on the takes): English folk in each cot mode (full 77.6 s, melody 103 s, off 103 s)
   word for word; upstream's Mandarin demo (今晚不眠, seed 12300) 222.6 s, its choruses and bridge as written; the
   English song again over its own score with new lyrics (same seed and style): every new line sung, each line starting
