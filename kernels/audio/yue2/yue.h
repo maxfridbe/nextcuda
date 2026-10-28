@@ -38,6 +38,17 @@ int ns_audio_yue2_add_vec_rows(ns_gpu* g, float* x, int64_t R, int64_t C, const 
 /* out = a + s b (n floats; out may be a): the midpoint solver's steps */
 int ns_audio_yue2_axpy(ns_gpu* g, float* out, const float* a, const float* b, int64_t n, float s);
 
+/* SheetSage2's encoder (MERT-v2's ConvNeXt subsampler and conformer blocks; kernels/audio/yue2/ss2.cu): float32 rows
+ * [T, C], channels-last.
+ * dwconv: a depthwise convolution along T, zero padded K / 2 either side: out[t, c] = bias[c] + sum_j w[c, j] x[t + j - K/2, c]
+ *   (w float32 [C, K], torch's [C, 1, K]; bias float32 [C] or NULL; K odd).
+ * grn: ConvNeXt-V2's global response norm over the whole sequence, out (half) = gamma (x n) + beta + x, n[c] = |x[:, c]|
+ *   / (mean over c of |x[:, c]| + 1e-6) (the L2 norm along T); part: float32 scratch of C + 1.
+ * glu: out[t, c] = x[t, c] sigmoid(x[t, C + c]) for x [T, 2C] (the conformer's convolution module). */
+int ns_audio_yue2_dwconv(ns_gpu* g, const float* x, int64_t T, int64_t C, const float* w, int64_t K, const float* bias, float* out);
+int ns_audio_yue2_grn(ns_gpu* g, const float* x, int64_t T, int64_t C, const float* gamma, const float* beta, void* out, float* part);
+int ns_audio_yue2_glu(ns_gpu* g, const float* x, int64_t T, int64_t C, float* out);
+
 #ifdef __cplusplus
 }
 #endif

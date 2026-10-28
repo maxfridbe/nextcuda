@@ -1,7 +1,8 @@
 //! The kernels of the audio library this engine needs beyond the shared diffusion ones (nsd): its own
 //! (`kernels/audio/yue2/yue.h`: the Q8_0 decode product and embedding rows, the attention's inputs and the decode's
 //! attention, the flow stage's element-wise steps) and ACE-Step's SnakeBeta (`kernels/audio/acestep/ace.h`: Oobleck's
-//! activation, YuE2-Vae's too).
+//! activation, YuE2-Vae's too) and SheetSage2's encoder's three (`kernels/audio/yue2/ss2.cu`: the depthwise
+//! convolutions, the global response norm, the GLU).
 
 use std::ffi::{c_int, c_void};
 use std::sync::OnceLock;
@@ -20,6 +21,9 @@ pub struct Api {
     pub add_vec_rows: unsafe extern "C" fn(G, *mut f32, i64, i64, *const f32, *const f32) -> c_int,
     pub axpy: unsafe extern "C" fn(G, *mut f32, *const f32, *const f32, i64, f32) -> c_int,
     pub snake: unsafe extern "C" fn(G, *const f32, i64, i64, *const f32, *const f32, *mut f32) -> c_int,
+    pub dwconv: unsafe extern "C" fn(G, *const f32, i64, i64, *const f32, i64, *const f32, *mut f32) -> c_int,
+    pub grn: unsafe extern "C" fn(G, *const f32, i64, i64, *const f32, *const f32, M, *mut f32) -> c_int,
+    pub glu: unsafe extern "C" fn(G, *const f32, i64, i64, *mut f32) -> c_int,
 }
 
 // SAFETY: function pointers into the library, which stays loaded for the process.
@@ -52,6 +56,9 @@ pub fn api() -> nextcuda_core::Result<&'static Api> {
             add_vec_rows: sym!("ns_audio_yue2_add_vec_rows"),
             axpy: sym!("ns_audio_yue2_axpy"),
             snake: sym!("ns_audio_ace_snake"),
+            dwconv: sym!("ns_audio_yue2_dwconv"),
+            grn: sym!("ns_audio_yue2_grn"),
+            glu: sym!("ns_audio_yue2_glu"),
         })
     })
     .as_ref()

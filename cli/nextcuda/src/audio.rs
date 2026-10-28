@@ -15,6 +15,9 @@ nextcuda audio gen \"<text to say>\" --model qwen3-tts-... [--voice NAME] [--lan
                    [--speaker FILE]...   (several speakers: a script of \"Speaker N:\" lines, Speaker 1's recording first; vibevoice)
 nextcuda audio gen \"<style>\" --model yue2-3b-q8 --lyrics-file FILE [--opt-cot full|melody|off] [--abc-file SCORE.abc]   (a song over a
                    score: a cover's melody, or an earlier song's .abc with new words; its own score saved beside it)
+nextcuda audio gen \"<new style>\" --model yue2-3b-q8 --source RECORDING --lyrics-file ITS-WORDS [--opt-cot melody|full]   (a cover: the
+                   recording's score by SheetSage2 - its melody, or melody and chords - sung in the new style with the words
+                   given, the song's own or new ones; --opt-score-only true: only the score, RECORDING's .abc)
 nextcuda audio gen \"<description>\" --model acestep-1.5 --source FILE --opt-task cover | repaint | edit | lego [--opt-repaint-start S]
                    [--opt-repaint-end S] [--opt-cover-strength X] [--opt-source-lyrics TEXT] ...   (a song made from a recording)
 nextcuda audio serve [MODEL] [--port 8087] [--host 127.0.0.1] [--gpu N] [--set NAME=VALUE]... [--wfe] [--out DIR] [--cors ORIGIN]
@@ -27,7 +30,8 @@ nextcuda audio voice design NAME --instructions \"the voice\" [--text \"what the
 nextcuda audio voice rm NAME            (addvoice / clonevoice NAME ... = voice add; designvoice = voice design)
 nextcuda audio transcribe FILE [--model ID | --dir DIR] [--language L] [--translate] [--no-words] [--prompt TEXT] [--opt-NAME VALUE]...
                    [--json] [--gpu N]   (speech to text: a recogniser, whisper-large-v3-turbo; any rate, WAV, MP3, FLAC, Ogg, M4A)
-nextcuda audio check <dump dir> [--model ID | --dir DIR] [--stages ar,dit,voc,chunks | prompt,frames,codec | mel,encoder,logits,transcribe | text,te,enc,velocity,sample,vae,song | tokens,ar,neg,noise,vel,steps,solve,vae] [--gpu N]
+nextcuda audio check <dump dir> [--model ID | --dir DIR] [--stages ar,dit,voc,chunks | prompt,frames,codec | mel,encoder,logits,transcribe | text,te,enc,velocity,sample,vae,song | tokens,ar,neg,noise,vel,steps,solve,vae |
+                   wave,mel,encoder,decoder,generate,notation,transcribe (yue2's SheetSage2)] [--gpu N]
 nextcuda audio engines | selftest [--gpu N]";
 
 /// The audio engines this program has (audio/<arch>)
@@ -211,7 +215,7 @@ fn gen(cfg: &Config, args: &[String]) -> Result<(), String> {
         },
     };
     if req.source.is_some() && !e.sources() {
-        return Err(format!("--source: {} makes no song from a recording (acestep does: --opt-task cover | repaint | edit)", e.arch()));
+        return Err(format!("--source: {} makes no song from a recording (acestep does: --opt-task cover | repaint | edit; yue2 with its sheetsage file: a cover)", e.arch()));
     }
     let t0 = std::time::Instant::now();
     // frames a second of sound: speech 12.5, songs 25
@@ -249,6 +253,19 @@ fn gen(cfg: &Config, args: &[String]) -> Result<(), String> {
         Ok(())
     }).map_err(|e| e.0)?;
     eprintln!();
+    // no sound, a score (yue2's score-only: a recording's transcription): the score alone, named for the recording
+    if audio.samples.is_empty() {
+        let sc = e.score().ok_or("the engine made neither sound nor a score")?;
+        let stem = opt(args, "--source").and_then(|f| Path::new(f).file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "score".into());
+        let path = match opt(args, "--out").map(PathBuf::from) {
+            Some(o) if o.is_dir() => o.join(format!("{stem}.abc")),
+            Some(o) => o.with_extension("abc"),
+            None => PathBuf::from(format!("{stem}.abc")),
+        };
+        std::fs::write(&path, &sc).map_err(|e| format!("{}: {e}", path.display()))?;
+        println!("score {}  ({} lines in {:.1} s)", path.display(), sc.lines().count(), t0.elapsed().as_secs_f64());
+        return Ok(());
+    }
     let parts: Vec<String> = spans.iter().map(|(p, t, n)| {
         let t = *t;
         match *p {
@@ -374,6 +391,12 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         let stages: Vec<&str> = opt(args, "--stages").unwrap_or("text,te,enc,velocity,sample,vae").split(',').collect();
         let e = nextcuda_audio_acestep::AceStep::load(&files, std::slice::from_ref(&g), &options(&m, args)?, &mut log).map_err(|e| e.0)?;
         nextcuda_audio_acestep::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
+    } else if m["arch"] == nextcuda_audio_yue2::ARCH && opt(args, "--stages").is_some_and(|st| st.split(',').all(|x| nextcuda_audio_yue2::sheet::check::STAGES.contains(&x))) {
+        // SheetSage2's stages alone: its file, on the first card given
+        let stages: Vec<&str> = opt(args, "--stages").unwrap_or_default().split(',').collect();
+        let p = files.get("sheetsage").ok_or("the model has no sheetsage file (SheetSage2: a cover's score)")?;
+        let e = nextcuda_audio_yue2::sheet::SheetSage::load(p, &g).map_err(|e| e.0)?;
+        nextcuda_audio_yue2::sheet::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
     } else if m["arch"] == nextcuda_audio_yue2::ARCH {
         let gs = gpus(args)?;
         let stages: Vec<&str> = opt(args, "--stages").unwrap_or("tokens,ar,neg,noise,vel,steps,solve,vae").split(',').collect();

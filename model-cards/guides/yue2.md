@@ -39,6 +39,27 @@ Over the water, I am not alone
   sing new words; edit its chords for a reharmonization. A cover's score is a recording's melody as ABC (no chord
   symbols for `cot: melody`), its sections matching the lyrics'.
 
+## A cover (a recording sung anew)
+Give the recording (`audio`: WAV, MP3, FLAC, Ogg, M4A), **its lyrics** (`input`: the words it sings, with section tags
+as above) and the **new style** (`instructions`). SheetSage2 (the model's `sheetsage` file, M-A-P's transcriber, also
+CC BY-NC 4.0) writes the recording's lead sheet as ABC - its beats, key, sections and melody - and YuE2 sings that
+score in the new style; the recording itself is never played back into the song.
+
+- `cot: melody` (the default for a cover, upstream's recommendation): the melody alone - the new style brings its own
+  harmony. `cot: full`: the recording's chords too (closer to the original's harmony).
+- **New words over the recording's tune**: give your own lyrics instead of its; keep their lines and syllables close to
+  the original's, section for section, so the notes have words to carry.
+- The score comes back (`score` in the answer); sing it again with `abc` and the same seed and style to make the song
+  again with other words. `score-only: true` gives the transcription alone (no song) - read it, edit it, then use it as
+  `abc`.
+- A whole song transcribes in seconds (300 s windows; a longer recording in overlapping windows). A clear lead melody
+  transcribes best; a busy mix can put the tune in the `Ins` voice rather than `Vocal` - YuE2 reads both.
+
+```
+nextcuda audio gen "Synthwave, female vocal, analog synths, driving drums" --model yue2-3b-q8 --source song.mp3 --lyrics-file its-words.txt
+nextcuda audio gen "-" --model yue2-3b-q8 --source song.mp3 --opt-score-only true     # its score alone: song.abc
+```
+
 ## Length, guidance, steps
 `seconds` is the most it makes (up to 360; the model ends the song when the lyrics are sung - a verse and two choruses
 run about a minute and a half). `cfg` guides the codes against the instruction alone (1: none; try 1.2 for a closer

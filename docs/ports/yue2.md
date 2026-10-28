@@ -125,3 +125,25 @@ SheetSage2 (`sheetsage2-f16.gguf`: a recording to a melody lead sheet as ABC), t
 engine) when the caller gives none. SheetSage2 is its own model (HOT-Step's port: an encoder over audio features, a
 decoder of note events, the events written as ABC) - ported after text-to-song is checked, as `audio/yue2/src/sheet*`
 on the same kernels. MMS-FA (lyric timestamps) and the community audio tokenizer are not needed for either.
+
+## SheetSage2, as ported (audio/yue2/src/sheet)
+
+```text
+  sheet/wave.rs      FFmpeg's mono 24 kHz: sqrt(1/2) (L + R) (libswresample's unnormalized float matrix), its Kaiser sinc
+  sheet/mel.rs       torchaudio's log-mel on the host (float64 FFT)
+  sheet/mert.rs      MERT-v2-FullSong + the layer mix + the projection on the card (kernels/audio/yue2/ss2.cu: dwconv, grn, glu)
+  sheet/decoder.rs   BART's decoder: the self-attention cache, the cross keys / values once a window
+  sheet/tokens.rs    the v1 vocabulary, the greedy decode's grammar, sequences <-> events
+  sheet/stitch.rs    the 300 s windows, overlap prefixes, stitching
+  sheet/notation.rs  exports + notation: beats, measures, Vocal / Ins voices, keys, chords -> ABC (spell.rs: key-aware spelling)
+  sheet/check.rs     the stages against reference/yue2/sheetsage_ref.py (wave, mel, encoder, decoder, generate, notation, transcribe)
+```
+
+Two things of upstream's run decide its result and are reproduced: the rotary table MERT caches at its first call, which
+transcribe makes under bf16 autocast (bf16 angles of bf16 positions: exact float32 angles give a memory at cosine 0.934
+of upstream's), and the GGUF's values (converted from a bf16 merge: its norms, biases and layer weights are bf16-rounded;
+upstream's own transcription changes with them, so the reference to compare with is `sheetsage_ref.py --bf16-params`).
+Measured on Jingle Bells (USAF Band 2020, 132.8 s) and the same three times over (398 s, two windows): the wave to
+2.2e-6, the mel to 3e-5, the memory 0.999995 against upstream on the file's numbers in float32; the notation from
+upstream's tokens byte for byte (one and two windows, the overlap prefix identical); end to end the notes 264 of 264
+(and one more) on the short one, precision 0.984 / recall 0.988 on the long one; 6.6 s on the 3060 for 132.8 s.

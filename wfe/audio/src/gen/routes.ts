@@ -32,7 +32,7 @@ export interface AudioSpeechBody {
   abc?: string | null;
   /** yue2-3b-q8: what it writes before the music - full (a melody and chords score; default), melody (a melody alone: covers), off (none; the codes guided 1.01 by default) */
   cot?: SongCot | null;
-  /** acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end) */
+  /** acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end). yue2-3b-q8, a cover: the recording whose score (SheetSage2: its melody for cot melody - the default then -, melody and chords for full) is sung in the new style with input's words (the song's own or new ones); option score-only true: the score alone */
   audio?: string | null;
   /** acestep-1.5: the tempo (else the planner's, or none said) */
   bpm?: number | null;

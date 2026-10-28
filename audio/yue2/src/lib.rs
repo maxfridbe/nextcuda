@@ -11,6 +11,11 @@
 //!   -> the VAE, tiled -> stereo
 //! ```
 //!
+//! A cover (a recording given: `AudioRequest::source`) gets its score from SheetSage2 (sheet/: the recording to a lead
+//! sheet in ABC - the melody alone for cot melody, the default for a cover; melody and chords for cot full), loaded
+//! when the model's files include it (the `sheetsage` role, on the second card when there are two), and sings it with
+//! the request's style and words: the recording itself never reaches the music stages, as upstream's cover.
+//!
 //! The weights are scragnog/YuE2-GGUF's: the language model Q8_0 (every matrix kept in its blocks on the card), the
 //! VAE float32. The whole of it is resident: ~3.9 GB of language model, the song's caches (half, 112 KiB a token) and
 //! the flow's rows on the first card, the VAE on the second when there is one. `check` compares the stages with the
@@ -21,6 +26,7 @@ mod ffi;
 pub mod lm;
 pub mod prompt;
 pub mod sample;
+pub mod sheet;
 pub mod vae;
 
 use std::path::{Path, PathBuf};
@@ -36,10 +42,12 @@ use nextcuda_tok::Tokenizer;
 use crate::lm::{Cache, Lm, Scratch, CONTEXT, HIDDEN, LATENT};
 use crate::prompt::{Cot, ABC_END, CODEC_OFFSET, CODEC_SIZE, EOD, MUSIC_END, MUSIC_START};
 use crate::sample::{Rng, Sampling};
+use crate::sheet::SheetSage;
 use crate::vae::{Vae, RATE};
 
 pub const ARCH: &str = "yue2";
-pub const ROLES: &[&str] = &["lm", "vae"];
+/// the files: the language model, the VAE, and SheetSage2 (optional: covers - a recording's score - when present)
+pub const ROLES: &[&str] = &["lm", "vae", "sheetsage"];
 /// codes a second
 pub const FPS: f32 = 25.0;
 /// the longest song: the semantic phase's 9000 codes
@@ -51,6 +59,7 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "abc", env: "", value: "TEXT", help: "a score (ABC) to sing over instead of one drawn (cot melody or full): a cover's melody, or the score of an earlier song (its `score`) to sing it again with new words - same seed and style", at: At::Request },
     EngineOption { name: "int8", env: "NS_YUE2_INT8", value: "0|1", help: "the flow's (NAR path's) matrices as int8 ConvRot rows on the int8 tensor cores (on; 0: as stored, Q8_0)", at: At::Load },
     EngineOption { name: "score-tokens", env: "", value: "4096", help: "the most tokens the score may take (32 to 4096; a longer score is cut and closed)", at: At::Request },
+    EngineOption { name: "score-only", env: "", value: "true|false", help: "with a recording (source): only its score - SheetSage2's transcription, the melody for cot melody, melody and chords for cot full - comes back (the answer's score), no song is made", at: At::Request },
 ];
 
 pub fn kind() -> AudioKind {
@@ -74,6 +83,9 @@ pub fn files_in(dir: &Path) -> Result<ModelFiles> {
     let mut f = ModelFiles::new();
     f.insert("lm".into(), find("yue2-lm-").ok_or_else(|| Error(format!("{}: no yue2-lm-*.gguf", dir.display())))?);
     f.insert("vae".into(), find("yue2-vae-standard").ok_or_else(|| Error(format!("{}: no yue2-vae-standard-*.gguf", dir.display())))?);
+    if let Some(p) = find("sheetsage2-") {
+        f.insert("sheetsage".into(), p);
+    }
     Ok(f)
 }
 
@@ -113,6 +125,8 @@ pub struct Made {
 pub struct Yue2 {
     pub lm: Lm,
     pub vae: Vae,
+    /// SheetSage2, when its file is given: a recording's score (covers)
+    pub sheet: Option<SheetSage>,
     pub tok: Tokenizer,
     settings: LoadOptions,
     work: Mutex<Scratch>,
@@ -129,11 +143,14 @@ impl Yue2 {
         let vgpu = gpus.get(1).unwrap_or(gpu);
         let path = |r: &str| files.get(r).cloned().ok_or_else(|| Error(format!("{ARCH}: no {r} file")));
         let (lmp, vp) = (path("lm")?, path("vae")?);
+        let sp = files.get("sheetsage").cloned();
         let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
         // the plan: the language model's file (the position table stays on the host) and a minute's caches and flow
-        // rows on its card, the VAE and a tile's activations on its own (or the same)
+        // rows on its card, the VAE and a tile's activations on its own (or the same); SheetSage2 beside the VAE (its
+        // 1.3 GB and a window's encoder activations and attention scores, ~1 GiB - it runs before the song, so the
+        // VAE's tiles never overlap it)
         let lm_need = size(&lmp) + (1u64 << 30);
-        let v_need = size(&vp) + (1u64 << 30);
+        let v_need = size(&vp) + (1u64 << 30) + sp.as_deref().map_or(0, |p| size(p) + (1u64 << 30));
         let plan: Vec<(&Arc<Gpu>, u64)> = if Arc::ptr_eq(gpu, vgpu) { vec![(gpu, lm_need + v_need)] } else { vec![(gpu, lm_need), (vgpu, v_need)] };
         for (g, need) in &plan {
             let (total, free) = g.memory()?;
@@ -153,11 +170,19 @@ impl Yue2 {
         let lm = Lm::load(&f, gpu, int8, log)?;
         let vf = Gguf::open(&vp).map_err(|e| Error(e.0))?;
         let vae = Vae::load(&vf, vgpu)?;
+        let sheet = match &sp {
+            Some(p) => {
+                let s = SheetSage::load(p, vgpu)?;
+                log(format!("{ARCH}: SheetSage2 (covers: a recording's score) {:.2} GiB on {}", s.bytes as f64 / GIB, vgpu.name));
+                Some(s)
+            }
+            None => None,
+        };
         let load_s = t0.elapsed().as_secs_f64();
         log(format!("{ARCH}: the language model {:.2} GiB on {} (the flow's matrices {}, its attention {}), the VAE {:.2} GiB on {} - loaded in {load_s:.1} s",
                     lm.bytes as f64 / GIB, gpu.name, if lm.int8 { "int8" } else { "Q8_0" },
                     lm.silo.map_or("nsd's".to_string(), |s| format!("the silo's for sm_{}", s.sm)), vae.bytes as f64 / GIB, vgpu.name));
-        Ok(Yue2 { lm, vae, tok, settings: o.clone(), work: Mutex::new(Scratch::default()), vwork: Mutex::new(Scratch::default()), last: Mutex::new(None),
+        Ok(Yue2 { lm, vae, sheet, tok, settings: o.clone(), work: Mutex::new(Scratch::default()), vwork: Mutex::new(Scratch::default()), last: Mutex::new(None),
                   load_s })
     }
 
@@ -168,11 +193,26 @@ impl Yue2 {
     /// The request as a song: the pipeline's defaults where it says nothing (cot full, guidance 1 - 1.01 for cot off -,
     /// up to six minutes: the model ends the song, 32 ODE steps)
     pub fn song(&self, req: &AudioRequest) -> Result<Song> {
-        let cot_s = self.opt(req, "cot", "NS_YUE2_COT").unwrap_or_else(|| "full".into());
+        // a cover's own default: the melody (upstream's recommendation - the recording's chords are the new style's)
+        let cot_s = req.extra.get("cot").cloned().filter(|v| !v.trim().is_empty())
+            .or_else(|| req.source.as_ref().map(|_| "melody".to_string()))
+            .or_else(|| self.opt(req, "cot", "NS_YUE2_COT"))
+            .unwrap_or_else(|| "full".into());
         let cot = Cot::parse(&cot_s).ok_or_else(|| Error(format!("cot {cot_s}: full, melody or off")))?;
         let abc = self.opt(req, "abc", "").map(|a| a.trim().to_string());
         if abc.is_some() && cot == Cot::Off {
             return Err(Error("abc: a score is sung with cot melody or full (cot off writes none)".into()));
+        }
+        if req.source.is_some() {
+            if abc.is_some() {
+                return Err(Error("a recording (source) and a score (abc): the recording's score is its transcription - give one or the other".into()));
+            }
+            if cot == Cot::Off {
+                return Err(Error("a cover sings over the recording's score: cot melody (its melody, the default) or full (melody and chords)".into()));
+            }
+            if self.sheet.is_none() {
+                return Err(Error("a recording (source) needs SheetSage2 (the model's sheetsage file: nextcuda models pull yue2-3b-q8)".into()));
+            }
         }
         let style = req.prompt.trim().to_string();
         if style.is_empty() {
@@ -422,6 +462,9 @@ impl AudioEngine for Yue2 {
     fn lyrics(&self) -> bool {
         true
     }
+    fn sources(&self) -> bool {
+        self.sheet.is_some()
+    }
     fn options(&self) -> &'static [EngineOption] {
         OPTIONS
     }
@@ -430,9 +473,22 @@ impl AudioEngine for Yue2 {
     }
     fn generate(&self, req: &AudioRequest, progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Audio> {
         let t0 = Instant::now();
-        let song = self.song(req)?;
+        let mut song = self.song(req)?;
         let mut made = Made::default();
         *self.last.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        if let (Some(src), Some(sheet)) = (&req.source, &self.sheet) {
+            // a cover: the recording's score (its melody for cot melody, melody and chords for full), sung in the new style
+            let tr = sheet.transcribe(&sheet::wave::prepare(&src.samples, src.channels as usize, src.rate), progress)?;
+            let s = if song.cot == Cot::Melody { &tr.melody } else { &tr.full };
+            let abc = s.abc.clone().ok_or_else(|| Error(format!("the recording's score: {}", s.error.as_deref().unwrap_or("none was made"))))?;
+            *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Some(abc.clone());
+            if self.opt(req, "score-only", "").is_some_and(|v| v.trim() == "true" || v.trim() == "1") {
+                return Ok(Audio { rate: RATE, channels: 2, samples: Vec::new() });
+            }
+            song.abc = Some(abc.trim().to_string());
+        } else if self.opt(req, "score-only", "").is_some_and(|v| v.trim() == "true" || v.trim() == "1") {
+            return Err(Error("score-only: a recording's score - give the recording (source)".into()));
+        }
         self.latents(&song, &mut made, t0, progress)?;
         if song.cot != Cot::Off {
             *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Some(String::from_utf8_lossy(&self.tok.decode_bytes(&made.abc)).into_owned());
@@ -447,7 +503,8 @@ impl AudioEngine for Yue2 {
     }
     fn report(&self) -> Vec<String> {
         let on = if Arc::ptr_eq(&self.lm.gpu, &self.vae.gpu) { self.lm.gpu.name.clone() } else { format!("{} + {}", self.lm.gpu.name, self.vae.gpu.name) };
-        vec![format!("{ARCH} on {on} (the language model Q8_0, {:.2} GiB; loaded in {:.0} s)", self.lm.bytes as f64 / GIB, self.load_s)]
+        let sheet = self.sheet.as_ref().map_or(String::new(), |s| format!("; SheetSage2 for covers, {:.2} GiB on {}", s.bytes as f64 / GIB, s.gpu.name));
+        vec![format!("{ARCH} on {on} (the language model Q8_0, {:.2} GiB{sheet}; loaded in {:.0} s)", self.lm.bytes as f64 / GIB, self.load_s)]
     }
 }
 
