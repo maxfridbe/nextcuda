@@ -122,6 +122,9 @@ r = 0.99), and the singer's mouth is drawn to it. Without it H3 writes and sings
   `start + i x 221 / 24` s, the same seed. Join dissolving over the 22 frames each clip replays (a hard cut in their
   middle was the largest frame-to-frame jump of the film; the dissolve brings it within the shot's own motion),
   then lay the take itself under the joined picture from `start` - never the clips' sound.
+- The face: the same singer picture as `ref_images` on every clip (Ref2VA, "the woman from `<Picture 1>`") held one
+  face over a chain; the chain alone kept the dress, the light and the room but let the face drift. A picture given,
+  or the first clip's own frame at 0.5 s for the clips after it.
 - Time: on hardac1 (nextsycl, B70) a 243-frame clip at 768x576, 12 steps is ~290 s - a 4-minute song ~28 clips,
   ~2.3 h. On brainiac (nextcuda, 5070 + 3060, Q4_K_M) the same clip at 512x384 is ~950 s (74 s a step).
 ### A cut: what to carry, by kind (docs/video/scenes.md has the measurements)
