@@ -1560,10 +1560,10 @@ pub struct Model3dRigBody {
     pub file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<f64>,
-    /// an animating model: frames to make
+    /// an animating model: frames to make (UniMate: its 60-frame clip resampled to this many, 2 to 600)
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub frames: Option<i64>,
-    /// the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload)
+    /// the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload); UniMate's a rigged GLB (a skin of at most 71 joints under one root)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<String>,
     /// the model's id; none: the loaded one, else the first enabled
@@ -1572,7 +1572,7 @@ pub struct Model3dRigBody {
     /// the engine's own
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<serde_json::Map<String, serde_json::Value>>,
-    /// an animating model: the motion, in words ("a dragon flapping its wings")
+    /// an animating model: the motion, in words ("a dragon flapping its wings"; UniMate: plain ASCII, "An object walks forward.")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
@@ -2579,7 +2579,7 @@ fn model3d_generate(h: &Arc<Home>, req: Model3dGenerateReq) -> Answer {
     h.legacy("model3d.generate", req)
 }
 
-/// A mesh given a skeleton and skin weights (UniRig, RigNet), or set in motion by words (AnimateAnyMesh: prompt); the answer links the rigged or animated GLB. A job like model3d.generate
+/// A mesh given a skeleton and skin weights (UniRig, SkinTokens, RigNet), or set in motion by words (prompt): its vertices (AnimateAnyMesh: morph targets) or, for a rigged mesh, its skeleton (UniMate: glTF skeletal animation; capability needs_rig); the answer links the rigged or animated GLB. A job like model3d.generate
 #[rpc(name = "model3d.rig", tags = "model3d", example = r#"{"file": "1792132541-trellis2-42.glb", "model": "unirig"}"#)]
 fn model3d_rig(h: &Arc<Home>, req: Model3dRigReq) -> Answer {
     h.legacy("model3d.rig", req)

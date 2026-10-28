@@ -1,0 +1,13 @@
+[package]
+name = "nextcuda-model3d-skintokens"
+description = "SkinTokens / TokenRig: a skeleton and its skin weights for a mesh, written as one autoregressive token sequence (a Qwen3-shaped decoder over a Michelangelo shape encoding, an FSQ-CVAE skin decoder), on NVIDIA GPUs (CUDA)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextcuda-core.workspace = true
+nextcuda-diffusion.workspace = true
+nextcuda-gguf.workspace = true
+nextcuda-model3d.workspace = true
+serde_json.workspace = true

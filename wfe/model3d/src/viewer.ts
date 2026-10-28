@@ -1,6 +1,7 @@
 /** A GLB viewer on WebGL2, no library: every triangle primitive of the scene (its node transforms applied), its
  *  base colour texture or vertex colours, lit by a key light and the sky; a skeleton drawn over it as lines; a morph
- *  animation (one target a frame, as the server writes it) played. Orbit with a drag, zoom with the wheel or a
+ *  animation (one target a frame, as the server writes it) played, or a skeletal one (UniMate's: the joints' rotation
+ *  tracks and the root's translation, the mesh posed by linear blend skinning on the CPU). Orbit with a drag, zoom with the wheel or a
  *  pinch, pan with the right button or two fingers. */
 
 type Mat4 = Float32Array;
@@ -62,6 +63,26 @@ interface Part {
   image: ImageBitmap | null; factor: number[];
   /** morph frames: each target's position offsets, in world space */
   targets: Float32Array[];
+  /** a skinned primitive: its rest positions and normals in the mesh's own space, four joints (skin order) and weights a vertex */
+  skin: { pos: Float32Array; nrm: Float32Array; joints: Float32Array; weights: Float32Array } | null;
+}
+
+/** A skeletal animation: the skin's joints (rest TRS, parent joint or -1), their inverse bind matrices and keyframes */
+interface Skel {
+  rest: { t: number[]; r: number[]; s: number[] }[];
+  parent: number[];
+  /** the world matrix above a joint without a joint parent */
+  above: Mat4[];
+  ibm: Float32Array;
+  /** keyframes: [frame][joint] rotation (x y z w) when the joint has a track, translation likewise */
+  rot: (Float32Array | null)[];
+  tra: (Float32Array | null)[];
+  frames: number;
+}
+
+/** T * R * S as a matrix */
+function trs(t: number[], q: number[], s: number[]): Mat4 {
+  return local({ translation: t, rotation: q, scale: s });
 }
 
 export interface Loaded {
@@ -69,7 +90,7 @@ export interface Loaded {
 }
 
 /** A GLB's parts (world space), skeleton lines and animation clock */
-async function parse(buf: ArrayBuffer): Promise<{ parts: Part[]; bones: Float32Array; fps: number; frames: number }> {
+async function parse(buf: ArrayBuffer): Promise<{ parts: Part[]; bones: Float32Array; fps: number; frames: number; skel: Skel | null }> {
   const dv = new DataView(buf);
   if (dv.getUint32(0, true) !== 0x46546c67) throw new Error("not a GLB file");
   const jl = dv.getUint32(12, true);
@@ -128,11 +149,14 @@ async function parse(buf: ArrayBuffer): Promise<{ parts: Part[]; bones: Float32A
   const bones: number[] = [];
   const scene = doc.scenes?.[doc.scene ?? 0]?.nodes ?? doc.nodes.map((_: unknown, i: number) => i);
   const stack: [number, Mat4][] = (scene as number[]).map((r) => [r, ident()]);
+  const worldOf = new Map<number, Mat4>();
+  const parentOf = new Map<number, number>();
   while (stack.length) {
     const [ni, parent] = stack.pop()!;
     const node = doc.nodes[ni];
     const world = mul(parent, local(node));
-    for (const k of (node.children ?? []) as number[]) stack.push([k, world]);
+    worldOf.set(ni, world);
+    for (const k of (node.children ?? []) as number[]) { stack.push([k, world]); parentOf.set(k, ni); }
     if (node.mesh === undefined) continue;
     const mesh = doc.meshes[node.mesh];
     for (const p of mesh.primitives as Record<string, any>[]) {
@@ -176,7 +200,11 @@ async function parse(buf: ArrayBuffer): Promise<{ parts: Part[]; bones: Float32A
         for (let i = 0; i < nv; i++) w.set(apply(world, D, i * 3, 0), i * 3);
         targets.push(w);
       }
-      parts.push({ pos, nrm, uv, col, idx, image: await image(pbr.baseColorTexture), factor: pbr.baseColorFactor ?? [1, 1, 1, 1], targets });
+      // skinned (the first skin's): its rest pose kept for posing; glTF ignores a skinned mesh node's own transform
+      const skinned = node.skin === 0 && p["attributes"].JOINTS_0 !== undefined && p["attributes"].WEIGHTS_0 !== undefined;
+      const sk = skinned ? { pos: P.slice(), nrm: p["attributes"].NORMAL !== undefined ? floats(p["attributes"].NORMAL).a : nrm.slice(),
+                             joints: floats(p["attributes"].JOINTS_0).a, weights: floats(p["attributes"].WEIGHTS_0).a } : null;
+      parts.push({ pos, nrm, uv, col, idx, image: await image(pbr.baseColorTexture), factor: pbr.baseColorFactor ?? [1, 1, 1, 1], targets, skin: sk });
     }
   }
   // the skeleton: each joint's head from its inverse bind matrix's translation (inverted), a line to its parent
@@ -202,8 +230,56 @@ async function parse(buf: ArrayBuffer): Promise<{ parts: Part[]; bones: Float32A
     const t = floats(anim.input).a;
     if (t.length > 1 && t[1]! > 0) fps = 1 / t[1]!;
   }
-  const frames = Math.max(0, ...parts.map((p) => p.targets.length));
-  return { parts, bones: new Float32Array(bones), fps, frames };
+  let frames = Math.max(0, ...parts.map((p) => p.targets.length));
+  // a skeletal animation of the skin's joints (rotation / translation tracks, one shared clock)
+  let skel: Skel | null = null;
+  const sa = (doc.animations as Record<string, any>[] | undefined)?.find((a) => (a["channels"] as Record<string, any>[]).some((c) => c["target"]?.path === "rotation"));
+  if (skin && sa && parts.some((p) => p.skin)) {
+    const joints = skin.joints as number[];
+    const ibm = skin.inverseBindMatrices !== undefined ? floats(skin.inverseBindMatrices).a : new Float32Array(joints.flatMap(() => [...ident()]));
+    const rot: (Float32Array | null)[] = joints.map(() => null), tra: (Float32Array | null)[] = joints.map(() => null);
+    let n = 0;
+    for (const c of sa["channels"] as Record<string, any>[]) {
+      const j = joints.indexOf(c["target"]?.node);
+      const sm = sa["samplers"][c["sampler"]];
+      if (j < 0 || !sm) continue;
+      const out = floats(sm.output).a;
+      if (c["target"].path === "rotation") { rot[j] = out; n = Math.max(n, out.length / 4); }
+      if (c["target"].path === "translation") { tra[j] = out; n = Math.max(n, out.length / 3); }
+    }
+    const rest = joints.map((ni) => { const nd = doc.nodes[ni]; return { t: nd.translation ?? [0, 0, 0], r: nd.rotation ?? [0, 0, 0, 1], s: nd.scale ?? [1, 1, 1] }; });
+    const parent = joints.map((ni) => joints.indexOf(parentOf.get(ni) ?? -1));
+    const above = joints.map((ni) => { const pn = parentOf.get(ni); return pn === undefined ? ident() : (worldOf.get(pn) ?? ident()); });
+    if (n > 1) { skel = { rest, parent, above, ibm, rot, tra, frames: n }; frames = n; }
+  }
+  return { parts, bones: new Float32Array(bones), fps, frames, skel };
+}
+
+/** The skin's joint matrices at fractional frame f (keyframes blended: nlerp, lerp), parents before children */
+function pose(sk: Skel, f: number): { joint: Mat4[]; world: Mat4[] } {
+  const a = Math.floor(f) % sk.frames, b = (a + 1) % sk.frames, w = f - Math.floor(f);
+  const world: Mat4[] = new Array(sk.rest.length);
+  const done = new Array(sk.rest.length).fill(false);
+  const at = (j: number): Mat4 => {
+    if (done[j]) return world[j]!;
+    const r = sk.rest[j]!;
+    let q = r.r, t = r.t;
+    const R = sk.rot[j], T = sk.tra[j];
+    if (R) {
+      const qa = [0, 1, 2, 3].map((k) => R[a * 4 + k]!), qb = [0, 1, 2, 3].map((k) => R[b * 4 + k]!);
+      const sg = qa[0]! * qb[0]! + qa[1]! * qb[1]! + qa[2]! * qb[2]! + qa[3]! * qb[3]! < 0 ? -1 : 1;
+      const m = [0, 1, 2, 3].map((k) => qa[k]! * (1 - w) + sg * qb[k]! * w);
+      const l = Math.hypot(m[0]!, m[1]!, m[2]!, m[3]!) || 1;
+      q = m.map((v) => v / l);
+    }
+    if (T) t = [0, 1, 2].map((k) => T[a * 3 + k]! * (1 - w) + T[b * 3 + k]! * w);
+    const p = sk.parent[j]!;
+    world[j] = mul(p >= 0 ? at(p) : sk.above[j]!, trs(t, q, r.s));
+    done[j] = true;
+    return world[j]!;
+  };
+  const joint = sk.rest.map((_, j) => mul(at(j), sk.ibm.subarray(j * 16, j * 16 + 16) as Mat4));
+  return { joint, world };
 }
 
 const VS = `#version 300 es
@@ -246,6 +322,7 @@ export class Viewer {
   private raf = 0;
   private frames = 0;
   private fps = 24;
+  private skel: Skel | null = null;
   private t0 = performance.now();
   private observer: ResizeObserver;
   wire = false;
@@ -288,7 +365,7 @@ export class Viewer {
     this.url = url;
     const r = await fetch(url);
     if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
-    const { parts, bones, fps, frames } = await parse(await r.arrayBuffer());
+    const { parts, bones, fps, frames, skel } = await parse(await r.arrayBuffer());
     if (this.url !== url) throw new Error("superseded");
     this.clear();
     const gl = this.gl;
@@ -355,6 +432,7 @@ export class Viewer {
     this.pan = [0, 0, 0];
     this.frames = frames;
     this.fps = fps;
+    this.skel = skel;
     this.t0 = performance.now();
     this.draw();
     return { triangles: tris, vertices: verts, textured, joints: this.bones ? this.bones.count / 2 : 0, frames, fps };
@@ -420,11 +498,45 @@ export class Viewer {
     if (this.frames > 1 && this.playing) this.draw();
   }
 
+  /** The skeletal pose now: every skinned vertex by its four joints' matrices, the bones' lines from the joints' heads */
+  private skinning(f: number): void {
+    const sk = this.skel!;
+    const gl = this.gl;
+    const { joint, world } = pose(sk, f);
+    for (const p of this.parts) {
+      const s = p.src.skin;
+      if (!s) continue;
+      const out = new Float32Array(s.pos.length);
+      for (let v = 0; v < out.length / 3; v++) {
+        let x = 0, y = 0, z = 0;
+        for (let k = 0; k < 4; k++) {
+          const wt = s.weights[v * 4 + k]!;
+          if (wt === 0) continue;
+          const m = joint[s.joints[v * 4 + k]!];
+          if (!m) continue;
+          const q = apply(m, s.pos, v * 3, 1);
+          x += wt * q[0]; y += wt * q[1]; z += wt * q[2];
+        }
+        out[v * 3] = x; out[v * 3 + 1] = y; out[v * 3 + 2] = z;
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, p.posBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, out, gl.DYNAMIC_DRAW);
+    }
+    if (this.bones) {
+      const lines: number[] = [];
+      sk.parent.forEach((pj, j) => { if (pj >= 0) lines.push(world[pj]![12]!, world[pj]![13]!, world[pj]![14]!, world[j]![12]!, world[j]![13]!, world[j]![14]!); });
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.bones.buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lines), gl.DYNAMIC_DRAW);
+      this.bones.count = lines.length / 3;
+    }
+  }
+
   /** The morph frame now: the positions blended between the two frames around the clock */
   private morph(): void {
     if (this.frames < 2) return;
     const gl = this.gl;
     const t = ((performance.now() - this.t0) / 1000) * this.fps;
+    if (this.skel) return this.skinning(t % this.frames);
     const f = t % this.frames;
     const a = Math.floor(f), b = (a + 1) % this.frames, w = f - a;
     for (const p of this.parts) {

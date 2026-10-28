@@ -1092,12 +1092,12 @@ components:
           anyOf:
           - type: integer
           - type: 'null'
-          description: 'an animating model: frames to make'
+          description: 'an animating model: frames to make (UniMate: its 60-frame clip resampled to this many, 2 to 600)'
         mesh:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload)'
+          description: 'the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload); UniMate''s a rigged GLB (a skin of at most 71 joints under one root)'
         model:
           anyOf:
           - type: string
@@ -1112,7 +1112,7 @@ components:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'an animating model: the motion, in words ("a dragon flapping its wings")'
+          description: 'an animating model: the motion, in words ("a dragon flapping its wings"; UniMate: plain ASCII, "An object walks forward.")'
         seed:
           anyOf:
           - type: integer

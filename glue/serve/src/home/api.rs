@@ -951,7 +951,7 @@ impl Home {
         let took = t0.elapsed().as_secs_f64();
         let meta = json!({"model": "tool", "arch": format!("tool:{op}"), "prompt": op, "triangles": out.triangles(), "before": before, "took": took, "created": created,
                           "textured": out.material.as_ref().is_some_and(|x| x.base_color.is_some()), "rigged": out.skin.as_ref().map(|s| s.joints.len()),
-                          "animated": out.animation.as_ref().map(|a| a.frames.len())});
+                          "animated": nextcuda_model3d::frames(&out)});
         let _ = std::fs::write(path.with_extension("json"), serde_json::to_vec_pretty(&meta).unwrap_or_default());
         let mut e = crate::model3d::entry(&path).unwrap_or(meta);
         e["url"] = json!(format!("http://nextcuda/v1/model3d/files/{name}"));

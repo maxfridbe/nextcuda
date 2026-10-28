@@ -14,6 +14,8 @@ export interface Abilities {
   rig: boolean;
   /** animates one (a motion in words) */
   animate: boolean;
+  /** animate moves a rigged mesh's skeleton (the mesh must carry a skin; glTF skeletal animation), not its vertices (morph targets) */
+  skeletal?: boolean;
 }
 
 /** What a cancel takes */
@@ -202,15 +204,15 @@ export interface Model3dRigBody {
   /** or a GLB made here (model3d.generate's file name or url) */
   file?: string | null;
   fps?: number | null;
-  /** an animating model: frames to make */
+  /** an animating model: frames to make (UniMate: its 60-frame clip resampled to this many, 2 to 600) */
   frames?: number | null;
-  /** the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload) */
+  /** the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload); UniMate's a rigged GLB (a skin of at most 71 joints under one root) */
   mesh?: string | null;
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
   /** the engine's own */
   options?: Record<string, unknown> | null;
-  /** an animating model: the motion, in words ("a dragon flapping its wings") */
+  /** an animating model: the motion, in words ("a dragon flapping its wings"; UniMate: plain ASCII, "An object walks forward.") */
   prompt?: string | null;
   seed?: number | null;
   steps?: number | null;
