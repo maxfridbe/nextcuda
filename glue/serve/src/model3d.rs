@@ -217,7 +217,8 @@ impl Model3dServer {
         let (a, d) = (e.abilities(), e.defaults());
         json!({
             "model": self.model, "arch": e.arch(), "wfe": self.wfe.is_some(),
-            "abilities": {"generate": a.generate, "texture": a.texture, "views": a.views, "rig": a.rig, "animate": a.animate},
+            "abilities": {"generate": a.generate, "texture": a.texture, "views": a.views, "rig": a.rig, "animate": a.animate,
+                          "skeletal": a.skeletal},
             "defaults": {"steps": d.steps, "cfg": f(d.cfg), "resolution": d.resolution, "faces": d.faces, "texture_size": d.texture_size,
                          "frames": d.frames, "fps": f(d.fps)},
             "options": e.options().iter().filter(|o| o.at != nextcuda_core::At::Load)
@@ -396,7 +397,7 @@ impl Model3dServer {
         meta["triangles"] = json!(mesh.triangles());
         meta["textured"] = json!(mesh.material.as_ref().is_some_and(|m| m.base_color.is_some()));
         meta["rigged"] = json!(mesh.skin.as_ref().map(|s| s.joints.len()));
-        meta["animated"] = json!(mesh.animation.as_ref().map(|a| a.frames.len()));
+        meta["animated"] = json!(nextcuda_model3d::frames(&mesh));
         let mut answer = None;
         if let Some(dir) = &self.out_dir {
             let name = format!("{created}-{}-{seed}.glb", self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"));

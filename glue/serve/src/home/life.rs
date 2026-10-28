@@ -206,6 +206,10 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
             if does("animate") {
                 c.extend(["animate", "text_to_motion"]);
             }
+            if does("skeletal") {
+                // it animates a rigged mesh's skeleton (UniMate): the mesh it is given must carry a skin
+                c.extend(["skeletal_animation", "needs_rig"]);
+            }
             if does("rig") || does("animate") {
                 methods.push("model3d.rig");
             }

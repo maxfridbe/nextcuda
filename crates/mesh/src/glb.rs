@@ -437,6 +437,10 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, String> {
             stack.extend(kids.iter().filter_map(|k| k.as_u64()).map(|k| (k as usize, world, depth + 1)));
         }
         let Some(mi) = node["mesh"].as_u64() else { continue };
+        // a skinned mesh's own node transform does not apply (glTF 2.0, skins): its vertices are in the bind space the
+        // inverse bind matrices map from - the joints' heads read below are there too. Applying it set a rig's mesh
+        // apart from its skeleton (UniMate's Go2 example: the parts under Blender's Z-up node, turned 90 degrees, 2026-10-27)
+        let world = if node["skin"].as_u64().is_some() { ident } else { world };
         for p in doc["meshes"][mi as usize]["primitives"].as_array().into_iter().flatten() {
             if p["mode"].as_u64().unwrap_or(4) != 4 {
                 continue; // points and lines
@@ -751,6 +755,35 @@ mod tests {
         out.extend_from_slice(&BIN.to_le_bytes());
         out.extend_from_slice(bin);
         assert!(read(&out).unwrap().positions.iter().all(|p| p[2] == 5.0));
+    }
+
+    #[test]
+    fn a_skinned_mesh_ignores_its_own_node_transform() {
+        let mut m = tri();
+        m.skin = Some(Skin {
+            joints: vec![Joint { name: "root".into(), parent: None, head: [0.0, 0.0, 0.0] }],
+            weights: vec![[(0, 1.0), (0, 0.0), (0, 0.0), (0, 0.0)]; 3],
+            motion: None,
+        });
+        let before = m.positions.clone();
+        let b = write(&m).unwrap();
+        let (mut doc, bin) = chunks(&b).unwrap();
+        doc["nodes"][0]["rotation"] = json!([0.7071068, 0.0, 0.0, 0.7071068]);
+        let mut js = serde_json::to_vec(&doc).unwrap();
+        while !js.len().is_multiple_of(4) {
+            js.push(b' ');
+        }
+        let mut out = Vec::new();
+        for w in [GLB, 2, (12 + 8 + js.len() + 8 + bin.len()) as u32, js.len() as u32, JSON] {
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+        out.extend_from_slice(&js);
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(&BIN.to_le_bytes());
+        out.extend_from_slice(bin);
+        let back = read(&out).unwrap();
+        assert!(back.skin.is_some());
+        assert_eq!(back.positions, before);
     }
 
     #[test]

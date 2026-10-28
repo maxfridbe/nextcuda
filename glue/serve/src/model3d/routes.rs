@@ -26,6 +26,9 @@ pub struct Abilities {
     pub rig: bool,
     /// animates one (a motion in words)
     pub animate: bool,
+    /// animate moves a rigged mesh's skeleton (the mesh must carry a skin; glTF skeletal animation), not its vertices (morph targets)
+    #[serde(default)]
+    pub skeletal: bool,
 }
 
 /// The engine's own defaults (a request's absent fields)

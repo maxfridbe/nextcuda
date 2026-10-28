@@ -1166,15 +1166,15 @@ export interface Model3dRigReq {
   /** or a GLB made here (model3d.generate's file name or url) */
   file?: string | null;
   fps?: number | null;
-  /** an animating model: frames to make */
+  /** an animating model: frames to make (UniMate: its 60-frame clip resampled to this many, 2 to 600) */
   frames?: number | null;
-  /** the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload) */
+  /** the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload); UniMate's a rigged GLB (a skin of at most 71 joints under one root) */
   mesh?: string | null;
   /** the model's id; none: the loaded one, else the first enabled */
   model?: string | null;
   /** the engine's own */
   options?: Record<string, unknown> | null;
-  /** an animating model: the motion, in words ("a dragon flapping its wings") */
+  /** an animating model: the motion, in words ("a dragon flapping its wings"; UniMate: plain ASCII, "An object walks forward.") */
   prompt?: string | null;
   seed?: number | null;
   steps?: number | null;
@@ -2245,7 +2245,7 @@ export interface Methods {
    */
   "model3d.generate": { req: Model3dGenerateReq; resp: any };
   /**
-   * A mesh given a skeleton and skin weights (UniRig, RigNet), or set in motion by words (AnimateAnyMesh: prompt); the answer links the rigged or animated GLB. A job like model3d.generate
+   * A mesh given a skeleton and skin weights (UniRig, SkinTokens, RigNet), or set in motion by words (prompt): its vertices (AnimateAnyMesh: morph targets) or, for a rigged mesh, its skeleton (UniMate: glTF skeletal animation; capability needs_rig); the answer links the rigged or animated GLB. A job like model3d.generate
    * @tags model3d
    * @example {"file":"1792132541-trellis2-42.glb","model":"unirig"}
    */
@@ -2852,7 +2852,7 @@ export function client(post: Post, raw?: PostRaw) {
      */
     "model3d.generate": (req: Model3dGenerateReq): Promise<any> => post("model3d.generate", req),
     /**
-     * A mesh given a skeleton and skin weights (UniRig, RigNet), or set in motion by words (AnimateAnyMesh: prompt); the answer links the rigged or animated GLB. A job like model3d.generate
+     * A mesh given a skeleton and skin weights (UniRig, SkinTokens, RigNet), or set in motion by words (prompt): its vertices (AnimateAnyMesh: morph targets) or, for a rigged mesh, its skeleton (UniMate: glTF skeletal animation; capability needs_rig); the answer links the rigged or animated GLB. A job like model3d.generate
      * @tags model3d
      * @example {"file":"1792132541-trellis2-42.glb","model":"unirig"}
      */
