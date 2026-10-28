@@ -38,6 +38,7 @@ nextcuda-audio-voxcpm2.workspace = true
 nextcuda-audio-breezetts2.workspace = true
 nextcuda-audio-whisper.workspace = true
 nextcuda-audio-acestep.workspace = true
+nextcuda-audio-yue2.workspace = true
 nextcuda-audio-vibevoice.workspace = true
 nextcuda-models.workspace = true
 nextcuda-serve.workspace = true

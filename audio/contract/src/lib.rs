@@ -436,6 +436,11 @@ pub trait AudioEngine: Send + Sync {
     fn transcribe(&self, _req: &TranscribeRequest, _progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Transcript> {
         Err(Error(format!("{} makes sound; it does not transcribe (audio.transcribe needs a recogniser: whisper)", self.arch())))
     }
+    /// the score (ABC) the last song was sung over, for an engine that writes one first (YuE2): given back with the
+    /// same seed and style and new words, the song keeps its melody
+    fn score(&self) -> Option<String> {
+        None
+    }
     /// lines for `status`: its GPUs, memory, what is loaded where
     fn report(&self) -> Vec<String> {
         Vec::new()

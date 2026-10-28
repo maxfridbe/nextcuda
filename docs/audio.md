@@ -73,3 +73,20 @@ the metas, the caption and the audio codes first; `NS_ACE_PLANNER=0` at load lea
 
 - **Through the platform** (2026-10-21): a 30 s song with lyrics rendered on the box in 27.2 s and was listened back by
   its own Whisper.
+
+## Songs: YuE2-3B
+
+`audio.generate` with `model: yue2-3b-q8`: M-A-P's YuE2 (non-commercial, CC BY-NC 4.0) in Rust and CUDA
+(`audio/yue2`, `kernels/audio/yue2`; the plan and the port's record: [ports/yue2.md](ports/yue2.md)). One AR-NAR
+Mixture-of-Transformers writes a score (ABC: melody and chords for `cot: full`, the default; a melody for `melody`; none
+for `off`) and the semantic codes, then the acoustic latents by flow matching (32 midpoint steps); YuE2-Vae decodes 48 kHz
+stereo. scragnog's GGUFs: the language model Q8_0 (every matrix in its blocks on the card), the VAE float32. A song's
+score comes back with it (`score`, and the WAV's comment): sung again with the same seed and style and new lyrics
+(`abc`), the melody stays. The guide: `model-cards/guides/yue2.md`.
+
+- **Checked** (2026-10-27) against upstream's yue2_infer 0.1.5 on the CPU in float32 with the same Q8_0 file
+  (`reference/yue2/ref.py`): the prompts identical in every cot mode; the whole sequence teacher-forced (prompt, a
+  160-token score, 225 codes), the logits cosine 1.000000 (rel 3e-4 to 2e-3) and the argmax the same on every row checked;
+  the twin's prefill 1.000000; torch.randn's noise to 5e-7; the first velocity 0.999996, every midpoint step from the
+  reference's state 1.000000, 8 steps from the noise 0.99998; the VAE 1.000000 (rel 1.6e-6).
+- **Sung** (Whisper large-v3-turbo on the take): a verse and two choruses, word for word.

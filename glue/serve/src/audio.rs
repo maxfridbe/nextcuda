@@ -575,6 +575,9 @@ impl AudioServer {
             Ok(())
         });
         *p.lock().unwrap() = json!({"busy": false});
+        // the score the song was sung over (an engine that writes one: YuE2) - given back with the same seed, style and
+        // new words, the melody stays
+        let score = out.as_ref().ok().and_then(|_| engine.score());
         drop(engine);
         if let Err(e) = &out {
             // the device failed (out of resources, lost): this process's GPU state is not to be trusted again
@@ -593,6 +596,9 @@ impl AudioServer {
         let created = now();
         let meta = json!({"model": self.model, "seed": seed, "steps": steps, "cfg": f(cfg), "took": took, "wh": wh, "created": created}).to_string();
         let mut meta: Value = serde_json::from_str(&meta).unwrap_or_default();
+        if let Some(sc) = &score {
+            meta["score"] = json!(sc);
+        }
         if speech {
             meta["voice"] = json!(req.voice.clone().or(saved));
             meta["language"] = json!(req.language);
@@ -615,7 +621,7 @@ impl AudioServer {
                     let mut v = e;
                     v["url"] = json!(format!("{base}/v1/audio/files/{name}"));
                     answer = Some(json!({"created": created, "data": [v], "nextsycl": {"took": took, "seconds": audio.seconds(), "seed": seed, "steps": steps,
-                                                                                     "cfg": f(cfg), "wh": wh}}));
+                                                                                     "cfg": f(cfg), "wh": wh, "score": score}}));
                 }
             }
         }

@@ -13,6 +13,8 @@ const USAGE: &str = "nextcuda audio gen \"<description>\" [--lyrics TEXT | --lyr
 nextcuda audio gen \"<text to say>\" --model qwen3-tts-... [--voice NAME] [--language L] [--instructions TEXT]
                    [--ref-audio FILE.wav [--ref-text TEXT]] [--cfg X] [--seconds N] [--seed N] [--out FILE|DIR]   (speech)
                    [--speaker FILE]...   (several speakers: a script of \"Speaker N:\" lines, Speaker 1's recording first; vibevoice)
+nextcuda audio gen \"<style>\" --model yue2-3b-q8 --lyrics-file FILE [--opt-cot full|melody|off] [--abc-file SCORE.abc]   (a song over a
+                   score: a cover's melody, or an earlier song's .abc with new words; its own score saved beside it)
 nextcuda audio gen \"<description>\" --model acestep-1.5 --source FILE --opt-task cover | repaint | edit | lego [--opt-repaint-start S]
                    [--opt-repaint-end S] [--opt-cover-strength X] [--opt-source-lyrics TEXT] ...   (a song made from a recording)
 nextcuda audio serve [MODEL] [--port 8087] [--host 127.0.0.1] [--gpu N] [--set NAME=VALUE]... [--wfe] [--out DIR] [--cors ORIGIN]
@@ -25,13 +27,13 @@ nextcuda audio voice design NAME --instructions \"the voice\" [--text \"what the
 nextcuda audio voice rm NAME            (addvoice / clonevoice NAME ... = voice add; designvoice = voice design)
 nextcuda audio transcribe FILE [--model ID | --dir DIR] [--language L] [--translate] [--no-words] [--prompt TEXT] [--opt-NAME VALUE]...
                    [--json] [--gpu N]   (speech to text: a recogniser, whisper-large-v3-turbo; any rate, WAV, MP3, FLAC, Ogg, M4A)
-nextcuda audio check <dump dir> [--model ID | --dir DIR] [--stages ar,dit,voc,chunks | prompt,frames,codec | mel,encoder,logits,transcribe | text,te,enc,velocity,sample,vae,song] [--gpu N]
+nextcuda audio check <dump dir> [--model ID | --dir DIR] [--stages ar,dit,voc,chunks | prompt,frames,codec | mel,encoder,logits,transcribe | text,te,enc,velocity,sample,vae,song | tokens,ar,neg,noise,vel,steps,solve,vae] [--gpu N]
 nextcuda audio engines | selftest [--gpu N]";
 
 /// The audio engines this program has (audio/<arch>)
 pub fn engines() -> Vec<nextcuda_audio::AudioKind> {
     vec![nextcuda_audio_minimaxmusic3::kind(), nextcuda_audio_breezetts2::kind(), nextcuda_audio_qwen3tts::kind(), nextcuda_audio_voxcpm2::kind(),
-         nextcuda_audio_whisper::kind(), nextcuda_audio_vibevoice::kind(), nextcuda_audio_acestep::kind()]
+         nextcuda_audio_whisper::kind(), nextcuda_audio_vibevoice::kind(), nextcuda_audio_acestep::kind(), nextcuda_audio_yue2::kind()]
 }
 
 /// Every `--speaker FILE` (a recording a speaker, Speaker 1 first: a multi-speaker script's voices)
@@ -59,7 +61,10 @@ fn model(cfg: &Config, args: &[String]) -> Result<(Value, ModelFiles), String> {
         let dir = Path::new(d);
         let whisper = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"whisper\""));
         let vibevoice = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"vibevoice\""));
-        let (arch, files) = if vibevoice {
+        let yue2 = std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| e.file_name().to_string_lossy().starts_with("yue2-lm-"));
+        let (arch, files) = if yue2 {
+            (nextcuda_audio_yue2::ARCH, nextcuda_audio_yue2::files_in(dir).map_err(|e| e.0)?)
+        } else if vibevoice {
             (nextcuda_audio_vibevoice::ARCH, nextcuda_audio_vibevoice::files_in(dir).map_err(|e| e.0)?)
         } else if whisper {
             (nextcuda_audio_whisper::ARCH, nextcuda_audio_whisper::files_in(dir).map_err(|e| e.0)?)
@@ -180,8 +185,12 @@ fn gen(cfg: &Config, args: &[String]) -> Result<(), String> {
         },
     };
     // the request's own --opt-NAMEs (those taken at load went into the load options)
-    let given: nextcuda_core::options::Given = nextcuda_core::options::given(args).into_iter()
+    let mut given: nextcuda_core::options::Given = nextcuda_core::options::given(args).into_iter()
         .filter(|(n, _)| k.options.iter().any(|o| (o.name == n.as_str() || o.env == n.as_str()) && o.at != nextcuda_core::At::Load)).collect();
+    // a score from a file (YuE2's abc: a cover's melody, or an earlier song's score with new words)
+    if let Some(f) = opt(args, "--abc-file") {
+        given.insert("abc".into(), std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?);
+    }
     nextcuda_core::options::resolve(&given, k.options, nextcuda_core::At::Request, k.name)?;
     let req = AudioRequest {
         prompt: prompt.clone(),
@@ -265,6 +274,12 @@ fn gen(cfg: &Config, args: &[String]) -> Result<(), String> {
     let lyr = lyrics.unwrap_or_default();
     audio.write_wav(&path, &[("INAM", &prompt), ("ICMT", &comment), ("ILYR", &lyr)])?;
     println!("saved {}  ({:.1} s of sound in {:.1} s)", path.display(), audio.seconds(), t0.elapsed().as_secs_f64());
+    // the score it sang over, beside it (--abc-file it with the same seed and style and new lyrics: the same melody)
+    if let Some(sc) = e.score() {
+        let p = path.with_extension("abc");
+        std::fs::write(&p, sc).map_err(|e| format!("{}: {e}", p.display()))?;
+        println!("score {}", p.display());
+    }
     Ok(())
 }
 
@@ -359,8 +374,13 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         let stages: Vec<&str> = opt(args, "--stages").unwrap_or("text,te,enc,velocity,sample,vae").split(',').collect();
         let e = nextcuda_audio_acestep::AceStep::load(&files, std::slice::from_ref(&g), &options(&m, args)?, &mut log).map_err(|e| e.0)?;
         nextcuda_audio_acestep::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
+    } else if m["arch"] == nextcuda_audio_yue2::ARCH {
+        let gs = gpus(args)?;
+        let stages: Vec<&str> = opt(args, "--stages").unwrap_or("tokens,ar,neg,noise,vel,steps,solve,vae").split(',').collect();
+        let e = nextcuda_audio_yue2::Yue2::load(&files, &gs, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
+        nextcuda_audio_yue2::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
     } else {
-        return Err(format!("check knows {}, {}, {}, {}, {} and {}", nextcuda_audio_minimaxmusic3::ARCH, nextcuda_audio_breezetts2::ARCH, nextcuda_audio_qwen3tts::ARCH,
+        return Err(format!("check knows {}, {}, {}, {}, {}, {} and {}", nextcuda_audio_yue2::ARCH, nextcuda_audio_minimaxmusic3::ARCH, nextcuda_audio_breezetts2::ARCH, nextcuda_audio_qwen3tts::ARCH,
                            nextcuda_audio_voxcpm2::ARCH, nextcuda_audio_whisper::ARCH, nextcuda_audio_acestep::ARCH));
     };
     println!("worst relative error {worst:.2e}");
