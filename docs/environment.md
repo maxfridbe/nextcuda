@@ -278,6 +278,11 @@ Qwen-Image 2.1 (`image/qwenimage21`).
 | `NS_QI_*` | - | every NS_QI_ setting in nextsycl.conf is passed to the image server | cli (image serve) |
 | `NS_QI_DUMP` | off | Debug: a directory: what the denoiser is given (embeds, pads, cond latents, noise) written there as raw float32 files | image qwenimage21 |
 | `NS_QI_INT8` | 0 | 1: the DiT's block matrices in int8 ConvRot (~1.4x a step, half the VRAM) (--opt-int8) | image qwenimage21 |
+| `NS_MOSS_INT8` | 1 | 0: MOSS-Image's block matrices as stored (Q8_0, about twice as long a step) instead of int8 ConvRot rows; LoRAs need the int8 ones | image mossimage |
+| `NS_MOSS_ATTN` | half | the silo's attention: half (scores accumulated in half), float, fp8 or fp8v (sm_89 and up, the 5070's silo; no faster there and less exact) | image mossimage |
+| `NS_MOSS_ATTN_WARPS` | the silo's own | warps a block for the silo's attention (a tuning A/B) | image mossimage |
+| `NS_MOSS_FUSED` | 1 | 0: the int8 products' nsd epilogue then the step's own kernels instead of the silo's fused epilogues | image mossimage |
+| `NS_MOSS_STEPS` | 50, or 4 with a turbo LoRA | the default step count (a turbo entry's card sets 8 for an 8-step distillation), 1 to 200 | image mossimage |
 | `NS_QI_PROFILE` | off | Debug: set: a GPU wait after each named step, the totals printed (slower; shows where the time goes) | image qwenimage21 |
 | `NC_TE_HOST_CACHE` | 1 | 0: do not keep the streamed text-encoder layers in host RAM (they are re-read from disk for every prompt; saves ~5 GB of RAM) | image qwenimage21 |
 | `NS_QI_SIGMAS` | the model's own schedule | a few-step preset: noise levels from 1 down, comma separated (their count is the steps) (--opt-sigmas; per request too) | image qwenimage21 |
@@ -628,6 +633,7 @@ Read by `build.sh`, `kernels/build.sh`, `wfe/build.sh` and the scripts beside th
 | `NS_SYCL_TLA` | /opt/sycl-tla | sycl-tla's headers for the flash-attention library | build (kernels/build.sh) |
 | `NS_VERSION` | ./version.sh (yy.mmdd.###); "dev" if cargo built without it | the version compiled in (read at compile time, option_env!) | build (build.sh), cli, serve |
 | `NS_WFE` | http://localhost:8086 | the running server `wfe/build.sh --check` smoke-tests (not checked: JavaScript) | build (wfe/check.mjs) |
+| `NS_STATE_SAMPLE` | - | a saved /api/state answer the ignored test `live_state_sample_is_a_state` checks against its type (`cargo test -p nextcuda-serve live_state -- --ignored`) | test (nextcuda-serve) |
 | `ONLY` | every source | compile only these kernel sources, space-separated | build (kernels/build.sh) |
 
 ## System variables read

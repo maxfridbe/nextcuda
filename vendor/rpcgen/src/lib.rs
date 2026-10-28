@@ -899,6 +899,9 @@ pub fn conforms<T: DeserializeOwned + Serialize>(v: &Value) -> Result<(), Mismat
     let back = serde_json::to_value(&t).map_err(|e| Mismatch { at: String::new(), what: format!("it does not encode again: {e}") })?;
     let mut lost = Vec::new();
     lost_fields(v, &back, String::new(), &mut lost);
+    // in name order, so the place named first is the same whether the crate's serde_json keeps objects sorted or in
+    // the order they came (preserve_order: nextcuda's workspace turns it on, this one does not)
+    lost.sort();
     match lost.first() {
         None => Ok(()),
         Some(first) => Err(Mismatch {
