@@ -57,12 +57,19 @@ pub const CHUNK: usize = 512;
 /// rows a block of the per-row work (the projections, the MLP) of a pass: the MLP's float32 [rows, 12288] bounded
 const ROWS: usize = 2048;
 
-/// A Q8_0 matrix [n, k] as stored
+/// A matrix [n, k]: Q8_0 as stored, or (`scale` Some) int8 ConvRot rows with a scale each - the NAR path's for the
+/// card's int8 tensor cores (nsd_int8_linear: the activations rotated by the normalized 256 x 256 Hadamard matrix along
+/// their inputs, quantized per row; the flow's passes are thousands of rows, where the int8 product is twice the bf16's
+/// rate and nothing is dequantized a pass)
 pub struct Mat {
     pub w: DevBuf,
     pub n: usize,
     pub k: usize,
+    pub scale: Option<DevBuf>,
 }
+
+/// The ConvRot group: int8 matrices are rotated by the normalized 256 x 256 Hadamard matrix along their inputs (MOSS-Image's)
+const GROUP: usize = 256;
 
 impl Mat {
     /// rows [r0, ..) of it
@@ -172,11 +179,13 @@ pub struct Lm {
     t2: (Vec<f32>, Vec<f32>),
     /// the latent position table, bfloat16 bits [24576, 2048] on the host (a chunk's rows go up once)
     pos: Vec<u16>,
+    /// the NAR path's matrices int8 ConvRot (their products take half activations)
+    pub int8: bool,
     pub bytes: u64,
 }
 
 impl Lm {
-    pub fn load(f: &Gguf, gpu: &Arc<Gpu>, log: &mut dyn FnMut(String)) -> Result<Lm> {
+    pub fn load(f: &Gguf, gpu: &Arc<Gpu>, int8: bool, log: &mut dyn FnMut(String)) -> Result<Lm> {
         let t0 = std::time::Instant::now();
         if f.architecture() != "yue2" {
             return Err(Error(format!("{}: a {} file; YuE2's language model is arch yue2", f.paths[0].display(), f.architecture())));
@@ -214,7 +223,7 @@ impl Lm {
                 rows += r;
                 all.extend(f.read(t).map_err(ge)?);
             }
-            Ok(Mat { w: up(&all)?, n: rows, k: kk })
+            Ok(Mat { w: up(&all)?, n: rows, k: kk, scale: None })
         };
         let vecd = |name: &str| -> Result<DevBuf> {
             let v = host_vec(f, name)?;
@@ -234,7 +243,19 @@ impl Lm {
         let mut layers = Vec::with_capacity(LAYERS);
         for i in 0..LAYERS {
             let p = format!("blk.{i}");
-            layers.push(Layer { ar: path(&p, "attn", "ffn")?, nar: path(&p, "nar_attn", "nar_ffn")? });
+            let mut nar = path(&p, "nar_attn", "nar_ffn")?;
+            if int8 {
+                // the Q8_0 rows made int8 ConvRot rows (dequantized, rotated, a scale a row), the stored copy let go
+                for m in [&mut nar.qkv, &mut nar.o, &mut nar.gu, &mut nar.down] {
+                    let q = DevBuf::new(gpu, m.n * m.k)?;
+                    let sc = DevBuf::f32(gpu, m.n)?;
+                    nsd.int8_prepare(m.w.ptr(), Q8_0, 0, m.n, m.k, GROUP, q.ptr(), sc.ptr())?;
+                    nsd.wait()?;
+                    bytes.set(bytes.get() + (m.n * m.k + m.n * 4) as u64 - m.w.len as u64);
+                    *m = Mat { w: q, n: m.n, k: m.k, scale: Some(sc) };
+                }
+            }
+            layers.push(Layer { ar: path(&p, "attn", "ffn")?, nar });
         }
         let embed = mats(&["token_embd.weight".to_string()])?;
         let head = mats(&["output.weight".to_string()])?;
@@ -255,6 +276,7 @@ impl Lm {
             t1: (host_vec(f, "time_embd.0.weight")?, host_vec(f, "time_embd.0.bias")?),
             t2: (host_vec(f, "time_embd.1.weight")?, host_vec(f, "time_embd.1.bias")?),
             pos,
+            int8,
             embed: embed.w,
             head,
             layers,
@@ -288,7 +310,10 @@ impl Lm {
     }
 
     fn lin(&self, x: P, dt: Dt, m: usize, w: &Mat, out: M) -> Result<()> {
-        self.nsd.linear_q(x, dt, m, w.k, w.w.ptr(), Q8_0, w.n, none(), out, Dt::F32, 0)
+        match &w.scale {
+            Some(sc) => self.nsd.int8_linear(x, dt, m, w.k, w.w.ptr(), w.n, sc.ptr(), none(), out, Dt::F32, GROUP, 0),
+            None => self.nsd.linear_q(x, dt, m, w.k, w.w.ptr(), Q8_0, w.n, none(), out, Dt::F32, 0),
+        }
     }
 
     fn add(&self, x: M, y: P, m: usize) -> Result<()> {
@@ -327,13 +352,16 @@ impl Lm {
         let qkv = s.get(g, "qkv", rb * QKV * 4)?;
         let gu = s.get(g, "gu", rb * 2 * FFN * 4)?;
         let y = s.get(g, "y", rb * HIDDEN * 4)?;
+        // the products' inputs: bf16 (the reference's own type) for Q8_0 matrices, half for the int8 ones (their
+        // rotation takes half; the rows are normed, the MLP's product bounded by the activations' own range)
+        let pdt = if nar && self.int8 { Dt::F16 } else { Dt::BF16 };
         for (li, l) in self.layers.iter().enumerate() {
             let p = if nar { &l.nar } else { &l.ar };
             let (kc, vc) = (c.k[li].ptr(), c.v[li].ptr());
             for b0 in (0..m).step_by(rb) {
                 let bm = rb.min(m - b0);
-                self.rms(at(x, b0 * HIDDEN * 4), bm, &p.norm1, h, Dt::BF16)?;
-                self.lin(h, Dt::BF16, bm, &p.qkv, qkv)?;
+                self.rms(at(x, b0 * HIDDEN * 4), bm, &p.norm1, h, pdt)?;
+                self.lin(h, pdt, bm, &p.qkv, qkv)?;
                 // SAFETY: qkv holds bm rows of 4096, q m rows of 2048 half, the caches cap rows (checked above).
                 ffi::check(unsafe { (self.k.qkv)(self.g(), qkv.cast(), bm as i64, p.qn.fp(), p.kn.fp(), EPS, THETA, (pos0 + b0) as i64,
                                                  at(q, b0 * QW * 2), kc, vc, (pos0 + b0) as i64) }, "q / k / v")?;
@@ -350,10 +378,10 @@ impl Lm {
                 let xb = at(x, b0 * HIDDEN * 4);
                 self.lin(at(o, b0 * QW * 2), Dt::F16, bm, &p.o, y)?;
                 self.add(xb, y, bm)?;
-                self.rms(xb, bm, &p.norm2, h, Dt::BF16)?;
-                self.lin(h, Dt::BF16, bm, &p.gu, gu)?;
-                self.nsd.swiglu(gu, Dt::F32, bm, FFN, h, Dt::BF16)?;
-                self.lin(h, Dt::BF16, bm, &p.down, y)?;
+                self.rms(xb, bm, &p.norm2, h, pdt)?;
+                self.lin(h, pdt, bm, &p.gu, gu)?;
+                self.nsd.swiglu(gu, Dt::F32, bm, FFN, h, pdt)?;
+                self.lin(h, pdt, bm, &p.down, y)?;
                 self.add(xb, y, bm)?;
             }
         }

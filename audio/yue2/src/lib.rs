@@ -49,6 +49,7 @@ pub const ODE_STEPS: u32 = 32;
 pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "cot", env: "NS_YUE2_COT", value: "full|melody|off", help: "what the model writes before the music: a score of melody and chords (full, the default), a melody alone (melody: covers), or none (off)", at: At::Both },
     EngineOption { name: "abc", env: "", value: "TEXT", help: "a score (ABC) to sing over instead of one drawn (cot melody or full): a cover's melody, or the score of an earlier song (its `score`) to sing it again with new words - same seed and style", at: At::Request },
+    EngineOption { name: "int8", env: "NS_YUE2_INT8", value: "0|1", help: "the flow's (NAR path's) matrices as int8 ConvRot rows on the int8 tensor cores (on; 0: as stored, Q8_0)", at: At::Load },
     EngineOption { name: "score-tokens", env: "", value: "4096", help: "the most tokens the score may take (32 to 4096; a longer score is cut and closed)", at: At::Request },
 ];
 
@@ -147,7 +148,9 @@ impl Yue2 {
         if tok.tokens.len() != MUSIC_START as usize || tok.id("<|endoftext|>") != Some(EOD) {
             return Err(Error(format!("{}: not YuE2's tokenizer ({} tokens, 151851 expected)", lmp.display(), tok.tokens.len())));
         }
-        let lm = Lm::load(&f, gpu, log)?;
+        // the NAR path's matrices int8 ConvRot unless NS_YUE2_INT8=0 (as stored: Q8_0, dequantized a slice a product)
+        let int8 = o.setting("NS_YUE2_INT8").is_none_or(|v| !matches!(v.trim(), "0" | "false" | "off"));
+        let lm = Lm::load(&f, gpu, int8, log)?;
         let vf = Gguf::open(&vp).map_err(|e| Error(e.0))?;
         let vae = Vae::load(&vf, vgpu)?;
         let load_s = t0.elapsed().as_secs_f64();

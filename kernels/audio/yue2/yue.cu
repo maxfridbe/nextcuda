@@ -146,7 +146,7 @@ __global__ void qkv_k(const float* qkv, int64_t T, const float* qn, const float*
 // ---- one query row against the cache: a block per (key head, split of the keys), NW_A warps taking the split's keys in
 // turn, a lane DL = 4 features of the G = 2 query heads that share the key head; the warps' running (max, sum, values)
 // merged in shared memory, the splits by a second kernel (mm3.cu's scheme, the cache rows-major here)
-constexpr int64_t KB = 256;
+constexpr int64_t KB = 64;  // keys a split: a thousand-key decode spreads over 128 blocks
 constexpr int NW_A = 4, DL = 4, G = 2;
 
 int64_t splits(int64_t n) { return n > KB ? (n + KB - 1) / KB : 1; }

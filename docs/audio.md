@@ -93,6 +93,9 @@ score comes back with it (`score`, and the WAV's comment): sung again with the s
   word for word; upstream's Mandarin demo (今晚不眠, seed 12300) 222.6 s, its choruses and bridge as written; the
   English song again over its own score with new lyrics (same seed and style): every new line sung, each line starting
   within 0.2 s of the first take's - the melody kept. The same request and seed make the same WAV, byte for byte.
-- **Speed** (RTX 5070 the language model, RTX 3060 the VAE): 222.6 s of song in 88.1 s - the score 12.8 s, 5565 codes at
-  192 a second, 32 flow steps in 41.6 s, the VAE 4.5 s; 77.6 s in 25.8 s. 21 s to load from the HDD. Peak 7.1 GiB on the
-  5070, 1.4 GiB on the 3060.
+- **Speed** (RTX 5070 the language model, RTX 3060 the VAE): 223.8 s of song (the Mandarin demo) in 78.6 s - the score
+  11.4 s, 5594 codes at 192 a second, 32 flow steps in 33.5 s, the VAE 4.2 s (as ported, the flow on the Q8_0 matrices:
+  88.1 s, its steps 41.6 s); a 30 s song in 12 s (224 codes a second). 21 s to load from the HDD. Peak 7.2 GiB on the
+  5070, 1.4 GiB on the 3060. The flow's (NAR path's) matrices are int8 ConvRot rows by default (`NS_YUE2_INT8=0`: Q8_0 as
+  stored): the first velocity cosine 0.99991 against the reference (Q8_0: 0.999996), 8 steps from the noise 0.99985
+  (0.99998) - bf16's own distance from float32 by HOT-Step's measure; the takes transcribe as before.

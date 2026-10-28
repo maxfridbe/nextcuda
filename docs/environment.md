@@ -356,6 +356,7 @@ ACE-Step 1.5 (`NS_ACE_`), MiniMax Music 3 (`NS_MM3_`), YuE2 (`NS_YUE2_`), Qwen3-
 | `NS_WH_FALLBACK` | 1 | 0: a window that runs on without ending, or decodes unsure (average log-probability under -1), is kept as greedy decoding left it instead of decoded again at rising temperatures (openai's fallback); also a request's option fallback (--opt-fallback) | audio whisper |
 | `NS_WH_NO_SPEECH` | 0.6 | a window is skipped as silence when <\|nospeech\|> is likelier than this and its text unsure; also a request's option no-speech (--opt-no-speech) | audio whisper |
 | `NS_YUE2_COT` | full | what YuE2 writes before the music: full (a melody and chords score), melody, off (--opt-cot; a request's `cot` wins) | audio yue2 |
+| `NS_YUE2_INT8` | 1 | 0: the flow's (NAR path's) matrices as stored (Q8_0, dequantized a slice a product) instead of int8 ConvRot rows on the int8 tensor cores (--opt-int8) | audio yue2 |
 
 ## 3D
 
