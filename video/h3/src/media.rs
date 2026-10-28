@@ -157,6 +157,47 @@ pub fn read_audio_tail(path: &Path, seconds: f64, rate: u32) -> Result<Vec<Vec<f
     Ok((0..2).map(|c| (n - keep..n).map(|i| v[i * 2 + c]).collect()).collect())
 }
 
+/// `seconds` of a sound from `start` seconds in (a song's stretch under a clip), stereo at `rate`: exactly
+/// `seconds * rate` samples a channel, silence where the file ends first.
+pub fn read_audio_span(path: &Path, start: f64, seconds: f64, rate: u32) -> Result<Vec<Vec<f32>>> {
+    let out = Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-ss", &format!("{:.6}", start.max(0.0)), "-t", &format!("{:.6}", seconds), "-i"])
+        .arg(path)
+        .args(["-vn", "-ac", "2", "-ar", &rate.to_string(), "-f", "f32le", "-"])
+        .output()
+        .ctx("starting ffmpeg")?;
+    if !out.status.success() {
+        return Err(Error(format!("{}: ffmpeg could not read sound ({})", path.display(), String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    let v: Vec<f32> = out.stdout.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let want = (seconds * rate as f64).round() as usize;
+    if v.len() < 2 && want > 0 {
+        return Err(Error(format!("{}: no sound at {start:.2} s (past its end?)", path.display())));
+    }
+    Ok((0..2).map(|c| (0..want).map(|i| v.get(i * 2 + c).copied().unwrap_or(0.0)).collect()).collect())
+}
+
+/// An .mp4's own sound replaced by `seconds` of `sound` from `start` (the clip's picture copied as it is): a clip made
+/// to a song carries the song itself, not the audio decoder's rendering of it.
+pub fn mux_sound(clip: &Path, sound: &Path, start: f64, seconds: f64) -> Result<()> {
+    let tmp = clip.with_extension("mux.mp4");
+    let out = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-i"])
+        .arg(clip)
+        .args(["-ss", &format!("{:.6}", start.max(0.0)), "-t", &format!("{:.6}", seconds), "-i"])
+        .arg(sound)
+        .args(["-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k"])
+        .arg(&tmp)
+        .output()
+        .ctx("starting ffmpeg")?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error(format!("{}: ffmpeg could not lay {} under it ({})", clip.display(), sound.display(), String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    std::fs::rename(&tmp, clip)?;
+    Ok(())
+}
+
 /// A picture [h, w, 3] in [0, 1] as a lossless .png.
 pub fn write_png(path: &Path, px: &[f32], w: usize, h: usize) -> Result<()> {
     let mut child = Command::new("ffmpeg")

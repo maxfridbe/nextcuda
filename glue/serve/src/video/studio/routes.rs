@@ -149,6 +149,15 @@ pub struct ClipRequest {
     pub first_audio: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_audio_s: Option<Value>,
+    /// a driving soundtrack (a song: a sound file in the clips directory, video.upload): the clip's length of it from
+    /// soundtrack_start is pinned under the whole clip as an audio keyframe, and the picture is made to it (a singer's
+    /// mouth to the singing); the clip carries the file's own sound. Not with first_audio (a chain's sound is off)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soundtrack: Option<Value>,
+    /// seconds into the soundtrack at the clip's first frame (default 0); a chain's next clip starts where its first
+    /// carried frame is in the song
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soundtrack_start: Option<Num>,
     /// harmful here: decodes as visible confetti
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cond_noise_aug: Option<Value>,

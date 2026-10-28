@@ -35,6 +35,9 @@ interface Form {
   controlMask: string;
   controlSource: string;
   controlStrength: number;
+  /** a song the clip is made to (an upload's name) and the second of it at the clip's first frame */
+  soundtrack: string;
+  soundtrackStart: number;
 }
 
 export const form: Form = {
@@ -65,6 +68,8 @@ export const form: Form = {
   controlMask: "",
   controlSource: "",
   controlStrength: 1,
+  soundtrack: "",
+  soundtrackStart: 0,
 };
 
 /** The settings a reload keeps (canvas, length, steps, engine, ...): the last ones used, in localStorage. References and
@@ -106,6 +111,8 @@ export function useSettings(j: GenerateRequest): void {
   form.controlMask = j.control_mask ?? "";
   form.controlSource = j.control_source ?? "";
   form.controlStrength = j.control_strength ?? 1;
+  form.soundtrack = j.soundtrack ?? "";
+  form.soundtrackStart = j.soundtrack_start ?? 0;
   form.label = j.label ?? "";
   form.chain = !!j.first_frame;
   remember();
@@ -150,6 +157,10 @@ async function generate(): Promise<void> {
     if (form.controlVideo || form.controlMask) body.control_strength = form.controlStrength;
   }
   if (form.chain) body.first_frame = "prev";
+  if (form.soundtrack) {
+    body.soundtrack = form.soundtrack;
+    body.soundtrack_start = form.soundtrackStart;
+  }
   submitted = "sending…";
   render();
   try {
@@ -307,6 +318,52 @@ function References() {
   );
 }
 
+async function setSoundtrack(files: FileList | null): Promise<void> {
+  const f = files?.[0];
+  if (!f) return;
+  try {
+    form.soundtrack = (await api.upload(f)).name;
+    state.error = null;
+  } catch (e) {
+    state.error = `${f.name}: ${String(e)}`;
+  }
+  render();
+}
+
+/** A song the clip is made to: its stretch from the start second is pinned under the whole clip (an audio keyframe)
+ *  and the picture follows it - a singer's mouth to the singing. The clip carries the song itself. */
+function Soundtrack() {
+  return (
+    <div>
+      <div class="row">
+        <span class="ref">
+          <label class="tbtn">
+            <span class="i" props={{ innerHTML: "&#xf093;" }} />song
+            <input attrs={{ type: "file", accept: "audio/*", style: "display:none" }}
+              on={{ change: (e: Event) => void setSoundtrack((e.target as HTMLInputElement).files) }} />
+          </label>
+          {form.soundtrack
+            ? <span><span class="hint">{form.soundtrack.replace(/^ref_\d+_/, "")}</span>
+                <a attrs={{ href: "#", title: "remove" }} on={{ click: (e: Event) => { e.preventDefault(); form.soundtrack = ""; render(); } }}> ✕</a></span>
+            : null}
+        </span>
+        {form.soundtrack
+          ? <label attrs={{ title: "the second of the song at the clip's first frame" }}>
+              from (s)
+              <input attrs={{ type: "number", min: 0, step: 0.01, value: form.soundtrackStart }}
+                on={{ input: (e: Event) => { form.soundtrackStart = Math.max(0, Number((e.target as HTMLInputElement).value) || 0); } }} />
+            </label>
+          : null}
+      </div>
+      <div class="hint">
+        The clip's length of the song from that second is held under the whole clip and the picture is made to it:
+        describe someone singing it ("the woman (S1) sings into the microphone: &lt;d&gt;[English] the line&lt;/d&gt;").
+        For a whole song, chain clips (each from where its first frame falls in the song) and lay the song under the join.
+      </div>
+    </div>
+  );
+}
+
 type ControlKey = "controlVideo" | "controlMask" | "controlSource";
 
 async function setControl(key: ControlKey, files: FileList | null): Promise<void> {
@@ -435,6 +492,14 @@ export function Creation() {
       >
         <ControlNet />
       </Panel>}
+      <Panel
+        id="soundtrack"
+        icon="&#xf001;"
+        title="Soundtrack"
+        hint={form.soundtrack ? `${form.soundtrack.replace(/^ref_\d+_/, "")} from ${form.soundtrackStart} s` : "a song the picture is made to (lip-sync)"}
+      >
+        <Soundtrack />
+      </Panel>
       <Panel
         id="canvas"
         icon="&#xf0b2;"

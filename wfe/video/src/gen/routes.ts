@@ -126,6 +126,10 @@ export interface ClipRequest {
   exposure_ref?: unknown | null;
   first_audio?: unknown | null;
   first_audio_s?: unknown | null;
+  /** a driving soundtrack (a song: a sound file in the clips directory, video.upload): the clip's length of it from soundtrack_start is pinned under the whole clip as an audio keyframe, and the picture is made to it (a singer's mouth to the singing); the clip carries the file's own sound. Not with first_audio (a chain's sound is off) */
+  soundtrack?: unknown | null;
+  /** seconds into the soundtrack at the clip's first frame (default 0); a chain's next clip starts where its first carried frame is in the song */
+  soundtrack_start?: number | null;
   /** harmful here: decodes as visible confetti */
   cond_noise_aug?: unknown | null;
   camera?: unknown | null;

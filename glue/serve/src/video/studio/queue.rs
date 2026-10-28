@@ -145,9 +145,11 @@ pub fn unchain(p: &Value) -> Result<(Value, Vec<String>), RpcError> {
             out[k] = v;
         }
     };
+    // a clip made to a soundtrack has its sound already: the chain carries the picture only
+    let soundtrack = p.get("soundtrack").is_some_and(|v| v.as_str().is_some_and(|s| !s.is_empty()));
     if n > 0 {
         set(&mut out, "guide_clip", json!(format!("{from}:{n}:0")));
-        if c.get("sound").and_then(|v| v.as_bool()) != Some(false) {
+        if !soundtrack && c.get("sound").and_then(|v| v.as_bool()) != Some(false) {
             set(&mut out, "first_audio", json!(from));
             set(&mut out, "first_audio_s", json!(n as f64 / 24.0));
         }
@@ -188,7 +190,7 @@ fn ignored_keys() -> Vec<String> {
 
 pub fn inputs_of(quant: &str) -> Value {
     let common = ["prompt", "seconds", "frames", "steps", "seed", "width", "height", "te", "first_frame", "last_frame", "exposure_ref", "guide_clip",
-                  "first_audio", "first_audio_s", "ref_audios", "loras", "upscale", "upscaler", "shift_video", "shift_audio", "sampler", "schedule", "chain", "source", "regen", "regen_box"];
+                  "first_audio", "first_audio_s", "soundtrack", "soundtrack_start", "ref_audios", "loras", "upscale", "upscaler", "shift_video", "shift_audio", "sampler", "schedule", "chain", "source", "regen", "regen_box"];
     if quant == "REF2VA" {
         json!({"takes": common.iter().chain(["ref_images", "ref_videos", "ref_image_size", "ref_video_sound", "te_pictures"].iter()).collect::<Vec<_>>(),
                "not": ["control_video", "control_mask", "control_source", "control_strength", "control_start", "control_end"],
@@ -416,6 +418,23 @@ impl Studio {
         for k in ["ref_video_sound", "te_pictures"] {
             it.insert(k.into(), p.get(k).filter(|v| v.is_boolean()).cloned().unwrap_or(Value::Null));
         }
+        // a driving soundtrack: a sound file beside the clips, from a start second
+        match p.get("soundtrack").and_then(|v| v.as_str()).map(basename).filter(|v| !v.is_empty()) {
+            Some(f) => {
+                if !self.out.join(&f).exists() {
+                    return Err(RpcError::not_found(&format!("soundtrack {f} not found in out/ (video.upload it)")));
+                }
+                if p.get("first_audio").is_some_and(|v| !v.is_null()) {
+                    return Err(RpcError::param("soundtrack is the clip's whole sound: not with first_audio"));
+                }
+                it.insert("soundtrack".into(), json!(f));
+                it.insert("soundtrack_start".into(), num(p, "soundtrack_start", 0.0, 0.0, 86400.0, false)?);
+            }
+            None => {
+                it.insert("soundtrack".into(), Value::Null);
+                it.insert("soundtrack_start".into(), Value::Null);
+            }
+        }
         // the ControlNet: a control video, a mask over a source; files beside the clips
         for k in ["control_video", "control_mask", "control_source"] {
             let v = p.get(k).and_then(|v| v.as_str()).map(basename).filter(|v| !v.is_empty());
@@ -552,6 +571,11 @@ mod tests {
         assert_eq!(p["first_frame"], "a.png"); // the flat key wins
         assert_eq!(p["chain_mode"], "png");
         assert!(unchain(&json!({"chain": {"context_frames": 30}})).is_err());
+        // a clip made to a soundtrack carries the picture alone: its sound is the song's own stretch
+        let (p, _) = unchain(&json!({"soundtrack": "song.flac", "soundtrack_start": 9.21, "chain": {"from": "prev", "context_frames": 22}})).unwrap();
+        assert_eq!(p["guide_clip"], "prev:22:0");
+        assert!(p.get("first_audio").is_none() && p.get("first_audio_s").is_none());
+        assert!(inputs_of("Q4_K_M")["takes"].as_array().unwrap().contains(&json!("soundtrack")));
     }
 
     #[test]
