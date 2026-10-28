@@ -181,6 +181,10 @@ pub struct Lm {
     pos: Vec<u16>,
     /// the NAR path's matrices int8 ConvRot (their products take half activations)
     pub int8: bool,
+    /// this card's silo (the flow's attention), when built; NS_SILO=0: nsd_flash_attention
+    pub silo: Option<&'static ffi::Silo>,
+    /// the silo's attention accumulates its scores in half (NS_YUE2_ATTN=half, the default; float: in float32)
+    half_scores: bool,
     pub bytes: u64,
 }
 
@@ -277,6 +281,8 @@ impl Lm {
             t2: (host_vec(f, "time_embd.1.weight")?, host_vec(f, "time_embd.1.bias")?),
             pos,
             int8,
+            silo: ffi::silo(gpu.cc),
+            half_scores: std::env::var("NS_YUE2_ATTN").map_or(true, |v| v.trim() != "float"),
             embed: embed.w,
             head,
             layers,
@@ -367,7 +373,12 @@ impl Lm {
                                                  at(q, b0 * QW * 2), kc, vc, (pos0 + b0) as i64) }, "q / k / v")?;
             }
             if nar {
-                self.nsd.flash_attention(q, m, QW, kc, vc, pos0 + m, KW, HEADS, KV_HEADS, o)?;
+                match self.silo {
+                    // SAFETY: q holds m rows of 2048 half, the caches pos0 + m rows of 1024, o m rows of 2048.
+                    Some(si) => ffi::check(unsafe { (si.attention)(self.g(), q, m as i64, QW as i64, kc, vc, (pos0 + m) as i64, KW as i64, HEADS as i64,
+                                                                   KV_HEADS as i64, o, 0, self.half_scores as i32) }, "the flow's attention")?,
+                    None => self.nsd.flash_attention(q, m, QW, kc, vc, pos0 + m, KW, HEADS, KV_HEADS, o)?,
+                }
             } else {
                 // the query table is read as if it began `pos0` rows earlier (nsd takes row0 of a table from row 0)
                 let q0 = q.cast::<u8>().wrapping_sub(pos0 * QW * 2).cast_const().cast();
