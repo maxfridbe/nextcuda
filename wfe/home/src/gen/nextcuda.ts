@@ -76,6 +76,13 @@ export interface AudioGenerateReq {
   seconds?: number | null;
   seed?: number | null;
   steps?: number | null;
+  /**
+   * yue2-3b-q8: a score (ABC text) to sing over instead of one drawn (cot melody or full) - a cover's melody, or the score an earlier song came back with (its score) to sing it again with new words: the same seed and style keep the melody
+   * @maxLength 200000
+   */
+  abc?: string | null;
+  /** yue2-3b-q8: what it writes before the music - full (a melody and chords score; default), melody (a melody alone: covers), off (none; the codes guided 1.01 by default) */
+  cot?: SongCot | null;
   /** acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end) */
   audio?: string | null;
   /** acestep-1.5: the tempo (else the planner's, or none said) */
@@ -1230,6 +1237,9 @@ export type RepaintMode = "balanced" | "conservative" | "aggressive";
 /** How a picture comes back: a URL, or the bytes as base64 (OpenAI's names): url | b64_json */
 export type ResponseFormat = "url" | "b64_json";
 
+/** YuE2's plan before the music: full (a melody and chords score) | melody (a melody alone) | off (none) */
+export type SongCot = "full" | "melody" | "off";
+
 /** What system.busy takes. */
 export interface SystemBusyReq {
   /** other keys */
@@ -2128,7 +2138,7 @@ export interface Methods {
    */
   "image.describePromptGuideMD": { req: ImageDescribePromptGuideMdReq; resp: any };
   /**
-   * A song from a description and lyrics, or from a recording (acestep-1.5: a cover, a repaint or an extension, new words over it); the model loads first if it must; the answer links the WAV
+   * A song from a description and lyrics, or from a recording (acestep-1.5: a cover, a repaint or an extension, new words over it); the model loads first if it must; the answer links the WAV (yue2-3b-q8: and the score it sang over, nextsycl.score - give it back as abc with the same seed and style and new lyrics to keep the melody)
    * @tags audio
    * @example {"input":"[verse]\nRiver runs slow tonight\n[chorus]\nCarry me home","instructions":"warm acoustic folk, 90 BPM, a soft male voice","model":"minimax-music3","seconds":60}
    */
@@ -2735,7 +2745,7 @@ export function client(post: Post, raw?: PostRaw) {
      */
     "image.describePromptGuideMD": (req: ImageDescribePromptGuideMdReq): Promise<any> => post("image.describePromptGuideMD", req),
     /**
-     * A song from a description and lyrics, or from a recording (acestep-1.5: a cover, a repaint or an extension, new words over it); the model loads first if it must; the answer links the WAV
+     * A song from a description and lyrics, or from a recording (acestep-1.5: a cover, a repaint or an extension, new words over it); the model loads first if it must; the answer links the WAV (yue2-3b-q8: and the score it sang over, nextsycl.score - give it back as abc with the same seed and style and new lyrics to keep the melody)
      * @tags audio
      * @example {"input":"[verse]\nRiver runs slow tonight\n[chorus]\nCarry me home","instructions":"warm acoustic folk, 90 BPM, a soft male voice","model":"minimax-music3","seconds":60}
      */

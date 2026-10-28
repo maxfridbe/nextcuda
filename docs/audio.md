@@ -89,4 +89,10 @@ score comes back with it (`score`, and the WAV's comment): sung again with the s
   160-token score, 225 codes), the logits cosine 1.000000 (rel 3e-4 to 2e-3) and the argmax the same on every row checked;
   the twin's prefill 1.000000; torch.randn's noise to 5e-7; the first velocity 0.999996, every midpoint step from the
   reference's state 1.000000, 8 steps from the noise 0.99998; the VAE 1.000000 (rel 1.6e-6).
-- **Sung** (Whisper large-v3-turbo on the take): a verse and two choruses, word for word.
+- **Sung** (Whisper large-v3-turbo on the takes): English folk in each cot mode (full 77.6 s, melody 103 s, off 103 s)
+  word for word; upstream's Mandarin demo (今晚不眠, seed 12300) 222.6 s, its choruses and bridge as written; the
+  English song again over its own score with new lyrics (same seed and style): every new line sung, each line starting
+  within 0.2 s of the first take's - the melody kept. The same request and seed make the same WAV, byte for byte.
+- **Speed** (RTX 5070 the language model, RTX 3060 the VAE): 222.6 s of song in 88.1 s - the score 12.8 s, 5565 codes at
+  192 a second, 32 flow steps in 41.6 s, the VAE 4.5 s; 77.6 s in 25.8 s. 21 s to load from the HDD. Peak 7.1 GiB on the
+  5070, 1.4 GiB on the 3060.
