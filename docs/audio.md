@@ -34,6 +34,17 @@ nextcuda audio check <reference dump dir> --model breeze-tts-2        # referenc
   clones (`voice: "skippy"` on `/v1/audio/speech`). VoxCPM2 takes a saved voice's timbre alone - continuing its
   recording (`NS_VCP_CONTINUE=1`) led the recording's last words into each sentence (Whisper heard them ahead of 4 of
   5 lines; the timbre alone said all the plain ones word for word).
+- **OpenAI's `/v1/audio/speech`, streamed:** OpenAI's request as it is (`model` tts-1 / tts-1-hd / gpt-4o-mini-tts:
+  the speech model serving; `voice` alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse:
+  qwen3-tts-custom's vivian, ryan, aiden, serena - a saved voice of the name wins, a model without built-in voices
+  speaks its own; `response_format`, `speed` 0.25-4, `instructions`) answers `Transfer-Encoding: chunked`: the text in
+  stretches of whole sentences (the first short), each sent as soon as it is spoken, through one ffmpeg for the whole
+  answer (`glue/serve/src/audio/stream.rs`): mp3 (the default), opus (Ogg), aac (ADTS), flac, wav (a header of
+  unknown length) or pcm - raw s16le, 24 kHz, mono, OpenAI's, so
+  `curl ... -d '{"model":"tts-1","input":"...","voice":"alloy","response_format":"pcm"}' --output - | ffplay -f s16le -ar 24k -ac 1 -nodisp -`
+  plays as it comes. An error before the first sound is a JSON error; after it the answer ends without its closing
+  chunk; a client that hangs up stops the stretch being spoken at its next step and the rest are not spoken.
+  `stream_format: "sse"` is refused. `response_format: url` (and a song's wav) is the whole file, as before.
 - **Text as it is said:** math and code symbols become words before any speech model sees them (`Q·K^T / √d_k`:
   "Q dot K to the T, divided by square root of d sub k"), markdown's marks go, dashes and brackets are pauses
   (`NS_SPEECH_NORMALIZE=0` or `normalize: false` for the text as sent) - one such line had a voice loop for 18 s.

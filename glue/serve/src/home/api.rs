@@ -311,11 +311,19 @@ impl Home {
         };
         // a saved voice without its transcript: not a model that clones only with one
         let untold = !voice.is_empty() && self.voices().get(&voice).is_some_and(|v| v["text"].as_str().is_none_or(|t| t.trim().is_empty()));
-        let can: Vec<String> = all.iter()
-            .filter(|m| registry::kind_of(m) == "audio" && m["enabled"] != false)
-            .filter(|m| m["speech"].as_array().is_some_and(|a| need.is_empty() || a.iter().any(|x| x == need)))
-            .filter(|m| !(untold && needs_text(all, &m["id"])))
-            .map(|m| s(m, "id")).collect();
+        let able = |need: &str| -> Vec<String> {
+            all.iter()
+                .filter(|m| registry::kind_of(m) == "audio" && m["enabled"] != false)
+                .filter(|m| m["speech"].as_array().is_some_and(|a| need.is_empty() || a.iter().any(|x| x == need)))
+                .filter(|m| !(untold && needs_text(all, &m["id"])))
+                .map(|m| s(m, "id")).collect()
+        };
+        let mut can = able(need);
+        // one of OpenAI's voice names (alloy, nova ...): a model with built-in voices speaks it as one of them, and
+        // without one any speech model speaks it in its own voice
+        if can.is_empty() && need == "voices" && crate::audio::stream::openai_voice(&voice, &[]).is_some() {
+            can = able("");
+        }
         let loaded = self.loaded_of("audio");
         loaded.into_iter().find(|l| can.contains(l)).or_else(|| can.first().cloned()).ok_or_else(|| {
             (409, match need {

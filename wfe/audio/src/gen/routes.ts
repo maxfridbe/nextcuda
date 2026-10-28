@@ -21,8 +21,17 @@ export interface AudioSpeechBody {
   seed?: number | null;
   /** also as num_inference_steps */
   steps?: number | null;
-  /** wav (default: the file) or url (JSON with its link; needs an output directory) */
+  /** OpenAI's mp3, opus, aac, flac, wav or pcm, streamed as it is made (speech: mp3 by default; pcm is raw s16le, 24 kHz, mono; wav a header of unknown length, then that), or url (JSON with its link; needs an output directory); a song: wav (the default: the whole file), url, or another format streamed */
   response_format?: string | null;
+  /**
+   * how fast it is said, 0.25-4 (OpenAI's; beyond it clamped), over the whole answer; not with url
+   * @minimum 0.25
+   * @maximum 4.0
+   * @default 1.0
+   */
+  speed?: number | null;
+  /** audio (the default: the audio bytes, streamed); OpenAI's sse is refused */
+  stream_format?: string | null;
   /** speech: false says the text as written (default: symbols as words, no markdown) */
   normalize?: boolean | null;
   /**
@@ -72,7 +81,7 @@ export interface AudioSpeechBody {
    * @maxItems 4
    */
   speakers?: unknown[] | null;
-  /** a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices) */
+  /** a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices). /v1/audio/speech also takes OpenAI's names (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse): built-in voices of qwen3-tts-custom (vivian, ryan, aiden, serena), or a model's own voice */
   voice?: string | null;
   /** other keys */
   [key: string]: unknown;
@@ -557,11 +566,11 @@ export function routes(base = "", fetcher: typeof fetch = (u, i) => fetch(u, i))
      */
     transcriptions: (req: AudioTranscribeBody = {}): Promise<Transcript> => r.json("POST", r.url("/v1/audio/transcriptions", req, false), JSON.stringify(req), "application/json", false),
     /**
-     * A song or speech, as the model is (the reference server's speech endpoint): the WAV, or with response_format url JSON with its link
+     * A song or speech, as the model is (the reference server's speech endpoint, and OpenAI's): speech streamed (chunked, sent as each stretch of the text is spoken) in mp3 (the default), opus, aac, flac, wav or pcm (raw s16le, 24 kHz, mono); a song's WAV, or another of those formats streamed; with response_format url JSON with its link
      * @route POST /v1/audio/speech
      * @alias /audio/speech
      * @tags openai
-     * @produces application/json, audio/wav
+     * @produces application/json, audio/mpeg, audio/ogg, audio/aac, audio/flac, audio/wav, audio/L16
      */
     speech: (req: AudioSpeechBody = {}): Promise<Sound | Blob> => r.blob("POST", r.url("/v1/audio/speech", req, false), JSON.stringify(req), "application/json"),
   };

@@ -361,9 +361,16 @@ pub struct AudioSpeechBody {
     /// also as num_inference_steps
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     pub steps: Option<i64>,
-    /// wav (default: the file) or url (JSON with its link; needs an output directory)
+    /// OpenAI's mp3, opus, aac, flac, wav or pcm, streamed as it is made (speech: mp3 by default; pcm is raw s16le, 24 kHz, mono; wav a header of unknown length, then that), or url (JSON with its link; needs an output directory); a song: wav (the default: the whole file), url, or another format streamed
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<String>,
+    /// how fast it is said, 0.25-4 (OpenAI's; beyond it clamped), over the whole answer; not with url
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0.25, max = 4.0, default = 1.0)]
+    pub speed: Option<f64>,
+    /// audio (the default: the audio bytes, streamed); OpenAI's sse is refused
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_format: Option<String>,
     /// speech: false says the text as written (default: symbols as words, no markdown)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub normalize: Option<bool>,
@@ -479,10 +486,15 @@ fn transcriptions(s: &AudioServer, cx: &mut Cx, req: AudioTranscribeBody) -> Res
     Ok(Sent::new())
 }
 
-/// A song or speech, as the model is (the reference server's speech endpoint): the WAV, or with response_format url JSON with its link
-#[route(post = "/v1/audio/speech", alias = "/audio/speech", tags = "openai", produces = "application/json, audio/wav")]
+/// A song or speech, as the model is (the reference server's speech endpoint, and OpenAI's): speech streamed (chunked, sent as each stretch of the text is spoken) in mp3 (the default), opus, aac, flac, wav or pcm (raw s16le, 24 kHz, mono); a song's WAV, or another of those formats streamed; with response_format url JSON with its link
+#[route(post = "/v1/audio/speech", alias = "/audio/speech", tags = "openai", produces = "application/json, audio/mpeg, audio/ogg, audio/aac, audio/flac, audio/wav, audio/L16")]
 fn speech(s: &AudioServer, cx: &mut Cx, req: AudioSpeechBody) -> Result<Sent<Sound>, Fail> {
     let b = serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?;
+    // OpenAI's formats, streamed as the sound is made (stream.rs)
+    if s.speech_streamed(cx, &b) {
+        s.maybe_retire();
+        return Ok(Sent::new());
+    }
     let base = cx.base();
     match s.generate(&b, &base) {
         Ok((Some(v), _)) => cx.json(200, &Checked::<Sound>::new(v).0),

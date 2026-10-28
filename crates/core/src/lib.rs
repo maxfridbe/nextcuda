@@ -204,6 +204,11 @@ impl Gpu {
         Ok(Arc::new(Gpu { dev: None, index, name: r.1, pci: Some(r.2).filter(|s| !s.is_empty()), cc: 0 }))
     }
 
+    /// A GPU with no device behind it (no library, no sensors): what a server's tests run a fake engine on
+    pub fn detached(name: &str) -> Arc<Gpu> {
+        Arc::new(Gpu { dev: None, index: 0, name: name.into(), pci: None, cc: 0 })
+    }
+
     /// The library's handle of this GPU (`ns_gpu*`), for an engine's own ABI; null without the library
     pub fn raw(&self) -> *mut c_void {
         self.dev.map_or(std::ptr::null_mut(), |d| d.1)

@@ -126,8 +126,8 @@ fn edits(h: &Arc<Home>, cx: &mut Cx) -> Result<Sent<Pictures>, Fail> {
     to_kind(h, cx, "image").map(|_| Sent::new())
 }
 
-/// A song (input: the lyrics, instructions: the music) or speech (input: the text; voice, language, instructions, ref_audio, ref_text); response_format wav or url
-#[route(post = "/v1/audio/speech", tags = "openai", produces = "application/json, audio/wav",
+/// A song (input: the lyrics, instructions: the music) or speech (input: the text; voice, language, instructions, ref_audio, ref_text): OpenAI's request (model tts-1 / gpt-4o-mini-tts, voice alloy ... verse, speed), speech streamed (chunked, each stretch of the text as soon as it is spoken) in mp3 (the default), opus, aac, flac, wav or pcm (raw s16le, 24 kHz, mono); response_format url: JSON with its link; a song's wav: the file
+#[route(post = "/v1/audio/speech", tags = "openai", produces = "application/json, audio/mpeg, audio/ogg, audio/aac, audio/flac, audio/wav, audio/L16",
         example = r#"{"instructions": "warm folk", "input": "[verse]\nRiver runs slow", "response_format": "url"}"#)]
 fn speech(h: &Arc<Home>, cx: &mut Cx, _req: AudioSpeechBody) -> Result<Sent<Sound>, Fail> {
     to_kind(h, cx, "audio").map(|_| Sent::new())

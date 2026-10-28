@@ -273,7 +273,7 @@ export interface AudioSpeakReq {
    * @maxItems 4
    */
   speakers?: unknown[] | null;
-  /** a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices) */
+  /** a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices). /v1/audio/speech also takes OpenAI's names (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse): built-in voices of qwen3-tts-custom (vivian, ryan, aiden, serena), or a model's own voice */
   voice?: string | null;
   /** other keys */
   [key: string]: unknown;
