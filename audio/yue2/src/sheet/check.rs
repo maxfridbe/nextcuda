@@ -225,7 +225,18 @@ pub fn run(e: &SheetSage, dir: &Path, stages: &[&str], log: &mut dyn FnMut(Strin
         let mut stitched = Vec::new();
         for (i, w) in plan.iter().enumerate() {
             let toks = ids(&format!("tokens{i}"))?;
-            let base = if i > 0 { stitch::overlap_prefix(&stitched, &prompts, w.start, w.prefix_end).map_err(Error)?.map_or(0, |p| p.1) } else { 0 };
+            let mut base = 0;
+            if i > 0 {
+                // the window's decode started from the overlap's events: our prefix must be the one its tokens begin with
+                if let Some((p, b)) = stitch::overlap_prefix(&stitched, &prompts, w.start, w.prefix_end).map_err(Error)? {
+                    base = b;
+                    let same = toks.len() >= p.len() && toks[..p.len()] == p[..];
+                    log(format!("notation: window {i}'s overlap prefix ({} tokens, from global subbeat {b}) {}", p.len(), if same { "identical" } else { "DIFFERS" }));
+                    if !same {
+                        worst = 0.0;
+                    }
+                }
+            }
             let (d, _) = tokens::decode_generated(&toks).map_err(Error)?;
             let map = stitch::TimeMap::new(&d, WINDOW);
             stitched.extend(stitch::stitched(&d, &map, w, duration, i, base));
