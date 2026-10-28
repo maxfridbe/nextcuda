@@ -1,20 +1,21 @@
-//! Dense Qwen3.5 / Qwen3.8 (`qwen35`: Qwen3.8-27B and its siblings): its geometry from the file's metadata and its
-//! engine (`engine`: gated DeltaNet and gated full attention, the dense SwiGLU, the sessions and checkpoints), behind
-//! the runtime's `Engine` contract (`nextcuda-llm`). `kind()` is its registry entry. Its own kernels are in
+//! Dense Qwen3.5 / Qwen3.8 (`qwen35`: Qwen3.8-27B and its siblings) behind the runtime's `Engine` contract
+//! (`nextcuda-llm`). The model core - its geometry from the file's metadata, gated DeltaNet and gated full attention,
+//! the dense SwiGLU, the sessions and checkpoints - is the foundation's `nextcuda-qwen35` (MOSS-Image encodes with the
+//! same core); this crate is what the contract adds: the opaque handles, the sampler, the registry entry `kind()`. Its own kernels are in
 //! `kernels/llm/qwen35/` (with glm5next's generic conv, L2 norm and delta-rule scan); the products from the stored
 //! blocks, the dequantizers and the norms are the nemotronh engine's, in the same library. After nextsycl's qwen35.
-
-pub mod engine;
-mod ffi;
-pub mod vision;
 
 use std::any::Any;
 use std::sync::Arc;
 
 use nextcuda_gguf::Gguf;
+use nextcuda_qwen35::engine;
 use nextcuda_llm::{At, EngineOption};
 use nextcuda_llm::{Checkpoint, CheckpointState, Decoder, DecoderState, Engine, EngineKind, GpuInfo, LoadOptions, Result, Sampler, Session, SessionState,
                    Tap};
+
+// the core keeps its own copies of the picture token's layout (it knows no contract); they must be the contract's
+const _: () = assert!(engine::PICTURE == nextcuda_llm::PICTURE_TOKEN && engine::PICTURE_INDEX_BITS == nextcuda_llm::PICTURE_INDEX_BITS);
 
 pub const ARCH: &str = "qwen35";
 
@@ -38,15 +39,21 @@ fn info(f: &Gguf) -> std::result::Result<String, String> {
 }
 
 fn load<'g>(f: &'g Gguf, gpus: &[Arc<nextcuda_core::Gpu>], o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<Box<dyn Engine + 'g>> {
-    Ok(Box::new(engine::Qwen35::load(f, gpus, o.draft, o.kv, log)?))
+    Ok(Box::new(Qwen35(engine::Qwen35::load(f, gpus, o.draft, o.kv, log)?)))
 }
 
-impl SessionState for engine::Session {
+// The contract's traits are implemented on these newtypes: the core's types and the traits are both foreign here.
+struct Qwen35<'g>(engine::Qwen35<'g>);
+struct Sess(engine::Session);
+struct Dec(engine::Decoder);
+struct Ck(engine::Checkpoint);
+
+impl SessionState for Sess {
     fn pos(&self) -> usize {
-        self.pos
+        self.0.pos
     }
     fn max_ctx(&self) -> usize {
-        self.max_ctx
+        self.0.max_ctx
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -56,27 +63,27 @@ impl SessionState for engine::Session {
     }
 }
 
-impl DecoderState for engine::Decoder {
+impl DecoderState for Dec {
     fn drafts(&self) -> (u64, u64) {
-        (self.drafted, self.accepted)
+        (self.0.drafted, self.0.accepted)
     }
     fn pending(&mut self) -> Option<u32> {
-        engine::Decoder::pending(self)
+        self.0.pending()
     }
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 }
 
-impl CheckpointState for engine::Checkpoint {
+impl CheckpointState for Ck {
     fn pos(&self) -> usize {
-        self.pos
+        self.0.pos
     }
     fn bytes(&self) -> usize {
-        self.bytes
+        self.0.bytes
     }
     fn write_to(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
-        engine::Checkpoint::write_to(self, w)
+        self.0.write_to(w)
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -84,100 +91,102 @@ impl CheckpointState for engine::Checkpoint {
 }
 
 fn sess(s: &Session) -> Result<&engine::Session> {
-    s.get().ok_or_else(|| nextcuda_core::Error("a session of another engine".into()))
+    s.get::<Sess>().map(|s| &s.0).ok_or_else(|| nextcuda_core::Error("a session of another engine".into()))
 }
 fn sess_mut(s: &mut Session) -> Result<&mut engine::Session> {
-    s.get_mut().ok_or_else(|| nextcuda_core::Error("a session of another engine".into()))
+    s.get_mut::<Sess>().map(|s| &mut s.0).ok_or_else(|| nextcuda_core::Error("a session of another engine".into()))
 }
 
-impl Engine for engine::Qwen35<'_> {
+impl Engine for Qwen35<'_> {
     fn arch(&self) -> &'static str {
         ARCH
     }
     fn load_seconds(&self) -> f64 {
-        engine::Qwen35::load_seconds(self)
+        self.0.load_seconds()
     }
     fn load_bytes(&self) -> u64 {
-        engine::Qwen35::load_bytes(self)
+        self.0.load_bytes()
     }
     fn has_draft(&self) -> bool {
-        engine::Qwen35::has_draft(self)
+        self.0.has_draft()
     }
     fn prefill_chunk(&self) -> usize {
-        engine::Qwen35::prefill_chunk(self)
+        self.0.prefill_chunk()
     }
     fn max_verify(&self) -> usize {
-        engine::Qwen35::max_verify(self)
+        self.0.max_verify()
     }
     fn cache_fingerprint(&self) -> String {
         // checkpoints hold the draft block's cache too when it is loaded
         // nsq35-2: a checkpoint carries the session's rotary shift (pictures); -3: the DeltaNet state value-column first
         // (each GPU's cache type: f16-kv, q8-kv, f16,q8-kv ... - NS_Q35_KV)
-        let kv = format!("{}-kv", self.kv_types());
+        let kv = format!("{}-kv", self.0.kv_types());
         if self.has_draft() { format!("qwen35 {kv} nsq35-3 mtp") } else { format!("qwen35 {kv} nsq35-3") }
     }
     fn session(&self, max_ctx: usize) -> Result<Session> {
-        Ok(Session::new(engine::Qwen35::session(self, max_ctx)?))
+        Ok(Session::new(Sess(self.0.session(max_ctx)?)))
     }
     fn reset_session(&self, s: &mut Session) -> Result<()> {
-        engine::Qwen35::reset_session(self, sess_mut(s)?)
+        self.0.reset_session(sess_mut(s)?)
     }
     fn copy_session(&self, dst: &mut Session, src: &Session) -> Result<()> {
         let src = sess(src)?;
-        engine::Qwen35::copy_session(self, sess_mut(dst)?, src)
+        self.0.copy_session(sess_mut(dst)?, src)
     }
     fn feed(&self, s: &mut Session, tokens: &[u32], tap: Tap) -> Result<Vec<f32>> {
-        Ok(engine::Qwen35::feed_until(self, sess_mut(s)?, tokens, &|_| false, tap)?.1)
+        Ok(self.0.feed_until(sess_mut(s)?, tokens, &|_| false, tap)?.1)
     }
     fn feed_until(&self, s: &mut Session, tokens: &[u32], stop: &(dyn Fn(usize) -> bool + Sync), tap: Tap) -> Result<(usize, Vec<f32>)> {
-        engine::Qwen35::feed_until(self, sess_mut(s)?, tokens, stop, tap)
+        self.0.feed_until(sess_mut(s)?, tokens, stop, tap)
     }
     fn forward(&self, s: &mut Session, tokens: &[u32], tap: Tap) -> Result<Vec<f32>> {
-        Ok(engine::Qwen35::forward_rows(self, sess_mut(s)?, tokens, 1, tap)?.pop().unwrap_or_default())
+        Ok(self.0.forward_rows(sess_mut(s)?, tokens, 1, tap)?.pop().unwrap_or_default())
     }
     fn forward_rows(&self, s: &mut Session, tokens: &[u32], n_out: usize, tap: Tap) -> Result<Vec<Vec<f32>>> {
-        engine::Qwen35::forward_rows(self, sess_mut(s)?, tokens, n_out, tap)
+        self.0.forward_rows(sess_mut(s)?, tokens, n_out, tap)
     }
     fn rollback(&self, s: &mut Session, keep: usize) -> Result<()> {
-        engine::Qwen35::rollback(self, sess_mut(s)?, keep)
+        self.0.rollback(sess_mut(s)?, keep)
     }
     fn forward_batch(&self, sessions: &mut [&mut Session], tokens: &[u32], tap: Tap) -> Result<Vec<Vec<f32>>> {
         let mut own: Vec<&mut engine::Session> = Vec::with_capacity(sessions.len());
         for s in sessions.iter_mut() {
-            own.push(s.get_mut().ok_or_else(|| nextcuda_core::Error("a session of another engine".into()))?);
+            own.push(&mut s.get_mut::<Sess>().ok_or_else(|| nextcuda_core::Error("a session of another engine".into()))?.0);
         }
-        engine::Qwen35::forward_batch(self, &mut own, tokens, tap)
+        self.0.forward_batch(&mut own, tokens, tap)
     }
     fn decoder(&self, logits: Vec<f32>, draft: bool) -> Decoder {
-        Decoder::new(engine::Decoder::new(logits, draft))
+        Decoder::new(Dec(engine::Decoder::new(logits, draft)))
     }
     fn decoder_after(&self, next: u32, draft: bool) -> Decoder {
-        Decoder::new(engine::Decoder::after(next, draft))
+        Decoder::new(Dec(engine::Decoder::after(next, draft)))
     }
     fn step(&self, s: &mut Session, d: &mut Decoder, smp: &mut dyn Sampler, tap: Tap) -> Result<Vec<u32>> {
-        let d = d.get_mut::<engine::Decoder>().ok_or_else(|| nextcuda_core::Error("a decoder of another engine".into()))?;
-        engine::Qwen35::step(self, sess_mut(s)?, d, smp, tap)
+        let d = &mut d.get_mut::<Dec>().ok_or_else(|| nextcuda_core::Error("a decoder of another engine".into()))?.0;
+        self.0.step(sess_mut(s)?, d, &mut |l| smp.sample(l), tap)
     }
     fn save(&self, s: &Session) -> Result<Checkpoint> {
-        Ok(Checkpoint::new(engine::Qwen35::save(self, sess(s)?)?))
+        Ok(Checkpoint::new(Ck(self.0.save(sess(s)?)?)))
     }
     fn restore(&self, s: &mut Session, ck: &Checkpoint) -> Result<()> {
-        let ck = ck.get::<engine::Checkpoint>().ok_or_else(|| nextcuda_core::Error("a checkpoint of another engine".into()))?;
-        engine::Qwen35::restore(self, sess_mut(s)?, ck)
+        let ck = &ck.get::<Ck>().ok_or_else(|| nextcuda_core::Error("a checkpoint of another engine".into()))?.0;
+        self.0.restore(sess_mut(s)?, ck)
     }
     fn read_checkpoint(&self, r: &mut dyn std::io::Read) -> std::io::Result<Checkpoint> {
-        Ok(Checkpoint::new(engine::Checkpoint::read_from(r)?))
+        Ok(Checkpoint::new(Ck(engine::Checkpoint::read_from(r)?)))
     }
     fn gpu_info(&self) -> Vec<GpuInfo> {
-        engine::Qwen35::gpu_info(self)
+        self.0.gpu_info().into_iter()
+            .map(|c| GpuInfo { index: c.index, name: c.name, pci: c.pci, total: c.total, free: c.free, layers: c.layers, expert_slots: 0, host_slots: 0 })
+            .collect()
     }
     fn sees(&self) -> bool {
-        engine::Qwen35::sees(self)
+        self.0.sees()
     }
     fn add_picture(&self, key: u32, rgb: &[u8], w: usize, h: usize) -> Result<(usize, usize)> {
-        engine::Qwen35::add_picture_rgb(self, key, rgb, w, h)
+        self.0.add_picture_rgb(key, rgb, w, h)
     }
     fn report(&self, _tokens: usize) -> Vec<String> {
-        engine::Qwen35::profile_lines(self)
+        self.0.profile_lines()
     }
 }

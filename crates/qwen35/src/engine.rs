@@ -25,9 +25,24 @@ use std::time::Instant;
 
 use nextcuda_core::{Arena, DevBuf, Gpu, HostBuf};
 use nextcuda_gguf::{GType, Gguf, Tensor};
-use nextcuda_llm::{Error, GpuInfo, Result, Sampler, Tap};
+use nextcuda_core::{Error, Result};
 
 use crate::ffi;
+
+/// Called with a tensor's name (llama.cpp's graph names: `result_norm`, `l_out-44`, ...) and its float32 values on the GPU
+pub type Tap<'a> = &'a mut dyn FnMut(&str, &DevBuf) -> Result<()>;
+
+/// One GPU as the engine uses it
+#[derive(Clone, Debug)]
+pub struct CardUse {
+    pub index: usize,
+    pub name: String,
+    pub pci: Option<String>,
+    pub total: u64,
+    pub free: Option<u64>,
+    /// the layers it runs [first, end)
+    pub layers: (u64, u64),
+}
 
 fn e(x: impl std::fmt::Display) -> Error {
     Error(x.to_string())
@@ -326,8 +341,8 @@ const UPLOAD_SLOTS: usize = 8;
 /// A picture's tokens in a prompt: ids past the vocabulary, PICTURE | (the picture's key << 12) | its token's index,
 /// the key a hash of the picture (so a prefix with another picture is never reused for it). Rows in raster order of
 /// the merged patch grid, nx columns by ny rows
-pub const PICTURE: u32 = nextcuda_llm::PICTURE_TOKEN;
-pub const PICTURE_INDEX_BITS: u32 = nextcuda_llm::PICTURE_INDEX_BITS;
+pub const PICTURE: u32 = 0x8000_0000;
+pub const PICTURE_INDEX_BITS: u32 = 12;
 
 /// What the vision tower made of a picture: its tokens' embeddings [nx * ny, n_embd] (float32, host) and its grid
 pub struct Picture {
@@ -1851,11 +1866,11 @@ impl<'g> Qwen35<'g> {
 
     /// The next committed token(s). With drafts: [token, drafts] in one pass, each row's token drawn as plain
     /// sampling would draw it, the drafts kept while they match (what is committed is distributed as without drafts)
-    pub fn step(&self, s: &mut Session, d: &mut Decoder, smp: &mut dyn Sampler, tap: Tap) -> Result<Vec<u32>> {
+    pub fn step(&self, s: &mut Session, d: &mut Decoder, smp: &mut dyn FnMut(&[f32]) -> u32, tap: Tap) -> Result<Vec<u32>> {
         let _w = self.work.lock().unwrap();
         let drafting = d.mtp && self.drafts > 0 && s.mtp.is_some();
         let out = match (d.logits.take(), d.next.take()) {
-            (Some(l), _) => vec![smp.sample(&l)],
+            (Some(l), _) => vec![smp(&l)],
             (None, Some(x)) => {
                 let mut rows = vec![x];
                 if drafting {
@@ -1865,7 +1880,7 @@ impl<'g> Qwen35<'g> {
                 let logits = self.pass_in(s, &rows, rows.len(), tap)?;
                 let mut out = Vec::with_capacity(rows.len());
                 for (i, l) in logits.iter().enumerate() {
-                    let y = smp.sample(l);
+                    let y = smp(l);
                     out.push(y);
                     if i + 1 < rows.len() {
                         d.drafted += 1;
@@ -2083,13 +2098,12 @@ impl<'g> Qwen35<'g> {
         Ok((Rope::Rows(pos), shift))
     }
 
-    pub fn gpu_info(&self) -> Vec<GpuInfo> {
+    pub fn gpu_info(&self) -> Vec<CardUse> {
         self.devs
             .iter()
             .map(|d| {
                 let (total, free) = d.gpu.memory().unwrap_or((0, None));
-                GpuInfo { index: d.gpu.index, name: d.gpu.name.clone(), pci: d.gpu.pci.clone(), total, free, layers: (d.lb as u64, d.le as u64), expert_slots: 0,
-                          host_slots: 0 }
+                CardUse { index: d.gpu.index, name: d.gpu.name.clone(), pci: d.gpu.pci.clone(), total, free, layers: (d.lb as u64, d.le as u64) }
             })
             .collect()
     }

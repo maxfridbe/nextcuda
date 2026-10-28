@@ -21,12 +21,14 @@ crates/                    THE FOUNDATION - every kind uses it, it knows no kind
   diffusion  nextsycl-diffusion  what every diffusion engine shares: samplers and schedules by name, the sigma
                                  schedules, LoRA references, pictures (PNG); the diffusion kernels' bindings (Nsd)
   qwen3vl    nextsycl-qwen3vl    the Qwen3-VL text tower (int8 ConvRot): a text encoder image and video engines share
+  qwen35     nextcuda-qwen35     the Qwen3.5 / Qwen3.8 model core (gated DeltaNet + gated full attention, sessions, a
+                                 hidden-state tap): the llm engine serves it, MOSS-Image encodes its prompts with it
 
 llm/                       LANGUAGE MODELS
   contract   nextsycl-llm        the contract: Engine, Session / Decoder / Checkpoint, Sampler, EngineKind; host sampling
   glm5next   nextsycl-llm-glm5next   GLM-5.3-Flash
   qwen4exp   nextsycl-llm-qwen4exp   the Qwen3.8-Flash-Next family (IQ2_XS, Coder IQ1_M, Swift 1.5)
-  qwen35     nextsycl-llm-qwen35     dense Qwen3.5 / Qwen3.8 (Qwen3.8-27B): gated DeltaNet + gated full attention
+  qwen35     nextsycl-llm-qwen35     dense Qwen3.5 / Qwen3.8 (Qwen3.8-27B): the llm contract around crates/qwen35
   example    nextsycl-llm-example    a template: the contract filled with documented stubs
 
 image/                     IMAGES
@@ -154,7 +156,7 @@ CONTRIBUTING.md walks through a port step by step; each kind's template (`<kind>
   same results; Q8_0 / Q6_K and the rest go to the shared ones. Settings: `NS_Q35_CHUNK` (prompt rows a pass: 2,048 when they fit beside the weights and a session, else 1,024 or 512),
   `NS_Q35_PROFILE=1` with `NS_PROFILE=gpu` (every kernel timed on the device between queue timestamps, with its bytes
   and arithmetic: time, GB/s and TFLOP/s against the card's ceilings by phase and kernel, decode and prompt passes apart,
-  and the device time between kernels - `llm/qwen35/src/probe.rs`), `NS_Q35_MMVQ_ROWS`
+  and the device time between kernels - `crates/qwen35/src/probe.rs`), `NS_Q35_MMVQ_ROWS`
   (rows a sub-group, every silo type) and `NS_Q35_MMVQ_GROUPS` (work-groups of the kernels with a table, 512).
   MTP: the draft block (the GGUF's `MTP/` file, `NS_Q35_MTP`) reads each position's normed hidden state with the token
   after it (eh_proj split into its two halves at load), a gated full-attention layer with its own cache, a SwiGLU,

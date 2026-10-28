@@ -1,6 +1,6 @@
 //! The text encoder: Qwen3.5-9B (gated DeltaNet and gated full attention), its last hidden state after the final norm
 //! for every token of the prompt in the chat template - the pipeline's `encode_prompt`. It is nextcuda's own Qwen3.5
-//! engine (llm/qwen35) on its card, the rows read through its `result_norm` tap; the head's logits it makes beside
+//! model core (crates/qwen35) on its card, the rows read through its `result_norm` tap; the head's logits it makes beside
 //! them are dropped.
 //!
 //! ```text
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use nextcuda_core::{Error, Gpu, Result};
 use nextcuda_gguf::Gguf;
-use nextcuda_llm_qwen35::engine::{Qwen35, Session};
+use nextcuda_qwen35::engine::{Qwen35, Session};
 use nextcuda_tok::Tokenizer;
 
 /// the hidden state's width
@@ -60,9 +60,9 @@ impl TextEncoder {
         let mut out = Vec::with_capacity(ids.len() * HIDDEN);
         for c in ids.chunks(self.engine.prefill_chunk().max(1)) {
             let mut rows: Option<Vec<f32>> = None;
-            let mut tap = |name: &str, b: &nextcuda_core::DevBuf| -> nextcuda_llm::Result<()> {
+            let mut tap = |name: &str, b: &nextcuda_core::DevBuf| -> nextcuda_core::Result<()> {
                 if name == "result_norm" {
-                    rows = Some(b.to_f32().map_err(|e| nextcuda_llm::Error(e.0))?);
+                    rows = Some(b.to_f32().map_err(|e| nextcuda_core::Error(e.0))?);
                 }
                 Ok(())
             };

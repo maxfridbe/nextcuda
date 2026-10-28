@@ -1,5 +1,5 @@
 /* q35.h: the qwen35 engine's own kernels (dense Qwen3.5 / Qwen3.8: gated DeltaNet and gated full attention), its C
- * ABI, bound by its crate by name (llm/qwen35/src/ffi.rs). After nextsycl's kernels/llm/qwen35/q35.h and the generic
+ * ABI, bound by its crate by name (crates/qwen35/src/ffi.rs). After nextsycl's kernels/llm/qwen35/q35.h and the generic
  * ones of its glm5next engine (glm.h: conv + SiLU, L2 norm, the delta-rule scan, SwiGLU) - the same names and arguments
  * (glm.h's under an ns_q35_ prefix here). The products, dequantizers, embedding, RMS norm, add and GEMM are the
  * nemotronh engine's (nh.h; Q2_K added to them for this model's file). Float32 activations, row-major, all queued on
