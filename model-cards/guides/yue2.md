@@ -16,6 +16,12 @@ Name the voice (male / female vocal, its character) and leave out what should no
 ## The lyrics
 - Section tags on lines of their own: `[Intro]`, `[Verse]`, `[Pre-Chorus]`, `[Chorus]`, `[Bridge]`, `[Interlude]`,
   `[Outro]`; a blank line between sections. An empty `[Intro]` or `[Interlude]` is an instrumental passage.
+- Start with an empty `[Intro]` (then a blank line), as upstream's own examples do - especially for short lyrics. The
+  score is drawn first; without the tag it sometimes gives the intro a single bar and the music then runs the verse into
+  the first seconds, and the chorus is never sung. That is the model and the score it drew, not this engine: upstream's
+  own code, given the same score, sang no chorus for 2 of 3 seeds. With `[Intro]` the same request (seed 7) sang every
+  line, and so did 5 other seeds. If a take loses its words anyway, change the seed; `cot: melody` or `cot: off` draw
+  other plans.
 - One sung line per line; repeat a chorus in full where it comes back (the model sings what is written).
 - English and Mandarin are what it was made for (upstream's demos: English rock, metal, folk; Mandarin pop, funk); write
   Mandarin in characters, phrases separated by spaces.
