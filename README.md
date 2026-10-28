@@ -75,7 +75,7 @@ curl -s -X POST http://127.0.0.1:8000/rpc/image.status -H "Authorization: Bearer
 | listening | Whisper large-v3-turbo | one card | [audio.md](docs/audio.md) |
 | songs | MiniMax Music 3 (int8), ACE-Step 1.5 | MiniMax: the language model on the 5070, the flow stage and decoder on the 3060 | [audio.md](docs/audio.md) |
 | video | MiniMax H3 (the native daemon, `--span`) and the video studio | the denoiser over both cards, nothing streamed: a clip in ~62 s from the SSD | [models.md](docs/models.md) |
-| 3D | TRELLIS.2, Hunyuan3D-2mini and 2.1 (and its paint alone), UniRig, RigNet, AnimateAnyMesh | one card each | [3d.md](docs/3d.md) |
+| 3D | TRELLIS.2, Hunyuan3D-2mini and 2.1 (and its paint alone), UniRig, SkinTokens, RigNet, AnimateAnyMesh, UniMate | one card each | [3d.md](docs/3d.md) |
 
 Not here yet: HunyuanImage 2.1; the bigger cards' forms (the models [marked too big](docs/models.md)). The answers'
 `nextsycl` result key keeps its name (the platform reads it).

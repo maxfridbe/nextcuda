@@ -42,3 +42,15 @@ checkpoints, read as published without Python.
 - It writes the "articulation" class of skeletons (the class token the demo asks for); characters and creatures suit it
   best, other shapes get a rig, not always a good one.
 - License: MIT (code and weights).
+
+## Speed and memory (nextcuda, 2026-10-27)
+
+A 3.6K-vertex humanoid rigs in 3.0 s on the 5070 with 10 beams (4.0 GiB at the high point), a 177K-triangle soldier in
+3.4 s; the mesh size matters little (the samples are always 54,000). Longer skeletons grow the beams' key / value pool;
+`--opt-beams 1` (greedy) is the fallback when memory is short. Checked against the reference: the same tokens, joints
+and parents, the skin within 1e-6 relative RMS (docs/3d.md).
+
+## Then animate it
+
+UniMate (`--model unimate --prompt "An object walks forward."`) moves a rigged mesh's skeleton. SkinTokens' joints are
+named `bone_N`, which UniMate cannot read: expect a weaker motion, set the facing, try seeds (model-cards/guides/unimate.md).

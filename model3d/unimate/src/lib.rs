@@ -253,7 +253,7 @@ impl Model3dEngine for UniMate {
         let t0 = Instant::now();
         let prompt = req.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty())
             .ok_or_else(|| Error(format!("{ARCH} animates a rig from a description: give a prompt (\"An object walks forward.\")")))?;
-        let skin = req.mesh.skin.as_ref().ok_or_else(|| Error(format!("{ARCH} animates the skeleton of a rigged mesh: this one has no skin (rig it first: unirig, rignet)")))?;
+        let skin = req.mesh.skin.as_ref().ok_or_else(|| Error(format!("{ARCH} animates the skeleton of a rigged mesh: this one has no skin (rig it first: skintokens, unirig, rignet)")))?;
         let facing = req.extra.get("facing").map(|v| rig::Facing::parse(v)).transpose()?.unwrap_or(self.facing);
         let names = req.extra.get("names").map(|v| rig::NameMode::parse(v)).transpose()?.unwrap_or(self.names);
         let d = self.defaults();

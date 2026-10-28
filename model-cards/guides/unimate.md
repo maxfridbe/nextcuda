@@ -1,6 +1,6 @@
 # UniMate: a rigged mesh set in motion by a sentence
 
-Give it a mesh that already has a skeleton and skin weights (a GLB from UniRig or RigNet, or any GLB with a skin) and
+Give it a mesh that already has a skeleton and skin weights (a GLB from UniRig, SkinTokens or RigNet, or any GLB with a skin) and
 a sentence; it returns the same mesh with a skeletal animation named "skeleton": 60 frames at 30 fps (2 s), a
 rotation for every joint on every frame and a path for the root. Nothing about the mesh changes - vertices, UVs,
 textures, weights - so it plays in any glTF viewer or engine.
@@ -34,6 +34,14 @@ repository, "A robot dog walks forward.") is stable: amplitude 50 deg in both se
 takes 18 deg rms apart (0.36 of the amplitude). So for a UniRig or RigNet skeleton expect a weaker, less repeatable
 motion than the paper shows, and try several seeds. Renaming the joints in the GLB before animating (Mixamo or
 `Left Thigh` style names) is the real fix; nothing in this engine invents the names from the geometry.
+
+SkinTokens names its joints `bone_N` too. Rendered on the 5070 (nextcuda, 2026-10-27; "An object walks forward."):
+a soldier rigged by SkinTokens walks cleanly in seed 1 (alternate strides, the arms swinging) but almost on the spot,
+and in seed 2 strides further and drifts partly backwards; the Go2's bare mesh rigged by SkinTokens was faced backwards
+by the symmetry guess (`--opt-facing +z` fixed the direction: 3.8 and 1.8 units forward) and its legs hardly moved - the
+body glides. The Go2 as UniMate ships it, with its real names, trots forward 3.6 units with every leg stepping. So:
+after SkinTokens / UniRig, check the direction (set `--opt-facing`), try a few seeds, and rename the joints when it
+matters.
 
 ### `--opt-names structure`
 
@@ -89,5 +97,7 @@ the skeleton being the only input).
 ## Checking it
 
 `nextcuda model3d check <dump> --model unimate` compares against the official code (reference/unimate/ref.py, float32,
-same noise): flan-T5 3e-7 to 7e-7 relative RMS, one denoiser pass 1.3e-6 (10 blocks, 2.2M values), the whole adaptive
-flow 1.2e-6 with the same 128 evaluations, the decoded motion 3e-7, the rest pose and graph features identical.
+same noise): on the 5070 flan-T5 5.5e-7 relative RMS, one denoiser pass 1.5e-7 to 4.7e-7 (10 blocks, 2.2M values),
+the guided velocity 1.7e-6, the whole adaptive flow 9.9e-7 with the same 128 evaluations, the decoded motion 3.5e-7, the
+rest pose 1.7e-7 and the graph features identical. `reference/unimate/render_anim.py anim.glb frames.png` draws frames
+of the result (side and front, posed by linear blend skinning) without a viewer; the 3D page's viewer plays it too.
