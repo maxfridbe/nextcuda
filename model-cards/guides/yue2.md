@@ -47,6 +47,11 @@ score in the new style; the recording itself is never played back into the song.
 
 - `cot: melody` (the default for a cover, upstream's recommendation): the melody alone - the new style brings its own
   harmony. `cot: full`: the recording's chords too (closer to the original's harmony).
+- **Match the lyrics' sections to the recording's**: YuE2 fits the words to the score's sections (`% intro`, `% verse`,
+  `% chorus` ... in the score; `score-only: true` shows them), so tag the lyrics the same way and give a long `[Verse]`
+  every verse and chorus it holds. Words under tags the score lacks are scatted, not sung.
+- **An instrumental recording**: SheetSage2 writes a played lead line as the score's `Ins` voice; the engine moves it to
+  the `Vocal` voice, the one YuE2 sings (`sing-lead: 0` keeps the score as transcribed - an instrumental cover).
 - **New words over the recording's tune**: give your own lyrics instead of its; keep their lines and syllables close to
   the original's, section for section, so the notes have words to carry.
 - The score comes back (`score` in the answer); sing it again with `abc` and the same seed and style to make the song

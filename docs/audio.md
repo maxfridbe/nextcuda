@@ -104,3 +104,12 @@ score comes back with it (`score`, and the WAV's comment): sung again with the s
   stored): the first velocity cosine 0.99991 against the reference (Q8_0: 0.999996), 8 steps from the noise 0.99985
   (0.99998) - bf16's own distance from float32 by HOT-Step's measure; the silo's attention with its scores in half (the
   default; `NS_YUE2_ATTN=float`) 0.99989 and 0.99978; the takes transcribe as before.
+- **Covers** (2026-10-27): a recording given is transcribed by SheetSage2 on the 3060 (`audio/yue2/src/sheet`, checked
+  against upstream: [ports/yue2.md](ports/yue2.md)) and its score sung in the new style. The test recording is the USAF
+  Band of Mid-America's Jingle Bells (2020, public domain, an instrumental: `/mnt/hdd/nextcuda-models/yue2/test` on the
+  box). Its lead line is in SheetSage2's `Ins` voice; the engine moves it to the `Vocal` voice YuE2 sings, because with
+  the score as transcribed all three styles came out instrumental and Whisper heard no words. With lyrics tagged to the
+  score's sections (`[Intro]`, a long `[Verse]`, `[Outro]`), all three styles sing the traditional words over the
+  transcribed tune (Whisper hears the verse and the choruses): jazz 135.7 s in 39.4 s, metal 117.1 s in 34.5 s,
+  synthwave 138.4 s in 40.4 s. The whole song with new words ("Rolling on, rolling on ...") is sung line for line,
+  163.2 s in 47.1 s. Each run spends 7.2 s on the transcription; peaks are 7.0 GiB on the 5070 and 3.1 GiB on the 3060.

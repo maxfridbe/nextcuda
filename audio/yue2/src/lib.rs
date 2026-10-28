@@ -58,6 +58,7 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "cot", env: "NS_YUE2_COT", value: "full|melody|off", help: "what the model writes before the music: a score of melody and chords (full, the default), a melody alone (melody: covers), or none (off)", at: At::Both },
     EngineOption { name: "abc", env: "", value: "TEXT", help: "a score (ABC) to sing over instead of one drawn (cot melody or full): a cover's melody, or the score of an earlier song (its `score`) to sing it again with new words - same seed and style", at: At::Request },
     EngineOption { name: "int8", env: "NS_YUE2_INT8", value: "0|1", help: "the flow's (NAR path's) matrices as int8 ConvRot rows on the int8 tensor cores (on; 0: as stored, Q8_0)", at: At::Load },
+    EngineOption { name: "sing-lead", env: "", value: "1|0", help: "a cover of an instrumental recording: its lead line (SheetSage2's Ins voice) moved to the voice YuE2 sings (on; 0: the score as transcribed - an instrumental cover)", at: At::Request },
     EngineOption { name: "score-tokens", env: "", value: "4096", help: "the most tokens the score may take (32 to 4096; a longer score is cut and closed)", at: At::Request },
     EngineOption { name: "score-only", env: "", value: "true|false", help: "with a recording (source): only its score - SheetSage2's transcription, the melody for cot melody, melody and chords for cot full - comes back (the answer's score), no song is made", at: At::Request },
 ];
@@ -481,6 +482,9 @@ impl AudioEngine for Yue2 {
             let tr = sheet.transcribe(&sheet::wave::prepare(&src.samples, src.channels as usize, src.rate), progress)?;
             let s = if song.cot == Cot::Melody { &tr.melody } else { &tr.full };
             let abc = s.abc.clone().ok_or_else(|| Error(format!("the recording's score: {}", s.error.as_deref().unwrap_or("none was made"))))?;
+            // an instrumental recording's tune is in the Ins voice: moved to the Vocal voice, the one YuE2 sings (else it
+            // makes an instrumental: measured on a bluegrass Jingle Bells, Whisper heard no words in any of three styles)
+            let abc = if self.opt(req, "sing-lead", "").is_some_and(|v| matches!(v.trim(), "0" | "false" | "off")) { abc } else { prompt::sung_lead(&abc).0 };
             *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Some(abc.clone());
             if self.opt(req, "score-only", "").is_some_and(|v| v.trim() == "true" || v.trim() == "1") {
                 return Ok(Audio { rate: RATE, channels: 2, samples: Vec::new() });
