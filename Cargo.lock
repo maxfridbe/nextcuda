@@ -693,7 +693,9 @@ dependencies = [
  "nextcuda-model3d-animateanymesh",
  "nextcuda-model3d-hunyuan3d",
  "nextcuda-model3d-rignet",
+ "nextcuda-model3d-skintokens",
  "nextcuda-model3d-trellis2",
+ "nextcuda-model3d-unimate",
  "nextcuda-model3d-unirig",
  "nextcuda-models",
  "nextcuda-remover",
@@ -1016,6 +1018,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nextcuda-model3d-skintokens"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-model3d",
+ "serde_json",
+]
+
+[[package]]
 name = "nextcuda-model3d-trellis2"
 version = "0.0.0"
 dependencies = [
@@ -1024,6 +1037,17 @@ dependencies = [
  "nextcuda-gguf",
  "nextcuda-model3d",
  "nextcuda-remover",
+ "serde_json",
+]
+
+[[package]]
+name = "nextcuda-model3d-unimate"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-model3d",
  "serde_json",
 ]
 

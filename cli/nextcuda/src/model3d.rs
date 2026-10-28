@@ -12,7 +12,8 @@ const USAGE: &str = "nextcuda model3d gen PICTURE [PICTURE[:SIDE]]... [--model I
                    [--resolution N] [--faces N] [--texture-size N] [--mesh FILE.glb|.obj (paint it like the picture; a model that paints)] [--keep-background] [--set NAME=VALUE]... [--opt-NAME VALUE]...
                    [--out FILE.glb|DIR] [--gpu N]                 a mesh from a picture (or several views: front, back, left, right)
 nextcuda model3d rig MESH.glb|.obj [--model ID] [--prompt \"the motion\"] [--frames N] [--fps X] [--seed N] [--out FILE.glb|DIR] [--gpu N]
-                   a skeleton and skin weights (UniRig, RigNet), or motion from words (AnimateAnyMesh)
+                   a skeleton and skin weights (UniRig, SkinTokens, RigNet), or motion from words: a mesh's (AnimateAnyMesh)
+                   or a rigged mesh's skeleton (UniMate)
 nextcuda model3d serve [MODEL] [--port 8088] [--host 127.0.0.1] [--gpu N] [--set NAME=VALUE]... [--wfe] [--out DIR] [--cors ORIGIN]
 nextcuda model3d start [serve's options] [--slot N] | ps | logs [-f] | stop [--slot N]
 nextcuda model3d tool decimate IN OUT --faces N          quadric decimation (positions and colours kept)
@@ -31,7 +32,7 @@ nextcuda model3d engines | selftest [--gpu N]";
 /// The 3D engines this program has (model3d/<arch>)
 pub fn engines() -> Vec<nextcuda_model3d::Model3dKind> {
     vec![nextcuda_model3d_trellis2::kind(), nextcuda_model3d_trellis2::kind_pixal(), nextcuda_model3d_hunyuan3d::kind(), nextcuda_model3d_unirig::kind(),
-         nextcuda_model3d_rignet::kind(), nextcuda_model3d_animateanymesh::kind()]
+         nextcuda_model3d_skintokens::kind(), nextcuda_model3d_rignet::kind(), nextcuda_model3d_animateanymesh::kind(), nextcuda_model3d_unimate::kind()]
 }
 
 fn opt<'a>(args: &'a [String], k: &str) -> Option<&'a str> {
@@ -190,7 +191,7 @@ fn rig(cfg: &Config, args: &[String]) -> Result<(), String> {
     let out = out_file(cfg, args, &format!("{stem}-{}", m["id"].as_str().unwrap_or("rig")))?;
     std::fs::write(&out, nextcuda_model3d::mesh::glb::write(&out_mesh)?).map_err(|e| format!("{}: {e}", out.display()))?;
     println!("{} ({} joints, {} frames, {:.1} s)", out.display(), out_mesh.skin.as_ref().map_or(0, |s| s.joints.len()),
-             out_mesh.animation.as_ref().map_or(0, |a| a.frames.len()), t0.elapsed().as_secs_f64());
+             nextcuda_model3d::frames(&out_mesh).unwrap_or(0), t0.elapsed().as_secs_f64());
     Ok(())
 }
 
@@ -292,11 +293,23 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
             nextcuda_model3d_animateanymesh::check::run(&e, &dir, &st, opt(args, "--mesh").map(Path::new), opt(args, "--prompt"), &mut log)
                 .map_err(|e| e.0)?
         }
+        nextcuda_model3d_unimate::ARCH => {
+            let e = nextcuda_model3d_unimate::UniMate::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
+            let st = stages("t5,pass,ode,dec");
+            let st: Vec<&str> = st.iter().map(String::as_str).collect();
+            nextcuda_model3d_unimate::check::run(&e, &dir, &st, opt(args, "--mesh").map(Path::new), opt(args, "--prompt"), &mut log).map_err(|e| e.0)?
+        }
         nextcuda_model3d_unirig::ARCH => {
             let e = nextcuda_model3d_unirig::UniRig::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
             let st = stages("encoder,logits,skin");
             let st: Vec<&str> = st.iter().map(String::as_str).collect();
             nextcuda_model3d_unirig::check::run(&e, &dir, &st, opt(args, "--mesh").map(Path::new), &mut log).map_err(|e| e.0)?
+        }
+        nextcuda_model3d_skintokens::ARCH => {
+            let e = nextcuda_model3d_skintokens::SkinTokens::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
+            let st = stages("encoder,vae,logits,detok,fsq,decoder,weights");
+            let st: Vec<&str> = st.iter().map(String::as_str).collect();
+            nextcuda_model3d_skintokens::check::run(&e, &dir, &st, opt(args, "--mesh").map(Path::new), &mut log).map_err(|e| e.0)?
         }
         nextcuda_model3d_rignet::ARCH => {
             let e = nextcuda_model3d_rignet::RigNet::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
@@ -304,8 +317,9 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
             let st: Vec<&str> = st.iter().map(String::as_str).collect();
             nextcuda_model3d_rignet::check::run(&e, &dir, &st, opt(args, "--mesh").map(Path::new), &mut log).map_err(|e| e.0)?
         }
-        a => return Err(format!("check knows {}, {}, {}, {} and {} (not {a})", nextcuda_model3d_hunyuan3d::ARCH_21, nextcuda_model3d_hunyuan3d::ARCH_MINI,
-                                nextcuda_model3d_animateanymesh::ARCH, nextcuda_model3d_unirig::ARCH, nextcuda_model3d_rignet::ARCH)),
+        a => return Err(format!("check knows {}, {}, {}, {}, {}, {} and {} (not {a})", nextcuda_model3d_hunyuan3d::ARCH_21, nextcuda_model3d_hunyuan3d::ARCH_MINI,
+                                nextcuda_model3d_animateanymesh::ARCH, nextcuda_model3d_unimate::ARCH, nextcuda_model3d_unirig::ARCH,
+                                nextcuda_model3d_skintokens::ARCH, nextcuda_model3d_rignet::ARCH)),
     };
     println!("worst relative error {worst:.2e}");
     Ok(())

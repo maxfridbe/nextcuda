@@ -81,8 +81,11 @@ pub struct Abilities {
     pub views: u32,
     /// a skeleton and skin weights (`rig`)
     pub rig: bool,
-    /// motion from a description (`rig` with a prompt: a morph animation)
+    /// motion from a description (`rig` with a prompt: a morph animation, or with `skeletal` the skeleton's)
     pub animate: bool,
+    /// animate moves the skeleton of a rigged mesh (glTF skeletal animation: the mesh it is given must carry a skin)
+    /// rather than the mesh's vertices (morph targets)
+    pub skeletal: bool,
 }
 
 /// The engine's own defaults, shown by `engines` and used for the request's `None` fields
@@ -185,6 +188,11 @@ pub fn shards(files: &ModelFiles, role: &str) -> Vec<PathBuf> {
         return vec![p.clone()];
     }
     (1..).map_while(|i| files.get(&format!("{role}-{i}")).cloned()).collect()
+}
+
+/// The frames of a mesh's animation, if it has one: its morph targets' (AnimateAnyMesh) or its skeleton's (UniMate)
+pub fn frames(m: &Mesh) -> Option<usize> {
+    m.animation.as_ref().map(|a| a.frames.len()).or_else(|| m.skin.as_ref().and_then(|s| s.motion.as_ref()).map(|mo| mo.rotations.len()))
 }
 
 /// The roles `files` lacks (optional ones, ending in `?`, never missing; a sharded one, ending in `*`, needs `-1`)

@@ -90,6 +90,8 @@ repository's `cardData.license` and its licence text (2026-10-27):
 | trellis2, trellis2-512 | mit | yes, with a note | https://huggingface.co/microsoft/TRELLIS.2-4B (MIT); DINOv3 as above; BiRefNet (MIT) |
 | rignet | gpl-3.0 | yes, with a note | https://github.com/zhan-xu/RigNet (GPLv3; UMass offers a commercial licence) |
 | unirig | mit | yes | https://huggingface.co/VAST-AI/UniRig |
+| skintokens | mit | yes | https://huggingface.co/VAST-AI/SkinTokens (code https://github.com/VAST-AI-Research/SkinTokens: MIT) |
+| unimate | cc-by-nc-4.0 | **no** | https://huggingface.co/Linzhan/UniMate (the checkpoints CC BY-NC 4.0; the code https://github.com/Friedrich-M/UniMate MIT; flan-T5-base Apache-2.0) |
 | minimax-h3, -q4km, -q6k, -q8, -ref2va | minimax-h3-community | yes, with a note | https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE (not licensed in the EU, UK, South Korea or the US; US$20 million yearly revenue needs written authorization; show "MiniMax H3"; outputs may not train another model; encoder Qwen3-VL-32B, Apache-2.0) |
 
 The rules, checked when the cards load and by `cargo test` (`the_model_cards_are_whole`): the id is the file's

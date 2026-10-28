@@ -7,7 +7,7 @@ members = [
     "llm/contract", "llm/nemotronh", "llm/qwen35",
     "image/contract", "image/qwenimage21", "image/paddleocrvl", "image/unlimitedocr", "image/olmocr2", "image/mingimage", "image/mossimage", "image/upscale", "image/starvector",
     "video/contract", "video/h3",
-    "model3d/contract", "model3d/trellis2", "model3d/hunyuan3d", "model3d/unirig", "model3d/rignet", "model3d/animateanymesh",
+    "model3d/contract", "model3d/trellis2", "model3d/hunyuan3d", "model3d/unirig", "model3d/skintokens", "model3d/rignet", "model3d/animateanymesh", "model3d/unimate",
     "audio/contract", "audio/minimaxmusic3", "audio/qwen3tts", "audio/voxcpm2", "audio/breezetts2", "audio/whisper", "audio/vibevoice", "audio/acestep",
     "glue/models", "glue/serve",
     "cli/nextcuda",
@@ -46,8 +46,10 @@ nextcuda-model3d = { path = "model3d/contract" }
 nextcuda-model3d-trellis2 = { path = "model3d/trellis2" }
 nextcuda-model3d-hunyuan3d = { path = "model3d/hunyuan3d" }
 nextcuda-model3d-unirig = { path = "model3d/unirig" }
+nextcuda-model3d-skintokens = { path = "model3d/skintokens" }
 nextcuda-model3d-rignet = { path = "model3d/rignet" }
 nextcuda-model3d-animateanymesh = { path = "model3d/animateanymesh" }
+nextcuda-model3d-unimate = { path = "model3d/unimate" }
 nextcuda-audio = { path = "audio/contract" }
 nextcuda-audio-minimaxmusic3 = { path = "audio/minimaxmusic3" }
 nextcuda-audio-qwen3tts = { path = "audio/qwen3tts" }
