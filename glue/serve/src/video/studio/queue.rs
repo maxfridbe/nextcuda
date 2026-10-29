@@ -59,19 +59,15 @@ pub fn label_number(label: &str) -> Option<u64> {
     None
 }
 
-/// "run:shots:0:016#3" -> 3: the number after the last '#' of a reentrant_id.
-pub fn reentrant_number(r: &str) -> Option<u64> {
-    let digits: String = r[r.rfind('#')? + 1..].chars().take_while(|d| d.is_ascii_digit()).collect();
-    digits.parse().ok()
-}
-
-/// A clip's place in its project's timeline, 1-based: the `clip` it was asked with, else its label's "NN/MM", else the
-/// #N of its reentrant_id, else 0 (no place: before the numbered ones, sharing the place with the other unplaced).
-pub fn clip_of(item: &Value) -> u64 {
-    item.get("clip").and_then(|c| c.as_u64()).filter(|c| *c >= 1)
-        .or_else(|| label_number(&s(item, "label")))
-        .or_else(|| reentrant_number(&s(item, "reentrant_id")))
-        .unwrap_or(0)
+/// A clip's place in the edit: the `clip` its request stated; for clips made before that key, the label's "NN/MM"
+/// number, else the pass number the creative platform put after the `#` of its `reentrant_id`
+/// ("<run>:shots:0:0#17" is the 17th; its labels, "<run>:shots:0:017", carry no "NN/MM"), else 0.
+pub fn clip_number(item: &Value) -> u64 {
+    item["clip"].as_u64().filter(|c| *c > 0).or_else(|| label_number(&s(item, "label"))).or_else(|| {
+        let id = s(item, "reentrant_id");
+        let tail = id.rsplit_once('#')?.1;
+        tail.chars().all(|c| c.is_ascii_digit()).then(|| tail.parse().ok()).flatten()
+    }).unwrap_or(0)
 }
 
 /// The project an item belongs to: its own, or its label's series.
@@ -370,11 +366,14 @@ impl Studio {
             }
         }
         it.insert("reentrant_id".into(), reentrant(p).map_or(Value::Null, |r| json!(r)));
-        // the clip's place in the timeline: an integer from 1 (absent: the label's NN/MM, or the reentrant_id's #N)
-        it.insert("clip".into(), match p.get("clip") {
-            None | Some(Value::Null) => Value::Null,
-            Some(_) => num(p, "clip", 1.0, 1.0, 1_000_000.0, true)?,
-        });
+        // the clip's place in its project's edit (1 and up): the timeline's n, stated rather than read from the label
+        match p.get("clip").filter(|v| !v.is_null()) {
+            Some(c) => match c.as_u64().filter(|c| (1..=100_000).contains(c)) {
+                Some(c) => it.insert("clip".into(), json!(c)),
+                None => return Err(RpcError::param("clip: a whole number from 1 (the clip's place in its project's timeline)")),
+            },
+            None => it.insert("clip".into(), Value::Null),
+        };
         it.insert("steps".into(), num(p, "steps", 10.0, 1.0, 40.0, true)?);
         it.insert("seed".into(), num(p, "seed", 0.0, -2147483648.0, 2147483648.0, true)?);
         it.insert("te".into(), json!(te));
@@ -567,13 +566,14 @@ mod tests {
         assert_eq!(label_prefix("Harbour Night 03/12: the lamp"), "Harbour Night");
         assert_eq!(label_number("Harbour Night 03/12: the lamp"), Some(3));
         assert_eq!(label_number("no number"), None);
-        assert_eq!(reentrant_number("run:shots:0:016#3"), Some(3));
-        assert_eq!(reentrant_number("run:shots:0:016"), None);
-        // the order of use: clip, the label's NN/MM, the reentrant_id's #N, 0
-        assert_eq!(clip_of(&json!({"clip": 7, "label": "P 03/12", "reentrant_id": "x#5"})), 7);
-        assert_eq!(clip_of(&json!({"clip": null, "label": "P 03/12", "reentrant_id": "x#5"})), 3);
-        assert_eq!(clip_of(&json!({"label": "run:shots:0:016", "reentrant_id": "x#5"})), 5);
-        assert_eq!(clip_of(&json!({"label": "run:shots:0:016", "clip": 0})), 0);
+        // the order of use: clip, the label's NN/MM, the reentrant_id's #N (all digits after the last #), 0
+        let c = |label: &str, id: Value| json!({"label": label, "reentrant_id": id});
+        assert_eq!(clip_number(&c("a2c6221e-bde2:shots:0:016", json!("a2c6221e-bde2:shots:0:0#16"))), 16);
+        assert_eq!(clip_number(&c("Name 03/12: x", json!("r#9"))), 3);
+        assert_eq!(clip_number(&c("cp-smoke:shots:0:0", Value::Null)), 0);
+        assert_eq!(clip_number(&c("x", json!("r#x1"))), 0);
+        assert_eq!(clip_number(&json!({"clip": 5, "label": "Name 03/12: x", "reentrant_id": "r#9"})), 5);
+        assert_eq!(clip_number(&json!({"clip": null, "label": "Name 03/12: x"})), 3);
         assert_eq!(project_of(&json!({"label": "Speech 07/20: words"})), "Speech");
         assert_eq!(project_of(&json!({"label": "x", "project": "P"})), "P");
         assert_eq!(dialogue_of("says: <d>[English] First   batch.</d> then <d>[English] More.</d>"), "First batch. / More.");

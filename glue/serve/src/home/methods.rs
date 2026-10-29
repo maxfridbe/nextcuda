@@ -1792,9 +1792,9 @@ pub struct VideoGenerateReq {
     /// a camera name: prev_cam / first_cam anchor on the series' clips of the same camera
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<String>,
-    /// the clip's place in the project's timeline, 1-based (a retry takes the same one). Absent: the label's "NN/MM", then the #N of reentrant_id, else no place (0)
+    /// the clip's place in its project's timeline (1 and up). Say it: without it the timeline reads the label's NN/MM, else the #N of reentrant_id
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
-    #[schema(min = 1)]
+    #[schema(min = 1, max = 100000)]
     pub clip: Option<i64>,
     /// how the clip carries on from another, as one object (it sets guide_clip, first_audio, first_audio_s, first_frame, chain_mode, exposure_ref; those given flat win). There is no renormalisation step here: pin_renorm and other keys are listed back in ignored
     #[serde(default, skip_serializing_if = "Option::is_none")]
