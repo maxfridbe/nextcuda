@@ -7,6 +7,7 @@ import { navigate } from "../router.js";
 import type { ListRow } from "../types.js";
 import { clipNumber, fmtMS, labelPrefix } from "../util.js";
 import { Panel } from "./Panel.js";
+import { Spinner } from "./Spinner.js";
 
 /** A finished clip knows its project once the server has been told about projects; older
  *  records only have a label, so fall back to the prefix the timeline groups by. */
@@ -49,7 +50,8 @@ export function Completed() {
       hint={`${rows.length}${f ? ` of ${state.list.length}` : ""} clips`}
       tools={[filter]}
     >
-      <div class="box">
+      <div style={{ display: !state.slowLoaded ? "" : "none" }}><Spinner label="Loading the finished clips…" /></div>
+      <div class="box" style={{ display: state.slowLoaded ? "" : "none" }}>
         <table class="grid">
           <thead>
             <tr>

@@ -8,6 +8,7 @@ import { Gallery, Results, Zoom } from "./Gallery.js";
 import { NonCommercial } from "./Licence.js";
 import { Panel } from "./Panel.js";
 import { Progress } from "./Progress.js";
+import { Spinner } from "./Spinner.js";
 import { Stats } from "./Stats.js";
 
 function GpuPill() {
@@ -39,6 +40,7 @@ export function App() {
         <h1><span class="i" props={{ innerHTML: "&#xf03e;" }} /> {title}{NonCommercial(info)}</h1>
         <GpuPill />
       </div>
+      {!info ? <Spinner label="Connecting to the model…" /> : info.loading ? <Spinner label="Loading the model…" /> : null}
       <Stats />
       {state.error && !state.busy ? <pre class="err">{state.error}</pre> : null}
       {info?.vectorize ? <pre class="err">{`${info.model} writes pictures as SVG (POST /v1/images/vectorize, image.vectorize); this page draws them (serve a drawing model)`}</pre> : null}

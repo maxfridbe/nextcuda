@@ -13,6 +13,7 @@ import { fmtMS, fmtT, here } from "../util.js";
 import { ClipProgress } from "./Progress.js";
 import { Detail } from "./Detail.js";
 import { Panel } from "./Panel.js";
+import { Spinner } from "./Spinner.js";
 
 function exportScene(): void {
   if (state.timelineProject) {
@@ -196,6 +197,8 @@ export function Timeline() {
         tool("types.ts", () => { location.href = "api/types.ts"; }),
       ]}
     >
+      <div style={{ display: state.timelineLoading ? "" : "none" }}><Spinner label={`Loading the clips of ${project}…`} /></div>
+      <div style={{ display: state.timelineLoading ? "none" : "" }}>
       <ClipProgress />
       <ProjectProgress clips={clips} total={total} />
       <div class="tl">
@@ -206,6 +209,7 @@ export function Timeline() {
         </div>
       </div>
       <Detail />
+      </div>
       <input
         attrs={{ type: "file", id: "sceneFile", accept: "application/json,.json" }}
         style={{ display: "none" }}

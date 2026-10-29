@@ -16,7 +16,12 @@ export async function loadTimeline(project?: string): Promise<void> {
     render();
     return;
   }
+  const first = p !== state.timelineProject || !state.timelineClips.length;
   state.timelineProject = p;
+  if (first) {
+    state.timelineLoading = true;
+    render();
+  }
   try {
     const r = await api.timeline(p);
     state.timelineClips = r.clips.slice().sort((a, b) => a.n - b.n);
@@ -25,6 +30,7 @@ export async function loadTimeline(project?: string): Promise<void> {
     state.error = String(e);
     state.timelineClips = [];
   }
+  state.timelineLoading = false;
   render();
 }
 

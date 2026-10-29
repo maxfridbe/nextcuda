@@ -7,6 +7,7 @@ import { Create } from "./Create.js";
 import { NonCommercial } from "./Licence.js";
 import { Panel } from "./Panel.js";
 import { Progress } from "./Progress.js";
+import { Spinner } from "./Spinner.js";
 import { SongCard, Songs } from "./Songs.js";
 import { Speak } from "./Speak.js";
 import { Stats } from "./Stats.js";
@@ -40,6 +41,7 @@ export function App() {
         <h1><span class="i" props={{ innerHTML: info?.speech ? "&#xf130;" : "&#xf001;" }} /> {title}{NonCommercial(info)}</h1>
         <GpuPill />
       </div>
+      {!info ? <Spinner label="Connecting to the model…" /> : null}
       <Stats />
       {state.error && !state.busy ? <pre class="err">{state.error}</pre> : null}
       <Panel id="create" icon="&#xf040;" title="Create" hint={info?.arch ?? "connecting…"}>
