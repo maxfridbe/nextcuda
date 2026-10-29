@@ -35,7 +35,7 @@ const API_VERSION: u32 = 3;
 const FEATURES: &[&str] = &[
     "system.busy", "system.busy.cards", "system.busy.slots", "system.ping", "system.version", "system.files.stat", "system.files.delete",
     "jobs.image", "jobs.audio", "jobs.cancel.label", "reentrant_id",
-    "video.frames", "video.chain", "video.priority", "video.cancel.label", "video.queue.move", "video.queue.remove", "video.engines.inputs",
+    "video.frames", "video.chain", "video.soundtrack", "video.priority", "video.cancel.label", "video.queue.move", "video.queue.remove", "video.engines.inputs",
     "video.negative_prompt.ignored", "image.canvases", "image.cancel", "spec.open",
     "image.edit.strength", "audio.speak.continue_from", "video.preview", "system.busy.parallel",
     "errors.retryable", "errors.no_room", "jobs.precheck", "image.info.steps", "image.generate.init_image", "image.edit.reference",

@@ -13,7 +13,10 @@ mkdir -p dist
 # the web front ends first (node is the build's only use of it): the binary embeds dist/wfe (glue/serve/build.rs)
 ./wfe/build.sh >/dev/null
 "$TOOL" image exists "$IMAGE" 2>/dev/null || "$TOOL" build -q -t "$IMAGE" -f tooling/Containerfile tooling >/dev/null
-"$TOOL" run --rm -v "$PWD":/build:Z -w /build -e CARGO_TARGET_DIR=/build/target-trixie -e NS_LIB_DIST "$IMAGE" \
+# the libraries to embed, by value: a bare `-e NS_LIB_DIST` reached the container empty
+LIBDIST=()
+[ -z "${NS_LIB_DIST:-}" ] || LIBDIST=(-e "NS_LIB_DIST=$NS_LIB_DIST")
+"$TOOL" run --rm -v "$PWD":/build:Z -w /build -e CARGO_TARGET_DIR=/build/target-trixie "${LIBDIST[@]}" "$IMAGE" \
     cargo build --release -p nextcuda
 install -m 0755 target-trixie/release/nextcuda dist/nextcuda
 # what the binary finds beside itself: the python worker, the model cards, the docs it serves
