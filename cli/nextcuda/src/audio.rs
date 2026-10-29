@@ -438,7 +438,7 @@ fn serve(cfg: &Config, args: &[String], detach: bool) -> Result<(), String> {
     // no container program asked for: the server is this program, as a process (as the image server)
     if crate::native::native(cfg) {
         options(&m, args)?;
-        if args.iter().any(|a| a == "--wfe") && !cfg.dist.join("wfe/audio/index.html").exists() {
+        if args.iter().any(|a| a == "--wfe") && !nextcuda_serve::wfe::exists(&cfg.dist.join("wfe"), "audio/index.html") {
             return Err(format!("{}: the web front end is not built yet (./build.sh wfe)", cfg.dist.join("wfe").display()));
         }
         std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -467,7 +467,7 @@ fn serve(cfg: &Config, args: &[String], detach: bool) -> Result<(), String> {
             return Err(format!("{}: not built yet (./build.sh)", cfg.dist.join(f).display()));
         }
     }
-    if args.iter().any(|a| a == "--wfe") && !cfg.dist.join("wfe/audio/index.html").exists() {
+    if args.iter().any(|a| a == "--wfe") && !nextcuda_serve::wfe::exists(&cfg.dist.join("wfe"), "audio/index.html") {
         return Err(format!("{}: the web front end is not built yet (./build.sh wfe)", cfg.dist.join("wfe").display()));
     }
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;

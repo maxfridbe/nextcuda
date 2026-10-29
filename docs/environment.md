@@ -38,6 +38,7 @@ nextsycl's, kept until phase 2 replaces it.)
 |---|---|---|---|
 | `CUDA_DEVICE_ORDER` | PCI_BUS_ID (set by the program when unset) | how CUDA numbers the GPUs: nvidia-smi's order, not fastest first | runtime (every kind) |
 | `NEXTCUDA_LIB` | the library beside the executable | the kind's kernel library to load (a `libnextcuda-<kind>.so` path) | runtime (every kind) |
+| `NS_WFE_FROM_DISK` | unset: the front ends are read from inside the binary | `1`: read the pages and modules from `dist/wfe` instead of the embedded copy (edit a page and reload, no rebuild) | serve, studio, image/audio/model3d servers, cli |
 
 ### Build
 
@@ -54,6 +55,8 @@ nextsycl's, kept until phase 2 replaces it.)
 | `SKIP_BUILD` | unset | 1: deploy `dist/` as it is | deploy |
 | `SKIP_KERNELS` | unset | 1: do not rebuild the CUDA libraries on the host | deploy |
 | `RESTART` | 1 | 0: copy the files, leave the service as it was | deploy |
+| `NS_WFE_DIST` | `dist/wfe` beside the repository | build time: the directory `glue/serve/build.rs` embeds into the binary (`build.sh` builds it first) | build |
+| `CARGO_MANIFEST_DIR`, `OUT_DIR` | set by cargo | where `glue/serve/build.rs` finds the repository and writes the list of embedded front-end files | build |
 | `SDCPP` | ~/stable-diffusion.cpp | the stable-diffusion.cpp source tree (its headers) | build (kernels) |
 | `SDLIB` | ~/nextcuda/src/sdcpp-build | its shared build (`libstable-diffusion.so`) | build (kernels) |
 
