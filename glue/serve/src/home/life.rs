@@ -816,7 +816,8 @@ impl Home {
         }
         let card_mb = |c: &Value| c["vram_total_mb"].as_u64().unwrap_or(0);
         let (need, _) = self.vouched_mb(m, self.cards.lock().unwrap().get(gpus[0]).map_or(32768, card_mb));
-        let want = |g: usize| need.get(&g).copied().unwrap_or(0) + MARGIN_MB;
+        let asked = self.asked.lock().unwrap().get(id).copied().unwrap_or(0);
+        let want = |g: usize| (need.get(&g).copied().unwrap_or(0) + MARGIN_MB).max(asked);
         let cards = self.named_cards(&self.models());
         // a server that holds another model and could go now
         let idle_other = |x: &&Slot| x.model.is_some() && x.model.as_deref() != Some(id) && !x.busy && !x.loading && inflight(x.port) == 0;
@@ -826,15 +827,17 @@ impl Home {
             // with the fewest requests (its server queues it)
             let on: Vec<usize> = mine.iter().filter_map(|x| card_of_port(&cards, x.port)).collect();
             let spare = sv.iter().find(|x| x.model.is_none()).or_else(|| sv.iter().find(idle_other));
-            let plan = gpus.iter().copied().filter(|g| !on.contains(g))
-                .find_map(|g| self.room_plan(&cards, g, want(g), kind, true).map(|p| (g, p)));
+            let plan = pick_card(gpus.iter().copied().filter(|g| !on.contains(g))
+                .map(|g| (g, card_free(&cards, g), self.room_plan(&cards, g, want(g), kind, true))));
             if let (Some(x), Some((gpu, plan))) = (spare, plan) {
                 // (a plan another request's lock stands in the way of: no copy now, the requests share the first)
                 let started = self.free(&plan, kind, id).and_then(|_| {
                     self.stop_slot(kind, x, id)?;
-                    self.wait_room(gpu, want(gpu));
+                    if !self.wait_room(gpu, want(gpu)) {
+                        return Err((503, format!("GPU {gpu} did not free the room")));
+                    }
                     self.note(job, "loading", &format!("a second copy of {id} loading on GPU {gpu} (server {})", x.slot + 1));
-                    self.start_at(kind, id, x, gpu)
+                    self.start_at(kind, id, x, gpu).inspect_err(|(_, e)| { self.learn_ask(id, e, gpu, want(gpu)); })
                 });
                 match started {
                     Ok(()) => return Ok(Ok(self.lease(x.port))),
@@ -848,10 +851,10 @@ impl Home {
             }
             return Ok(Ok(self.lease(x.port)));
         }
-        // not loaded: the first card of its with the room now, or once idle models there go (picture and sound
-        // servers, an idle video worker, a chat model not kept by X-Keep-Up-S); a slot no server holds, else one an
-        // idle model holds, else one a busy model of the kind holds, after its requests
-        let plan = gpus.iter().copied().find_map(|g| self.room_plan(&cards, g, want(g), kind, false).map(|p| (g, p)));
+        // not loaded: a card of its with the room now (the one with the most free), else the first that has it once idle
+        // models there go (picture and sound servers, an idle video worker, a chat model not kept by X-Keep-Up-S); a
+        // slot no server holds, else one an idle model holds, else one a busy model of the kind holds, after its requests
+        let plan = pick_card(gpus.iter().map(|&g| (g, card_free(&cards, g), self.room_plan(&cards, g, want(g), kind, false))));
         let empty = sv.iter().find(|x| x.model.is_none());
         let idle = sv.iter().filter(idle_other).min_by_key(|x| card_of_port(&cards, x.port).is_none_or(|g| Some(g) != plan.as_ref().map(|p| p.0)));
         let on_mine = |x: &&Slot| x.model.is_some() && card_of_port(&cards, x.port).is_some_and(|g| gpus.contains(&g));
@@ -885,9 +888,19 @@ impl Home {
         if let Err((_, e)) = self.free(&plan, kind, id) {
             return Ok(Err(e));
         }
-        self.wait_room(gpu, want(gpu));
+        // what was stopped has let go of the room before the load (a holder that took work meanwhile is not stopped:
+        // the next try plans again)
+        if !self.wait_room(gpu, want(gpu)) {
+            return Ok(Err(format!("GPU {gpu} has not freed {:.1} GiB for {id} yet", want(gpu) as f64 / 1024.0)));
+        }
         self.note(job, "loading", &format!("{id} loading on GPU {gpu} (server {})", x.slot + 1));
-        self.start_at(kind, id, x, gpu)?;
+        if let Err((code, e)) = self.start_at(kind, id, x, gpu) {
+            // the server asked more than was planned for: the next try plans for that (stopping idle work for it)
+            if self.learn_ask(id, &e, gpu, want(gpu)) {
+                return Ok(Err(format!("{id} needed more room on GPU {gpu} than planned ({e}); planned again")));
+            }
+            return Err((code, e));
+        }
         Ok(Ok(self.lease(x.port)))
     }
 
@@ -938,7 +951,7 @@ impl Home {
     /// free its own kind's chat or video.
     fn room_plan(&self, cards: &Value, g: usize, want: u64, asking: &str, light: bool) -> Option<Vec<Holder>> {
         let c = cards.get(g)?;
-        let free = c["vram_total_mb"].as_u64().unwrap_or(0).saturating_sub(c["vram_used_mb"].as_u64().unwrap_or(0));
+        let free = card_free(cards, g);
         if free >= want {
             return Some(Vec::new());
         }
@@ -970,18 +983,22 @@ impl Home {
                 _ => {}
             }
         }
-        // the lightest to bring back first: picture and sound servers, then the video worker, then a chat model
-        idle.sort_by_key(|h| (h.order, std::cmp::Reverse(h.mb)));
-        let mut got = free;
-        let mut plan = Vec::new();
-        for h in idle {
-            if got >= want {
-                break;
-            }
-            got += h.mb;
-            plan.push(h);
+        plan_room(free, want, idle)
+    }
+
+    /// A server's refusal to load for want of memory (its "needs about X GiB ...; Y GiB are free", in `e`) on card
+    /// `gpu`, planned for `want` MiB: what it asks, as the front door counts free memory, kept for `id`. Whether that
+    /// is more than was planned (another try may then succeed).
+    fn learn_ask(&self, id: &str, e: &str, gpu: usize, want: u64) -> bool {
+        let Some((need, had)) = asked_mb(e) else { return false };
+        let ask = ask_mb(need, had, card_free(&self.cards.lock().unwrap(), gpu));
+        eprintln!("{id}: its server asked {need} MiB with {had} MiB free on GPU {gpu}; planned {want} MiB, from now {ask}");
+        let mut a = self.asked.lock().unwrap();
+        let more = ask > want && a.get(id).is_none_or(|x| ask > *x);
+        if more {
+            a.insert(id.to_string(), ask);
         }
-        (got >= want).then_some(plan)
+        more
     }
 
     /// Stop the idle holders of a plan (for `id`; the kind `kind` asking holds its own lock; another kind's is tried, and
@@ -1021,16 +1038,17 @@ impl Home {
         Ok(())
     }
 
-    /// Wait (30 s at most) until card `g` has `want` MiB free: a stopped process lets go of its memory in a moment
-    fn wait_room(&self, g: usize, want: u64) {
+    /// Wait (30 s at most) until card `g` has `want` MiB free: a stopped process lets go of its memory in a moment.
+    /// Whether it came.
+    fn wait_room(&self, g: usize, want: u64) -> bool {
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_secs(30) {
-            let free = self.cards.lock().unwrap().get(g).map_or(0, |c| c["vram_total_mb"].as_u64().unwrap_or(0).saturating_sub(c["vram_used_mb"].as_u64().unwrap_or(0)));
-            if free >= want {
-                return;
+            if card_free(&self.cards.lock().unwrap(), g) >= want {
+                return true;
             }
             std::thread::sleep(Duration::from_secs(1));
         }
+        false
     }
 
     /// Whether the studio has nothing to make: no clip running, none runnable in the queue
@@ -1213,6 +1231,64 @@ impl Home {
     }
 }
 
+/// Card `g`'s free memory as the sampler has it (its total less what is used), MiB
+fn card_free(cards: &Value, g: usize) -> u64 {
+    cards.get(g).map_or(0, |c| c["vram_total_mb"].as_u64().unwrap_or(0).saturating_sub(c["vram_used_mb"].as_u64().unwrap_or(0)))
+}
+
+/// What of a card's idle holders must go so `want` MiB is free (it has `free`): none (Some(empty)), the lightest to
+/// bring back first - picture and sound servers, then the video worker, then a chat model - or no way (None)
+fn plan_room(free: u64, want: u64, mut idle: Vec<Holder>) -> Option<Vec<Holder>> {
+    idle.sort_by_key(|h| (h.order, std::cmp::Reverse(h.mb)));
+    let mut got = free;
+    let mut plan = Vec::new();
+    for h in idle {
+        if got >= want {
+            break;
+        }
+        got += h.mb;
+        plan.push(h);
+    }
+    (got >= want).then_some(plan)
+}
+
+/// The card to load on, of (card, its free MiB, its plan) in the model's order: one with the room now - the one with the
+/// most free, so an estimate on the low side does not land the model beside another on a full card - before the first
+/// whose room needs idle work stopped
+fn pick_card(plans: impl Iterator<Item = (usize, u64, Option<Vec<Holder>>)>) -> Option<(usize, Vec<Holder>)> {
+    let mut later = None;
+    let mut now: Option<(usize, u64, Vec<Holder>)> = None;
+    for (g, free, plan) in plans {
+        match plan {
+            Some(p) if p.is_empty() => {
+                if now.as_ref().is_none_or(|n| free > n.1) {
+                    now = Some((g, free, p));
+                }
+            }
+            Some(p) => {
+                later.get_or_insert((g, p));
+            }
+            None => {}
+        }
+    }
+    now.map(|(g, _, p)| (g, p)).or(later)
+}
+
+/// A server's "needs about X GiB on <card>; Y GiB are free" (its refusal to load), as (X, Y) in MiB
+fn asked_mb(e: &str) -> Option<(u64, u64)> {
+    let gib = |t: &str| t.trim().parse::<f64>().ok().map(|g| (g * 1024.0) as u64);
+    let need = e.split("needs about ").nth(1)?.split(" GiB").next()?;
+    let free = e.split(" GiB are free").next()?.rsplit(' ').next()?;
+    Some((gib(need)?, gib(free)?))
+}
+
+/// What a card must have free, as the front door counts it (`front_free`: total less used), for a server that asked
+/// `need` MiB and found `had` free: the difference is its context and what the driver keeps (half a GiB at least: the
+/// sample may still count the server that ended), with a quarter GiB for the asking's rounding
+fn ask_mb(need: u64, had: u64, front_free: u64) -> u64 {
+    need + front_free.saturating_sub(had).max(512) + 256
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1248,5 +1324,51 @@ mod tests {
         assert!(!spans_all(&json!({"id": "qwen3.8-27b-q8", "kind": "llm"}), &cards), "a one-card chat model");
         assert!(!spans_all(&json!({"id": "breeze-tts-2", "kind": "audio"}), &cards), "an audio model's all is where its copies may go");
         assert!(!spans_all(&json!({"id": "my-own", "kind": "llm", "gpus": "all"}), &cards), "no model card: a choice");
+    }
+
+    // brainiac's two RTX 5070s: breeze-tts-2 idle in audio server 1 on GPU 0 (5.9 GiB), GPU 1 all but empty;
+    // qwen3-tts-custom (seen at 3914 MiB) asked for
+    fn two_cards() -> Value {
+        json!([{"vram_total_mb": 12227, "vram_used_mb": 6134}, {"vram_total_mb": 12288, "vram_used_mb": 157}])
+    }
+
+    fn breeze() -> Vec<Holder> {
+        vec![Holder { what: Free::Server("audio".into(), 0), mb: 6040, model: "breeze-tts-2".into(), order: 0 }]
+    }
+
+    fn plans(cards: &Value, gpus: &[usize], want: u64) -> Option<(usize, Vec<Holder>)> {
+        pick_card(gpus.iter().map(|&g| (g, card_free(cards, g), plan_room(card_free(cards, g), want, if g == 0 { breeze() } else { vec![] }))))
+    }
+
+    #[test]
+    fn a_model_goes_to_the_card_with_room_not_beside_another() {
+        let cards = two_cards();
+        let want = 3914 + MARGIN_MB;
+        // GPU 0 has the room too, by the estimate (it had not: the server asked 5.6 GiB with 5.3 free): the emptier card
+        let (g, plan) = plans(&cards, &[0, 1], want).unwrap();
+        assert_eq!((g, plan.len()), (1, 0));
+        // a card with room now before an earlier one whose room needs breeze stopped
+        let (g, plan) = plans(&cards, &[0, 1], 7000).unwrap();
+        assert_eq!((g, plan.len()), (1, 0));
+    }
+
+    #[test]
+    fn a_refusal_for_memory_plans_the_idle_server_away() {
+        let cards = two_cards();
+        let e = "audio start qwen3-tts-custom on GPU 0 (server 2): nextcuda: nextcuda-audio-1 ended while loading (nextcuda: qwen3-tts needs \
+                 about 5.6 GiB on NVIDIA GeForce RTX 5070; 5.3 GiB are free): nextcuda audio logs";
+        let (need, had) = asked_mb(e).unwrap();
+        assert_eq!((need, had), (5734, 5427));
+        let ask = ask_mb(need, had, card_free(&cards, 0));
+        assert!(ask > card_free(&cards, 0) && ask > 3914 + MARGIN_MB, "{ask}");
+        // the model on GPU 0 only (its entry's gpus: "0"): breeze goes first
+        let (g, plan) = plans(&cards, &[0], ask).unwrap();
+        assert_eq!(g, 0);
+        assert!(matches!(&plan[..], [Holder { what: Free::Server(k, 0), .. }] if k == "audio"));
+        // on both cards: the empty one, nothing stopped
+        let (g, plan) = plans(&cards, &[0, 1], ask).unwrap();
+        assert_eq!((g, plan.len()), (1, 0));
+        assert_eq!(asked_mb("qwen3.8 needs about 30.1 GiB on X (28.0 GiB of weights); 22.5 GiB are free").map(|x| x.0), Some(30822));
+        assert_eq!(asked_mb("nextcuda-audio-1 ended while loading"), None);
     }
 }

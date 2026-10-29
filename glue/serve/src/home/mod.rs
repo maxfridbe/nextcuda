@@ -205,6 +205,9 @@ pub struct Home {
     kind_lock: BTreeMap<&'static str, Mutex<()>>,
     /// model id -> card -> MiB, the most seen while it ran
     seen: Mutex<BTreeMap<String, BTreeMap<usize, u64>>>,
+    /// model id -> MiB a card must have free (as the front door counts it) for its server to start: learned when the
+    /// server refused to load for want of memory (its own check asks more than its seen peak)
+    asked: Mutex<BTreeMap<String, u64>>,
     /// the requests sent on to each image and audio server and not answered yet, by its port
     pub(crate) inflight: Mutex<BTreeMap<u16, usize>>,
     /// what each image, audio and 3D server last said of itself (model, loading, busy), by its port
@@ -308,7 +311,7 @@ impl Home {
             o, token, state_file, jobs,
             cards: Mutex::new(json!([])), runs: Mutex::new(Vec::new()), next: Mutex::new(1), loading: Mutex::new(BTreeMap::new()),
             kind_lock: ["llm", "image", "audio", "model3d", "video"].into_iter().map(|k| (k, Mutex::new(()))).collect(),
-            seen: Mutex::new(seen), inflight: Mutex::new(BTreeMap::new()), answers: Mutex::new(BTreeMap::new()), stages: Mutex::new(BTreeMap::new()), chat_keep: Mutex::new(BTreeMap::new()),
+            seen: Mutex::new(seen), asked: Mutex::new(BTreeMap::new()), inflight: Mutex::new(BTreeMap::new()), answers: Mutex::new(BTreeMap::new()), stages: Mutex::new(BTreeMap::new()), chat_keep: Mutex::new(BTreeMap::new()),
             maint_file, maint_bypass, disks: disks::Disks::new(&st), pulls: pulls::Pulls::default(),
         });
         let me = h.clone();
