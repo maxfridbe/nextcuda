@@ -300,7 +300,10 @@ pub(crate) mod tests {
 
     /// The decoded length in seconds (ffmpeg, to 24 kHz mono s16)
     pub(crate) fn decoded_secs(b: &[u8], fmt: &str) -> f64 {
-        let dir = std::env::temp_dir().join(format!("nc-speech-{}-{}", std::process::id(), Instant::now().elapsed().as_nanos() ^ b.len() as u128));
+        // one directory per call: the tests run in parallel, and a name made of the pid and the size (as it once was)
+        // is the same for two calls that decode the same format and length, one removing the file the other is reading
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("nc-speech-{}-{}", std::process::id(), CALLS.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(format!("out.{fmt}"));
         std::fs::write(&p, b).unwrap();
@@ -363,6 +366,14 @@ pub(crate) mod tests {
             let k = i;
             i += 1;
             if Some(k) == fail {
+                // the failure comes once the first stretch is out at the client (up to 10 s): a failing stretch kills
+                // the encoder without draining it, so what the client has is what ffmpeg had written by then, and how
+                // soon that is depends on the machine, not on `delay`
+                let want = 41_500;
+                let give_up = Instant::now() + Duration::from_secs(10);
+                while b.lock().unwrap().len() < want && Instant::now() < give_up {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 return Some(Err(format!("stretch {k} failed")));
             }
             made.push(t0.elapsed());
@@ -418,13 +429,17 @@ pub(crate) mod tests {
     #[test]
     fn the_first_sound_goes_out_before_the_last_stretch_is_spoken() {
         for fmt in ["pcm", "mp3", "opus", "wav", "aac", "flac"] {
-            let (r, raw, at, made, _) = run(fmt, 1.0, 5, Duration::from_millis(300), None, None);
+            let (r, raw, at, made, _) = run(fmt, 1.0, 5, Duration::from_millis(400), None, None);
             r.unwrap();
-            // the head, then the first data (the head is one write, the first chunk's size line the next)
+            // the head, then the first data (the head is one write, the first chunk's size line the next). Against the
+            // fake's own clock, and the last stretch rather than the second: starting ffmpeg and the first encoded bytes
+            // take as long as a loaded machine makes them, but they cannot take the three stretches (1.2 s) between the
+            // second and the last, and a stream that waits for the end could not beat the last
             let first = at[1];
-            assert!(first < made[1], "{fmt}: first bytes {first:?}, stretch 2 made at {:?}", made[1]);
+            assert_eq!(made.len(), 5);
+            assert!(first < made[4], "{fmt}: first bytes {first:?}, the last stretch made at {:?}", made[4]);
             let total = *at.last().unwrap();
-            eprintln!("{fmt}: first byte {first:?}, total {total:?} ({} bytes, 5 stretches of 0.3 s)", raw.len());
+            eprintln!("{fmt}: first byte {first:?}, total {total:?} ({} bytes, 5 stretches of 0.4 s)", raw.len());
         }
     }
 
