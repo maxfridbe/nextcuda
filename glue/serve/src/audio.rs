@@ -971,6 +971,8 @@ mod streamed {
     struct Fake {
         delay: Duration,
         said: Said,
+        /// when each request was done being spoken: the fake's own clock, to set the first byte against
+        made: Arc<Mutex<Vec<Instant>>>,
     }
 
     impl AudioEngine for Fake {
@@ -996,13 +998,20 @@ mod streamed {
             if req.prompt.contains("FAIL") {
                 return Err(nextcuda_core::Error("the engine refused it".into()));
             }
+            self.made.lock().unwrap().push(Instant::now());
             Ok(nextcuda_audio::Audio { rate: 12_000, channels: 1, samples: (0..12_000).map(|i| 0.2 * (i as f32 * 0.2).sin()).collect() })
         }
     }
 
     fn serve(delay: Duration) -> (String, Said) {
+        let (addr, said, _) = serve_stamped(delay);
+        (addr, said)
+    }
+
+    fn serve_stamped(delay: Duration) -> (String, Said, Arc<Mutex<Vec<Instant>>>) {
         let said = Arc::new(Mutex::new(Vec::new()));
-        let srv = AudioServer::new("qwen3-tts-custom".into(), Gpu::detached("none"), Box::new(Fake { delay, said: said.clone() }), None, None, vec![]).unwrap();
+        let made = Arc::new(Mutex::new(Vec::new()));
+        let srv = AudioServer::new("qwen3-tts-custom".into(), Gpu::detached("none"), Box::new(Fake { delay, said: said.clone(), made: made.clone() }), None, None, vec![]).unwrap();
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap().to_string();
         drop(l);
@@ -1014,12 +1023,18 @@ mod streamed {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        (addr, said)
+        (addr, said, made)
     }
 
     /// POST it as curl does: (the raw answer, when its first body bytes came, when it ended); `stop_after` bytes of
     /// body: hang up there
     fn post(addr: &str, body: &str, stop_after: Option<usize>) -> (Vec<u8>, Duration, Duration) {
+        let (raw, _, first, total) = post_from(addr, body, stop_after);
+        (raw, first, total)
+    }
+
+    /// `post`, and the instant it started, to set against the fake engine's own clock
+    fn post_from(addr: &str, body: &str, stop_after: Option<usize>) -> (Vec<u8>, Instant, Duration, Duration) {
         let mut c = std::net::TcpStream::connect(addr).unwrap();
         let t0 = Instant::now();
         write!(c, "POST /v1/audio/speech HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer sk-test\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
@@ -1039,7 +1054,7 @@ mod streamed {
                 }
             }
         }
-        (raw, first.unwrap_or_default(), t0.elapsed())
+        (raw, t0, first.unwrap_or_default(), t0.elapsed())
     }
 
     const TEXT: &str = "Streaming raw audio chunks directly to standard output. It is said a sentence or so at a time, and each stretch \
@@ -1049,9 +1064,9 @@ mod streamed {
     /// long before the last stretch is spoken
     #[test]
     fn an_openai_client_gets_pcm_streamed() {
-        let (addr, said) = serve(Duration::from_millis(500));
+        let (addr, said, made) = serve_stamped(Duration::from_millis(800));
         let body = json!({"model": "tts-1", "input": TEXT, "voice": "alloy", "response_format": "pcm"}).to_string();
-        let (raw, first, total) = post(&addr, &body, None);
+        let (raw, t0, first, total) = post_from(&addr, &body, None);
         let (head, pcm, closed) = dechunk(&raw);
         assert!(head.starts_with("HTTP/1.1 200") && head.contains("Transfer-Encoding: chunked") && head.contains("Content-Type: audio/L16"), "{head}");
         assert!(closed);
@@ -1060,8 +1075,13 @@ mod streamed {
         assert!(s.iter().all(|(_, v, _)| v.as_deref() == Some("vivian")), "alloy is vivian: {s:?}");
         assert!(s.windows(2).all(|w| w[0].2 == w[1].2), "one seed for every stretch");
         assert!((pcm.len() as i64 - s.len() as i64 * 48_000).abs() < 400, "{} bytes for {} s", pcm.len(), s.len());
-        assert!(first + Duration::from_millis(400) < total, "first {first:?}, total {total:?}");
-        eprintln!("pcm over HTTP: {} stretches of 0.5 s, first byte {first:?}, total {total:?}", s.len());
+        // the first sound reached the client before the engine had made the last stretch (its own clock, not a margin on
+        // the wall clock: how long ffmpeg takes to start is up to the machine, but it cannot take the stretches between)
+        let made = made.lock().unwrap().clone();
+        assert_eq!(made.len(), s.len());
+        let last = made.last().unwrap().duration_since(t0);
+        assert!(first < last, "first {first:?}, the last stretch made at {last:?}, total {total:?}");
+        eprintln!("pcm over HTTP: {} stretches of 0.8 s, first byte {first:?}, total {total:?}", s.len());
     }
 
     #[test]
