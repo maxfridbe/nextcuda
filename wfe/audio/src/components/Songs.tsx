@@ -4,6 +4,7 @@ import { reuse, saveVoice } from "../actions.js";
 import { render, state } from "../state.js";
 import type { Song } from "../types.js";
 import { fmtT, mss } from "../util.js";
+import { Spinner } from "./Spinner.js";
 
 function meta(s: Song): string {
   const who = s.cloned ? "cloned voice · " : s.voice ? `${s.voice} · ` : "";
@@ -42,6 +43,7 @@ export function SongCard(props: { s: Song; big: boolean }) {
 }
 
 export function Songs() {
+  if (!state.historyLoaded) return <Spinner label="Loading what was made…" />;
   // a speech server lists its speech, a song server its songs (they share the output directory)
   const speech = !!state.info?.speech;
   const list = state.history.filter((s) => (s.cloned !== undefined) === speech);

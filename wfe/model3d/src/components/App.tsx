@@ -8,6 +8,7 @@ import { Gallery } from "./Gallery.js";
 import { NonCommercial } from "./Licence.js";
 import { Panel } from "./Panel.js";
 import { Progress } from "./Progress.js";
+import { Spinner } from "./Spinner.js";
 import { Stage } from "./Stage.js";
 
 function GpuPill() {
@@ -42,6 +43,7 @@ export function App() {
         <GpuPill />
       </div>
       {state.error && !state.busy ? <pre class="err">{state.error}</pre> : null}
+      {!info ? <Spinner label="Connecting to the model…" /> : null}
       <Panel id="create" icon="&#xf040;" title="Create" hint={what}>
         <Create />
       </Panel>

@@ -8,6 +8,7 @@ import { NonCommercial } from "./Licence.js";
 import { Output } from "./Output.js";
 import { Panel } from "./Panel.js";
 import { Read } from "./Read.js";
+import { Spinner } from "./Spinner.js";
 import { Stats } from "./Stats.js";
 
 function GpuPill() {
@@ -39,6 +40,7 @@ export function App() {
         <h1><span class="i" props={{ innerHTML: "&#xf15c;" }} /> {info ? info.model : "nextcuda ocr"}{NonCommercial(info)}</h1>
         <GpuPill />
       </div>
+      {!info ? <Spinner label="Connecting to the model…" /> : info.loading ? <Spinner label="Loading the model…" /> : null}
       <Stats />
       {state.error && !state.busy ? <pre class="err">{state.error}</pre> : null}
       {info && !info.loading && info.reads === false

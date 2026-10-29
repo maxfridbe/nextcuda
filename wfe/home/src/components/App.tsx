@@ -6,6 +6,7 @@ import type { Available, Card, Model, Proc, Service } from "../types.js";
 import { Api } from "./Api.js";
 import { ConfigView } from "./Config.js";
 import { NonCommercial } from "./Licence.js";
+import { Spinner } from "./Spinner.js";
 
 const gib = (mb: number) => (mb / 1024).toFixed(1);
 /** A GPU as the pages show it (the same function in every app's util.ts). */
@@ -200,7 +201,7 @@ function ModelRow(m: Model) {
 
 function Models() {
   const st = ui.state;
-  if (!st) return null;
+  if (!st) return <section class="panel"><div class="pbody"><Spinner label="Loading the models…" /></div></section>;
   return (
     <section class="panel">
       <div class="phead"><span class="i" props={{ innerHTML: "&#xf1b3;" }} /><span class="ptitle">Models</span>

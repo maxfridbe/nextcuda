@@ -16,12 +16,16 @@ export interface AppState {
   pickGpu: number | null;
   list: ListRow[];
   films: Film[];
+  /** false until the slow poll's first answer (the finished clips and films: a spinner stands in) */
+  slowLoaded: boolean;
   /** films being joined, and the joins since the studio started */
   joins: Join[];
   filter: string;
 
   timelineProject: string | null;
   timelineClips: TimelineClip[];
+  /** true while a project's clips are fetched for the first time (not on the 30 s refresh) */
+  timelineLoading: boolean;
   selected: number | null;
   pxPerSecond: number;
 
@@ -48,10 +52,12 @@ export const state: AppState = {
   pickGpu: null,
   list: [],
   films: [],
+  slowLoaded: false,
   joins: [],
   filter: "",
   timelineProject: null,
   timelineClips: [],
+  timelineLoading: false,
   selected: null,
   pxPerSecond: 14,
   panels: {},
