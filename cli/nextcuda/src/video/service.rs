@@ -151,9 +151,7 @@ pub fn start(cfg: &Config, raw: &[String]) -> Result<(), String> {
     }
     ce.need_image()?;
     for f in ["nextcuda", "libnextcuda-video.so"] {
-        if !cfg.dist.join(f).exists() {
-            return Err(format!("{}: not built yet (./build.sh)", cfg.dist.join(f).display()));
-        }
+        crate::service::need_dist(cfg, f)?;
     }
     ce.remove(ENGINE); // a stopped one from before
     let out = out_dir(cfg);

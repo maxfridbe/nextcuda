@@ -701,6 +701,7 @@ dependencies = [
  "nextcuda-models",
  "nextcuda-remover",
  "nextcuda-serve",
+ "nextcuda-sys",
  "nextcuda-tok",
  "nextcuda-video",
  "nextcuda-video-h3",

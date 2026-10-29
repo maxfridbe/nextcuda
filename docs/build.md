@@ -16,8 +16,14 @@ glue/serve, glue/models, cli/nextcuda    the control plane, the registry and the
 The rules of nextsycl's [`architecture.md`](architecture.md) hold - dependencies point down, one library a kind, tuning in silos -
 and `cli/nextcuda/tests/architecture.rs` checks them on every `cargo test`, with CUDA as the one GPU runtime.
 
-`./build.sh` builds the program in a debian:trixie toolchain image (its glibc is the GPU host's) and the web front
-end; `kernels/build.sh` builds the CUDA libraries with `nvcc` for the 3060 (sm_86) and the 5070 (sm_120).
+`./build.sh` builds the web front ends and then the program in a debian:trixie toolchain image (its glibc is the GPU
+host's); `kernels/build.sh` builds the CUDA libraries with `nvcc` for the 3060 (sm_86) and the 5070 (sm_120).
+
+The front ends are inside the binary (`glue/serve/build.rs` embeds `dist/wfe`; `NS_WFE_FROM_DISK=1` reads the
+directory instead). The kernel libraries are inside it when they were there to embed at build time
+(`crates/sys/build.rs`: `NS_LIB_DIST`, else `dist/`): `nvcc` is on the GPU host, so only `EMBED=1 tooling/deploy.sh`
+brings them back first; such a binary opens them from anonymous memory files (`NS_LIB_FROM_DISK=1`: the files). The
+silos stay files (`dist/silo/`, beside the executable).
 
 ## Run it as a service
 
@@ -26,6 +32,7 @@ here, builds the CUDA libraries where `nvcc` is, copies it all over and restarts
 
 ```sh
 ./tooling/deploy.sh gpu-host            # an ssh host with CUDA; SKIP_BUILD=1, SKIP_KERNELS=1, RESTART=0 to do less
+EMBED=1 ./tooling/deploy.sh gpu-host    # the kernel libraries inside the binary too (built there first, brought back)
 systemctl --user status nextcuda.service
 journalctl --user -u nextcuda.service -f
 ```
