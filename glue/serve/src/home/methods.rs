@@ -1792,6 +1792,10 @@ pub struct VideoGenerateReq {
     /// a camera name: prev_cam / first_cam anchor on the series' clips of the same camera
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<String>,
+    /// the clip's place in the project's timeline, 1-based (a retry takes the same one). Absent: the label's "NN/MM", then the #N of reentrant_id, else no place (0)
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 1)]
+    pub clip: Option<i64>,
     /// how the clip carries on from another, as one object (it sets guide_clip, first_audio, first_audio_s, first_frame, chain_mode, exposure_ref; those given flat win). There is no renormalisation step here: pin_renorm and other keys are listed back in ignored
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(json = r#"{"properties": {"color_reanchor": {"description": "true (= from), an anchor or a picture: the carried pictures scaled to its brightness (exposure_ref) - gain 0.75-1.35 on luminance, against drift"}, "context_frames": {"description": "0 or 17k + 5 (22 = 0.92 s): the last N frames of from as one moving keyframe at frame 0 (guide_clip) - the clip replays them, so trim N/2 each side at the join", "type": "integer"}, "from": {"default": "prev", "description": "anchor or file: the clip carried on from", "type": "string"}, "mode": {"description": "still: chain_mode", "enum": ["video", "png", "latent"], "type": "string"}, "sound": {"default": true, "description": "with context_frames: the sound's last N/24 s too (first_audio, first_audio_s)", "type": "boolean"}, "still": {"description": "from's last frame as the first frame (first_frame); default: when context_frames is 0", "type": "boolean"}}}"#)]

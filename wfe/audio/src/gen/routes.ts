@@ -4,8 +4,24 @@
 
 /** What /v1/audio/speech takes: a song (a song model: input the lyrics, instructions the music) or speech (a speech model: input the text; voice, language, instructions, ref_audio, ref_text ...), as the model this server runs is */
 export interface AudioSpeechBody {
-  /** a song: the lyrics ([verse] / [chorus] tags on lines of their own; empty: instrumental); speech: the text to say (required; also as text) */
-  input?: string | null;
+  /** a song: the lyrics ([verse] / [chorus] tags on lines of their own; empty: instrumental); speech: the text to say (required; also as text), or a list of texts said in turn as one stream (the same voice and seed, `gap` seconds between; not with url) */
+  input?: unknown | null;
+  /**
+   * a list of texts: the silence between them in seconds, 0-5 (0.3 by default)
+   * @minimum 0.0
+   * @maximum 5.0
+   * @default 0.3
+   */
+  gap?: number | null;
+  /**
+   * the rate of the sound in Hz, 8000-96000 (24000 by default, OpenAI's; pcm and wav say it in X-Sample-Rate); not with url
+   * @minimum 8000
+   * @maximum 96000
+   * @default 24000
+   */
+  sample_rate?: number | null;
+  /** a song: true sends its wav as it is made too (speech's wav is streamed anyway) */
+  stream?: boolean | null;
   /** a song: the music - genre, mood, tempo, instruments, voice (required unless a recording is given; also as prompt or description); speech: how to say it, the voice to make up, or a cloned voice's direction */
   instructions?: string | null;
   /** guidance (also as guidance_scale) */

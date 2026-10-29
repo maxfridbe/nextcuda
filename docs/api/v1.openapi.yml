@@ -422,9 +422,30 @@ components:
       properties:
         input:
           anyOf:
-          - type: string
+          - {}
           - type: 'null'
-          description: 'a song: the lyrics ([verse] / [chorus] tags on lines of their own; empty: instrumental); speech: the text to say (required; also as text)'
+          description: 'a song: the lyrics ([verse] / [chorus] tags on lines of their own; empty: instrumental); speech: the text to say (required; also as text), or a list of texts said in turn as one stream (the same voice and seed, `gap` seconds between; not with url)'
+        gap:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0.0
+          maximum: 5.0
+          default: 0.3
+          description: 'a list of texts: the silence between them in seconds, 0-5 (0.3 by default)'
+        sample_rate:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 8000
+          maximum: 96000
+          default: 24000
+          description: the rate of the sound in Hz, 8000-96000 (24000 by default, OpenAI's; pcm and wav say it in X-Sample-Rate); not with url
+        stream:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'a song: true sends its wav as it is made too (speech''s wav is streamed anyway)'
         instructions:
           anyOf:
           - type: string
