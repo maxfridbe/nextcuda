@@ -335,9 +335,20 @@ pub struct VoiceName {
 /// model: input the text; voice, language, instructions, ref_audio, ref_text ...), as the model this server runs is
 #[derive(Serialize, Deserialize, Rpc)]
 pub struct AudioSpeechBody {
-    /// a song: the lyrics ([verse] / [chorus] tags on lines of their own; empty: instrumental); speech: the text to say (required; also as text)
+    /// a song: the lyrics ([verse] / [chorus] tags on lines of their own; empty: instrumental); speech: the text to say (required; also as text), or a list of texts said in turn as one stream (the same voice and seed, `gap` seconds between; not with url)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
+    pub input: Option<Value>,
+    /// a list of texts: the silence between them in seconds, 0-5 (0.3 by default)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0.0, max = 5.0, default = 0.3)]
+    pub gap: Option<f64>,
+    /// the rate of the sound in Hz, 8000-96000 (24000 by default, OpenAI's; pcm and wav say it in X-Sample-Rate); not with url
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 8000, max = 96000, default = 24000)]
+    pub sample_rate: Option<i64>,
+    /// a song: true sends its wav as it is made too (speech's wav is streamed anyway)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
     /// a song: the music - genre, mood, tempo, instruments, voice (required unless a recording is given; also as prompt or description); speech: how to say it, the voice to make up, or a cloned voice's direction
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,

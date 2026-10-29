@@ -44,7 +44,12 @@ nextcuda audio check <reference dump dir> --model breeze-tts-2        # referenc
   `curl ... -d '{"model":"tts-1","input":"...","voice":"alloy","response_format":"pcm"}' --output - | ffplay -f s16le -ar 24k -ac 1 -nodisp -`
   plays as it comes. An error before the first sound is a JSON error; after it the answer ends without its closing
   chunk; a client that hangs up stops the stretch being spoken at its next step and the rest are not spoken.
-  `stream_format: "sse"` is refused. `response_format: url` (and a song's wav) is the whole file, as before.
+  `stream_format: "sse"` is refused. `response_format: url` (and a song's wav, unless `stream: true`) is the whole file, as before.
+  Two more, from nextsycl: `sample_rate` (8000-96000, 24000 by default; `X-Sample-Rate` and a streamed wav's header
+  say it; opus takes 8000, 12000, 16000, 24000 or 48000, mp3 up to 48000), and `input` as a list of texts
+  (`["One.", "Two."]`), said in turn as one stream - the same voice and seed, `gap` seconds (0.3 by default, 0-5) of
+  silence between - through the same single ffmpeg. A list is a stream, so `response_format: url` takes one text only
+  (a 400 says so); a script of `speakers` takes no list. A part that fails ends the stream uncleanly, as above.
 - **Text as it is said:** math and code symbols become words before any speech model sees them (`Q·K^T / √d_k`:
   "Q dot K to the T, divided by square root of d sub k"), markdown's marks go, dashes and brackets are pauses
   (`NS_SPEECH_NORMALIZE=0` or `normalize: false` for the text as sent) - one such line had a voice loop for 18 s.

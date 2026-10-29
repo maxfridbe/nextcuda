@@ -48,8 +48,8 @@ pub fn wire(name: &str) -> Option<Wire> {
     })
 }
 
-/// A WAV header for 24 kHz mono s16le of a length not known yet
-pub fn streaming_wav_header() -> [u8; 44] {
+/// A WAV header for mono s16le at `rate` of a length not known yet
+pub fn streaming_wav_header(rate: u32) -> [u8; 44] {
     let mut h = [0u8; 44];
     h[0..4].copy_from_slice(b"RIFF");
     h[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
@@ -57,8 +57,8 @@ pub fn streaming_wav_header() -> [u8; 44] {
     h[16..20].copy_from_slice(&16u32.to_le_bytes());
     h[20..22].copy_from_slice(&1u16.to_le_bytes());
     h[22..24].copy_from_slice(&1u16.to_le_bytes());
-    h[24..28].copy_from_slice(&RATE.to_le_bytes());
-    h[28..32].copy_from_slice(&(RATE * 2).to_le_bytes());
+    h[24..28].copy_from_slice(&rate.to_le_bytes());
+    h[28..32].copy_from_slice(&(rate * 2).to_le_bytes());
     h[32..34].copy_from_slice(&2u16.to_le_bytes());
     h[34..36].copy_from_slice(&16u16.to_le_bytes());
     h[36..40].copy_from_slice(b"data");
@@ -169,8 +169,8 @@ pub struct Pcm {
 }
 
 /// The HTTP answer's head for a streamed format (each header in `extra` ends \r\n)
-pub fn head(w: &Wire, extra: &str) -> String {
-    format!("HTTP/1.1 200 OK\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nX-Sample-Rate: {RATE}\r\nCache-Control: no-store\r\n{extra}Connection: close\r\n\r\n", w.mime)
+pub fn head(w: &Wire, rate: u32, extra: &str) -> String {
+    format!("HTTP/1.1 200 OK\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nX-Sample-Rate: {rate}\r\nCache-Control: no-store\r\n{extra}Connection: close\r\n\r\n", w.mime)
 }
 
 /// One HTTP chunk
@@ -187,16 +187,16 @@ fn chunk(out: &mut impl Write, b: &[u8]) -> std::io::Result<()> {
 /// Streams the answer: the head, then the encoder's output as HTTP chunks, from `first` (spoken already) and each
 /// stretch `next` gives (None: no more) until the last, then the closing chunk. Err: why it stopped early (the
 /// connection is then to be dropped without the closing chunk); `gone` set when the client went away.
-pub fn send(out: &mut (impl Write + Send), w: Wire, speed: f64, extra: &str, first: Pcm, next: &mut dyn FnMut() -> Option<Result<Pcm, String>>,
+pub fn send(out: &mut (impl Write + Send), w: Wire, speed: f64, out_rate: u32, extra: &str, first: Pcm, next: &mut dyn FnMut() -> Option<Result<Pcm, String>>,
             gone: &AtomicBool) -> Result<(), String> {
     let rate = first.rate.max(1);
     let mut cmd = Command::new("ffmpeg");
     // no probing: the input's format is given, and ffmpeg otherwise reads seconds of it before it writes anything
     cmd.args(["-hide_banner", "-loglevel", "error", "-probesize", "32", "-analyzeduration", "0", "-f", "f32le", "-ar", &rate.to_string(), "-ac", "1",
               "-i", "pipe:0"]);
-    let mut filter = vec![format!("aresample={RATE}")];
+    let mut filter = vec![format!("aresample={out_rate}")];
     filter.extend(atempo(speed));
-    cmd.args(["-filter:a", &filter.join(","), "-ac", "1", "-ar", &RATE.to_string()]).args(w.args).args(["-flush_packets", "1", "pipe:1"]);
+    cmd.args(["-filter:a", &filter.join(","), "-ac", "1", "-ar", &out_rate.to_string()]).args(w.args).args(["-flush_packets", "1", "pipe:1"]);
     let mut child: Child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
         .map_err(|e| format!("ffmpeg: {e}"))?;
     let mut stdin = child.stdin.take().ok_or("ffmpeg's input")?;
@@ -209,7 +209,7 @@ pub fn send(out: &mut (impl Write + Send), w: Wire, speed: f64, extra: &str, fir
         let writer = sc.spawn(move || -> Result<(), String> {
             let out = o;
             let mut stdout = stdout;
-            let mut lead = head(&w, extra).into_bytes();
+            let mut lead = head(&w, out_rate, extra).into_bytes();
             let gone_now = |e: std::io::Error| {
                 gone.store(true, Ordering::Relaxed);
                 format!("the client went away ({e})")
@@ -217,7 +217,7 @@ pub fn send(out: &mut (impl Write + Send), w: Wire, speed: f64, extra: &str, fir
             out.write_all(&lead).map_err(gone_now)?;
             lead.clear();
             if w.wav_header {
-                chunk(out, &streaming_wav_header()).map_err(gone_now)?;
+                chunk(out, &streaming_wav_header(out_rate)).map_err(gone_now)?;
             }
             let mut buf = vec![0u8; 16 * 1024];
             loop {
@@ -368,7 +368,7 @@ pub(crate) mod tests {
             made.push(t0.elapsed());
             Some(Ok(tone(1.0, 16_000, 0.1 * (k as f32 + 1.0))))
         };
-        let r = send(&mut out, wire(fmt).unwrap(), speed, "", first, &mut next, &gone);
+        let r = send(&mut out, wire(fmt).unwrap(), speed, RATE, "", first, &mut next, &gone);
         let raw = b.lock().unwrap().clone();
         let at = at.lock().unwrap().clone();
         (r, raw, at, made, asked)

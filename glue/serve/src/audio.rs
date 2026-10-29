@@ -408,18 +408,61 @@ impl AudioServer {
     /// (the caller answers it as before); true: answered
     fn speech_streamed(&self, cx: &mut Cx, b: &Value) -> bool {
         let speech = self.speech_voices.is_some();
+        // input as a list of texts: said in turn as one stream (speech only; a stream, so not url)
+        let list = match &b["input"] {
+            Value::Array(a) => {
+                let texts: Option<Vec<String>> = a.iter().map(|t| t.as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from)).collect();
+                match texts {
+                    Some(t) if !t.is_empty() && speech => Some(t),
+                    _ => {
+                        cx.json(400, &err("input: a text, or a list of texts (each not empty; speech only)"));
+                        return true;
+                    }
+                }
+            }
+            _ => None,
+        };
+        let gap = match &b["gap"] {
+            Value::Null => 0.3,
+            v => match v.as_f64().filter(|g| (0.0..=5.0).contains(g)) {
+                Some(g) => g,
+                None => {
+                    cx.json(400, &err("gap: seconds from 0 to 5"));
+                    return true;
+                }
+            },
+        };
+        let out_rate = match &b["sample_rate"] {
+            Value::Null => stream::RATE,
+            v => match v.as_u64().filter(|r| (8000..=96000).contains(r)) {
+                Some(r) => r as u32,
+                None => {
+                    cx.json(400, &err("sample_rate: Hz from 8000 to 96000"));
+                    return true;
+                }
+            },
+        };
         let asked = b["response_format"].as_str().map(|f| f.trim().to_ascii_lowercase()).filter(|f| !f.is_empty());
         let name = match asked.as_deref() {
+            Some("url") if list.is_some() => {
+                cx.json(400, &err("response_format url: one text (a list is a stream: mp3, opus, aac, flac, wav or pcm)"));
+                return true;
+            }
             Some("url") => return false,
             None if speech => "mp3",
             None => return false,
-            Some("wav") if !speech => return false,
+            Some("wav") if !speech && b["stream"].as_bool() != Some(true) => return false,
             Some(f) => f,
         };
         let Some(w) = stream::wire(name) else {
             cx.json(400, &err(format!("response_format {name}: mp3, opus, aac, flac, wav, pcm (streamed) or url")));
             return true;
         };
+        // what the encoders take (ffmpeg would fail after the first sound otherwise)
+        if (w.name == "opus" && ![8000, 12000, 16000, 24000, 48000].contains(&out_rate)) || (w.name == "mp3" && out_rate > 48000) {
+            cx.json(400, &err(format!("sample_rate {out_rate}: {} takes {}", w.name, if w.name == "opus" { "8000, 12000, 16000, 24000 or 48000" } else { "8000 to 48000" })));
+            return true;
+        }
         match b["stream_format"].as_str().map(str::trim) {
             None | Some("") | Some("audio") => {}
             Some("sse") => {
@@ -446,21 +489,37 @@ impl AudioServer {
         // stays the same voice); a script of several speakers, and a song, whole
         let mut whole = b.clone();
         whole["response_format"] = json!("wav");
-        let text = ["input", "text"].iter().find_map(|k| b[*k].as_str()).unwrap_or("").to_string();
+        let texts: Vec<String> = match &list {
+            Some(t) => t.clone(),
+            None => vec![["input", "text"].iter().find_map(|k| b[*k].as_str()).unwrap_or("").to_string()],
+        };
+        let text = texts.join(" ");
         let many = b["speakers"].as_array().is_some_and(|a| !a.is_empty());
-        let pieces: Vec<Value> = if speech && !many && !text.trim().is_empty() {
+        if list.is_some() && many {
+            cx.json(400, &err("input as a list: not with speakers (a script says its own parts)"));
+            return true;
+        }
+        // None: the pause between two texts of a list
+        let pieces: Vec<Option<Value>> = if speech && !many && !text.trim().is_empty() {
             let seed = b["seed"].as_u64().unwrap_or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos() as u64 % 1_000_000).unwrap_or(7));
-            stream::chunks(&text, 160, 400).into_iter().map(|c| {
-                let mut x = whole.clone();
-                if let Some(o) = x.as_object_mut() {
-                    o.remove("text");
+            let mut v = Vec::new();
+            for (i, t) in texts.iter().enumerate() {
+                if i > 0 && gap > 0.0 {
+                    v.push(None);
                 }
-                x["input"] = json!(c);
-                x["seed"] = json!(seed);
-                x
-            }).collect()
+                for c in stream::chunks(t, 160, 400) {
+                    let mut x = whole.clone();
+                    if let Some(o) = x.as_object_mut() {
+                        o.remove("text");
+                    }
+                    x["input"] = json!(c);
+                    x["seed"] = json!(seed);
+                    v.push(Some(x));
+                }
+            }
+            v
         } else {
-            vec![whole]
+            vec![Some(whole)]
         };
         let gone = AtomicBool::new(false);
         // speech's stretches are not kept (they are not the whole of anything); a song is, as before
@@ -470,18 +529,24 @@ impl AudioServer {
             Ok(stream::Pcm { samples, rate })
         };
         // the first stretch decides: its sound starts the answer, its error is the answer
-        let first = match one(&pieces[0]) {
+        let first = match one(pieces[0].as_ref().expect("a text first")) {
             Ok(p) => p,
             Err((code, m)) => {
                 cx.json(code, &err(m));
                 return true;
             }
         };
+        let first_rate = first.rate;
         let label = format!("{}, {} stretches, {} characters", w.name, pieces.len(), text.chars().count());
         let mut rest = pieces[1..].iter();
-        let mut next = || rest.next().map(|x| one(x).map_err(|(_, m)| m));
+        let mut next = || {
+            rest.next().map(|x| match x {
+                Some(x) => one(x).map_err(|(_, m)| m),
+                None => Ok(stream::Pcm { samples: vec![0.0; (gap * first_rate as f64) as usize], rate: first_rate }),
+            })
+        };
         let cors = cx.cors.clone();
-        if let Err(e) = stream::send(&mut cx.s, w, speed, &cors, first, &mut next, &gone) {
+        if let Err(e) = stream::send(&mut cx.s, w, speed, out_rate, &cors, first, &mut next, &gone) {
             // the answer has begun: it ends without its closing chunk, and why is said here
             eprintln!("nextcuda audio: a streamed answer stopped early ({label}): {e}");
         }
@@ -1015,6 +1080,43 @@ mod streamed {
         let (raw, _, _) = post(&addr, &json!({"input": "Hello.", "voice": "nova"}).to_string(), None);
         assert!(dechunk(&raw).0.contains("Content-Type: audio/mpeg"));
         assert_eq!(said.lock().unwrap().last().unwrap().1.as_deref(), Some("serena"));
+    }
+
+    /// input as a list: one stream, one voice and seed, `gap` seconds between; sample_rate; the refusals
+    #[test]
+    fn a_list_of_texts_is_one_stream_with_a_gap_and_a_rate() {
+        let (addr, said) = serve(Duration::from_millis(10));
+        let body = json!({"input": ["One.", "Two."], "voice": "alloy", "response_format": "pcm", "gap": 1.0}).to_string();
+        let (raw, _, _) = post(&addr, &body, None);
+        let (_, pcm, closed) = dechunk(&raw);
+        assert!(closed);
+        let s = said.lock().unwrap().clone();
+        assert_eq!(s.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["One.", "Two."]);
+        assert!(s[0].2 == s[1].2 && s[0].1 == s[1].1, "one voice and seed: {s:?}");
+        // two seconds of speech and one of silence, at 24 kHz
+        assert!((pcm.len() as i64 - 3 * 48_000).abs() < 400, "{} bytes", pcm.len());
+        // no gap given: 0.3 s
+        let body = json!({"input": ["One.", "Two."], "voice": "alloy", "response_format": "pcm"}).to_string();
+        let (raw, _, _) = post(&addr, &body, None);
+        assert!((dechunk(&raw).1.len() as i64 - (2.3 * 48_000.0) as i64).abs() < 400);
+        // a rate of its own
+        let body = json!({"input": "One.", "voice": "alloy", "response_format": "pcm", "sample_rate": 16000}).to_string();
+        let (raw, _, _) = post(&addr, &body, None);
+        let (head, pcm, _) = dechunk(&raw);
+        assert!(head.contains("X-Sample-Rate: 16000") && (pcm.len() as i64 - 32_000).abs() < 400, "{head} {}", pcm.len());
+        for (body, want) in [
+            (json!({"input": ["a", ""], "voice": "alloy"}), "input"),
+            (json!({"input": [], "voice": "alloy"}), "input"),
+            (json!({"input": ["a", "b"], "response_format": "url"}), "url"),
+            (json!({"input": "a", "gap": 9}), "gap"),
+            (json!({"input": "a", "sample_rate": 100}), "sample_rate"),
+            (json!({"input": "a", "sample_rate": 44100, "response_format": "opus"}), "opus"),
+        ] {
+            let (raw, _, _) = post(&addr, &body.to_string(), None);
+            let s = String::from_utf8_lossy(&raw);
+            let v: Value = serde_json::from_str(s.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert!(v["error"]["message"].as_str().unwrap().contains(want), "{v}");
+        }
     }
 
     #[test]
