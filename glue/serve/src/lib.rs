@@ -22,6 +22,7 @@ pub mod switch;
 pub mod telemetry;
 pub mod video;
 pub mod voices;
+pub mod wfe;
 
 pub use serve::Server;
 

@@ -16,9 +16,11 @@ use crate::client;
 use nextcuda_models::Config;
 use crate::container::{mount, Ce, SERVER, SOCKET_DIR_IN};
 
-fn need_dist(cfg: &Config, file: &str) -> Result<PathBuf, String> {
+/// A file of dist/ the command needs: there, or (a kernel library) inside this binary
+pub(crate) fn need_dist(cfg: &Config, file: &str) -> Result<PathBuf, String> {
     let p = cfg.dist.join(file);
-    if p.exists() {
+    let inside = file.strip_prefix("libnextcuda-").and_then(|k| k.strip_suffix(".so")).is_some_and(nextcuda_sys::has_embedded);
+    if p.exists() || inside {
         Ok(p)
     } else {
         Err(format!("{}: not built yet (./build.sh)", p.display()))
@@ -140,7 +142,8 @@ fn run(cfg: &Config, raw: &[String], foreground: bool) -> Result<(), String> {
         // the expert profile beside the checkpoints: decode's requests, the next load's VRAM fill order
         args.extend(["-e".into(), "NS_EXPERT_PROFILE=/cache/expert-profile.txt".into()]);
     }
-    args.extend(["-e".into(), "NEXTSYCL_LIB=/app/libnextcuda-llm.so".into(), "-e".into(), "ONEAPI_DEVICE_SELECTOR=level_zero:*".into()]);
+    // the kernel library is the binary's own (embedded; else /app/libnextcuda-llm.so beside it)
+    args.extend(["-e".into(), "ONEAPI_DEVICE_SELECTOR=level_zero:*".into()]);
     // engine settings the server reads from its environment (NS_KV=q8: the latent cache in q8; NS_SILO=0: no silos)
     for k in ["NS_KV", "NS_PREFILL_CHUNK", "NS_PIPE_TRACE", "NS_VRAM_GUARD_GIB", "NS_SILO"] {
         if let Some(v) = cfg.get(k) {

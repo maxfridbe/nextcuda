@@ -37,7 +37,9 @@ nextsycl's, kept until phase 2 replaces it.)
 | Variable | Default | What it does | Read by |
 |---|---|---|---|
 | `CUDA_DEVICE_ORDER` | PCI_BUS_ID (set by the program when unset) | how CUDA numbers the GPUs: nvidia-smi's order, not fastest first | runtime (every kind) |
-| `NEXTCUDA_LIB` | the library beside the executable | the kind's kernel library to load (a `libnextcuda-<kind>.so` path) | runtime (every kind) |
+| `NEXTCUDA_LIB` | the copy inside the binary, else the library beside the executable | the kind's kernel library to load (a `libnextcuda-<kind>.so` path; set, the copy inside the binary is not used) | runtime (every kind) |
+| `NS_LIB_FROM_DISK` | unset: the kernel libraries are read from inside the binary (when it was built with them: `tooling/deploy.sh` with `EMBED=1`) | `1`: open `libnextcuda-<kind>.so` and `libstable-diffusion.so` from the files beside the executable instead (rebuild a kernel without relinking the program) | runtime (every kind), cli |
+| `NS_WFE_FROM_DISK` | unset: the front ends are read from inside the binary | `1`: read the pages and modules from `dist/wfe` instead of the embedded copy (edit a page and reload, no rebuild) | serve, studio, image/audio/model3d servers, cli |
 
 ### Build
 
@@ -54,6 +56,10 @@ nextsycl's, kept until phase 2 replaces it.)
 | `SKIP_BUILD` | unset | 1: deploy `dist/` as it is | deploy |
 | `SKIP_KERNELS` | unset | 1: do not rebuild the CUDA libraries on the host | deploy |
 | `RESTART` | 1 | 0: copy the files, leave the service as it was | deploy |
+| `EMBED` | unset: the binary carries no kernel libraries (the host's files are opened) | 1: build the kernels on the host first, bring the libraries back to `target-trixie/embed-libs` and embed them in the binary | deploy |
+| `NS_LIB_DIST` | `dist/` beside the repository (where the GPU host's build puts them; empty on a build machine) | build time: the directory `crates/sys/build.rs` embeds the kernel libraries from (`build.sh` passes it into its container: a path under the repository, as `/build/...`) | build |
+| `NS_WFE_DIST` | `dist/wfe` beside the repository | build time: the directory `glue/serve/build.rs` embeds into the binary (`build.sh` builds it first) | build |
+| `CARGO_MANIFEST_DIR`, `OUT_DIR` | set by cargo | where `glue/serve/build.rs` and `crates/sys/build.rs` find the repository and write the lists of embedded files | build |
 | `SDCPP` | ~/stable-diffusion.cpp | the stable-diffusion.cpp source tree (its headers) | build (kernels) |
 | `SDLIB` | ~/nextcuda/src/sdcpp-build | its shared build (`libstable-diffusion.so`) | build (kernels) |
 
@@ -73,7 +79,7 @@ Where the program, its libraries, its models and its sockets are.
 | `NS_SILO` | silos on | 0: no model silo, every model on the shared kernels (the A/B for a silo) | runtime (every kind) |
 | `NS_SILO_NAME` | the architecture's own | another silo of the engine's ABI to load (dist/silo/libnextsycl-<name>.so) - a model card's `silo.name` | runtime (every kind) |
 | `NS_SILO_REQUIRED` | 0 | 1: refuse to load when the silo is not built (no fall back to the shared kernels) - a model card's `silo.required` | runtime (every kind) |
-| `NS_SILO_DIR` | silo/ beside the kind's kernel library | directory holding the silos (`libnextsycl-<arch>.so`) | runtime (every kind) |
+| `NS_SILO_DIR` | silo/ beside the kind's kernel library (beside the executable for one inside the binary) | directory holding the silos (`libnextsycl-<arch>.so`) | runtime (every kind) |
 | `NS_SOCKET_DIR` | $XDG_RUNTIME_DIR/nextsycl (serve's pid and marker files: /tmp) | where the control sockets live (mounted into the containers) | cli, serve, llm, video, studio |
 
 ## Front door and services
