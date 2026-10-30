@@ -63,20 +63,28 @@ pub fn generate(m: &Ltx2, spec: &Value, c: &mut Ctl) -> Result<Value> {
     let nsteps = sig.len() - 1;
     let out = r.out.clone();
     let shape = Shape { f: rules::latent_frames(frames), h: height / 32, w: width / 32, la: rules::audio_latents(frames, fps), fps };
-    (c.log)(format!("ltx2: {width} x {height}, {want} frames (made as {frames}), {nsteps} steps{}, seed {seed}", if fast { ", the distilled DiT" } else { "" }));
+    (c.log)(format!("ltx2: {width} x {height}, {want} frames (made as {frames}), {nsteps} steps{}{}, seed {seed}", if fast { ", the distilled DiT" } else { "" },
+                    if r.guided { "" } else { ", unguided (one pass a step)" }));
 
     // 1. the prompt (and the negative): the text encoder, then the connectors, each released after
     (c.progress)("encode", 0, nsteps);
     let t0 = Instant::now();
     m.with_dit(fast, &mut *c.log, |_| Ok(()))?;
     let (pid, nid) = (m.tokens(&prompt), m.tokens(&negative));
+    // the empty-prompt branch (the negative) is only used by the guidance; unguided, the prompt's states stand in for it
     let (ps, ns) = {
         let te = m.text_encoder(&mut *c.log)?;
-        let r = (te.encode(&pid)?, te.encode(&nid)?);
+        let p = te.encode(&pid)?;
+        let n = if r.guided { Some(te.encode(&nid)?) } else { None };
         drop(te);
-        r
+        (p, n)
     };
-    let ((pv, pa), (nv, na)) = (m.connectors(&ps, &mut *c.log)?, m.connectors(&ns, &mut *c.log)?);
+    let ((pv, pa), (nv, na)) = if let Some(ns) = &ns {
+        (m.connectors(&ps, &mut *c.log)?, m.connectors(ns, &mut *c.log)?)
+    } else {
+        let (v, a) = m.connectors(&ps, &mut *c.log)?;
+        ((v.clone(), a.clone()), (v, a))
+    };
     let encode_s = t0.elapsed().as_secs_f64();
     (c.log)(format!("ltx2: prompt ({} tokens) encoded in {encode_s:.1} s", pid.len()));
     debug_assert_eq!(pv.len(), conn::SEQ * 4096);
@@ -112,7 +120,7 @@ pub fn generate(m: &Ltx2, spec: &Value, c: &mut Ctl) -> Result<Value> {
         let la = shape.la;
         let prep = d.prepare(Shape { ..shape }, first.is_some())?;
         let mut prog = |i: usize, n: usize| (c.progress)("denoise", i, n);
-        sample::denoise(d, &prep, &cond, &neg, &mut lat, &mut aud, &sig, clean, &mut sample::Hooks { progress: &mut prog, cancel: c.cancel, each: None })?;
+        sample::denoise(d, &prep, &cond, &neg, &mut lat, &mut aud, &sig, clean, &mut sample::Hooks { progress: &mut prog, cancel: c.cancel, each: None, guided: r.guided })?;
         let peak: Vec<f64> = d.gpus().iter().map(|g| g.memory().map_or(0.0, |(t, f)| (t - f.unwrap_or(t)) as f64 / (1u64 << 30) as f64)).collect();
         Ok((lat, aud, la, peak))
     })?;
@@ -144,7 +152,7 @@ pub fn generate(m: &Ltx2, spec: &Value, c: &mut Ctl) -> Result<Value> {
     let secs = t_all.elapsed().as_secs_f64();
     (c.log)(format!("ltx2: decoded in {decode_s:.1} s; {} in {secs:.1} s", out.display()));
     Ok(json!({
-        "out": out, "engine": "ltx2", "fast": fast, "steps": nsteps, "width": width, "height": height, "frames": want.min(frames), "gen_frames": frames,
+        "out": out, "engine": "ltx2", "fast": fast, "guided": r.guided, "steps": nsteps, "width": width, "height": height, "frames": want.min(frames), "gen_frames": frames,
         "fps": fps, "seed": seed, "sample_rate": crate::audio::SAMPLE_RATE, "encode_secs": round1(encode_s), "denoise_secs": round1(denoise_s),
         "decode_secs": round1(decode_s), "secs": round1(secs), "gpu_gib": peak,
     }))

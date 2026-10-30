@@ -1551,7 +1551,7 @@ export interface VideoGenerateReq {
   /** anchor or file: the clip starts on this picture / clip's last frame. ltx2: a picture file in the clips directory (png, jpg, webp - video.upload it), the clip's first frame (image to video); an anchor word or a clip is refused */
   first_frame?: string | null;
   /**
-   * the length exactly, instead of seconds. H3: 17k + 5 (22, 39, 56 ... 107, 124 ... 362); another count is refused, the message naming the nearest two. ltx2: any count from 9 to 361 (the model works on 8k + 1 and the clip is cut to what was asked); width/32 x height/32 x ((frames - 1)/8 + 1) is at most 4800 tokens
+   * the length exactly, instead of seconds. H3: 17k + 5 (22, 39, 56 ... 107, 124 ... 362); another count is refused, the message naming the nearest two. ltx2: any count from 9 to 361 (the model works on 8k + 1 and the clip is cut to what was asked); width/32 x height/32 x ((frames - 1)/8 + 1) is at most 9216 tokens (1024 x 576 for 121 frames; 12.8 s a step at 640 x 384 for 121 frames, 39 s at 1024 x 576)
    * @minimum 9
    * @maximum 362
    */

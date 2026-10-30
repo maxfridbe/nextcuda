@@ -1,6 +1,6 @@
 # Supported models
 
-43 model cards in `model-cards/` (one YAML a model, every file a pinned link with its size and SHA-256);
+52 model cards in `model-cards/` (one YAML a model, every file a pinned link with its size and SHA-256);
 `nextcuda models pull <id> [--from DIR]` downloads what is missing or hard-links a file already on the machine,
 checks it and registers the model. **Served** - running on this box today; **download** - its card is here and it
 runs once pulled; **too big** - more than these 12 GB cards hold: the page shows it "won't run here" (why, in GiB)
@@ -43,6 +43,8 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 | video | `minimax-h3-q8` | MiniMax H3 Q8_0, a reference form | 20.0 GiB | too big |
 | video | `minimax-h3-ref2va` | MiniMax H3 Ref2VA (int8 ConvRot): reference pictures, clips and sounds to video | 19.5 GiB | too big |
 | video | `minimax-h3` | MiniMax H3, int8 ConvRot denoiser: the fastest | 47.9 GiB | too big |
+| video | `ltx-2.5` | LTX-2.5 (Lightricks), the dev DiT Q4_K_M: text and a first frame to video with its own 48 kHz sound, 30 guided steps; engines `ltx2` (variant dev or distilled) and `ltx2_upscale` (a clip twice the size). LTX-2.x Community License: free below US$10M annual revenue, a paid license above ([ports/ltx2.md](ports/ltx2.md)) | 58.7 GiB of files (both DiTs, the bf16 text encoder, connectors, VAEs, vocoder, upsampler) + a 10.7 GiB text cache made beside them | served, both cards |
+| video | `ltx-2.5-fast` | the same with the distilled DiT (8 steps, no guidance: a preview, thinner sound); its files are `ltx-2.5`'s (the distilled DiT, 13.2 GiB, is the one it runs) | (the above's) | served, both cards |
 | 3D | `trellis2-512` | TRELLIS.2 4B Q8_0 at 512: picture to textured mesh, the light path (MIT) | 1.3 GiB | served |
 | 3D | `hunyuan3d-2mini-turbo` | Hunyuan3D-2mini-turbo: a mesh from a picture in seconds (shape) | 3.9 GiB | served |
 | 3D | `unirig` | UniRig: a skeleton and skin weights for any mesh (MIT) | 5.4 GiB | served |
@@ -65,7 +67,7 @@ Each model's guide (how to ask it, what it takes, what it answers) is in `model-
 | image, OCR | stable-diffusion.cpp's ggml-cuda (Qwen-Image), our Rust + CUDA engines (Qwen-Image 2.1 `rust`, Ming-Image, Unlimited-OCR, PaddleOCR-VL, olmOCR-2) | one card each; olmOCR-2 the decoder on one, the vision tower on the other; Ming-Image the DiT on the 5070, its text encoder on the 3060 |
 | speech | `breeze-tts-2`, `qwen3-tts`, `voxcpm2`, `vibevoice` (several speakers) | one card each; VoxCPM2 int8 fits beside the chat model |
 | songs | `minimax-music3` (int8), `acestep-1.5` | MiniMax: the language model on the 5070, the flow stage and decoder on the 3060 |
-| video | `minimax-h3` (the native daemon, `--span`) and the video studio (scenes, plans, a film's clips joined) | the denoiser over both cards, nothing streamed: a clip in ~62 s from the SSD |
+| video | `minimax-h3` (the native daemon, `--span`), `ltx2` (LTX-2.5: Gemma-4 text stage, a 22B audio-video DiT, VAEs, vocoder, latent upsampler) and the video studio (scenes, plans, a film's clips joined) | the denoiser over both cards, nothing streamed: an H3 clip in ~62 s from the SSD; LTX-2.5's DiT resident, 32 blocks on the 5070 and 16 on the 3060, its text stage loaded for a clip and released |
 | 3D | TRELLIS.2, Hunyuan3D-2mini and 2.1 (its paint alone too), UniRig, SkinTokens, RigNet, AnimateAnyMesh, UniMate | one card each |
 | listening | `whisper` (large-v3-turbo) | one card |
 | upscale | `realesrgan`, `waifu2x` (their ncnn graphs) | one card |

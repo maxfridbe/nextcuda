@@ -6,7 +6,7 @@
 //! released, nothing streamed.
 //!
 //! The contract (`nextcuda_video::VideoEngine`): `generate` for a clip from a request, and jobs (`run_job`):
-//! `generate`, and `check` (the stages against reference/ltx2's dumps).
+//! `generate`, `upscale` (a finished clip twice the size) and `check` (the stages against reference/ltx2's dumps).
 
 pub mod audio;
 pub mod cache;
@@ -43,6 +43,7 @@ pub const ROLES: &[&str] = &["denoiser", "denoiser-fast", "text-encoder", "conne
 pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "threads", env: "LTX2_THREADS", value: "N", help: "threads quantizing the text encoder the first time (default 8)", at: At::Load },
     EngineOption { name: "fast", env: "", value: "0|1", help: "the distilled DiT: 8 steps, no guidance (default 0: the dev DiT, 30 steps, guided)", at: At::Request },
+    EngineOption { name: "guided", env: "", value: "0|1", help: "four guided passes a step (default 1 for the dev DiT; 0 for the distilled one, which is trained without guidance: one pass a step)", at: At::Request },
     EngineOption { name: "first_frame", env: "", value: "PNG", help: "image to video: the clip starts on this picture", at: At::Request },
 ];
 

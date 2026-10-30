@@ -15,15 +15,24 @@ tags, `<Subject N>` tokens) does not belong here.
   caption closely. For dialogue: "the dialogue is clean, centered, close-mic, natural, and distortion-free". Give a
   voice its character ("a very deep, resonating, mechanically processed voice").
 - **Say when you want no music** ("with no background music, only the quiet simmer of the pan beneath her voice").
-- **Length**: any length up to 15 s in one clip (made as 8k + 1 frames at 24 fps and cut to what was asked); the canvas a
-  multiple of 32 (640 x 384 is the movie maker's size; up to 1344 x 768).
-- **A first frame**: `first_frame` (a picture) makes it image to video - the picture is the clip's first frame.
+- **Length**: any frame count from 9 (the model works on 8k + 1 frames at 24 fps and the clip is cut to what was
+  asked: 120 frames = 5 s). The canvas a multiple of 32; what limits a clip is its tokens, width/32 x height/32 x
+  ((frames - 1)/8 + 1), at most 9,216 on a 12 GB pair: 640 x 384 for 5 s is 3,840 (the movie maker's size), 1024 x 576
+  for 5 s is 9,216 (the largest tried).
+- **A first frame**: `first_frame` (a picture file in the clips directory - `video.upload` it) makes it image to video:
+  the picture is the clip's first frame. An anchor word (`prev`, `first`) or a clip is not read as a picture.
+- **A negative prompt** is read (the guidance has an empty-prompt branch to steer); H3 ignores it.
+- **The sound is the model's draw**: five seeds on one prompt range from a thin hiss to a full mix, and it comes out
+  quiet (peaks around -24 dBFS: normalize it downstream). Say the sound in the prompt; try another seed when it is thin.
 
 ## Engines
-- `ltx-2.5` (LTX-2.5): the dev DiT, 30 guided steps (four passes a step: the prompt, the empty prompt, STG and
-  modality isolation). The take.
-- `ltx-2.5-fast` (LTX-2.5-FAST): the distilled DiT on its own eight sigmas - a preview: visibly worse in picture and
-  sound (thin audio).
+`video.engines.list` gives two LTX rows; `video.generate`'s `engine` takes their `quant`:
+- `ltx2` (the shots): `variant` `dev` (the default; the `ltx-2.5` model: 30 guided steps, four passes a step - the
+  prompt, the empty prompt, STG and modality isolation: the take) or `distilled` (the `ltx-2.5-fast` model's DiT on its
+  own eight sigmas, unguided: about 80 s a clip against the dev take's 7 minutes; a good preview, softer than the dev
+  take, its sound as much a draw).
+- `ltx2_upscale`: a finished clip (`source_clip`, a file in the clips directory) made twice the size through LTX's
+  latent upsampler, its sound copied; no prompt (send ""). It makes a new clip.
 
 ## Example
 > A woman in her forties, wearing a simple, light-colored top, stands at a stainless steel stove in a warm, modern

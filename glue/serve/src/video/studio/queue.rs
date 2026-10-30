@@ -351,9 +351,10 @@ pub const LTX_STEPS: (i64, i64) = (30, 8);
 pub const LTX_FRAMES: (u64, u64) = (9, 361);
 /// The canvas side: a multiple of 32
 pub const LTX_SIDE: (i64, i64) = (256, 1344);
-/// The tokens a clip may take (width/32 x height/32 x latent frames): a 12 GB card pair holds the DiT and this much
-/// working memory (tested: 640 x 384 x 121 frames = 3,840)
-pub const LTX_MAX_TOKENS: i64 = 4800;
+/// The tokens a clip may take (width/32 x height/32 x latent frames). The DiT's working memory barely grows with them
+/// (flash attention: 9.7 GiB on the 5070 at 3,840 tokens, 9.8 at 9,216), the time does: 12.8 s a step at 640 x 384 x 121
+/// (3,840), 22.9 at 768 x 512 (6,144), 39.4 at 1024 x 576 (9,216: the largest run on the 12 GB pair)
+pub const LTX_MAX_TOKENS: i64 = 9216;
 
 /// LTX's latent frames of a frame count: the count made as the next 8k + 1, (that - 1) / 8 + 1
 pub fn ltx_latent_frames(frames: u64) -> i64 {
@@ -375,7 +376,7 @@ pub fn check_ltx_canvas(w: i64, h: i64, frames: u64) -> Result<(), RpcError> {
     }
     let t = ltx_tokens(w, h, frames);
     if t > LTX_MAX_TOKENS {
-        return Err(RpcError::param(&format!("{w}x{h} for {frames} frames is {t} tokens; the cards hold at most {LTX_MAX_TOKENS} (640x384 for 121 frames is 3840): a smaller canvas or fewer frames")));
+        return Err(RpcError::param(&format!("{w}x{h} for {frames} frames is {t} tokens; the engine takes at most {LTX_MAX_TOKENS} (640x384 for 121 frames is 3840, 1024x576 is 9216): a smaller canvas or fewer frames")));
     }
     Ok(())
 }
@@ -888,7 +889,7 @@ mod tests {
         assert!(check_ltx_canvas(224, 384, 121).unwrap_err().message.contains("between 256 and 1344"));
         assert!(check_ltx_canvas(1344, 768, 121).unwrap_err().message.contains("tokens"));
         // the limit is tokens, not area: a smaller canvas for a longer clip
-        assert!(check_ltx_canvas(640, 384, 361).is_err() && check_ltx_canvas(480, 320, 241).is_ok());
+        assert!(check_ltx_canvas(640, 384, 361).is_err() && check_ltx_canvas(480, 320, 241).is_ok() && check_ltx_canvas(1024, 576, 121).is_ok() && check_ltx_canvas(1024, 608, 121).is_err());
     }
 
     #[test]

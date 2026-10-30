@@ -66,6 +66,9 @@ pub struct Generate {
     pub want: usize,
     pub frames: usize,
     pub fast: bool,
+    /// four guided passes a step (the dev DiT's way); false: the prompt's pass alone (the distilled DiT's: it is trained
+    /// without guidance, and guided it over-saturates the picture and clips the sound)
+    pub guided: bool,
     /// the steps asked for; None with `fast`: the distilled DiT's own eight sigmas
     pub steps: Option<usize>,
     pub seed: u64,
@@ -87,7 +90,8 @@ fn number(spec: &Value, k: &str) -> Option<f64> {
     spec[k].as_f64().or_else(|| spec[k].as_str().and_then(|s| s.parse().ok()))
 }
 
-/// The generate job's keys: {prompt, negative, width, height, frames | seconds, fps, steps, seed, out, first_frame, fast};
+/// The generate job's keys: {prompt, negative, width, height, frames | seconds, fps, steps, seed, out, first_frame, fast,
+/// guided (default: not with `fast`)};
 /// `fast_default`: the registry entry's (ltx-2.5-fast) when the job does not say
 pub fn parse_generate(spec: &Value, fast_default: bool) -> Result<Generate> {
     let prompt = spec["prompt"].as_str().unwrap_or("").trim().to_string();
@@ -122,6 +126,7 @@ pub fn parse_generate(spec: &Value, fast_default: bool) -> Result<Generate> {
         want,
         frames: align_frames(want),
         fast,
+        guided: spec["guided"].as_bool().unwrap_or(!fast),
         steps: number(spec, "steps").map(|s| s as usize).filter(|s| *s > 0),
         seed: number(spec, "seed").map_or(0, |s| s as i64) as u64,
         out: PathBuf::from(spec["out"].as_str().ok_or("generate: out (an .mp4 path)")?),
@@ -221,6 +226,10 @@ mod tests {
         let j = |v: Value| parse_generate(&v, true).unwrap();
         assert!(j(json!({"prompt": "x", "out": "o"})).fast, "the ltx-2.5-fast card's default");
         assert!(!j(json!({"prompt": "x", "out": "o", "fast": false})).fast, "an explicit false wins (the studio sends it)");
+        // guidance follows the variant: the dev DiT is guided, the distilled one is not, unless the job says
+        assert!(!j(json!({"prompt": "x", "out": "o"})).guided && j(json!({"prompt": "x", "out": "o", "fast": false})).guided);
+        assert!(j(json!({"prompt": "x", "out": "o", "guided": true})).guided);
+        assert!(!parse_generate(&json!({"prompt": "x", "out": "o", "guided": false}), false).unwrap().guided);
         assert!(j(json!({"prompt": "x", "out": "o", "fast": 1})).fast);
         assert!(!parse_generate(&json!({"prompt": "x", "out": "o", "fast": 0}), true).unwrap().fast);
         // the distilled DiT with no steps runs its own eight sigmas; with steps, the ordinary schedule

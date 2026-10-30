@@ -170,4 +170,85 @@ mod tests {
         // a canvas smaller than the tiles' reach is cut at its edge
         assert_eq!(place(&tiles, 1, 1, 2, 1, 3, |v| v), vec![1.0, 2.0, 5.0]);
     }
+
+    /// The stitch as the decoder first had it inline (frozen here, pixels as 3 channels; the encoder's was the same with
+    /// 128 channels and latent units): what `blend` and `place` replaced must give the same values bit for bit
+    #[allow(clippy::needless_range_loop)]
+    fn original(tiles: &mut Vec<Vec<Tile>>, fo: usize, c: usize, blend: usize, stride: usize, ho: usize, wo: usize) -> Vec<f32> {
+        for ri in 0..tiles.len() {
+            for ci in 0..tiles[ri].len() {
+                if ri > 0 {
+                    let (above, cur) = { let (a, b) = tiles.split_at_mut(ri); (&a[ri - 1][ci], &mut b[0][ci]) };
+                    let e = blend.min(above.1).min(cur.1);
+                    let (ah, aw) = (above.1, above.2);
+                    let cw = cur.2;
+                    for t in 0..fo {
+                        for y in 0..e {
+                            let k = y as f32 / e as f32;
+                            for x in 0..cw.min(aw) {
+                                for col in 0..c {
+                                    let av = above.0[((t * ah + ah - e + y) * aw + x) * c + col];
+                                    let bi = ((t * cur.1 + y) * cw + x) * c + col;
+                                    cur.0[bi] = av * (1.0 - k) + cur.0[bi] * k;
+                                }
+                            }
+                        }
+                    }
+                }
+                if ci > 0 {
+                    let (left, cur) = { let (a, b) = tiles[ri].split_at_mut(ci); (&a[ci - 1], &mut b[0]) };
+                    let e = blend.min(left.2).min(cur.2);
+                    let (lh, lw) = (left.1, left.2);
+                    for t in 0..fo {
+                        for y in 0..cur.1.min(lh) {
+                            for x in 0..e {
+                                let k = x as f32 / e as f32;
+                                for col in 0..c {
+                                    let av = left.0[((t * lh + y) * lw + lw - e + x) * c + col];
+                                    let bi = ((t * cur.1 + y) * cur.2 + x) * c + col;
+                                    cur.0[bi] = av * (1.0 - k) + cur.0[bi] * k;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = vec![0f32; fo * ho * wo * c];
+        for (ri, row) in tiles.iter().enumerate() {
+            for (ci, (px, th, tw)) in row.iter().enumerate() {
+                let (y0, x0) = (ri * stride, ci * stride);
+                for t in 0..fo {
+                    for y in 0..stride.min(*th).min(ho.saturating_sub(y0)) {
+                        for x in 0..stride.min(*tw).min(wo.saturating_sub(x0)) {
+                            for col in 0..c {
+                                out[((t * ho + y0 + y) * wo + x0 + x) * c + col] = (px[((t * th + y) * tw + x) * c + col] / 2.0 + 0.5).clamp(0.0, 1.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_shared_stitch_is_the_decoders_original_bit_for_bit() {
+        // random, different tiles (so the blends matter), uneven edges, three channels
+        let mut s = 0x1234_5678_9abc_def0u64;
+        let mut rnd = move || { s ^= s << 13; s ^= s >> 7; s ^= s << 17; (s >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0 };
+        for (h, w, tile, stride, frames) in [(10usize, 14usize, 8usize, 6usize, 3usize), (16, 8, 8, 6, 2), (7, 7, 8, 6, 2), (20, 20, 14, 8, 1)] {
+            let tiles: Vec<Vec<Tile>> = starts(h, stride).iter().map(|&i| starts(w, stride).iter().map(|&j| {
+                let (th, tw) = (tile.min(h - i), tile.min(w - j));
+                ((0..frames * th * tw * 3).map(|_| rnd()).collect(), th, tw)
+            }).collect()).collect();
+            let mut a = tiles.clone();
+            let want = original(&mut a, frames, 3, tile - stride, stride, h, w);
+            let mut b = tiles;
+            blend(&mut b, frames, 3, tile - stride);
+            let got = place(&b, frames, 3, stride, h, w, |v| (v / 2.0 + 0.5).clamp(0.0, 1.0));
+            assert_eq!(got.len(), want.len());
+            assert!(got.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()), "{h}x{w} tile {tile} stride {stride}");
+        }
+    }
 }

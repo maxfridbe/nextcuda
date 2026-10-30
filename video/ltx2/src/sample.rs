@@ -65,6 +65,9 @@ pub struct Hooks<'a> {
     pub cancel: &'a dyn Fn() -> bool,
     /// the latents after each step (a check)
     pub each: Option<&'a mut dyn FnMut(usize, &[f32], &[f32])>,
+    /// four passes a step combined by the guidance (the dev DiT); false: the prompt's pass alone, its x0 as it is
+    /// (the distilled DiT, which is trained to run without guidance)
+    pub guided: bool,
 }
 
 /// Denoise `lat` [Tv, 128] / `aud` [La, 128] in place over `sig`; `clean`: the first frame's tokens are kept
@@ -81,12 +84,15 @@ pub fn denoise(d: &Dit, prep: &Prepared, cond: &Text, neg: &Text, lat: &mut [f32
         d.set_step(prep, s * 1000.0)?;
         let mut xv: Vec<Vec<f32>> = Vec::new();
         let mut xa: Vec<Vec<f32>> = Vec::new();
-        for (v, a) in d.forward_passes(prep, lat, aud, &passes)? {
+        for (v, a) in d.forward_passes(prep, lat, aud, if h.guided { &passes } else { &passes[..1] })? {
             xv.push(lat.iter().zip(&v).map(|(x, v)| x - v * s).collect());
             xa.push(aud.iter().zip(&a).map(|(x, v)| x - v * s).collect());
         }
-        let pv = combine(&crate::sample::VIDEO, &xv[0], &xv[1], &xv[2], &xv[3]);
-        let pa = combine(&crate::sample::AUDIO, &xa[0], &xa[1], &xa[2], &xa[3]);
+        let (pv, pa) = if h.guided {
+            (combine(&crate::sample::VIDEO, &xv[0], &xv[1], &xv[2], &xv[3]), combine(&crate::sample::AUDIO, &xa[0], &xa[1], &xa[2], &xa[3]))
+        } else {
+            (xv.swap_remove(0), xa.swap_remove(0))
+        };
         for (j, x) in lat.iter_mut().enumerate() {
             if j / CH >= clean {
                 let v = (*x - pv[j]) / s;

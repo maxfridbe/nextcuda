@@ -186,7 +186,7 @@ pub fn run(m: &Ltx2, dir: &Path, stages: &[&str], log: &mut dyn FnMut(String)) -
                 let mut each = |k: usize, l: &[f32], a: &[f32]| got.push((k, l.to_vec(), a.to_vec()));
                 let t0 = std::time::Instant::now();
                 crate::sample::denoise(d, &prep, &cond, &neg, &mut l, &mut a, &sig, 0,
-                                       &mut crate::sample::Hooks { progress: &mut |_, _| {}, cancel: &|| false, each: Some(&mut each) })?;
+                                       &mut crate::sample::Hooks { progress: &mut |_, _| {}, cancel: &|| false, each: Some(&mut each), guided: true })?;
                 log(format!("steps: {} in {:.1} s", sig.len() - 1, t0.elapsed().as_secs_f64()));
                 for (k, gl, ga) in &got {
                     worst = worst.max(note(&format!("step {k} video latents"), gl, &get(&format!("lat_{k}"))?.1, log));

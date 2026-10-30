@@ -104,7 +104,9 @@ pub fn replace_picture(src: &Path, out: &Path, px: &[f32], count: usize, h: usiz
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{w}x{h}"), "-r", &format!("{fps}"), "-i", "-"]);
     if has_audio {
-        cmd.arg("-i").arg(src).args(["-map", "0:v", "-map", "1:a", "-c:a", "copy", "-shortest"]);
+        // the sound cut to the pictures' length by -t, not -shortest: with the copied sound the first to end, -shortest
+        // stopped the encoder before it had flushed its last frames (a 121-frame clip came back as 118)
+        cmd.arg("-i").arg(src).args(["-map", "0:v", "-map", "1:a", "-c:a", "copy", "-t", &format!("{:.6}", count as f64 / fps as f64)]);
     }
     cmd.args(["-c:v", "libx264", "-preset", "medium", "-crf", "16", "-pix_fmt", "yuv420p"]).arg(&tmp);
     let mut child = cmd.stdin(Stdio::piped()).spawn().map_err(|e| Error(format!("starting ffmpeg: {e}")))?;
@@ -207,6 +209,29 @@ mod tests {
         let r = d.join("c.mp4");
         write_mp4(&r, &px, count, h, w, 24.0, None).unwrap();
         assert!(!read_video(&r).unwrap().5);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_new_picture_keeps_every_frame_whose_sound_is_as_long_or_longer() {
+        if !ffmpeg() {
+            eprintln!("no ffmpeg: skipped");
+            return;
+        }
+        let d = tmp("keep");
+        // 121 frames, as a 5 s clip: with -shortest ffmpeg's encoder lost its last frames
+        for (count, h, w) in [(121usize, 64usize, 64usize), (49, 64, 96)] {
+            let px = clip(count, h, w);
+            let tone: Vec<f32> = (0..(count as f64 / 24.0 * 48_000.0) as usize).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+            let src = d.join(format!("src{count}.mp4"));
+            write_mp4(&src, &px, count, h, w, 24.0, Some((&[tone.clone(), tone], 48_000))).unwrap();
+            let out = d.join(format!("out{count}.mp4"));
+            replace_picture(&src, &out, &clip(count, 2 * h, 2 * w), count, 2 * h, 2 * w, 24.0, true).unwrap();
+            let (_, n, bw, bh, _, audio) = read_video(&out).unwrap();
+            assert_eq!((n, bw, bh, audio), (count, 2 * w, 2 * h, true), "{count} frames in, the same out");
+            let dur: f64 = probe(&out, "format=duration", "a:0").parse().unwrap_or(0.0);
+            assert!((dur - count as f64 / 24.0).abs() < 0.1, "{dur}");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

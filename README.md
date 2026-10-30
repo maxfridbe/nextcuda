@@ -10,8 +10,8 @@ We stand on the shoulders of giants.
   ggml-cuda kernels) on the GPU side; the model stays loaded between pictures
 - **Made for the cards people have** - two 12 GB cards (an RTX 5070 and an RTX 3060) run chat, pictures, OCR, speech,
   songs, video with sound and 3D: Qwen3.8-27B reads prompts at ~1,200 tok/s over both cards (llama.cpp: 925),
-  MiniMax H3 makes video with sound across both, Nemotron 3.5 Super (120B) chats on one, its experts streamed
-- **Every kind behind one door** - 43 model cards ([models.md](docs/models.md)), each started on the card with room when
+  MiniMax H3 and LTX-2.5 make video with sound across both, Nemotron 3.5 Super (120B) chats on one, its experts streamed
+- **Every kind behind one door** - 52 model cards ([models.md](docs/models.md)), each started on the card with room when
   a request names it and let go when idle
 - **A single API control plane** - one service, `nextcuda.service`, answers on :8000 and starts a model server when a
   request names its model
@@ -74,7 +74,7 @@ curl -s -X POST http://127.0.0.1:8000/rpc/image.status -H "Authorization: Bearer
 | speech | Breeze TTS 2, Qwen3-TTS, VoxCPM2, VibeVoice (several speakers) | one card each; VoxCPM2 int8 fits beside the chat model | [audio.md](docs/audio.md) |
 | listening | Whisper large-v3-turbo | one card | [audio.md](docs/audio.md) |
 | songs | MiniMax Music 3 (int8), ACE-Step 1.5 | MiniMax: the language model on the 5070, the flow stage and decoder on the 3060 | [audio.md](docs/audio.md) |
-| video | MiniMax H3 (the native daemon, `--span`) and the video studio | the denoiser over both cards, nothing streamed: a clip in ~62 s from the SSD | [models.md](docs/models.md) |
+| video | MiniMax H3 (the native daemon, `--span`), LTX-2.5 (`ltx2`, `ltx2_upscale`) and the video studio | the denoiser over both cards, nothing streamed: an H3 clip in ~62 s from the SSD; LTX-2.5's 22B DiT 32 blocks on the 5070 and 16 on the 3060, 12.8 s a step at 640 x 384 for 5 s | [models.md](docs/models.md), [ports/ltx2.md](docs/ports/ltx2.md) |
 | 3D | TRELLIS.2, Hunyuan3D-2mini and 2.1 (and its paint alone), UniRig, SkinTokens, RigNet, AnimateAnyMesh, UniMate | one card each | [3d.md](docs/3d.md) |
 
 Not here yet: HunyuanImage 2.1; the bigger cards' forms (the models [marked too big](docs/models.md)). The answers'
