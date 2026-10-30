@@ -425,3 +425,46 @@ fn resample3(padded: &[f32], left: usize, np: usize) -> Vec<Vec<f32>> {
         y[2 * width * ratio..full - (k - ratio)].iter().map(|v| v * ratio as f32).collect()
     }).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// two channels of `np` samples with `left` samples of padding before each, as `resample3` is given them
+    fn padded(ch0: &[f32], ch1: &[f32], left: usize) -> Vec<f32> {
+        let np = ch0.len();
+        let mut v = vec![0f32; 2 * (left + np)];
+        v[left..left + np].copy_from_slice(ch0);
+        v[left + np + left..].copy_from_slice(ch1);
+        v
+    }
+
+    #[test]
+    fn the_three_times_resampler_gives_three_samples_for_each() {
+        let x = vec![0.5f32; 40];
+        let y = resample3(&padded(&x, &x, 7), 7, 40);
+        assert_eq!(y.len(), 2);
+        assert_eq!(y[0].len(), 120);
+        // a constant (replicate-padded at the ends) stays near 0.99 of itself: the filter's gain is 0.99
+        assert!(y[0][30..90].iter().all(|v| (v - 0.5 * 0.99).abs() < 0.02), "{:?}", &y[0][30..40]);
+    }
+
+    #[test]
+    fn the_resampler_keeps_the_channels_apart_and_a_tone_in_place() {
+        let n = 200;
+        let tone: Vec<f32> = (0..n).map(|i| (i as f32 * 0.2).sin()).collect();
+        let quiet = vec![0.0f32; n];
+        let y = resample3(&padded(&tone, &quiet, 7), 7, n);
+        assert!(y[1].iter().all(|v| v.abs() < 1e-6), "the second channel is silent");
+        // the tone at three times the rate: sample 3 i of the output is the input's sample i (the sinc is 1 at its centre)
+        for i in 30..170 {
+            assert!((y[0][3 * i] - 0.99 * tone[i]).abs() < 0.03, "{i}: {} vs {}", y[0][3 * i], tone[i]);
+        }
+    }
+
+    #[test]
+    fn the_vocoders_output_is_48_khz() {
+        assert_eq!(SAMPLE_RATE, 48_000);
+        assert_eq!((DIL, KERNELS), ([1, 3, 5], [3, 7, 11]));
+    }
+}

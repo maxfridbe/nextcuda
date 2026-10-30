@@ -11,14 +11,17 @@
 pub mod audio;
 pub mod cache;
 pub mod check;
+pub mod config;
 pub mod conn;
 pub mod dit;
 pub mod ffi;
 pub mod gen;
 pub mod media;
 pub mod quant;
+pub mod rules;
 pub mod sample;
 pub mod te;
+pub mod tiles;
 pub mod ups;
 pub mod vae;
 

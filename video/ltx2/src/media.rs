@@ -149,3 +149,101 @@ pub fn crf_roundtrip(px: &[f32], w: usize, h: usize, crf: u32) -> Result<Vec<f32
     let _ = std::fs::remove_dir_all(&dir);
     back
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ffmpeg() -> bool {
+        Command::new("ffmpeg").arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+    }
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ltx2-media-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// `count` frames of a w x h picture whose brightness rises with the frame
+    fn clip(count: usize, h: usize, w: usize) -> Vec<f32> {
+        (0..count).flat_map(|f| std::iter::repeat_n(0.2 + 0.6 * f as f32 / count as f32, h * w * 3)).collect()
+    }
+
+    fn probe(p: &Path, entry: &str, stream: &str) -> String {
+        let o = Command::new("ffprobe").args(["-v", "error", "-select_streams", stream, "-show_entries", entry, "-of", "csv=p=0"]).arg(p).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn a_clip_is_written_read_and_its_sound_is_cut_to_the_frames() {
+        if !ffmpeg() {
+            eprintln!("no ffmpeg: skipped");
+            return;
+        }
+        let d = tmp("rw");
+        let (count, h, w) = (24, 64, 96);
+        let px = clip(count, h, w);
+        // 3 s of sound for a 1 s clip: cut to the frames' length; stereo at 48 kHz
+        let tone: Vec<f32> = (0..3 * 48_000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        let p = d.join("a.mp4");
+        write_mp4(&p, &px, count, h, w, 24.0, Some((&[tone.clone(), tone.clone()], 48_000))).unwrap();
+        let dur: f64 = probe(&p, "format=duration", "a:0").parse().unwrap_or(0.0);
+        assert!((dur - 1.0).abs() < 0.1, "the clip is one second, not three: {dur}");
+        assert_eq!(probe(&p, "stream=channels", "a:0"), "2");
+        assert_eq!(probe(&p, "stream=sample_rate", "a:0"), "48000");
+        let (back, n, bw, bh, fps, audio) = read_video(&p).unwrap();
+        assert_eq!((n, bw, bh, audio), (24, 96, 64, true));
+        assert!((fps - 24.0).abs() < 1e-3);
+        // brightness survives H.264 within a few levels and still rises
+        let mean = |f: usize| back[f * h * w * 3..(f + 1) * h * w * 3].iter().sum::<f32>() / (h * w * 3) as f32;
+        assert!((mean(0) - 0.2).abs() < 0.03 && (mean(23) - px[23 * h * w * 3]).abs() < 0.03, "{} {}", mean(0), mean(23));
+        // a short sound is padded with silence to the frames' length
+        let q = d.join("b.mp4");
+        write_mp4(&q, &px, count, h, w, 24.0, Some((&[vec![0.1; 4800], vec![0.1; 4800]], 48_000))).unwrap();
+        let dur: f64 = probe(&q, "format=duration", "a:0").parse().unwrap_or(0.0);
+        assert!((dur - 1.0).abs() < 0.1, "{dur}");
+        // no sound: no audio stream
+        let r = d.join("c.mp4");
+        write_mp4(&r, &px, count, h, w, 24.0, None).unwrap();
+        assert!(!read_video(&r).unwrap().5);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn too_few_values_are_refused_before_ffmpeg_runs() {
+        let e = write_mp4(Path::new("/nonexistent/x.mp4"), &[0.0; 10], 2, 4, 4, 24.0, None).unwrap_err().0;
+        assert!(e.contains("10 values for 2 x 4 x 4 x 3"), "{e}");
+    }
+
+    #[test]
+    fn a_picture_is_fitted_to_the_canvas_and_the_sound_survives_a_new_picture() {
+        if !ffmpeg() {
+            eprintln!("no ffmpeg: skipped");
+            return;
+        }
+        let d = tmp("pic");
+        let (count, h, w) = (9, 64, 64);
+        let px = clip(count, h, w);
+        let tone: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        let src = d.join("src.mp4");
+        write_mp4(&src, &px, count, h, w, 24.0, Some((&[tone.clone(), tone], 48_000))).unwrap();
+        // a video's first frame as a picture, stretched to 128 x 32
+        let pic = read_picture(&src, 128, 32).unwrap();
+        assert_eq!(pic.len(), 32 * 128 * 3);
+        assert!((pic[0] - 0.2).abs() < 0.03);
+        // a bigger picture in its place, its own sound copied
+        let big = clip(count, 128, 128);
+        let out = d.join("big.mp4");
+        replace_picture(&src, &out, &big, count, 128, 128, 24.0, true).unwrap();
+        let (_, n, bw, bh, _, audio) = read_video(&out).unwrap();
+        assert_eq!((n, bw, bh, audio), (9, 128, 128, true));
+        // a re-compressed still keeps its size and stays close to itself
+        let still = vec![0.5f32; 64 * 64 * 3];
+        let rt = crf_roundtrip(&still, 64, 64, 18).unwrap();
+        assert_eq!(rt.len(), still.len());
+        assert!(rt.iter().all(|v| (v - 0.5).abs() < 0.03));
+        assert!(read_picture(&d.join("missing.png"), 8, 8).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

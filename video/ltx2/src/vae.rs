@@ -287,23 +287,16 @@ impl Decoder {
         let (tl, ts) = if tiled { (tile_n, tile_s) } else { (h.max(w), h.max(w)) };
         let fo = 8 * (f - 1) + 1;
         let (ho, wo) = (32 * h, 32 * w);
-        let rows: Vec<usize> = (0..h).step_by(ts).collect();
-        let cols: Vec<usize> = (0..w).step_by(ts).collect();
+        let rows = crate::tiles::starts(h, ts);
+        let cols = crate::tiles::starts(w, ts);
         let total = rows.len() * cols.len();
         // the decoded tiles: (pixels, height, width)
-        let mut tiles: Vec<Vec<(Vec<f32>, usize, usize)>> = Vec::new();
+        let mut tiles: Vec<Vec<crate::tiles::Tile>> = Vec::new();
         for (ri, &i) in rows.iter().enumerate() {
             let mut row = Vec::new();
             for (ci, &j) in cols.iter().enumerate() {
                 let (th, tw) = (tl.min(h - i), tl.min(w - j));
-                let mut sub = vec![0f32; f * th * tw * 128];
-                for t in 0..f {
-                    for y in 0..th {
-                        let s = ((t * h + i + y) * w + j) * 128;
-                        let d = (t * th + y) * tw * 128;
-                        sub[d..d + tw * 128].copy_from_slice(&z[s..s + tw * 128]);
-                    }
-                }
+                let sub = crate::tiles::crop(z, f, h, w, 128, i, j, th, tw);
                 row.push((self.decode_tile(&sub, f, th, tw)?, th * 32, tw * 32));
                 progress(ri * cols.len() + ci + 1, total);
             }
@@ -312,64 +305,9 @@ impl Decoder {
         if !tiled {
             return Ok(tiles.remove(0).remove(0).0.iter().map(|v| (v / 2.0 + 0.5).clamp(0.0, 1.0)).collect());
         }
-        let blend = 32 * (tile_n - tile_s);
-        let stride = 32 * tile_s;
-        for ri in 0..tiles.len() {
-            for ci in 0..tiles[ri].len() {
-                if ri > 0 {
-                    let (above, cur) = { let (a, b) = tiles.split_at_mut(ri); (&a[ri - 1][ci], &mut b[0][ci]) };
-                    let e = blend.min(above.1).min(cur.1);
-                    let (ah, aw) = (above.1, above.2);
-                    let cw = cur.2;
-                    for t in 0..fo {
-                        for y in 0..e {
-                            let k = y as f32 / e as f32;
-                            for x in 0..cw.min(aw) {
-                                for col in 0..3 {
-                                    let av = above.0[((t * ah + ah - e + y) * aw + x) * 3 + col];
-                                    let bi = ((t * cur.1 + y) * cw + x) * 3 + col;
-                                    cur.0[bi] = av * (1.0 - k) + cur.0[bi] * k;
-                                }
-                            }
-                        }
-                    }
-                }
-                if ci > 0 {
-                    let (left, cur) = { let (a, b) = tiles[ri].split_at_mut(ci); (&a[ci - 1], &mut b[0]) };
-                    let e = blend.min(left.2).min(cur.2);
-                    let (lh, lw) = (left.1, left.2);
-                    for t in 0..fo {
-                        for y in 0..cur.1.min(lh) {
-                            for x in 0..e {
-                                let k = x as f32 / e as f32;
-                                for col in 0..3 {
-                                    let av = left.0[((t * lh + y) * lw + lw - e + x) * 3 + col];
-                                    let bi = ((t * cur.1 + y) * cur.2 + x) * 3 + col;
-                                    cur.0[bi] = av * (1.0 - k) + cur.0[bi] * k;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        crate::tiles::blend(&mut tiles, fo, 3, 32 * (tile_n - tile_s));
         // each tile's first stride x stride pixels, side by side
-        let mut out = vec![0f32; fo * ho * wo * 3];
-        for (ri, row) in tiles.iter().enumerate() {
-            for (ci, (px, th, tw)) in row.iter().enumerate() {
-                let (y0, x0) = (ri * stride, ci * stride);
-                for t in 0..fo {
-                    for y in 0..stride.min(*th).min(ho.saturating_sub(y0)) {
-                        for x in 0..stride.min(*tw).min(wo.saturating_sub(x0)) {
-                            for col in 0..3 {
-                                out[((t * ho + y0 + y) * wo + x0 + x) * 3 + col] = (px[((t * th + y) * tw + x) * 3 + col] / 2.0 + 0.5).clamp(0.0, 1.0);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(out)
+        Ok(crate::tiles::place(&tiles, fo, 3, 32 * tile_s, ho, wo, |v| (v / 2.0 + 0.5).clamp(0.0, 1.0)))
     }
 }
 
@@ -519,81 +457,21 @@ impl Encoder {
         }
         let (lf, lh, lw) = ((f - 1) / 8 + 1, h / 32, w / 32);
         let (ltn, lts) = (tn / 32, ts / 32);
-        let blend = ltn - lts;
-        let rows: Vec<usize> = (0..h).step_by(ts).collect();
-        let cols: Vec<usize> = (0..w).step_by(ts).collect();
+        let rows = crate::tiles::starts(h, ts);
+        let cols = crate::tiles::starts(w, ts);
         // (latents [lf, th, tw, 128], th, tw)
-        let mut tiles: Vec<Vec<(Vec<f32>, usize, usize)>> = Vec::new();
+        let mut tiles: Vec<Vec<crate::tiles::Tile>> = Vec::new();
         for &i in &rows {
             let mut row = Vec::new();
             for &j in &cols {
                 let (ph, pw) = (tn.min(h - i), tn.min(w - j));
-                let mut sub = vec![0f32; f * ph * pw * 3];
-                for t in 0..f {
-                    for y in 0..ph {
-                        let s = ((t * h + i + y) * w + j) * 3;
-                        let d = (t * ph + y) * pw * 3;
-                        sub[d..d + pw * 3].copy_from_slice(&px[s..s + pw * 3]);
-                    }
-                }
+                let sub = crate::tiles::crop(px, f, h, w, 3, i, j, ph, pw);
                 row.push((self.encode(&sub, f, ph, pw)?, ph / 32, pw / 32));
             }
             tiles.push(row);
         }
-        for ri in 0..tiles.len() {
-            for ci in 0..tiles[ri].len() {
-                if ri > 0 {
-                    let (a, b) = tiles.split_at_mut(ri);
-                    let (above, cur) = (&a[ri - 1][ci], &mut b[0][ci]);
-                    let e = blend.min(above.1).min(cur.1);
-                    for t in 0..lf {
-                        for y in 0..e {
-                            let k = y as f32 / e as f32;
-                            for x in 0..cur.2.min(above.2) {
-                                for c in 0..128 {
-                                    let av = above.0[((t * above.1 + above.1 - e + y) * above.2 + x) * 128 + c];
-                                    let bi = ((t * cur.1 + y) * cur.2 + x) * 128 + c;
-                                    cur.0[bi] = av * (1.0 - k) + cur.0[bi] * k;
-                                }
-                            }
-                        }
-                    }
-                }
-                if ci > 0 {
-                    let (a, b) = tiles[ri].split_at_mut(ci);
-                    let (left, cur) = (&a[ci - 1], &mut b[0]);
-                    let e = blend.min(left.2).min(cur.2);
-                    for t in 0..lf {
-                        for y in 0..cur.1.min(left.1) {
-                            for x in 0..e {
-                                let k = x as f32 / e as f32;
-                                for c in 0..128 {
-                                    let av = left.0[((t * left.1 + y) * left.2 + left.2 - e + x) * 128 + c];
-                                    let bi = ((t * cur.1 + y) * cur.2 + x) * 128 + c;
-                                    cur.0[bi] = av * (1.0 - k) + cur.0[bi] * k;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let mut out = vec![0f32; lf * lh * lw * 128];
-        for (ri, row) in tiles.iter().enumerate() {
-            for (ci, (z, th, tw)) in row.iter().enumerate() {
-                let (y0, x0) = (ri * lts, ci * lts);
-                for t in 0..lf {
-                    for y in 0..lts.min(*th).min(lh.saturating_sub(y0)) {
-                        for x in 0..lts.min(*tw).min(lw.saturating_sub(x0)) {
-                            let s = ((t * th + y) * tw + x) * 128;
-                            let d = ((t * lh + y0 + y) * lw + x0 + x) * 128;
-                            out[d..d + 128].copy_from_slice(&z[s..s + 128]);
-                        }
-                    }
-                }
-            }
-        }
-        Ok(out)
+        crate::tiles::blend(&mut tiles, lf, 128, ltn - lts);
+        Ok(crate::tiles::place(&tiles, lf, 128, lts, lh, lw, |v| v))
     }
 
     /// The latents normalized as the pipeline's DiT reads them ((z - mean) / std)

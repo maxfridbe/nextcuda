@@ -308,3 +308,100 @@ fn spec_text_dir(dir: &Path) -> String {
         .and_then(|v| v["text"].as_str().map(str::to_string))
         .unwrap_or_else(|| dir.parent().map(|p| p.join("t1").display().to_string()).unwrap_or_default())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn npy(dir: &Path, name: &str, descr: &str, fortran: bool, shape: &str, body: &[u8], version: u8) -> std::path::PathBuf {
+        let head = format!("{{'descr': '{descr}', 'fortran_order': {}, 'shape': {shape}, }}", if fortran { "True" } else { "False" });
+        let mut h = head.into_bytes();
+        let pad = (64 - (h.len() + 1 + if version == 1 { 10 } else { 12 }) % 64) % 64;
+        h.extend(std::iter::repeat_n(b' ', pad));
+        h.push(b'\n');
+        let mut b = b"\x93NUMPY".to_vec();
+        b.extend([version, 0]);
+        if version == 1 {
+            b.extend((h.len() as u16).to_le_bytes());
+        } else {
+            b.extend((h.len() as u32).to_le_bytes());
+        }
+        b.extend(h);
+        b.extend(body);
+        let p = dir.join(name);
+        std::fs::write(&p, b).unwrap();
+        p
+    }
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ltx2-check-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn npy_files_are_read_in_their_three_dtypes() {
+        let d = tmp("npy");
+        let f4: Vec<u8> = [1.5f32, -2.0, 3.25, 0.0, 7.0, 8.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let (shape, v) = read_npy(&npy(&d, "a.npy", "<f4", false, "(2, 3)", &f4, 1)).unwrap();
+        assert_eq!((shape, v), (vec![2, 3], vec![1.5, -2.0, 3.25, 0.0, 7.0, 8.0]));
+        // version 2 headers have a 32-bit length
+        let (shape, v) = read_npy(&npy(&d, "b.npy", "<f4", false, "(6,)", &f4, 2)).unwrap();
+        assert_eq!((shape, v.len()), (vec![6], 6));
+        let f2: Vec<u8> = [0x3c00u16, 0xc000].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(read_npy(&npy(&d, "c.npy", "<f2", false, "(2,)", &f2, 1)).unwrap().1, vec![1.0, -2.0]);
+        let i4: Vec<u8> = [7i32, -9].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(read_npy(&npy(&d, "d.npy", "<i4", false, "(2,)", &i4, 1)).unwrap().1, vec![7.0, -9.0]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_fortran_ordered_array_is_made_row_major() {
+        let d = tmp("fortran");
+        // a 2 x 3 array [[1, 2, 3], [4, 5, 6]] stored column by column: 1 4 2 5 3 6
+        let body: Vec<u8> = [1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let (shape, v) = read_npy(&npy(&d, "f.npy", "<f4", true, "(2, 3)", &body, 1)).unwrap();
+        assert_eq!((shape, v), (vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_bad_npy_is_refused() {
+        let d = tmp("bad");
+        std::fs::write(d.join("x.npy"), b"not numpy at all").unwrap();
+        assert!(read_npy(&d.join("x.npy")).unwrap_err().0.contains("not a .npy"));
+        let p = npy(&d, "y.npy", "<f8", false, "(1,)", &[0; 8], 1);
+        assert!(read_npy(&p).is_err(), "doubles are not read");
+        assert!(read_npy(&d.join("missing.npy")).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_comparison_is_relative_l2_max_and_cosine() {
+        let (rel, mx, cos) = compare(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
+        assert_eq!((rel, mx), (0.0, 0.0));
+        assert!((cos - 1.0).abs() < 1e-12);
+        // got = 1.1 want: rel 0.1, max 0.3, cosine 1
+        let (rel, mx, cos) = compare(&[1.1, 2.2, 3.3], &[1.0, 2.0, 3.0]);
+        assert!((rel - 0.1).abs() < 1e-6 && (mx - 0.3).abs() < 1e-6 && (cos - 1.0).abs() < 1e-9);
+        // orthogonal vectors: cosine 0, rel sqrt(2)
+        let (rel, _, cos) = compare(&[1.0, 0.0], &[0.0, 1.0]);
+        assert!(cos.abs() < 1e-12 && (rel - 2f64.sqrt()).abs() < 1e-9);
+        // nothing to compare against does not divide by zero
+        let (rel, _, cos) = compare(&[1.0], &[0.0]);
+        assert!(rel.is_finite() && cos.abs() < 1e-9);
+        let mut lines = Vec::new();
+        let rel = note("x", &[1.0, 2.0], &[1.0, 2.0, 3.0], &mut |l| lines.push(l));
+        assert!(rel < 1.0 && lines[0].contains("LENGTHS 2 vs 3"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_state_is_one_slice_of_every_tokens_49() {
+        let t = 2;
+        let v: Vec<f32> = (0..t * STATES * HIDDEN).map(|i| (i / HIDDEN) as f32).collect();
+        let s = state(&v, t, 3);
+        assert_eq!(s.len(), t * HIDDEN);
+        assert!(s[..HIDDEN].iter().all(|x| *x == 3.0) && s[HIDDEN..].iter().all(|x| *x == (STATES + 3) as f32));
+    }
+}

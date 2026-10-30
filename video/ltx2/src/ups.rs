@@ -123,7 +123,7 @@ impl Upsampler {
 /// The diffusers VAE's default tiles (enable_tiling() with no sizes): 512 pixels, a stride of 448
 pub const TILE_PX: (usize, usize) = (512, 448);
 /// frames a pass
-pub const WINDOW: usize = 121;
+pub const WINDOW: usize = crate::rules::WINDOW;
 
 /// The upscale job: {source: an mp4, out: an mp4, scale: 2}
 pub fn upscale(m: &crate::Ltx2, spec: &Value, log: &mut dyn FnMut(String), progress: &mut dyn FnMut(usize, usize)) -> Result<Value> {
@@ -134,12 +134,7 @@ pub fn upscale(m: &crate::Ltx2, spec: &Value, log: &mut dyn FnMut(String), progr
         log("ltx2: the latent upsampler only doubles; x2 is what this is".into());
     }
     let (px, total, w, h, fps, has_audio) = crate::media::read_video(&src)?;
-    if total < 9 {
-        return Err(Error(format!("{}: {total} frames; the VAE needs at least nine", src.display())));
-    }
-    if w % 32 != 0 || h % 32 != 0 {
-        return Err(Error(format!("{}: {w} x {h}; the VAE takes multiples of 32", src.display())));
-    }
+    crate::rules::check_source(&src.display().to_string(), total, w, h)?;
     let gpu = m.freest().clone();
     let enc = crate::vae::Encoder::load(m.file("vae")?, &gpu)?;
     let ups = Upsampler::load(m.file("upscaler")?, &gpu)?;
@@ -148,13 +143,7 @@ pub fn upscale(m: &crate::Ltx2, spec: &Value, log: &mut dyn FnMut(String), progr
     let (bw, bh) = (2 * w, 2 * h);
     let mut big: Vec<f32> = Vec::new();
     let mut done = 0;
-    let mut start = 0;
-    while start < total {
-        let n = (total - start).min(WINDOW);
-        let legal = n - (n - 1) % 8;
-        if legal < 9 {
-            break;
-        }
+    for (start, legal) in crate::rules::windows(total, WINDOW) {
         let x: Vec<f32> = px[start * frame..(start + legal) * frame].iter().map(|v| v * 2.0 - 1.0).collect();
         let z = enc.encode_tiled(&x, legal, h, w, TILE_PX)?;
         let lf = (legal - 1) / 8 + 1;
@@ -163,7 +152,6 @@ pub fn upscale(m: &crate::Ltx2, spec: &Value, log: &mut dyn FnMut(String), progr
         let v = dec.decode_raw(&z2, lf, 2 * h / 32, 2 * w / 32, (TILE_PX.0 / 32, TILE_PX.1 / 32), &mut p)?;
         big.extend_from_slice(&v[..legal * bw * bh * 3]);
         done += legal;
-        start += n;
         progress(done, total);
     }
     let secs = t_all.elapsed().as_secs_f64();

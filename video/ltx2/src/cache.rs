@@ -235,3 +235,80 @@ fn build(components: &Path, path: &Path, threads: usize, q8: bool, log: &mut dyn
     log(format!("text cache written in {:.0} s", t0.elapsed().as_secs_f64()));
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// a safetensors file of tensors (name, dtype, shape, bytes)
+    fn st(path: &Path, tensors: &[(&str, &str, Vec<u64>, Vec<u8>)]) {
+        let mut off = 0usize;
+        let mut head = serde_json::Map::new();
+        for (n, dt, shape, b) in tensors {
+            head.insert((*n).into(), serde_json::json!({"dtype": dt, "shape": shape, "data_offsets": [off, off + b.len()]}));
+            off += b.len();
+        }
+        let h = serde_json::to_vec(&head).unwrap();
+        let mut f = (h.len() as u64).to_le_bytes().to_vec();
+        f.extend(h);
+        for (_, _, _, b) in tensors {
+            f.extend(b);
+        }
+        std::fs::write(path, f).unwrap();
+    }
+
+    fn dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ltx2-cache-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn bf(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|x| ((x.to_bits() >> 16) as u16).to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn a_checkpoint_directory_without_an_index_is_every_safetensors_file() {
+        let d = dir("plain");
+        st(&d.join("a.safetensors"), &[("x.weight", "BF16", vec![2, 2], bf(&[1.0, 2.0, 3.0, 4.0]))]);
+        st(&d.join("b.safetensors"), &[("y.bias", "BF16", vec![2], bf(&[0.5, -0.5]))]);
+        std::fs::write(d.join("notes.txt"), "ignored").unwrap();
+        let s = Shards::open(&d).unwrap();
+        assert!(s.has("x.weight") && s.has("y.bias") && !s.has("z"));
+        let (shape, bytes) = s.bf16("x.weight").unwrap();
+        assert_eq!((shape, bytes.len()), (vec![2, 2], 8));
+        assert_eq!(s.f32("y.bias").unwrap(), vec![0.5, -0.5]);
+        assert!(s.bf16("z").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_index_names_the_files_that_are_read() {
+        let d = dir("index");
+        st(&d.join("model-00001-of-00002.safetensors"), &[("a", "BF16", vec![1], bf(&[1.0]))]);
+        st(&d.join("model-00002-of-00002.safetensors"), &[("b", "BF16", vec![1], bf(&[2.0]))]);
+        // a stray file the index does not name is not opened
+        std::fs::write(d.join("stray.safetensors"), "garbage").unwrap();
+        std::fs::write(d.join("model.safetensors.index.json"),
+                       r#"{"weight_map": {"a": "model-00001-of-00002.safetensors", "b": "model-00002-of-00002.safetensors"}}"#).unwrap();
+        let s = Shards::open(&d).unwrap();
+        assert_eq!((s.f32("a").unwrap(), s.f32("b").unwrap()), (vec![1.0], vec![2.0]));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_empty_or_missing_directory_is_refused() {
+        let d = dir("empty");
+        assert!(Shards::open(&d).err().unwrap().0.contains("no safetensors"));
+        assert!(Shards::open(&d.join("nope")).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_cache_files_are_named_and_versioned() {
+        assert_eq!((FILE, FILE_Q8), ("nextcuda-text.gguf", "nextcuda-text-q8.gguf"));
+        assert!(VERSION >= 1);
+        assert_eq!(f32_bytes(&[1.0, -2.0]), [1.0f32.to_le_bytes(), (-2.0f32).to_le_bytes()].concat());
+    }
+}

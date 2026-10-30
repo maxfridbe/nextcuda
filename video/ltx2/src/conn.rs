@@ -87,25 +87,7 @@ impl Connector {
 
     /// (cos, sin) per (row, head) and pair: the 1-D split RoPE over the padded length
     fn rope(&self) -> Vec<f32> {
-        let d = self.dim / HEADS;
-        let nf = self.dim / 2;
-        let freqs: Vec<f32> = (0..nf).map(|k| {
-            let e = if nf > 1 { k as f64 / (nf - 1) as f64 } else { 0.0 };
-            (THETA.powf(e) * std::f64::consts::PI / 2.0) as f32
-        }).collect();
-        let mut cs = vec![0f32; SEQ * self.dim];
-        for p in 0..SEQ {
-            let g = p as f32 / BASE_SEQ;
-            for h in 0..HEADS {
-                for i in 0..d / 2 {
-                    let a = (g * 2.0 - 1.0) * freqs[h * (d / 2) + i];
-                    let at = ((p * HEADS + h) * (d / 2) + i) * 2;
-                    cs[at] = (a as f64).cos() as f32;
-                    cs[at + 1] = (a as f64).sin() as f32;
-                }
-            }
-        }
-        cs
+        rope_table(self.dim)
     }
 
     /// The condition [1024, dim] float32 from a prompt's states [T, 49, 3840] (T at most 1,024)
@@ -163,5 +145,58 @@ impl Connector {
         nsd.rms_norm_mod(x.ptr(), Dt::F32, n, dim, none(), EPS, none(), none(), none(), out.ptr(), Dt::F32)?;
         nsd.wait()?;
         out.to_f32()
+    }
+}
+
+/// The connector's 1-D split RoPE table for width `dim` (32 heads): angle (2 p / 4096 - 1) f[head pair], f = theta^linspace
+/// pi / 2, per row p of the 1,024 padded; (cos, sin) a (row, head, pair)
+fn rope_table(dim: usize) -> Vec<f32> {
+    let d = dim / HEADS;
+    let nf = dim / 2;
+    let freqs: Vec<f32> = (0..nf).map(|k| {
+        let e = if nf > 1 { k as f64 / (nf - 1) as f64 } else { 0.0 };
+        (THETA.powf(e) * std::f64::consts::PI / 2.0) as f32
+    }).collect();
+    let mut cs = vec![0f32; SEQ * dim];
+    for p in 0..SEQ {
+        let g = p as f32 / BASE_SEQ;
+        for h in 0..HEADS {
+            for i in 0..d / 2 {
+                let a = (g * 2.0 - 1.0) * freqs[h * (d / 2) + i];
+                let at = ((p * HEADS + h) * (d / 2) + i) * 2;
+                cs[at] = (a as f64).cos() as f32;
+                cs[at + 1] = (a as f64).sin() as f32;
+            }
+        }
+    }
+    cs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_connector_rope_is_a_sequence_position_over_4096() {
+        let t = rope_table(4096);
+        assert_eq!(t.len(), SEQ * 4096, "(cos, sin) for each of 64 pairs of 32 heads, per row");
+        // the cos / sin pairs are unit vectors
+        assert!(t.chunks(2).step_by(997).all(|cs| (cs[0] * cs[0] + cs[1] * cs[1] - 1.0).abs() < 1e-5));
+        // pair i of head h at row p turns (2 p / 4096 - 1) f[h * 64 + i], f[k] = 10000^(k / 2047) pi / 2
+        let f = |k: usize| 10_000f64.powf(k as f64 / 2047.0) * std::f64::consts::FRAC_PI_2;
+        for (p, h, i) in [(0usize, 0usize, 0usize), (1, 0, 0), (512, 3, 5), (1023, 31, 63)] {
+            let a = (p as f64 / 4096.0 * 2.0 - 1.0) * f(h * 64 + i);
+            let at = ((p * HEADS + h) * 64 + i) * 2;
+            assert!((t[at] as f64 - a.cos()).abs() < 1e-3 && (t[at + 1] as f64 - a.sin()).abs() < 1e-3, "row {p} head {h} pair {i}: {} {} vs {} {}", t[at], t[at + 1], a.cos(), a.sin());
+        }
+        // row 0: angle -f, the first pair's pi / 2 (cos ~ 0, sin -1); the positions only reach 1023 of 4096, so the angle stays below zero
+        assert!(t[0].abs() < 1e-6 && (t[1] + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_condition_is_1024_tokens_of_a_prompt_and_registers() {
+        assert_eq!((SEQ, LAYERS, HEADS, REGISTERS), (1024, 8, 32, 128));
+        // the registers (learned rows) pad a short prompt to the 1,024: 8 x 128 from the 1,024-token window
+        assert_eq!(SEQ % REGISTERS, 0);
     }
 }

@@ -326,3 +326,56 @@ pub fn as_bytes(v: &[f32]) -> &[u8] {
     // SAFETY: plain floats viewed as their bytes.
     unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), v.len() * 4) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_sixth_layer_is_global() {
+        let g: Vec<usize> = (0..LAYERS).filter(|i| is_global(*i)).collect();
+        assert_eq!(g, vec![5, 11, 17, 23, 29, 35, 41, 47], "8 of the 48; the last is global");
+        assert_eq!(STATES, 49, "the embedding and every layer's output");
+    }
+
+    #[test]
+    fn local_rope_rotates_the_whole_head_and_global_rope_a_quarter() {
+        let local = TextEncoder::rope(3, false);
+        let global = TextEncoder::rope(3, true);
+        assert_eq!((local.len(), global.len()), (3 * 128 * 2, 3 * 256 * 2));
+        // position 0: angle 0
+        assert!(local[..256].chunks(2).all(|c| c == [1.0, 0.0]) && global[..512].chunks(2).all(|c| c == [1.0, 0.0]));
+        // local pair i at position p: p / 10000^(2 i / 256)
+        let (p, i) = (2usize, 10usize);
+        let a = p as f64 / 10_000f64.powf(2.0 * i as f64 / 256.0);
+        assert!((local[(p * 128 + i) * 2] as f64 - a.cos()).abs() < 1e-6 && (local[(p * 128 + i) * 2 + 1] as f64 - a.sin()).abs() < 1e-6);
+        // global: theta 1e6 over a 512 head; only the first 64 pairs turn ("proportional" 0.25), the rest stay at angle 0
+        let a = 1.0 / 1_000_000f64.powf(2.0 * 3.0 / 512.0);
+        assert!((global[(256 + 3) * 2] as f64 - a.cos()).abs() < 1e-6 && (global[(256 + 3) * 2 + 1] as f64 - a.sin()).abs() < 1e-6);
+        assert_eq!(&global[(256 + 64) * 2..(256 + 64) * 2 + 2], &[1.0, 0.0]);
+        assert_eq!(&global[(256 + 255) * 2..(256 + 255) * 2 + 2], &[1.0, 0.0]);
+    }
+
+    #[test]
+    fn bf16_rounds_to_nearest_even() {
+        assert_eq!(quant_bf16(1.0), 1.0);
+        assert_eq!(quant_bf16(0.0), 0.0);
+        // 1 + 2^-8 is half way between 1 and 1 + 2^-7: ties to the even mantissa (1)
+        assert_eq!(quant_bf16(1.0 + 2f32.powi(-8)), 1.0);
+        // 1 + 3 x 2^-8 is half way between 1 + 2^-7 (odd) and 1 + 2^-6 (even): up
+        assert_eq!(quant_bf16(1.0 + 3.0 * 2f32.powi(-8)), 1.0 + 2f32.powi(-6));
+        // just over a half rounds up
+        assert_eq!(quant_bf16(1.0 + 2f32.powi(-8) + 2f32.powi(-20)), 1.0 + 2f32.powi(-7));
+        assert_eq!(quant_bf16(-3.14159), -3.140625);
+        assert!(quant_bf16(f32::INFINITY).is_infinite());
+        // eight bits of mantissa survive: the relative error is under 2^-8
+        for x in [0.1f32, 7.3, 123.456, 1e-3, 3e4] {
+            assert!(((quant_bf16(x) - x) / x).abs() < 2f32.powi(-8), "{x}");
+        }
+    }
+
+    #[test]
+    fn floats_are_viewed_as_little_endian_bytes() {
+        assert_eq!(as_bytes(&[1.0f32, -2.0]), &[0, 0, 0x80, 0x3f, 0, 0, 0, 0xc0]);
+    }
+}

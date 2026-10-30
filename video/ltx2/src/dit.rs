@@ -239,15 +239,21 @@ const HEADROOM: u64 = 5 << 29;
 /// so a card's share of the time is its blocks over its speed - each card at most what fits beside HEADROOM, the rest
 /// to the others
 fn auto_split(gpus: &[Arc<Gpu>], per_block: u64) -> Result<Vec<usize>> {
-    let n = gpus.len();
     let speed: Vec<f64> = gpus.iter().map(|g| nextcuda_core::gpu_units(g.index).map_or(1.0, |(u, c)| if u == 0 { 1.0 } else { u as f64 * c.max(1) as f64 })).collect();
-    let total: f64 = speed.iter().sum();
-    let mut counts: Vec<usize> = speed.iter().map(|s| (BLOCKS as f64 * s / total).round() as usize).collect();
     let cap: Vec<usize> = gpus.iter().map(|g| {
         let (t, f) = g.memory().unwrap_or((0, None));
         let room = (f.unwrap_or(t) as f64 * 0.94) as u64;
         (room.saturating_sub(HEADROOM) / per_block.max(1)) as usize
     }).collect();
+    plan_split(&speed, &cap)
+}
+
+/// The split itself: blocks in proportion to `speed`, no card over its `cap` (blocks that fit), the rest to the others
+/// fastest first; an error when the caps cannot hold all [`BLOCKS`]
+fn plan_split(speed: &[f64], cap: &[usize]) -> Result<Vec<usize>> {
+    let n = speed.len();
+    let total: f64 = speed.iter().sum();
+    let mut counts: Vec<usize> = speed.iter().map(|s| (BLOCKS as f64 * s / total).round() as usize).collect();
     for i in 0..n {
         counts[i] = counts[i].min(cap[i]);
     }
@@ -457,6 +463,8 @@ impl Dit {
     pub fn load(path: &std::path::Path, gpus: &[Arc<Gpu>], split: Option<&[usize]>, log: &mut dyn FnMut(String)) -> Result<Dit> {
         let t0 = std::time::Instant::now();
         let f = Gguf::open(path).map_err(ge)?;
+        // the file's own config must be LTX-2.5's (config.rs): an LTX-2.0 file fails here, naming the flag
+        crate::config::check_gguf(&f).map_err(|e| Error(format!("{}: {}", path.display(), e.0)))?;
         let n = gpus.len().max(1);
         let block_bytes = |i: usize| -> u64 {
             let p = format!("transformer_blocks.{i}.");
@@ -920,5 +928,114 @@ impl Dit {
         tick(part, "video ff", &mut t)?;
         self.ff(part, &blk.audio_ff, y, ta, AD, ra, ak(4), ak(3), ak(5), b)?;
         tick(part, "audio ff", &mut t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocks_are_split_by_speed_within_what_fits() {
+        // two cards of one speed: half each
+        assert_eq!(plan_split(&[1.0, 1.0], &[40, 40]).unwrap(), vec![24, 24]);
+        // the 5070 (48 SMs x 2.5 GHz) and the 3060 (28 x 1.78): the faster takes the larger share
+        let c = plan_split(&[48.0 * 2.5, 28.0 * 1.78], &[35, 35]).unwrap();
+        assert_eq!(c.iter().sum::<usize>(), BLOCKS);
+        assert!(c[0] > c[1] && c[0] <= 35, "{c:?}");
+        // a cap holds a card back, the rest go to the other
+        assert_eq!(plan_split(&[120.0, 50.0], &[20, 40]).unwrap(), vec![20, 28]);
+        assert_eq!(plan_split(&[120.0, 50.0], &[40, 8]).unwrap(), vec![40, 8], "every card full");
+        assert!(plan_split(&[120.0, 50.0], &[40, 5]).is_err(), "45 blocks of room for 48");
+        // one card takes all it can hold
+        assert_eq!(plan_split(&[1.0], &[48]).unwrap(), vec![48]);
+        assert!(plan_split(&[1.0], &[47]).is_err());
+        // more cards: the sum is always the 48 blocks
+        for caps in [[20, 20, 20], [48, 5, 5], [16, 16, 16]] {
+            let c = plan_split(&[3.0, 2.0, 1.0], &caps).unwrap();
+            assert_eq!(c.iter().sum::<usize>(), BLOCKS, "{caps:?}");
+            assert!(c.iter().zip(caps).all(|(a, b)| *a <= b), "{c:?} {caps:?}");
+        }
+        // not enough room anywhere: refused with the caps named
+        assert!(plan_split(&[1.0, 1.0], &[10, 10]).unwrap_err().0.contains("[10, 10]"));
+    }
+
+    #[test]
+    fn the_rope_frequencies_run_from_pi_over_2_to_theta_pi_over_2() {
+        let f = freqs(64);
+        assert_eq!(f.len(), 64);
+        assert!((f[0] - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!((f[63] - 10_000.0 * std::f32::consts::FRAC_PI_2).abs() / (1e4 * 1.5708) < 1e-5);
+        assert!(f.windows(2).all(|w| w[1] > w[0]), "increasing");
+        assert_eq!(freqs(1), vec![std::f32::consts::FRAC_PI_2]);
+    }
+
+    #[test]
+    fn rope_tables_pad_in_front_and_rotate_by_the_fractions() {
+        // one axis, dim 8: 4 pairs; position 0.5 -> angle (2 x 0.5 - 1) f = 0 for every pair
+        let t = rope_table(&[vec![0.5]], 8);
+        assert_eq!(t.len(), 8);
+        assert!(t.chunks(2).all(|cs| (cs[0] - 1.0).abs() < 1e-6 && cs[1].abs() < 1e-6));
+        // position 1.0 -> angle f_k: cos / sin of freqs
+        let f = freqs(4);
+        let t = rope_table(&[vec![1.0]], 8);
+        for k in 0..4 {
+            assert!((t[k * 2] - f[k].cos()).abs() < 1e-5 && (t[k * 2 + 1] - f[k].sin()).abs() < 1e-5, "pair {k}");
+        }
+        // three axes with dim 128: 64 pairs = 21 frequencies x 3 axes + 1 pad pair in front (angle 0)
+        let t = rope_table(&[vec![0.0, 1.0, 0.25]], 128);
+        assert_eq!(t.len(), 64 * 2);
+        assert_eq!((t[0], t[1]), (1.0, 0.0), "the pad pair does not turn");
+        let f = freqs(21);
+        // pair 1 + 3 k + i: axis i of frequency k, angle (2 g_i - 1) f_k
+        for (k, i, g) in [(0usize, 0usize, 0.0f32), (5, 1, 1.0), (20, 2, 0.25)] {
+            let q = 1 + k * 3 + i;
+            let a = (g * 2.0 - 1.0) * f[k];
+            assert!((t[q * 2] - a.cos()).abs() < 1e-5 && (t[q * 2 + 1] - a.sin()).abs() < 1e-5, "k {k} axis {i}");
+        }
+    }
+
+    #[test]
+    fn the_video_grid_is_causal_and_centred() {
+        let s = Shape { f: 3, h: 2, w: 2, la: 0, fps: 24.0 };
+        assert_eq!(s.tv(), 12);
+        let g = s.video_grid();
+        assert_eq!(g.len(), 12);
+        // time: latent frame 0 is the first pixel frame alone (pixels 0 .. 1), frame f spans pixels 8f - 7 .. 8f + 1
+        let want0 = (0.0f32 + 1.0 / 24.0) / 2.0 / 20.0;
+        assert!((g[0][0] - want0).abs() < 1e-9, "{}", g[0][0]);
+        let want1 = ((1.0f32 / 24.0) + (9.0 / 24.0)) / 2.0 / 20.0;
+        assert!((g[4][0] - want1).abs() < 1e-7, "{} vs {want1}", g[4][0]);
+        // space: the cell midpoints over 2048: row h -> (32 h + 16) / 2048
+        assert!((g[0][1] - 16.0 / 2048.0).abs() < 1e-9 && (g[2][1] - 48.0 / 2048.0).abs() < 1e-9);
+        assert!((g[1][2] - 48.0 / 2048.0).abs() < 1e-9 && (g[0][2] - 16.0 / 2048.0).abs() < 1e-9);
+        // row-major: the width runs fastest, then the height, then the frame (a frame's four cells share its time)
+        assert_eq!((g[1][0], g[2][0], g[3][0]), (g[0][0], g[0][0], g[0][0]));
+        assert!(g[4][0] > g[3][0] && g[8][0] > g[4][0]);
+    }
+
+    #[test]
+    fn the_audio_grid_is_four_mel_frames_a_latent_causal() {
+        let s = Shape { f: 1, h: 1, w: 1, la: 4, fps: 24.0 };
+        let g = s.audio_grid();
+        assert_eq!(g.len(), 4);
+        assert!(g.iter().all(|r| r.len() == 1));
+        // frame 0: start max(-3, 0) = 0, end 1 mel frame = 160 / 16000 s; midpoint over 20 s
+        assert!((g[0][0] - (0.0 + 160.0 / 16000.0) / 2.0 / 20.0).abs() < 1e-9);
+        // frame 1: starts at mel frame 1, ends at 5
+        assert!((g[1][0] - ((1.0 + 5.0) * 160.0 / 16000.0) / 2.0 / 20.0).abs() < 1e-9);
+        assert!(g.windows(2).all(|w| w[1][0] > w[0][0]));
+    }
+
+    #[test]
+    fn a_sinusoid_is_a_cos_then_sin_embedding() {
+        let z = sinusoid(0.0);
+        assert_eq!(z.len(), 256);
+        assert!(z[..128].iter().all(|v| *v == 1.0) && z[128..].iter().all(|v| *v == 0.0));
+        let e = sinusoid(1000.0);
+        // frequency 0 turns 1000 radians; frequency i is exp(-ln(10000) i / 128) of it
+        assert!((e[0] - 1000f32.cos()).abs() < 1e-5 && (e[128] - 1000f32.sin()).abs() < 1e-5);
+        let f64_ = (-(10000f64.ln()) * 127.0 / 128.0).exp() * 1000.0;
+        assert!((e[127] as f64 - f64_.cos()).abs() < 1e-3 && (e[255] as f64 - f64_.sin()).abs() < 1e-3);
     }
 }

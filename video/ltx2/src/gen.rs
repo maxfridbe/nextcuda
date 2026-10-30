@@ -6,14 +6,13 @@
 //! canvas a multiple of 32. The noise is this engine's own (a seeded normal generator, not torch's), so a seed repeats
 //! here, not across engines.
 
-use std::path::PathBuf;
 use std::time::Instant;
 
 use nextcuda_core::{Error, Result};
 use serde_json::{json, Value};
 
 use crate::dit::{Shape, CH};
-use crate::{conn, sample, Ltx2};
+use crate::{conn, rules, sample, Ltx2};
 
 /// splitmix64, then Box-Muller: standard normals
 pub struct Rng(u64);
@@ -46,11 +45,7 @@ impl Rng {
     }
 }
 
-/// The next 8k + 1 at or above n (9 at least)
-pub fn align_frames(n: usize) -> usize {
-    let n = n.max(9);
-    n + (8 - (n - 1) % 8) % 8
-}
+pub use crate::rules::align_frames;
 
 pub struct Ctl<'a> {
     pub log: &'a mut dyn FnMut(String),
@@ -58,45 +53,16 @@ pub struct Ctl<'a> {
     pub cancel: &'a dyn Fn() -> bool,
 }
 
-/// The generate job: {prompt, negative, width, height, frames | seconds, steps, seed, out, first_frame, fast}
+/// The generate job: {prompt, negative, width, height, frames | seconds, steps, seed, out, first_frame, fast} (rules.rs)
 pub fn generate(m: &Ltx2, spec: &Value, c: &mut Ctl) -> Result<Value> {
     let t_all = Instant::now();
-    let prompt = spec["prompt"].as_str().unwrap_or("").trim().to_string();
-    if prompt.is_empty() {
-        return Err(Error("generate: a prompt".into()));
-    }
-    for k in ["guide_clip", "first_audio", "last_frame", "ref_audio", "source", "first_latent"] {
-        if !spec[k].is_null() {
-            return Err(Error(format!("{k}: LTX-2.5 here makes a clip from a prompt and (optionally) a first frame only")));
-        }
-    }
-    let negative = spec["negative"].as_str().unwrap_or("").to_string();
-    let num = |k: &str| spec[k].as_f64().or_else(|| spec[k].as_str().and_then(|s| s.parse().ok()));
-    let width = num("width").unwrap_or(768.0) as usize;
-    let height = num("height").unwrap_or(512.0) as usize;
-    if width % 32 != 0 || height % 32 != 0 || width < 64 || height < 64 {
-        return Err(Error(format!("{width} x {height}: the canvas is a multiple of 32 each way")));
-    }
-    let fps = num("fps").unwrap_or(24.0) as f32;
-    let want = match num("frames") {
-        Some(f) => f as usize,
-        // as H3 and the studio count them: round(seconds x fps)
-        None => (num("seconds").unwrap_or(5.0) * fps as f64).round() as usize,
-    }
-    .max(9);
-    let frames = align_frames(want);
-    // an explicit `fast` (the studio sends it either way) decides; else the registry entry's default
-    let fast = spec["fast"].as_bool().or_else(|| num("fast").map(|v| v != 0.0)).unwrap_or(m.fast_default);
-    let steps = num("steps").map(|s| s as usize).filter(|s| *s > 0);
+    let r = rules::parse_generate(spec, m.fast_default)?;
+    let (prompt, negative, width, height, fps, want, frames, fast, seed) = (r.prompt.clone(), r.negative.clone(), r.width, r.height, r.fps, r.want, r.frames, r.fast, r.seed);
     // the distilled DiT: its own sigmas unless steps are asked for
-    let sig = match (fast, steps) {
-        (true, None) => sample::sigmas(0, true),
-        (_, s) => sample::sigmas(s.unwrap_or(sample::DEV_STEPS), false),
-    };
+    let sig = r.sigmas();
     let nsteps = sig.len() - 1;
-    let seed = num("seed").map_or(0, |s| s as i64) as u64;
-    let out = PathBuf::from(spec["out"].as_str().ok_or("generate: out (an .mp4 path)")?);
-    let shape = Shape { f: (frames - 1) / 8 + 1, h: height / 32, w: width / 32, la: (frames as f64 / fps as f64 * 25.0).round() as usize, fps };
+    let out = r.out.clone();
+    let shape = Shape { f: rules::latent_frames(frames), h: height / 32, w: width / 32, la: rules::audio_latents(frames, fps), fps };
     (c.log)(format!("ltx2: {width} x {height}, {want} frames (made as {frames}), {nsteps} steps{}, seed {seed}", if fast { ", the distilled DiT" } else { "" }));
 
     // 1. the prompt (and the negative): the text encoder, then the connectors, each released after
@@ -116,7 +82,7 @@ pub fn generate(m: &Ltx2, spec: &Value, c: &mut Ctl) -> Result<Value> {
     debug_assert_eq!(pv.len(), conn::SEQ * 4096);
 
     // 2. the first frame's latents (image to video)
-    let first = match spec["first_frame"].as_str().filter(|s| !s.is_empty()) {
+    let first = match r.first_frame.as_deref() {
         Some(p) => {
             let t0 = Instant::now();
             let px = crate::media::read_picture(std::path::Path::new(p), width, height)?;
@@ -160,7 +126,7 @@ pub fn generate(m: &Ltx2, spec: &Value, c: &mut Ctl) -> Result<Value> {
     }
     // 4. pictures and sound
     let t0 = Instant::now();
-    let (f, h, w) = ((frames - 1) / 8 + 1, height / 32, width / 32);
+    let (f, h, w) = (shape.f, height / 32, width / 32);
     let px = {
         let dec = crate::vae::Decoder::load(m.file("vae")?, m.freest())?;
         let mut p = |i: usize, n: usize| (c.progress)("decode", i, n);

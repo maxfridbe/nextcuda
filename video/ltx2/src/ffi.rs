@@ -203,3 +203,16 @@ pub fn group_norm(g: &Gpu, x: P, n: usize, c: usize, groups: usize, w: *const f3
     // SAFETY: n x c halves each way, c floats each table.
     check(unsafe { (api()?.group_norm)(g.raw(), x, n as i64, c as i64, groups as i64, w, b, eps, res, c_int::from(silu), out) }, "group norm")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_zero_return_code_is_ok_and_the_activation_scale_is_a_power_of_two() {
+        assert!(check(0, "anything").is_ok());
+        // the scale the MLP products are made at in half must be exact in float (a power of two)
+        assert_eq!(ACT_SCALE, 2f32.powi(-8));
+        assert_eq!((1.0 / ACT_SCALE) as u32, 256);
+    }
+}

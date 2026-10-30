@@ -277,4 +277,68 @@ mod tests {
         let n: f32 = x.iter().map(|a| a * a).sum::<f32>().sqrt();
         assert!(e / n < 0.1, "relative error {}", e / n);
     }
+
+    #[test]
+    fn half_special_values() {
+        assert_eq!(f16_bits(0.0), 0);
+        assert_eq!(f16_bits(-0.0), 0x8000);
+        assert_eq!(f16_bits(-1.0), 0xbc00);
+        assert_eq!(f16_bits(65504.0), 0x7bff, "the largest half");
+        assert_eq!(f16_bits(65520.0), 0x7c00, "rounds up to infinity");
+        assert_eq!(f16_bits(1e9), 0x7c00);
+        assert_eq!(f16_bits(f32::NEG_INFINITY), 0xfc00);
+        assert_eq!(f16_bits(f32::NAN) & 0x7c00, 0x7c00);
+        assert_ne!(f16_bits(f32::NAN) & 0x3ff, 0, "a NaN stays one");
+        // subnormals: 2^-24 is the least, below half of it is zero
+        assert_eq!(f16_bits(2f32.powi(-24)), 1);
+        assert_eq!(f16_bits(2f32.powi(-25) * 0.99), 0);
+        assert_eq!(f16_bits(2f32.powi(-14)), 0x0400, "the least normal");
+        // ties to even: 1 + 2^-11 is half way between 1 and 1 + 2^-10
+        assert_eq!(f16_bits(1.0 + 2f32.powi(-11)), 0x3c00);
+        assert_eq!(f16_bits(1.0 + 3.0 * 2f32.powi(-11)), 0x3c02);
+        for h in [0u16, 1, 0x3c00, 0x7bff, 0x8001, 0xc000] {
+            assert_eq!(f16_bits(f16_val(h)), h, "{h:#x}");
+        }
+    }
+
+    #[test]
+    fn bf16_is_the_high_half_of_a_float() {
+        assert_eq!(bf16_val(0x3f80), 1.0);
+        assert_eq!(bf16_val(0xc000), -2.0);
+        assert_eq!(bf16_val(0), 0.0);
+    }
+
+    #[test]
+    fn q8_0_blocks_are_a_half_scale_and_32_int8() {
+        let x: Vec<f32> = (0..64).map(|i| (i as f32 - 31.5) * 0.1).collect();
+        let mut b = Vec::new();
+        q8_0(&x, &mut b);
+        assert_eq!(b.len(), 2 * 34);
+        // the first block's scale is its largest magnitude over 127; that value is +-127
+        let d = f16_val(u16::from_le_bytes([b[0], b[1]]));
+        assert!((d - 3.15 / 127.0).abs() < 1e-4, "{d}");
+        assert_eq!(b[2] as i8, -127);
+        for (i, v) in x[..32].iter().enumerate() {
+            let q = b[2 + i] as i8 as f32;
+            assert!((q * d - v).abs() <= d * 0.51 + 1e-4, "{i}");
+        }
+        // an all-zero block has a zero scale and zeros
+        let mut z = Vec::new();
+        q8_0(&[0.0; 32], &mut z);
+        assert_eq!(z, vec![0u8; 34]);
+    }
+
+    #[test]
+    fn rows_are_quantized_with_the_row_function_applied_first() {
+        // two rows of 32 bf16 values; the function scales row 1 by 2 and negates row 0
+        let bf = |v: f32| ((v.to_bits() >> 16) as u16).to_le_bytes();
+        let src: Vec<u8> = (0..64).flat_map(|i| bf(if i < 32 { 1.0 } else { 0.5 })).collect();
+        let f = |r: usize, row: &mut Vec<f32>| row.iter_mut().for_each(|v| *v *= if r == 0 { -1.0 } else { 2.0 });
+        for threads in [1, 2, 5] {
+            let q = quantize_rows(&src, 2, 32, nextcuda_gguf::GType::Q8_0, threads, &f);
+            assert_eq!(q.len(), 68);
+            assert_eq!(q[2] as i8, -127, "row 0 negated, {threads} threads");
+            assert_eq!(q[36] as i8, 127, "row 1 doubled to 1.0, {threads} threads");
+        }
+    }
 }
