@@ -85,7 +85,8 @@ pub fn generate(m: &Ltx2, spec: &Value, c: &mut Ctl) -> Result<Value> {
     }
     .max(9);
     let frames = align_frames(want);
-    let fast = spec["fast"].as_bool().unwrap_or(false) || num("fast").is_some_and(|v| v != 0.0) || m.fast_default;
+    // an explicit `fast` (the studio sends it either way) decides; else the registry entry's default
+    let fast = spec["fast"].as_bool().or_else(|| num("fast").map(|v| v != 0.0)).unwrap_or(m.fast_default);
     let steps = num("steps").map(|s| s as usize).filter(|s| *s > 0);
     // the distilled DiT: its own sigmas unless steps are asked for
     let sig = match (fast, steps) {

@@ -129,6 +129,10 @@ impl Ltx2 {
 
     /// The denoiser resident on the cards (`fast`: the distilled one), loaded if it is not
     pub fn with_dit<T>(&self, fast: bool, log: &mut dyn FnMut(String), f: impl FnOnce(&dit::Dit) -> Result<T>) -> Result<T> {
+        // a model whose dev and distilled files are one file (the ltx-2.5-fast card) cannot make the dev variant
+        if !fast && role(&self.files, "denoiser")? == role(&self.files, "denoiser-fast")? {
+            return Err(Error(format!("{ARCH}: this model has only the distilled DiT (ltx-2.5-fast): the dev variant needs the ltx-2.5 model")));
+        }
         let mut g = self.dit.lock().unwrap();
         if g.as_ref().is_some_and(|(k, _)| *k != fast) {
             *g = None;
