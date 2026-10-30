@@ -1,0 +1,163 @@
+//! A clip, as the movie maker's LTX-2.5 engine makes one (engines/ltx2.py's generate_segment): the prompt through the
+//! text encoder and the connectors (each loaded, run and released in turn), the DiT's guided denoise over noise (and
+//! the first frame's latents for image to video), the video VAE's tiled decode, the audio VAE and the vocoder, an mp4.
+//!
+//! The frame count: what is asked (the studio's 17k + 5 grid, or any) made as the next 8k + 1 and cut back to it; the
+//! canvas a multiple of 32. The noise is this engine's own (a seeded normal generator, not torch's), so a seed repeats
+//! here, not across engines.
+
+use std::time::Instant;
+
+use nextcuda_core::{Error, Result};
+use serde_json::{json, Value};
+
+use crate::dit::{Shape, CH};
+use crate::{conn, rules, sample, Ltx2};
+
+/// splitmix64, then Box-Muller: standard normals
+pub struct Rng(u64);
+
+impl Rng {
+    pub fn new(seed: u64) -> Rng {
+        Rng(seed ^ 0x9e37_79b9_7f4a_7c15)
+    }
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn uniform(&mut self) -> f64 {
+        ((self.next() >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    }
+    pub fn normals(&mut self, n: usize) -> Vec<f32> {
+        let mut v = Vec::with_capacity(n + 1);
+        while v.len() < n {
+            let (u1, u2) = (self.uniform(), self.uniform());
+            let r = (-2.0 * u1.ln()).sqrt();
+            let a = 2.0 * std::f64::consts::PI * u2;
+            v.push((r * a.cos()) as f32);
+            v.push((r * a.sin()) as f32);
+        }
+        v.truncate(n);
+        v
+    }
+}
+
+pub use crate::rules::align_frames;
+
+pub struct Ctl<'a> {
+    pub log: &'a mut dyn FnMut(String),
+    pub progress: &'a mut dyn FnMut(&'static str, usize, usize),
+    pub cancel: &'a dyn Fn() -> bool,
+}
+
+/// The generate job: {prompt, negative, width, height, frames | seconds, steps, seed, out, first_frame, fast} (rules.rs)
+pub fn generate(m: &Ltx2, spec: &Value, c: &mut Ctl) -> Result<Value> {
+    let t_all = Instant::now();
+    let r = rules::parse_generate(spec, m.fast_default)?;
+    let (prompt, negative, width, height, fps, want, frames, fast, seed) = (r.prompt.clone(), r.negative.clone(), r.width, r.height, r.fps, r.want, r.frames, r.fast, r.seed);
+    // the distilled DiT: its own sigmas unless steps are asked for
+    let sig = r.sigmas();
+    let nsteps = sig.len() - 1;
+    let out = r.out.clone();
+    let shape = Shape { f: rules::latent_frames(frames), h: height / 32, w: width / 32, la: rules::audio_latents(frames, fps), fps };
+    (c.log)(format!("ltx2: {width} x {height}, {want} frames (made as {frames}), {nsteps} steps{}{}, seed {seed}", if fast { ", the distilled DiT" } else { "" },
+                    if r.guided { "" } else { ", unguided (one pass a step)" }));
+
+    // 1. the prompt (and the negative): the text encoder, then the connectors, each released after
+    (c.progress)("encode", 0, nsteps);
+    let t0 = Instant::now();
+    m.with_dit(fast, &mut *c.log, |_| Ok(()))?;
+    let (pid, nid) = (m.tokens(&prompt), m.tokens(&negative));
+    // the empty-prompt branch (the negative) is only used by the guidance; unguided, the prompt's states stand in for it
+    let (ps, ns) = {
+        let te = m.text_encoder(&mut *c.log)?;
+        let p = te.encode(&pid)?;
+        let n = if r.guided { Some(te.encode(&nid)?) } else { None };
+        drop(te);
+        (p, n)
+    };
+    let ((pv, pa), (nv, na)) = if let Some(ns) = &ns {
+        (m.connectors(&ps, &mut *c.log)?, m.connectors(ns, &mut *c.log)?)
+    } else {
+        let (v, a) = m.connectors(&ps, &mut *c.log)?;
+        ((v.clone(), a.clone()), (v, a))
+    };
+    let encode_s = t0.elapsed().as_secs_f64();
+    (c.log)(format!("ltx2: prompt ({} tokens) encoded in {encode_s:.1} s", pid.len()));
+    debug_assert_eq!(pv.len(), conn::SEQ * 4096);
+
+    // 2. the first frame's latents (image to video)
+    let first = match r.first_frame.as_deref() {
+        Some(p) => {
+            let t0 = Instant::now();
+            let px = crate::media::read_picture(std::path::Path::new(p), width, height)?;
+            let z = m.encode_first(&px, height, width)?;
+            (c.log)(format!("ltx2: conditioned on {p} in {:.1} s", t0.elapsed().as_secs_f64()));
+            Some(z)
+        }
+        None => None,
+    };
+
+    // 3. the denoise
+    let mut rng = Rng::new(seed);
+    let tv = shape.tv();
+    let mut lat = rng.normals(tv * CH);
+    let mut aud = rng.normals(shape.la * CH);
+    let clean = if let Some(z) = &first {
+        let n = shape.h * shape.w * CH;
+        lat[..n].copy_from_slice(&z[..n]);
+        shape.h * shape.w
+    } else {
+        0
+    };
+    let t0 = Instant::now();
+    let (lat, aud, la, peak) = m.with_dit(fast, &mut *c.log, |d| {
+        let cond = d.text(&pv, &pa)?;
+        let neg = d.text(&nv, &na)?;
+        let la = shape.la;
+        let prep = d.prepare(Shape { ..shape }, first.is_some())?;
+        let mut prog = |i: usize, n: usize| (c.progress)("denoise", i, n);
+        sample::denoise(d, &prep, &cond, &neg, &mut lat, &mut aud, &sig, clean, &mut sample::Hooks { progress: &mut prog, cancel: c.cancel, each: None, guided: r.guided })?;
+        let peak: Vec<f64> = d.gpus().iter().map(|g| g.memory().map_or(0.0, |(t, f)| (t - f.unwrap_or(t)) as f64 / (1u64 << 30) as f64)).collect();
+        Ok((lat, aud, la, peak))
+    })?;
+    let denoise_s = t0.elapsed().as_secs_f64();
+    (c.log)(format!("ltx2: {nsteps} steps in {denoise_s:.1} s ({:.2} s a step); cards in use {peak:.2?} GiB", denoise_s / nsteps as f64));
+
+    // the final latents, when asked (a check of the decoders; the upscaler's input): raw float32 [Tv, 128], [La, 128]
+    if let Some(p) = spec["save_latents"].as_str() {
+        std::fs::write(format!("{p}.video.f32"), crate::te::as_bytes(&lat)).map_err(|e| Error(format!("{p}: {e}")))?;
+        std::fs::write(format!("{p}.audio.f32"), crate::te::as_bytes(&aud)).map_err(|e| Error(format!("{p}: {e}")))?;
+    }
+    // 4. pictures and sound
+    let t0 = Instant::now();
+    let (f, h, w) = (shape.f, height / 32, width / 32);
+    let px = {
+        let dec = crate::vae::Decoder::load(m.file("vae")?, m.freest())?;
+        let mut p = |i: usize, n: usize| (c.progress)("decode", i, n);
+        dec.decode(&lat, f, h, w, &mut p)?
+    };
+    let sound = {
+        let ad = crate::audio::AudioDecoder::load(m.file("audio-vae")?, m.freest())?;
+        let mel = ad.decode(&aud, la)?;
+        drop(ad);
+        let voc = crate::audio::Audio::load(m.file("vocoder")?, m.freest())?;
+        voc.vocode(&mel, 4 * la - 3)?
+    };
+    let decode_s = t0.elapsed().as_secs_f64();
+    crate::media::write_mp4(&out, &px, want.min(frames), height, width, fps, Some((&sound, crate::audio::SAMPLE_RATE)))?;
+    let secs = t_all.elapsed().as_secs_f64();
+    (c.log)(format!("ltx2: decoded in {decode_s:.1} s; {} in {secs:.1} s", out.display()));
+    Ok(json!({
+        "out": out, "engine": "ltx2", "fast": fast, "guided": r.guided, "steps": nsteps, "width": width, "height": height, "frames": want.min(frames), "gen_frames": frames,
+        "fps": fps, "seed": seed, "sample_rate": crate::audio::SAMPLE_RATE, "encode_secs": round1(encode_s), "denoise_secs": round1(denoise_s),
+        "decode_secs": round1(decode_s), "secs": round1(secs), "gpu_gib": peak,
+    }))
+}
+
+fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}

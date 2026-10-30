@@ -201,14 +201,20 @@ export interface Done {
 
 /** A denoiser the engine has */
 export interface EngineInfo {
-  /** INT8, Q6_K, Q4_K_M, REF2VA */
+  /** the name video.generate's engine takes: INT8, Q6_K, Q4_K_M, REF2VA (H3's denoisers), ltx2, ltx2_upscale (LTX-2.5) */
   quant: string;
+  /** the engine this is: minimax_h3 (every H3 denoiser), ltx2 (LTX-2.5 shots), ltx2_upscale (its x2 latent upscaler) */
+  engine?: string | null;
+  /** what it makes: shots (a clip from a prompt) or upscale (a finished clip, bigger) */
+  stage?: string | null;
+  /** the registry models behind it (LTX: ltx-2.5 and ltx-2.5-fast are one engine) */
+  models?: string[] | null;
   file: string;
   path: string;
   gib: number;
   ready: boolean;
   default?: boolean | null;
-  /** what it takes (video.generate's keys): takes, not, chosen, ignored */
+  /** what it takes (video.generate's keys): takes, not, chosen, ignored; LTX adds options (the choices and ranges) and fps */
   inputs: unknown;
   /** the licence of its weights, whether it allows commercial use (false: the picker tags it non-commercial), the conditions it puts on it */
   license?: string | null;

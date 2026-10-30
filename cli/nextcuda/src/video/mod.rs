@@ -32,7 +32,7 @@ in the service's container: nextcuda video daemon --socket PATH --model ID [--en
 
 /// The video engines this program has (video/<arch>)
 pub fn engines() -> Vec<VideoKind> {
-    vec![nextcuda_video_h3::kind()]
+    vec![nextcuda_video_h3::kind(), nextcuda_video_ltx2::kind()]
 }
 
 pub(crate) fn opt<'a>(args: &'a [String], k: &str) -> Option<&'a str> {

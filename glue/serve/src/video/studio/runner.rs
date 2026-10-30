@@ -78,7 +78,11 @@ impl Studio {
     }
 
     /// An item -> the engine's `generate` job (and the resolved anchors, recorded on the job).
-    fn spec(&self, st: &State, item: &Value, name: &str) -> (Value, Value) {
+    pub(super) fn spec(&self, st: &State, item: &Value, name: &str) -> (Value, Value) {
+        let engine = super::queue::engine_name(item["engine"].as_str());
+        if super::queue::is_ltx(&engine) {
+            return (self.ltx_spec(item, name, &engine), json!({}));
+        }
         let mut spec = json!({
             "kind": "generate", "prompt": item["prompt"], "width": item["width"], "height": item["height"], "seconds": item["seconds"],
             "steps": item["steps"], "seed": item["seed"], "out": format!("{}/{name}.mp4", self.out_in),
@@ -186,6 +190,28 @@ impl Studio {
         (spec, resolved)
     }
 
+    /// An LTX-2.5 item -> the engine's `generate` (or `upscale`) job. The model is the box's dev one for the dev
+    /// variant; the distilled variant is the request's `fast` (either model can make it).
+    fn ltx_spec(&self, item: &Value, name: &str, engine: &str) -> Value {
+        let ids: Vec<String> = super::queue::ltx_ids();
+        let out = format!("{}/{name}.mp4", self.out_in);
+        let variant = s(item, "variant");
+        let model = super::queue::ltx_model(&ids, &variant).unwrap_or_default();
+        if engine == super::queue::LTX_UPSCALE {
+            return json!({"kind": "upscale", "engine": model, "source": format!("{}/{}", self.out_in, s(item, "source_clip")), "out": out, "scale": 2});
+        }
+        let mut spec = json!({"kind": "generate", "engine": model, "prompt": item["prompt"], "negative": item["negative"], "width": item["width"],
+                              "height": item["height"], "frames": item["frames"], "seed": item["seed"], "out": out, "fast": variant == "distilled"});
+        // the distilled DiT with no steps named runs its own eight sigmas
+        if variant != "distilled" || item["steps_given"] == true {
+            spec["steps"] = item["steps"].clone();
+        }
+        if let Some(f) = item["first_frame"].as_str() {
+            spec["first_frame"] = json!(format!("{}/{f}", self.out_in));
+        }
+        spec
+    }
+
     /// Start an item on the engine.
     pub(super) fn launch(&self, st: &mut State, item: Value) -> Result<(), String> {
         let name = super::stamp();
@@ -255,7 +281,7 @@ impl Studio {
             pct = 10.0;
             stage = "conditioning done".into();
         }
-        let mut steps_done = 0;
+        let mut steps_done = 0u64;
         if has("tokens :") {
             pct = 12.0;
             stage = "sampling (step 1 running)".into();
@@ -278,6 +304,13 @@ impl Studio {
         if has("audio  :") {
             pct = 95.0;
             stage = "audio decoded, muxing".into();
+        }
+        let ltx = super::queue::is_ltx(&s(&job.rec, "engine"));
+        if ltx {
+            (pct, stage, steps_done) = ltx_stage(s(&job.rec, "engine") == super::queue::LTX_UPSCALE, &log, &j["progress"], steps_total);
+            if state == "queued" {
+                stage = "waiting for the engine (loading or another job)".into();
+            }
         }
         let done = state == "done";
         let failed = matches!(state, "failed" | "cancelled");
@@ -315,6 +348,19 @@ impl Studio {
         if let Some(t) = secs_after("clip   :") {
             times.insert("TOTAL".into(), json!(t));
         }
+        if ltx {
+            // LTX's result carries its stage times
+            let r = &j["result"];
+            for (k, key) in [("text encoder + connectors".to_string(), "encode_secs"), (format!("sampled {steps_total} steps"), "denoise_secs"),
+                             ("video + audio decoded".to_string(), "decode_secs"), ("latent upscaled".to_string(), "upscale_secs"), ("TOTAL".to_string(), "secs")] {
+                if let Some(t) = r[key].as_f64() {
+                    times.insert(k, json!(t));
+                }
+            }
+            if let Some(t) = r["upscale_secs"].as_f64() {
+                times.insert("TOTAL".into(), json!(t));
+            }
+        }
         // energy
         let mut energy = Value::Null;
         if let (Some(e0), Some(e1)) = (job.energy0, self.gpu()["energy_j"].as_f64()) {
@@ -335,9 +381,11 @@ impl Studio {
             stage = "failed".into();
         }
         let elapsed = now() - job.rec["started"].as_f64().unwrap_or(now());
-        let frames = frames_of(job.rec["seconds"].as_f64().unwrap_or(5.0));
+        let frames = job.rec["frames"].as_u64().filter(|_| super::queue::is_ltx(&s(&job.rec, "engine"))).unwrap_or_else(|| frames_of(job.rec["seconds"].as_f64().unwrap_or(5.0)));
         let eta = if done || failed {
             0.0
+        } else if ltx {
+            ltx_eta(&job.rec, elapsed, steps_done, steps_total)
         } else if steps_done > 0 && steps_done < steps_total {
             let per = (elapsed - 30.0).max(1.0) / steps_done as f64;
             per * (steps_total - steps_done) as f64 + 0.15 * frames as f64
@@ -488,6 +536,58 @@ impl Studio {
             std::thread::sleep(Duration::from_secs(1));
             self.tick();
         }
+    }
+}
+
+/// An LTX job's stage from its log and progress: (percent, words, steps done). Generate: the text encoder (to 10 %),
+/// the denoise (12 to 80 %, by step), the decode and sound; upscale: the frames done of the source.
+pub fn ltx_stage(upscale: bool, log: &[String], progress: &Value, steps_total: u64) -> (f64, String, u64) {
+    let has = |p: &str| log.iter().any(|l| l.contains(p));
+    let (d, t) = (progress["done"].as_u64().unwrap_or(0), progress["total"].as_u64().unwrap_or(0));
+    if upscale {
+        return match (t > 0, has("frames") && has(" -> ")) {
+            (_, true) => (97.0, "muxing".into(), 0),
+            (true, _) => (5.0 + 90.0 * d as f64 / t as f64, format!("upscaling {d}/{t} frames"), 0),
+            _ => (2.0, "starting".into(), 0),
+        };
+    }
+    let mut r = (2.0, "starting".to_string(), 0u64);
+    if has(" frames (made as") {
+        r = (6.0, "text encoder".into(), 0);
+    }
+    if has("ltx2: prompt (") {
+        r = (10.0, "conditioning done".into(), 0);
+    }
+    if has("conditioned on") {
+        r = (11.0, "first frame encoded".into(), 0);
+    }
+    if t > 0 && has("ltx2: prompt (") {
+        let d = d.min(steps_total.max(t));
+        r = (12.0 + 68.0 * d as f64 / t as f64, if d < t { format!("sampling {}/{t}", d + 1) } else { "sampling done".into() }, d.min(steps_total));
+    }
+    if has(" steps in ") && has("ltx2: ") {
+        r = (80.0, "sampling done, decoding".into(), steps_total);
+    }
+    if has("ltx2: decoded in") {
+        r = (95.0, "audio decoded, muxing".into(), steps_total);
+    }
+    r
+}
+
+/// Seconds left of an LTX job: the steps left at the pace so far (the first minute is loading and the text stage), the decode after
+fn ltx_eta(rec: &Value, elapsed: f64, steps_done: u64, steps_total: u64) -> f64 {
+    let (w, h) = (rec["width"].as_i64().unwrap_or(640), rec["height"].as_i64().unwrap_or(384));
+    let tokens = super::queue::ltx_tokens(w, h, rec["frames"].as_u64().unwrap_or(121)) as f64;
+    if rec["engine"] == super::queue::LTX_UPSCALE {
+        return (rec["frames"].as_f64().unwrap_or(120.0) * 0.6 - elapsed).max(5.0);
+    }
+    let decode = 25.0 * tokens / 3840.0;
+    if steps_done > 0 && steps_done < steps_total {
+        (elapsed - 60.0).max(1.0) / steps_done as f64 * (steps_total - steps_done) as f64 + decode
+    } else if steps_done >= steps_total {
+        decode
+    } else {
+        (90.0 - elapsed).max(5.0) + steps_total as f64 * 5.6 * 4.0 * tokens / 3840.0 + decode
     }
 }
 

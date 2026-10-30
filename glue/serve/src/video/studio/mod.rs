@@ -258,8 +258,10 @@ impl Studio {
     fn generate(&self, p: &Value) -> Result<Value, RpcError> {
         let (p, mut ignored) = queue::unchain(p)?;
         let p = &p;
-        for k in queue::IGNORED {
-            if p.get(k).is_some_and(|v| !v.is_null() && *v != json!("")) {
+        // LTX-2.5 reads the negative prompt (its guidance has an empty-prompt branch to steer); H3 does not
+        let ltx = queue::is_ltx(&queue::engine_name(p.get("engine").and_then(|v| v.as_str())));
+        for k in queue::IGNORED.iter().filter(|k| !(ltx && **k == "negative_prompt")) {
+            if p.get(*k).is_some_and(|v| !v.is_null() && *v != json!("")) {
                 ignored.push(k.to_string());
             }
         }

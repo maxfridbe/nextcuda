@@ -971,7 +971,24 @@ components:
       properties:
         quant:
           type: string
-          description: INT8, Q6_K, Q4_K_M, REF2VA
+          description: 'the name video.generate''s engine takes: INT8, Q6_K, Q4_K_M, REF2VA (H3''s denoisers), ltx2, ltx2_upscale (LTX-2.5)'
+        engine:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the engine this is: minimax_h3 (every H3 denoiser), ltx2 (LTX-2.5 shots), ltx2_upscale (its x2 latent upscaler)'
+        stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what it makes: shots (a clip from a prompt) or upscale (a finished clip, bigger)'
+        models:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: 'the registry models behind it (LTX: ltx-2.5 and ltx-2.5-fast are one engine)'
         file:
           type: string
         path:
@@ -985,7 +1002,7 @@ components:
           - type: boolean
           - type: 'null'
         inputs:
-          description: 'what it takes (video.generate''s keys): takes, not, chosen, ignored'
+          description: 'what it takes (video.generate''s keys): takes, not, chosen, ignored; LTX adds options (the choices and ranges) and fps'
         license:
           anyOf:
           - type: string

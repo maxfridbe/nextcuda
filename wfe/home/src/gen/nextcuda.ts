@@ -935,6 +935,9 @@ export interface LlmRequestsReq {
   [key: string]: unknown;
 }
 
+/** LTX-2.5's model: dev (the take: 30 guided steps) | distilled (a preview: 8 steps, unguided) */
+export type LtxVariant = "dev" | "distilled";
+
 /** A mesh tool's operation: decimate | remesh | uv | convert */
 export type MeshOp = "decimate" | "remesh" | "uv" | "convert";
 
@@ -1527,7 +1530,7 @@ export interface VideoGenerateReq {
   /** a ControlNet control clip (file); not with Ref2VA */
   control_video?: string | null;
   /**
-   * the denoiser, by video.engines.list's quant (Q8_0 is read as INT8); REF2VA is chosen by itself when ref_images or ref_videos are given
+   * the engine, by video.engines.list's quant (Q8_0 is read as INT8): H3's denoisers (REF2VA is chosen by itself when ref_images or ref_videos are given), or ltx2 (LTX-2.5 shots), or ltx2_upscale (a finished clip, twice the size: with source_clip and an empty prompt)
    * @default "INT8"
    */
   engine?: string | null;
@@ -1545,11 +1548,11 @@ export interface VideoGenerateReq {
    * @default 0
    */
   soundtrack_start?: number | null;
-  /** anchor or file: the clip starts on this picture / clip's last frame */
+  /** anchor or file: the clip starts on this picture / clip's last frame. ltx2: a picture file in the clips directory (png, jpg, webp - video.upload it), the clip's first frame (image to video); an anchor word or a clip is refused */
   first_frame?: string | null;
   /**
-   * the length exactly, instead of seconds: 17k + 5 (22, 39, 56 ... 107, 124 ... 362); another count is refused, the message naming the nearest two
-   * @minimum 22
+   * the length exactly, instead of seconds. H3: 17k + 5 (22, 39, 56 ... 107, 124 ... 362); another count is refused, the message naming the nearest two. ltx2: any count from 9 to 361 (the model works on 8k + 1 and the clip is cut to what was asked); width/32 x height/32 x ((frames - 1)/8 + 1) is at most 9216 tokens (1024 x 576 for 121 frames; 12.8 s a step at 640 x 384 for 121 frames, 39 s at 1024 x 576)
+   * @minimum 9
    * @maximum 362
    */
   frames?: number | null;
@@ -1575,7 +1578,7 @@ export interface VideoGenerateReq {
    * @items {"maxLength":200,"type":"string"}
    */
   loras?: string[] | null;
-  /** ignored: H3 runs at cfg 1 (one pass a step, no unconditional branch), so a negative prompt has nothing to steer - say what is there instead (negations render). Accepted and listed in the answer's ignored */
+  /** H3: ignored (it runs at cfg 1, one pass a step, no unconditional branch, so a negative prompt has nothing to steer - say what is there instead; accepted and listed in the answer's ignored). ltx2: read, as the text of the guidance's unconditional branch */
   negative_prompt?: string | null;
   /**
    * a queued clip goes ahead of every clip of a lower priority (same priority: first come first made)
@@ -1589,7 +1592,14 @@ export interface VideoGenerateReq {
    * @maxLength 60
    */
   project?: string | null;
-  /** read as written - tokenized whole, no template, no sections parsed. H3 was trained on three fields in a fixed order: integrated_multimodal_description (shots, actions, camera, dialogue), overall_soundscape, non_diegetic_music; video.describePromptGuideMD has the form and its rules */
+  /** ltx2_upscale: the finished clip to make twice the size (a file in the clips directory, name or name.mp4; sides multiples of 32); the sound is copied. The result is a new clip, with its own name */
+  source_clip?: string | null;
+  /**
+   * ltx2: the model - dev (the take: 30 guided steps) or distilled (a preview: 8 steps, unguided); default dev
+   * @default "dev"
+   */
+  variant?: LtxVariant | null;
+  /** read as written - tokenized whole, no template, no sections parsed (ltx2: one paragraph of prose describing what is seen and heard; ltx2_upscale: send an empty string). H3 was trained on three fields in a fixed order: integrated_multimodal_description (shots, actions, camera, dialogue), overall_soundscape, non_diegetic_music; video.describePromptGuideMD has the form and its rules */
   prompt: string;
   /**
    * queue the clip when the studio is busy (false: 409 busy)
@@ -1629,7 +1639,7 @@ export interface VideoGenerateReq {
   /** ComfyUI's name */
   schedule?: string | null;
   /**
-   * length; snapped up to the model's frame grid (17k + 5 frames at 24 fps: 4 s -> 107 frames); the model is trained on 5.2-15.1 s. The answer's frames and seconds say what is made
+   * length; H3: snapped up to the model's frame grid (17k + 5 frames at 24 fps: 4 s -> 107 frames), trained on 5.2-15.1 s; ltx2: seconds x 24 frames, as asked (5 s = 120). The answer's frames and seconds say what is made
    * @minimum 1
    * @maximum 15.1
    * @default 10
@@ -1649,7 +1659,7 @@ export interface VideoGenerateReq {
   /** anchor or file: a masked run - this clip's latents are kept outside the regenerated part */
   source?: string | null;
   /**
-   * denoising steps; below 8 only with a turbo LoRA
+   * denoising steps; below 8 only with a turbo LoRA. ltx2: default 30 (variant dev) or 8 (distilled, which with no steps named runs its own eight sigmas)
    * @minimum 1
    * @maximum 40
    * @default 10

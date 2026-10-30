@@ -311,6 +311,12 @@ The video daemon and the studio (`nextsycl video`) and the H3 engine (`video/h3`
 | `H3_TE_PIN_LOCK` | /tmp/h3-te-pin.lock | the lock file that lets one worker a host hold the pinned text-encoder copy | video h3 |
 | `H3_THREADS` | 8 | threads reading the checkpoint at load (--opt-threads) | video h3 |
 | `H3_VAE_ATTN_PER_TILE` | off | 1: the video decoder's attention a tile at a time (--opt-vae-attn-per-tile) | video h3 |
+| `LTX2_DEBUG_ENC` | none | Debug: a directory of reference VAE-encoder dumps (`check --stages vae`) to compare layer by layer | video ltx2 |
+| `LTX2_FAST` | 0 | 1: the registry entry's default is the distilled DiT (8 steps, no guidance); the `ltx-2.5-fast` card sets it (a request's `fast` overrides) | video ltx2 |
+| `LTX2_PROFILE` | off | Debug: 1 times each part of a DiT block per card and logs the sums per pass | video ltx2 |
+| `LTX2_SPLIT` | by card speed | Experiment: the DiT blocks per card, e.g. `28,20` (default: split by measured speed) | video ltx2 |
+| `LTX2_TE_Q8` | 0 | Debug: 1 keeps the text encoder in Q8_0 (a check's form: it does not fit beside the DiT) | video ltx2 |
+| `LTX2_THREADS` | 8 | threads quantizing the text encoder the first time (the `threads` load option) | video ltx2 |
 | `NS_VIDEO_CHARACTERS` | docs/video/characters.example.json | characters for the speech tool | cli (video tools) |
 | `NS_VIDEO_ENGINES` | none | the video daemon's other models, space-separated registry ids (serve: the enabled video models decide) | cli (video start), serve |
 | `NS_VIDEO_GPUS` | all | the video daemon's GPUs, e.g. "0 1" (serve: the enabled video models' GPUs) | cli (video start) |

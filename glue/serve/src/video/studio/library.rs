@@ -330,8 +330,10 @@ impl Studio {
             .and_then(|v| v["engines"].as_array().cloned())
             .unwrap_or_default();
         super::queue::learn_engines(&raw.iter().filter_map(|e| e["name"].as_str().map(str::to_string)).collect::<Vec<_>>());
+        let ltx_raw: Vec<&Value> = raw.iter().filter(|e| e["name"].as_str().is_some_and(|n| n.starts_with("ltx"))).collect();
         let listed: Vec<Value> = raw
             .iter()
+            .filter(|e| !e["name"].as_str().is_some_and(|n| n.starts_with("ltx")))
             .filter_map(|e| {
                 let path = e["path"].as_str()?;
                 let mut row = json!({"quant": super::queue::engine_quant(e["name"].as_str().unwrap_or("")), "file": path.rsplit('/').next().unwrap_or(path), "path": path,
@@ -342,16 +344,28 @@ impl Studio {
                 Some(row)
             })
             .collect();
-        if listed.is_empty() {
+        // LTX-2.5: its models (dev, distilled) are one engine, ltx2, with a variant option; the latent upscaler is
+        // the engine ltx2_upscale (the same models make it). Each has its own row, and `engine` says which is which
+        let ltx_rows = super::queue::ltx_rows(&ltx_raw.iter().map(|e| (e["name"].as_str().unwrap_or("").to_string(), e["path"].as_str().unwrap_or("").to_string(),
+                                                                     e["gib"].as_f64().unwrap_or(0.0))).collect::<Vec<_>>(),
+                                              &ltx_raw.iter().filter_map(|e| e["name"].as_str().and_then(super::queue::licence_of)).next());
+        if listed.is_empty() && ltx_rows.is_empty() {
             return vec![json!({"quant": "INT8", "file": "minimax_h3_fl2va_pruned_int8_convrot.safetensors", "path": "", "gib": 19.53, "ready": true, "default": true,
-                               "inputs": super::queue::inputs_of("INT8")})];
+                               "inputs": super::queue::inputs_of("INT8"), "engine": "minimax_h3", "stage": "shots"})];
         }
         let mut v = listed;
         v.sort_by(|a, b| a["gib"].as_f64().unwrap_or(0.0).total_cmp(&b["gib"].as_f64().unwrap_or(0.0)));
-        // what each takes (video.generate's keys)
+        // what each takes (video.generate's keys); H3's denoisers are the engine minimax_h3, making shots
         for e in v.iter_mut() {
             e["inputs"] = super::queue::inputs_of(e["quant"].as_str().unwrap_or(""));
+            e["engine"] = json!("minimax_h3");
+            e["stage"] = json!("shots");
         }
+        let ltx_default = ltx_raw.iter().any(|e| e["default"] == true);
+        v.extend(ltx_rows.into_iter().map(|mut r| {
+            r["default"] = json!(ltx_default && r["engine"] == super::queue::LTX);
+            r
+        }));
         v
     }
 

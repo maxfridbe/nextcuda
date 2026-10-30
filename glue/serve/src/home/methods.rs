@@ -191,6 +191,15 @@ pub enum ChainMode {
     None,
 }
 
+/// LTX-2.5's model: dev (the take: 30 guided steps) | distilled (a preview: 8 steps, unguided)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum LtxVariant {
+    #[serde(rename = "dev")]
+    Dev,
+    #[serde(rename = "distilled")]
+    Distilled,
+}
+
 /// A reference picture's size: match | max
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
 pub enum RefImageSize {
@@ -1826,7 +1835,7 @@ pub struct VideoGenerateReq {
     /// a ControlNet control clip (file); not with Ref2VA
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control_video: Option<String>,
-    /// the denoiser, by video.engines.list's quant (Q8_0 is read as INT8); REF2VA is chosen by itself when ref_images or ref_videos are given
+    /// the engine, by video.engines.list's quant (Q8_0 is read as INT8): H3's denoisers (REF2VA is chosen by itself when ref_images or ref_videos are given), or ltx2 (LTX-2.5 shots), or ltx2_upscale (a finished clip, twice the size: with source_clip and an empty prompt)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(default = "INT8")]
     pub engine: Option<String>,
@@ -1846,12 +1855,12 @@ pub struct VideoGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(min = 0, default = 0)]
     pub soundtrack_start: Option<f64>,
-    /// anchor or file: the clip starts on this picture / clip's last frame
+    /// anchor or file: the clip starts on this picture / clip's last frame. ltx2: a picture file in the clips directory (png, jpg, webp - video.upload it), the clip's first frame (image to video); an anchor word or a clip is refused
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_frame: Option<String>,
-    /// the length exactly, instead of seconds: 17k + 5 (22, 39, 56 ... 107, 124 ... 362); another count is refused, the message naming the nearest two
+    /// the length exactly, instead of seconds. H3: 17k + 5 (22, 39, 56 ... 107, 124 ... 362); another count is refused, the message naming the nearest two. ltx2: any count from 9 to 361 (the model works on 8k + 1 and the clip is cut to what was asked); width/32 x height/32 x ((frames - 1)/8 + 1) is at most 9216 tokens (1024 x 576 for 121 frames; 12.8 s a step at 640 x 384 for 121 frames, 39 s at 1024 x 576)
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
-    #[schema(min = 22, max = 362)]
+    #[schema(min = 9, max = 362)]
     pub frames: Option<i64>,
     /// a motion guide: "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1871,7 +1880,7 @@ pub struct VideoGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(json = r#"{"items": {"maxLength": 200, "type": "string"}}"#)]
     pub loras: Option<Vec<String>>,
-    /// ignored: H3 runs at cfg 1 (one pass a step, no unconditional branch), so a negative prompt has nothing to steer - say what is there instead (negations render). Accepted and listed in the answer's ignored
+    /// H3: ignored (it runs at cfg 1, one pass a step, no unconditional branch, so a negative prompt has nothing to steer - say what is there instead; accepted and listed in the answer's ignored). ltx2: read, as the text of the guidance's unconditional branch
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub negative_prompt: Option<String>,
     /// a queued clip goes ahead of every clip of a lower priority (same priority: first come first made)
@@ -1882,7 +1891,14 @@ pub struct VideoGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(max_length = 60)]
     pub project: Option<String>,
-    /// read as written - tokenized whole, no template, no sections parsed. H3 was trained on three fields in a fixed order: integrated_multimodal_description (shots, actions, camera, dialogue), overall_soundscape, non_diegetic_music; video.describePromptGuideMD has the form and its rules
+    /// ltx2_upscale: the finished clip to make twice the size (a file in the clips directory, name or name.mp4; sides multiples of 32); the sound is copied. The result is a new clip, with its own name
+    #[serde(rename = "source_clip", default, skip_serializing_if = "Option::is_none")]
+    pub source_clip: Option<String>,
+    /// ltx2: the model - dev (the take: 30 guided steps) or distilled (a preview: 8 steps, unguided); default dev
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(default = "dev")]
+    pub variant: Option<LtxVariant>,
+    /// read as written - tokenized whole, no template, no sections parsed (ltx2: one paragraph of prose describing what is seen and heard; ltx2_upscale: send an empty string). H3 was trained on three fields in a fixed order: integrated_multimodal_description (shots, actions, camera, dialogue), overall_soundscape, non_diegetic_music; video.describePromptGuideMD has the form and its rules
     pub prompt: String,
     /// queue the clip when the studio is busy (false: 409 busy)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1922,7 +1938,7 @@ pub struct VideoGenerateReq {
     /// ComfyUI's name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
-    /// length; snapped up to the model's frame grid (17k + 5 frames at 24 fps: 4 s -> 107 frames); the model is trained on 5.2-15.1 s. The answer's frames and seconds say what is made
+    /// length; H3: snapped up to the model's frame grid (17k + 5 frames at 24 fps: 4 s -> 107 frames), trained on 5.2-15.1 s; ltx2: seconds x 24 frames, as asked (5 s = 120). The answer's frames and seconds say what is made
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(min = 1, max = 15.1, default = 10)]
     pub seconds: Option<f64>,
@@ -1938,7 +1954,7 @@ pub struct VideoGenerateReq {
     /// anchor or file: a masked run - this clip's latents are kept outside the regenerated part
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// denoising steps; below 8 only with a turbo LoRA
+    /// denoising steps; below 8 only with a turbo LoRA. ltx2: default 30 (variant dev) or 8 (distilled, which with no steps named runs its own eight sigmas)
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 1, max = 40, default = 10)]
     pub steps: Option<i64>,

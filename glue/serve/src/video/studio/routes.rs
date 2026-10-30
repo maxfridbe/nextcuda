@@ -591,14 +591,23 @@ pub struct Gpu {
 /// A denoiser the engine has
 #[derive(Serialize, Deserialize, Rpc)]
 pub struct EngineInfo {
-    /// INT8, Q6_K, Q4_K_M, REF2VA
+    /// the name video.generate's engine takes: INT8, Q6_K, Q4_K_M, REF2VA (H3's denoisers), ltx2, ltx2_upscale (LTX-2.5)
     pub quant: String,
+    /// the engine this is: minimax_h3 (every H3 denoiser), ltx2 (LTX-2.5 shots), ltx2_upscale (its x2 latent upscaler)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// what it makes: shots (a clip from a prompt) or upscale (a finished clip, bigger)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// the registry models behind it (LTX: ltx-2.5 and ltx-2.5-fast are one engine)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<String>>,
     pub file: String,
     pub path: String,
     pub gib: f64,
     pub ready: bool,
     pub default: Option<bool>,
-    /// what it takes (video.generate's keys): takes, not, chosen, ignored
+    /// what it takes (video.generate's keys): takes, not, chosen, ignored; LTX adds options (the choices and ranges) and fps
     pub inputs: Value,
     /// the licence of its weights, whether it allows commercial use (false: the picker tags it non-commercial), the conditions it puts on it
     #[serde(default, skip_serializing_if = "Option::is_none")]
