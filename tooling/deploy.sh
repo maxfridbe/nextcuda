@@ -68,11 +68,13 @@ if [ -z "$pid" ]; then echo "    not running"; exit 0; fi
 case "$(readlink /proc/$pid/exe)" in *"(deleted)") ;; *) echo "    on the new program already"; exit 0 ;; esac
 sock=$(tr '\0' '\n' < /proc/$pid/cmdline | sed -n '/^--socket$/{n;p}')
 model=$(tr '\0' '\n' < /proc/$pid/cmdline | sed -n '/^--model$/{n;p}')
+# the extra engines it was started with (--engine ID, repeated: LTX beside H3) come back with it
+engines=$(tr '\0' '\n' < /proc/$pid/cmdline | sed -n '/^--engine$/{n;p}' | sed 's/^/--engine /' | tr '\n' ' ')
 if curl -s -m 5 --unix-socket "$sock" http://localhost/engine/status | grep -q '"running":{'; then
-  echo "    a clip is rendering: left on the old program (restart it with: nextcuda video stop; nextcuda video start --model $model)"
+  echo "    a clip is rendering: left on the old program (restart it with: nextcuda video stop; nextcuda video start --model $model $engines)"
   exit 0
 fi
-cd ~/nextcuda && ./dist/nextcuda video stop >/dev/null 2>&1; ./dist/nextcuda video start ${model:+--model "$model"} >/dev/null 2>&1
+cd ~/nextcuda && ./dist/nextcuda video stop >/dev/null 2>&1; ./dist/nextcuda video start ${model:+--model "$model"} $engines >/dev/null 2>&1
 new=$(pgrep -f "nextcuda video daemon" | head -1)
-[ -n "$new" ] && echo "    restarted on the new program ($model, pid $new)" || echo "    did not come back: nextcuda video start --model $model"
+[ -n "$new" ] && echo "    restarted on the new program ($model $engines, pid $new)" || echo "    did not come back: nextcuda video start --model $model $engines"
 EOF
