@@ -935,7 +935,7 @@ export interface LlmRequestsReq {
   [key: string]: unknown;
 }
 
-/** LTX-2.5's model: dev (the take: 30 guided steps) | distilled (a preview: 8 steps, no guidance, thinner sound) */
+/** LTX-2.5's model: dev (the take: 30 guided steps) | distilled (a preview: 8 steps, unguided) */
 export type LtxVariant = "dev" | "distilled";
 
 /** A mesh tool's operation: decimate | remesh | uv | convert */
@@ -1595,7 +1595,7 @@ export interface VideoGenerateReq {
   /** ltx2_upscale: the finished clip to make twice the size (a file in the clips directory, name or name.mp4; sides multiples of 32); the sound is copied. The result is a new clip, with its own name */
   source_clip?: string | null;
   /**
-   * ltx2: the model - dev (the take) or distilled (a preview); default dev
+   * ltx2: the model - dev (the take: 30 guided steps) or distilled (a preview: 8 steps, unguided); default dev
    * @default "dev"
    */
   variant?: LtxVariant | null;

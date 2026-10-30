@@ -191,7 +191,7 @@ pub enum ChainMode {
     None,
 }
 
-/// LTX-2.5's model: dev (the take: 30 guided steps) | distilled (a preview: 8 steps, no guidance, thinner sound)
+/// LTX-2.5's model: dev (the take: 30 guided steps) | distilled (a preview: 8 steps, unguided)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
 pub enum LtxVariant {
     #[serde(rename = "dev")]
@@ -1894,7 +1894,7 @@ pub struct VideoGenerateReq {
     /// ltx2_upscale: the finished clip to make twice the size (a file in the clips directory, name or name.mp4; sides multiples of 32); the sound is copied. The result is a new clip, with its own name
     #[serde(rename = "source_clip", default, skip_serializing_if = "Option::is_none")]
     pub source_clip: Option<String>,
-    /// ltx2: the model - dev (the take) or distilled (a preview); default dev
+    /// ltx2: the model - dev (the take: 30 guided steps) or distilled (a preview: 8 steps, unguided); default dev
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(default = "dev")]
     pub variant: Option<LtxVariant>,

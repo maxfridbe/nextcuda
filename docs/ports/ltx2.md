@@ -163,7 +163,7 @@ quantization. Relative L2 error unless noted:
 | VAE encoder (first frame latents) | 2.2e-3 (float32 residual path) |
 | upscaler (tiled encode, latent upsampler, tiled decode) | <= 2.5e-3 |
 
-The unit tests (`cargo test -p nextcuda-video-ltx2`, 57, no GPU) hold what can drift without a GPU: the sigma
+The unit tests (`cargo test -p nextcuda-video-ltx2`, 59, no GPU) hold what can drift without a GPU: the sigma
 schedules and the guidance's delta form and rescale, the frame / canvas / token rules, the config flags read from the
 GGUF's metadata (below), the RoPE tables, the block split over the cards, the VAE tile stitching, the upscaler's
 windows, the quantizers, the `.npy` reader the checks use, the safetensors shards, ffmpeg's mp4 round trip.

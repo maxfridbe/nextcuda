@@ -420,7 +420,7 @@ pub fn ltx_inputs(variants: &[&str]) -> Value {
            "not": LTX_NOT.iter().chain(["loras", "sampler", "schedule", "upscale", "upscaler"].iter()).collect::<Vec<_>>(),
            "chosen": "engine: ltx2", "ignored": ["cfg", "te", "chain.pin_renorm"],
            "options": {
-               "variant": {"values": variants, "default": variants.first(), "help": "dev: the take (30 guided steps, four passes a step); distilled: a preview (8 steps, no guidance, thinner sound)"},
+               "variant": {"values": variants, "default": variants.first(), "help": "dev: the take (30 guided steps, four passes a step); distilled: a preview (8 steps, unguided: one pass a step, about 80 s a clip; softer, its sound as much a draw)"},
                "steps": {"min": 1, "max": 40, "default": {"dev": LTX_STEPS.0, "distilled": LTX_STEPS.1},
                          "help": "distilled with no steps named runs its own eight sigmas; naming steps runs the ordinary schedule"},
                "frames": {"min": LTX_FRAMES.0, "max": LTX_FRAMES.1, "step": 1, "default": 121, "help": "any count; made as the next 8k + 1 and cut back; seconds x 24 when frames are not given"},
