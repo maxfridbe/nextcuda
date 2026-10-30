@@ -59,6 +59,17 @@ pub fn label_number(label: &str) -> Option<u64> {
     None
 }
 
+/// A clip's place in the edit: the `clip` its request stated; for clips made before that key, the label's "NN/MM"
+/// number, else the pass number the creative platform put after the `#` of its `reentrant_id`
+/// ("<run>:shots:0:0#17" is the 17th; its labels, "<run>:shots:0:017", carry no "NN/MM"), else 0.
+pub fn clip_number(item: &Value) -> u64 {
+    item["clip"].as_u64().filter(|c| *c > 0).or_else(|| label_number(&s(item, "label"))).or_else(|| {
+        let id = s(item, "reentrant_id");
+        let tail = id.rsplit_once('#')?.1;
+        tail.chars().all(|c| c.is_ascii_digit()).then(|| tail.parse().ok()).flatten()
+    }).unwrap_or(0)
+}
+
 /// The project an item belongs to: its own, or its label's series.
 pub fn project_of(item: &Value) -> String {
     let p = s(item, "project");
@@ -145,9 +156,11 @@ pub fn unchain(p: &Value) -> Result<(Value, Vec<String>), RpcError> {
             out[k] = v;
         }
     };
+    // a clip made to a soundtrack has its sound already: the chain carries the picture only
+    let soundtrack = p.get("soundtrack").is_some_and(|v| v.as_str().is_some_and(|s| !s.is_empty()));
     if n > 0 {
         set(&mut out, "guide_clip", json!(format!("{from}:{n}:0")));
-        if c.get("sound").and_then(|v| v.as_bool()) != Some(false) {
+        if !soundtrack && c.get("sound").and_then(|v| v.as_bool()) != Some(false) {
             set(&mut out, "first_audio", json!(from));
             set(&mut out, "first_audio_s", json!(n as f64 / 24.0));
         }
@@ -188,7 +201,7 @@ fn ignored_keys() -> Vec<String> {
 
 pub fn inputs_of(quant: &str) -> Value {
     let common = ["prompt", "seconds", "frames", "steps", "seed", "width", "height", "te", "first_frame", "last_frame", "exposure_ref", "guide_clip",
-                  "first_audio", "first_audio_s", "ref_audios", "loras", "upscale", "upscaler", "shift_video", "shift_audio", "sampler", "schedule", "chain", "source", "regen", "regen_box"];
+                  "first_audio", "first_audio_s", "soundtrack", "soundtrack_start", "ref_audios", "loras", "upscale", "upscaler", "shift_video", "shift_audio", "sampler", "schedule", "chain", "source", "regen", "regen_box"];
     if quant == "REF2VA" {
         json!({"takes": common.iter().chain(["ref_images", "ref_videos", "ref_image_size", "ref_video_sound", "te_pictures"].iter()).collect::<Vec<_>>(),
                "not": ["control_video", "control_mask", "control_source", "control_strength", "control_start", "control_end"],
@@ -231,6 +244,14 @@ pub fn engine_name(e: Option<&str>) -> String {
 /// nextcuda: the front end's denoiser names (INT8, Q6_K, Q4_K_M) and the registry ids of the models the daemon has
 /// (`--model`, `--engine`), set once by the studio's start
 pub static ENGINES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+/// nextcuda: each video model's licence by its registry id, set once by the studio's start
+pub static LICENSES: std::sync::OnceLock<Vec<(String, Value)>> = std::sync::OnceLock::new();
+
+/// A video model's licence keys (`license`, `commercial`, `license_note`), none when the registry has no such model
+pub fn licence_of(id: &str) -> Option<Value> {
+    LICENSES.get()?.iter().find(|(i, _)| i == id).map(|(_, l)| l.clone()).filter(|l| l.is_object())
+}
 
 /// Models the daemon lists that the start did not name (named by their suffix: `quant_of`)
 static LEARNED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
@@ -348,6 +369,14 @@ impl Studio {
             }
         }
         it.insert("reentrant_id".into(), reentrant(p).map_or(Value::Null, |r| json!(r)));
+        // the clip's place in its project's edit (1 and up): the timeline's n, stated rather than read from the label
+        match p.get("clip").filter(|v| !v.is_null()) {
+            Some(c) => match c.as_u64().filter(|c| (1..=100_000).contains(c)) {
+                Some(c) => it.insert("clip".into(), json!(c)),
+                None => return Err(RpcError::param("clip: a whole number from 1 (the clip's place in its project's timeline)")),
+            },
+            None => it.insert("clip".into(), Value::Null),
+        };
         it.insert("steps".into(), num(p, "steps", 10.0, 1.0, 40.0, true)?);
         it.insert("seed".into(), num(p, "seed", 0.0, -2147483648.0, 2147483648.0, true)?);
         it.insert("te".into(), json!(te));
@@ -410,6 +439,23 @@ impl Studio {
         }
         for k in ["ref_video_sound", "te_pictures"] {
             it.insert(k.into(), p.get(k).filter(|v| v.is_boolean()).cloned().unwrap_or(Value::Null));
+        }
+        // a driving soundtrack: a sound file beside the clips, from a start second
+        match p.get("soundtrack").and_then(|v| v.as_str()).map(basename).filter(|v| !v.is_empty()) {
+            Some(f) => {
+                if !self.out.join(&f).exists() {
+                    return Err(RpcError::not_found(&format!("soundtrack {f} not found in out/ (video.upload it)")));
+                }
+                if p.get("first_audio").is_some_and(|v| !v.is_null()) {
+                    return Err(RpcError::param("soundtrack is the clip's whole sound: not with first_audio"));
+                }
+                it.insert("soundtrack".into(), json!(f));
+                it.insert("soundtrack_start".into(), num(p, "soundtrack_start", 0.0, 0.0, 86400.0, false)?);
+            }
+            None => {
+                it.insert("soundtrack".into(), Value::Null);
+                it.insert("soundtrack_start".into(), Value::Null);
+            }
         }
         // the ControlNet: a control video, a mask over a source; files beside the clips
         for k in ["control_video", "control_mask", "control_source"] {
@@ -523,6 +569,14 @@ mod tests {
         assert_eq!(label_prefix("Harbour Night 03/12: the lamp"), "Harbour Night");
         assert_eq!(label_number("Harbour Night 03/12: the lamp"), Some(3));
         assert_eq!(label_number("no number"), None);
+        // the order of use: clip, the label's NN/MM, the reentrant_id's #N (all digits after the last #), 0
+        let c = |label: &str, id: Value| json!({"label": label, "reentrant_id": id});
+        assert_eq!(clip_number(&c("a2c6221e-bde2:shots:0:016", json!("a2c6221e-bde2:shots:0:0#16"))), 16);
+        assert_eq!(clip_number(&c("Name 03/12: x", json!("r#9"))), 3);
+        assert_eq!(clip_number(&c("cp-smoke:shots:0:0", Value::Null)), 0);
+        assert_eq!(clip_number(&c("x", json!("r#x1"))), 0);
+        assert_eq!(clip_number(&json!({"clip": 5, "label": "Name 03/12: x", "reentrant_id": "r#9"})), 5);
+        assert_eq!(clip_number(&json!({"clip": null, "label": "Name 03/12: x"})), 3);
         assert_eq!(project_of(&json!({"label": "Speech 07/20: words"})), "Speech");
         assert_eq!(project_of(&json!({"label": "x", "project": "P"})), "P");
         assert_eq!(dialogue_of("says: <d>[English] First   batch.</d> then <d>[English] More.</d>"), "First batch. / More.");
@@ -554,6 +608,11 @@ mod tests {
         assert_eq!(p["first_frame"], "a.png"); // the flat key wins
         assert_eq!(p["chain_mode"], "png");
         assert!(unchain(&json!({"chain": {"context_frames": 30}})).is_err());
+        // a clip made to a soundtrack carries the picture alone: its sound is the song's own stretch
+        let (p, _) = unchain(&json!({"soundtrack": "song.flac", "soundtrack_start": 9.21, "chain": {"from": "prev", "context_frames": 22}})).unwrap();
+        assert_eq!(p["guide_clip"], "prev:22:0");
+        assert!(p.get("first_audio").is_none() && p.get("first_audio_s").is_none());
+        assert!(inputs_of("Q4_K_M")["takes"].as_array().unwrap().contains(&json!("soundtrack")));
     }
 
     #[test]

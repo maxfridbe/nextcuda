@@ -25,3 +25,6 @@ export const labelPrefix = (label: string): string =>
 export const here = (u: string): string => u.replace(/^https?:\/\/[^/]+/, "").replace(/^\//, "");
 
 export const clamp = (x: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, x));
+
+/** A GPU as the pages show it: "NVIDIA GeForce RTX 5070" -> "RTX 5070", "Intel(R) Arc(TM) B70 Graphics" -> "B70" (the same in every app). */
+export const gpuName = (n: string) => n.replace(/^Intel\(R\) Arc\(TM\) /, "").replace(/^NVIDIA GeForce /, "").replace(/ Graphics$/, "");

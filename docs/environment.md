@@ -37,7 +37,9 @@ nextsycl's, kept until phase 2 replaces it.)
 | Variable | Default | What it does | Read by |
 |---|---|---|---|
 | `CUDA_DEVICE_ORDER` | PCI_BUS_ID (set by the program when unset) | how CUDA numbers the GPUs: nvidia-smi's order, not fastest first | runtime (every kind) |
-| `NEXTCUDA_LIB` | the library beside the executable | the kind's kernel library to load (a `libnextcuda-<kind>.so` path) | runtime (every kind) |
+| `NEXTCUDA_LIB` | the copy inside the binary, else the library beside the executable | the kind's kernel library to load (a `libnextcuda-<kind>.so` path; set, the copy inside the binary is not used) | runtime (every kind) |
+| `NS_LIB_FROM_DISK` | unset: the kernel libraries are read from inside the binary (when it was built with them: `tooling/deploy.sh` with `EMBED=1`) | `1`: open `libnextcuda-<kind>.so` and `libstable-diffusion.so` from the files beside the executable instead (rebuild a kernel without relinking the program) | runtime (every kind), cli |
+| `NS_WFE_FROM_DISK` | unset: the front ends are read from inside the binary | `1`: read the pages and modules from `dist/wfe` instead of the embedded copy (edit a page and reload, no rebuild) | serve, studio, image/audio/model3d servers, cli |
 
 ### Build
 
@@ -54,6 +56,10 @@ nextsycl's, kept until phase 2 replaces it.)
 | `SKIP_BUILD` | unset | 1: deploy `dist/` as it is | deploy |
 | `SKIP_KERNELS` | unset | 1: do not rebuild the CUDA libraries on the host | deploy |
 | `RESTART` | 1 | 0: copy the files, leave the service as it was | deploy |
+| `EMBED` | unset: the binary carries no kernel libraries (the host's files are opened) | 1: build the kernels on the host first, bring the libraries back to `target-trixie/embed-libs` and embed them in the binary | deploy |
+| `NS_LIB_DIST` | `dist/` beside the repository (where the GPU host's build puts them; empty on a build machine) | build time: the directory `crates/sys/build.rs` embeds the kernel libraries from (`build.sh` passes it into its container: a path under the repository, as `/build/...`) | build |
+| `NS_WFE_DIST` | `dist/wfe` beside the repository | build time: the directory `glue/serve/build.rs` embeds into the binary (`build.sh` builds it first) | build |
+| `CARGO_MANIFEST_DIR`, `OUT_DIR` | set by cargo | where `glue/serve/build.rs` and `crates/sys/build.rs` find the repository and write the lists of embedded files | build |
 | `SDCPP` | ~/stable-diffusion.cpp | the stable-diffusion.cpp source tree (its headers) | build (kernels) |
 | `SDLIB` | ~/nextcuda/src/sdcpp-build | its shared build (`libstable-diffusion.so`) | build (kernels) |
 
@@ -73,7 +79,7 @@ Where the program, its libraries, its models and its sockets are.
 | `NS_SILO` | silos on | 0: no model silo, every model on the shared kernels (the A/B for a silo) | runtime (every kind) |
 | `NS_SILO_NAME` | the architecture's own | another silo of the engine's ABI to load (dist/silo/libnextsycl-<name>.so) - a model card's `silo.name` | runtime (every kind) |
 | `NS_SILO_REQUIRED` | 0 | 1: refuse to load when the silo is not built (no fall back to the shared kernels) - a model card's `silo.required` | runtime (every kind) |
-| `NS_SILO_DIR` | silo/ beside the kind's kernel library | directory holding the silos (`libnextsycl-<arch>.so`) | runtime (every kind) |
+| `NS_SILO_DIR` | silo/ beside the kind's kernel library (beside the executable for one inside the binary) | directory holding the silos (`libnextsycl-<arch>.so`) | runtime (every kind) |
 | `NS_SOCKET_DIR` | $XDG_RUNTIME_DIR/nextsycl (serve's pid and marker files: /tmp) | where the control sockets live (mounted into the containers) | cli, serve, llm, video, studio |
 
 ## Front door and services
@@ -278,6 +284,11 @@ Qwen-Image 2.1 (`image/qwenimage21`).
 | `NS_QI_*` | - | every NS_QI_ setting in nextsycl.conf is passed to the image server | cli (image serve) |
 | `NS_QI_DUMP` | off | Debug: a directory: what the denoiser is given (embeds, pads, cond latents, noise) written there as raw float32 files | image qwenimage21 |
 | `NS_QI_INT8` | 0 | 1: the DiT's block matrices in int8 ConvRot (~1.4x a step, half the VRAM) (--opt-int8) | image qwenimage21 |
+| `NS_MOSS_INT8` | 1 | 0: MOSS-Image's block matrices as stored (Q8_0, about twice as long a step) instead of int8 ConvRot rows; LoRAs need the int8 ones | image mossimage |
+| `NS_MOSS_ATTN` | half | the silo's attention: half (scores accumulated in half), float, fp8 or fp8v (sm_89 and up, the 5070's silo; no faster there and less exact) | image mossimage |
+| `NS_MOSS_ATTN_WARPS` | the silo's own | warps a block for the silo's attention (a tuning A/B) | image mossimage |
+| `NS_MOSS_FUSED` | 1 | 0: the int8 products' nsd epilogue then the step's own kernels instead of the silo's fused epilogues | image mossimage |
+| `NS_MOSS_STEPS` | 50, or 4 with a turbo LoRA | the default step count (a turbo entry's card sets 8 for an 8-step distillation), 1 to 200 | image mossimage |
 | `NS_QI_PROFILE` | off | Debug: set: a GPU wait after each named step, the totals printed (slower; shows where the time goes) | image qwenimage21 |
 | `NC_TE_HOST_CACHE` | 1 | 0: do not keep the streamed text-encoder layers in host RAM (they are re-read from disk for every prompt; saves ~5 GB of RAM) | image qwenimage21 |
 | `NS_QI_SIGMAS` | the model's own schedule | a few-step preset: noise levels from 1 down, comma separated (their count is the steps) (--opt-sigmas; per request too) | image qwenimage21 |
@@ -320,7 +331,7 @@ The video daemon and the studio (`nextsycl video`) and the H3 engine (`video/h3`
 
 ## Audio
 
-ACE-Step 1.5 (`NS_ACE_`), MiniMax Music 3 (`NS_MM3_`), Qwen3-TTS (`NS_Q3T_`), VoxCPM2 (`NS_VCP_`), Whisper (`NS_WH_`). A per-request option's variable is only its name: it rides in the request (`"options"`), the engine does not read the environment for it.
+ACE-Step 1.5 (`NS_ACE_`), MiniMax Music 3 (`NS_MM3_`), YuE2 (`NS_YUE2_`), Qwen3-TTS (`NS_Q3T_`), VoxCPM2 (`NS_VCP_`), Whisper (`NS_WH_`). A per-request option's variable is only its name: it rides in the request (`"options"`), the engine does not read the environment for it.
 
 | Variable | Default | What it does | Read by |
 |---|---|---|---|
@@ -355,6 +366,9 @@ ACE-Step 1.5 (`NS_ACE_`), MiniMax Music 3 (`NS_MM3_`), Qwen3-TTS (`NS_Q3T_`), Vo
 | `NS_WH_CONDITION` | 0 | 1: Whisper prompts each 30 s window with the text before it (openai's condition_on_previous_text: a steadier style, but a mistake carries on); also a request's option condition (--opt-condition) | audio whisper |
 | `NS_WH_FALLBACK` | 1 | 0: a window that runs on without ending, or decodes unsure (average log-probability under -1), is kept as greedy decoding left it instead of decoded again at rising temperatures (openai's fallback); also a request's option fallback (--opt-fallback) | audio whisper |
 | `NS_WH_NO_SPEECH` | 0.6 | a window is skipped as silence when <\|nospeech\|> is likelier than this and its text unsure; also a request's option no-speech (--opt-no-speech) | audio whisper |
+| `NS_YUE2_ATTN` | half | the flow's attention in YuE2's silo: half (the scores accumulated in half, twice the rate on GeForce) or float | audio yue2 |
+| `NS_YUE2_COT` | full | what YuE2 writes before the music: full (a melody and chords score), melody, off (--opt-cot; a request's `cot` wins) | audio yue2 |
+| `NS_YUE2_INT8` | 1 | 0: the flow's (NAR path's) matrices as stored (Q8_0, dequantized a slice a product) instead of int8 ConvRot rows on the int8 tensor cores (--opt-int8) | audio yue2 |
 
 ## 3D
 
@@ -374,8 +388,12 @@ The `model3d` kind (meshes from pictures, rigging, animation) and its engines' s
 | `NS_M3D_HY_PAINT_TRACE` | off | Debug: set: the paint-only engine prints the card's free memory at each phase on stderr | model3d hunyuan3d |
 | `NS_M3D_AAM_PROFILE` | off | Debug: set: AnimateAnyMesh waits for the GPU after each named step of the flow and prints the totals (slower; shows where the time goes) | model3d animateanymesh |
 | `NS_M3D_AAM_TRAJ` | max(512, vertices / 8) | AnimateAnyMesh: the trajectory tokens DyMeshVAE samples (more: finer motion, slower) (--opt-traj; per request too) | model3d animateanymesh |
+| `NS_M3D_UNIMATE_FACING` | auto | UniMate: which way the rig looks (auto, +z, -z, +x, -x): auto reads the sides in the joint names (Left / Right), else finds the rig's mirror symmetry and the feet's direction, else takes +Z; a wrong facing turns the walk sideways or backwards (--opt-facing; per request too) | model3d unimate |
+| `NS_M3D_UNIMATE_NAMES` | auto | UniMate: auto cleans the joint names by rules (a name nothing recognizes is Bone); structure leaves the names out, the model reading the skeleton's graph, rest pose and depths alone (--opt-names; per request too) | model3d unimate |
 | `NS_M3D_UNIRIG_BEAMS` | 15 | UniRig: the skeleton decoder's beams, sampled as UniRig's inference (1: greedy, the same skeleton every time) (--opt-beams; per request too) | model3d unirig |
 | `NS_M3D_UNIRIG_PROFILE` | off | Debug: set: UniRig waits for the GPU after each named step and prints the totals (slower; shows where the time goes) | model3d unirig |
+| `NS_M3D_SKINTOKENS_BEAMS` | 10 | SkinTokens: the decoder's beams, sampled as the demo (1: greedy, the same rig every time) (--opt-beams; per request too) | model3d skintokens |
+| `NS_M3D_SKINTOKENS_SKIN_END` | upstream | SkinTokens: where the skin tokens end - upstream (the demo's: the last joint's fourth token is the end token, code 0) or fix (the model says it) (--opt-skin-end; per request too) | model3d skintokens |
 | `NS_M3D_RIGNET_FACES` | 4000 | RigNet: the triangles the mesh is decimated to before rigging (the weights go back to every vertex of the input) (--opt-faces; per request too) | model3d rignet |
 | `NS_M3D_RIGNET_BANDWIDTH` | the learned 0.0429 | RigNet: the joints' mean-shift bandwidth (smaller: more, closer joints) (--opt-bandwidth; per request too) | model3d rignet |
 | `NS_M3D_RIGNET_THRESHOLD` | 1e-5 | RigNet: the joints' density threshold (lower: more joints) (--opt-threshold; per request too) | model3d rignet |
@@ -625,6 +643,7 @@ Read by `build.sh`, `kernels/build.sh`, `wfe/build.sh` and the scripts beside th
 | `NS_SYCL_TLA` | /opt/sycl-tla | sycl-tla's headers for the flash-attention library | build (kernels/build.sh) |
 | `NS_VERSION` | ./version.sh (yy.mmdd.###); "dev" if cargo built without it | the version compiled in (read at compile time, option_env!) | build (build.sh), cli, serve |
 | `NS_WFE` | http://localhost:8086 | the running server `wfe/build.sh --check` smoke-tests (not checked: JavaScript) | build (wfe/check.mjs) |
+| `NS_STATE_SAMPLE` | - | a saved /api/state answer the ignored test `live_state_sample_is_a_state` checks against its type (`cargo test -p nextcuda-serve live_state -- --ignored`) | test (nextcuda-serve) |
 | `ONLY` | every source | compile only these kernel sources, space-separated | build (kernels/build.sh) |
 
 ## System variables read

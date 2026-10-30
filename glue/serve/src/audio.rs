@@ -27,6 +27,11 @@
 //!
 //! One request runs at a time (one engine on its GPU); the others wait their turn.
 
+pub(crate) mod routes;
+pub mod stream;
+
+pub use routes::infos as route_infos;
+
 use std::collections::VecDeque;
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -39,6 +44,7 @@ use nextcuda_core::Gpu;
 use serde_json::{json, Value};
 
 use crate::http::{self, Conn};
+use crate::page::{self, Cx};
 use crate::serve::cors_headers;
 use crate::telemetry::Telemetry;
 
@@ -59,11 +65,16 @@ pub struct AudioServer {
     history: Mutex<VecDeque<Value>>,
     /// ends the process after an idle stretch (`--idle-exit`; none: never)
     pub idle: Option<&'static crate::idle::Idle>,
+    /// its registry entry's licence (`license`, `commercial`, `license_note`; null: none): /api/info says it
+    pub license: Value,
     /// this process's card memory once the model was loaded (MiB), and whether to end after the request in hand: a
     /// GPU error, or memory grown well past the loaded model's (caches that keep a piece of every request's shape) -
     /// the front door starts a fresh server for the next request, so a leak never fills the card
     vram_loaded: AtomicU64,
     retire: AtomicBool,
+    /// a speech engine's built-in voices (None: songs, a recogniser): fixed at load, so a request is told its answer's
+    /// shape (streamed or not) without waiting for the engine
+    speech_voices: Option<Vec<String>>,
 }
 
 /// A float32 setting as JSON without its binary tail (1.7, not 1.7000000476837158)
@@ -130,14 +141,15 @@ impl AudioServer {
             std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
         }
         if let Some(w) = &wfe {
-            if !w.join("audio/index.html").is_file() {
+            if !crate::wfe::exists(w, "audio/index.html") {
                 return Err(format!("{}: no web front end built there (./build.sh wfe)", w.display()));
             }
         }
         let tele = Telemetry::start(std::slice::from_ref(&gpu.pci));
         let history = Mutex::new(out_dir.as_deref().map(earlier).unwrap_or_default());
-        Ok(AudioServer { model, out_dir, wfe, cors, gpu, tele, engine: Mutex::new(engine), progress: Mutex::new(json!({"busy": false})),
-                         idle: None, waiting: AtomicUsize::new(0), cancel: Default::default(), history,
+        let speech_voices = engine.speech().map(|sp| sp.voices);
+        Ok(AudioServer { speech_voices, model, out_dir, wfe, cors, gpu, tele, engine: Mutex::new(engine), progress: Mutex::new(json!({"busy": false})),
+                         idle: None, license: Value::Null, waiting: AtomicUsize::new(0), cancel: Default::default(), history,
                          vram_loaded: AtomicU64::new(own_vram_mb()), retire: AtomicBool::new(false) })
     }
 
@@ -172,80 +184,24 @@ impl AudioServer {
             Err(e) => return http::respond(&mut s, 400, &err(e)),
         };
         let cors = cors_headers(req.origin.as_deref(), &self.cors);
-        match (req.method.as_str(), req.path.as_str()) {
-            ("OPTIONS", _) => {
-                let h = format!("{cors}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, Range\r\n");
-                http::respond_bytes(&mut s, 204, "text/plain", b"", &h)
+        let mut cx = Cx { s, req, cors };
+        if cx.req.method == "OPTIONS" {
+            let h = "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, Range\r\n";
+            return cx.bytes(204, "text/plain", b"", h);
+        }
+        if self.wfe.is_some() && cx.req.method == "GET" {
+            let p = cx.req.path.clone();
+            if p == "/" || p == "/index.html" {
+                return self.page(&mut cx.s, &cx.cors);
             }
-            ("GET", "/") | ("GET", "/index.html") if self.wfe.is_some() => self.page(&mut s, &cors),
-            ("GET", p) if self.wfe.is_some() && (p.starts_with("/ui/") || p.starts_with("/static/")) => self.asset(&mut s, p, &cors),
-            ("GET", "/api/gpu") => http::respond_with(&mut s, 200, &self.gpu_json(), &cors),
-            ("GET", "/health") => http::respond_with(&mut s, 200, &json!({"status": "ok"}), &cors),
-            ("GET", "/v1/models") | ("GET", "/models") => http::respond_with(&mut s, 200, &json!({"object": "list", "data": [
-                {"id": self.model, "object": "model", "owned_by": "nextcuda", "created": 0}]}), &cors),
-            ("GET", "/api/info") => http::respond_with(&mut s, 200, &self.info(), &cors),
-            ("GET", "/api/progress") => {
-                let mut p = self.progress.lock().unwrap().clone();
-                p["waiting"] = json!(self.waiting.load(Ordering::Relaxed));
-                p["request_id"] = json!(self.cancel.current());
-                http::respond_with(&mut s, 200, &p, &cors)
+            if p.starts_with("/ui/") || p.starts_with("/static/") {
+                return self.asset(&mut cx.s, &p, &cx.cors);
             }
-            ("GET", "/api/history") => {
-                // files deleted since (system.files.delete) drop out
-                let mut h = self.history.lock().unwrap();
-                if let Some(d) = &self.out_dir {
-                    h.retain(|e| e["url"].as_str().and_then(|u| u.rsplit('/').next()).is_none_or(|f| d.join(f).exists()));
-                }
-                http::respond_with(&mut s, 200, &json!({"data": h.iter().collect::<Vec<_>>()}), &cors)
-            }
-            ("POST", "/api/cancel") => {
-                // {"id"}: that request only (the front door's job), running or waiting; none: the one running
-                let busy = self.progress.lock().unwrap()["busy"] == true;
-                let id = serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v["id"].as_str().map(str::to_string));
-                let running = self.cancel.request(id.as_deref(), busy);
-                http::respond_with(&mut s, 200, &json!({"cancelled": running, "id": id}), &cors)
-            }
-            ("GET", p) if p.starts_with("/v1/audio/files/") => self.file(&mut s, &p["/v1/audio/files/".len()..], &req.head, &cors),
-            ("GET", "/api/voices") => http::respond_with(&mut s, 200, &json!({"data": self.voices().map(|l| l.list()).unwrap_or_default()}), &cors),
-            ("GET", p) if p.starts_with("/v1/audio/voices/") => {
-                let name = p["/v1/audio/voices/".len()..].trim_end_matches(".wav");
-                match self.voices().and_then(|l| l.sample_path(name)).and_then(|p| std::fs::read(p).ok()) {
-                    Some(b) => http::respond_bytes(&mut s, 200, "audio/wav", &b, &format!("{cors}Cache-Control: no-cache\r\n")),
-                    None => http::respond_with(&mut s, 404, &err(format!("no saved voice {name}")), &cors),
-                }
-            }
-            ("POST", "/api/voices/add") | ("POST", "/api/voices/remove") => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-                match self.voice_op(&req.path, &body) {
-                    Ok(v) => http::respond_with(&mut s, 200, &v, &cors),
-                    Err(m) => http::respond_with(&mut s, 400, &err(m), &cors),
-                }
-            }
-            ("POST", "/v1/audio/transcriptions") | ("POST", "/audio/transcriptions") => {
-                let body: Value = match serde_json::from_slice(&req.body) {
-                    Ok(v) => v,
-                    Err(e) => return http::respond_with(&mut s, 400, &err(format!("the body is not JSON (a multipart form is not read here): {e}")), &cors),
-                };
-                match self.transcribe(&body) {
-                    Ok(v) => http::respond_with(&mut s, 200, &v, &cors),
-                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
-                }
-                self.maybe_retire();
-            }
-            ("POST", "/v1/audio/speech") | ("POST", "/audio/speech") => {
-                let body: Value = match serde_json::from_slice(&req.body) {
-                    Ok(v) => v,
-                    Err(e) => return http::respond_with(&mut s, 400, &err(format!("the body is not JSON: {e}")), &cors),
-                };
-                let base = req.host.as_deref().map(|h| format!("http://{h}")).unwrap_or_default();
-                match self.generate(&body, &base) {
-                    Ok((Some(v), _)) => http::respond_with(&mut s, 200, &v, &cors),
-                    Ok((None, wav)) => http::respond_bytes(&mut s, 200, "audio/wav", &wav, &cors),
-                    Err((code, m)) => http::respond_with(&mut s, code, &err(m), &cors),
-                }
-                self.maybe_retire();
-            }
-            _ => http::respond_with(&mut s, 404, &err(format!("no route {} {}", req.method, req.path)), &cors),
+        }
+        // the API: what routes.rs declares
+        if !page::serve(routes::table(), self, &mut cx, routes::fail) {
+            let m = format!("no route {} {}", cx.req.method, cx.req.path);
+            cx.json(404, &err(m));
         }
     }
 
@@ -270,9 +226,10 @@ impl AudioServer {
 
     /// The page: index.html with the stylesheet inlined (H3's server does the same)
     fn page(&self, s: &mut Conn, cors: &str) {
-        let dir = self.wfe.as_ref().expect("checked by the route").join("audio");
-        match (std::fs::read_to_string(dir.join("index.html")), std::fs::read_to_string(dir.join("style.css"))) {
-            (Ok(h), Ok(c)) => http::respond_bytes(s, 200, "text/html; charset=utf-8", h.replace("__CSS__", &c).as_bytes(),
+        let root = self.wfe.as_ref().expect("checked by the route");
+        let dir = root.join("audio");
+        match (crate::wfe::text(root, "audio/index.html"), crate::wfe::text(root, "audio/style.css")) {
+            (Some(h), Some(c)) => http::respond_bytes(s, 200, "text/html; charset=utf-8", h.replace("__CSS__", &c).as_bytes(),
                                                   &format!("{cors}Cache-Control: no-cache\r\n")),
             _ => http::respond_with(s, 500, &err(format!("{}: the page is not built (./build.sh wfe)", dir.display())), cors),
         }
@@ -285,18 +242,17 @@ impl AudioServer {
         if rel.split('/').any(|c| c == ".." || c.is_empty()) {
             return http::respond_with(s, 404, &err("no such file"), cors);
         }
-        match std::fs::read(root.join(rel)) {
+        match crate::wfe::read(root, rel).ok_or(()) {
             Ok(b) => http::respond_bytes(s, 200, http::content_type(rel), &b, &format!("{cors}Cache-Control: no-cache\r\n")),
             Err(_) => http::respond_with(s, 404, &err(format!("no file {rel}")), cors),
         }
     }
 
-    fn gpu_json(&self) -> Value {
+    fn gpu_json(&self) -> page::Gpu {
         let (total, free) = self.gpu.memory().unwrap_or((0, None));
         let used = free.map(|f| total.saturating_sub(f)).unwrap_or(0);
         let r = self.tele.readings().first().copied().unwrap_or_default();
-        json!({"name": self.gpu.name, "vram_used_mb": used >> 20, "vram_total_mb": total >> 20,
-               "power_w": r.watts, "temp_pkg": r.temp_c, "temp_vram": r.vram_c})
+        page::Gpu { name: self.gpu.name.clone(), vram_used_mb: used >> 20, vram_total_mb: total >> 20, power_w: r.watts, temp_pkg: r.temp_c, temp_vram: r.vram_c }
     }
 
     fn info(&self) -> Value {
@@ -306,11 +262,12 @@ impl AudioServer {
         };
         let d = e.defaults();
         json!({
-            "model": self.model, "arch": e.arch(), "lyrics": e.lyrics(), "wfe": self.wfe.is_some(),
+            "model": self.model, "arch": e.arch(), "lyrics": e.lyrics(), "guidance": e.guidance(), "wfe": self.wfe.is_some(),
             "recogniser": e.recogniser().map(|r| json!({"languages": r.languages, "words": r.words, "translate": r.translate})),
             "speech": e.speech().map(|sp| json!({"voices": sp.voices, "languages": sp.languages, "instructions": sp.instructions, "design": sp.design,
                                                  "clone": sp.clone, "clone_needs_text": sp.clone_needs_text, "clone_takes_text": sp.clone_takes_text,
-                                                 "direction": sp.direction, "events": sp.events, "requires": sp.requires})),
+                                                 "direction": sp.direction, "events": sp.events, "requires": sp.requires,
+                                                 "speakers": sp.speakers})),
             "defaults": {"seconds": f(d.seconds), "max_seconds": f(d.max_seconds), "steps": d.steps, "cfg": f(d.cfg), "rate": d.rate},
             "options": e.options().iter().filter(|o| o.at != nextcuda_core::At::Load)
                 .map(|o| json!({"name": o.name, "value": o.value, "help": o.help})).collect::<Vec<_>>(),
@@ -320,17 +277,17 @@ impl AudioServer {
     }
 
     /// A song made here, whole or the byte range asked for
-    fn file(&self, s: &mut Conn, name: &str, head: &[u8], cors: &str) {
+    fn file(&self, cx: &mut Cx, name: &str) {
         let ok = !name.is_empty() && name.ends_with(".wav") && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) && !name.contains("..");
         let b = match (&self.out_dir, ok) {
             (Some(d), true) => std::fs::read(d.join(name)).ok(),
             _ => None,
         };
-        let Some(b) = b else { return http::respond_with(s, 404, &err(format!("no song {name}")), cors) };
+        let Some(b) = b else { return cx.json(404, &err(format!("no song {name}"))) };
         let cache = "Cache-Control: max-age=31536000, immutable\r\nAccept-Ranges: bytes\r\n";
-        match range(head, b.len()) {
-            Some((a, z)) => http::respond_bytes(s, 206, "audio/wav", &b[a..=z], &format!("{cors}{cache}Content-Range: bytes {a}-{z}/{}\r\n", b.len())),
-            None => http::respond_bytes(s, 200, "audio/wav", &b, &format!("{cors}{cache}")),
+        match range(&cx.req.head, b.len()) {
+            Some((a, z)) => cx.bytes(206, "audio/wav", &b[a..=z], &format!("{cache}Content-Range: bytes {a}-{z}/{}\r\n", b.len())),
+            None => cx.bytes(200, "audio/wav", &b, cache),
         }
     }
 
@@ -447,15 +404,173 @@ impl AudioServer {
                   "created": now(), "nextsycl": {"took": took, "wh": wh, "seconds": r(t.duration)}}))
     }
 
+    /// /v1/audio/speech in one of OpenAI's formats, streamed (`stream`): speech in any of them (mp3 when none is named,
+    /// as OpenAI's default), a song in any but wav (its whole file, as before) and url. False: not a streamed request
+    /// (the caller answers it as before); true: answered
+    fn speech_streamed(&self, cx: &mut Cx, b: &Value) -> bool {
+        let speech = self.speech_voices.is_some();
+        // input as a list of texts: said in turn as one stream (speech only; a stream, so not url)
+        let list = match &b["input"] {
+            Value::Array(a) => {
+                let texts: Option<Vec<String>> = a.iter().map(|t| t.as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from)).collect();
+                match texts {
+                    Some(t) if !t.is_empty() && speech => Some(t),
+                    _ => {
+                        cx.json(400, &err("input: a text, or a list of texts (each not empty; speech only)"));
+                        return true;
+                    }
+                }
+            }
+            _ => None,
+        };
+        let gap = match &b["gap"] {
+            Value::Null => 0.3,
+            v => match v.as_f64().filter(|g| (0.0..=5.0).contains(g)) {
+                Some(g) => g,
+                None => {
+                    cx.json(400, &err("gap: seconds from 0 to 5"));
+                    return true;
+                }
+            },
+        };
+        let out_rate = match &b["sample_rate"] {
+            Value::Null => stream::RATE,
+            v => match v.as_u64().filter(|r| (8000..=96000).contains(r)) {
+                Some(r) => r as u32,
+                None => {
+                    cx.json(400, &err("sample_rate: Hz from 8000 to 96000"));
+                    return true;
+                }
+            },
+        };
+        let asked = b["response_format"].as_str().map(|f| f.trim().to_ascii_lowercase()).filter(|f| !f.is_empty());
+        let name = match asked.as_deref() {
+            Some("url") if list.is_some() => {
+                cx.json(400, &err("response_format url: one text (a list is a stream: mp3, opus, aac, flac, wav or pcm)"));
+                return true;
+            }
+            Some("url") => return false,
+            None if speech => "mp3",
+            None => return false,
+            Some("wav") if !speech && b["stream"].as_bool() != Some(true) => return false,
+            Some(f) => f,
+        };
+        let Some(w) = stream::wire(name) else {
+            cx.json(400, &err(format!("response_format {name}: mp3, opus, aac, flac, wav, pcm (streamed) or url")));
+            return true;
+        };
+        // what the encoders take (ffmpeg would fail after the first sound otherwise)
+        if (w.name == "opus" && ![8000, 12000, 16000, 24000, 48000].contains(&out_rate)) || (w.name == "mp3" && out_rate > 48000) {
+            cx.json(400, &err(format!("sample_rate {out_rate}: {} takes {}", w.name, if w.name == "opus" { "8000, 12000, 16000, 24000 or 48000" } else { "8000 to 48000" })));
+            return true;
+        }
+        match b["stream_format"].as_str().map(str::trim) {
+            None | Some("") | Some("audio") => {}
+            Some("sse") => {
+                cx.json(400, &err("stream_format sse: not served here; audio (the default) streams the audio bytes as they are made"));
+                return true;
+            }
+            Some(o) => {
+                cx.json(400, &err(format!("stream_format {o}: audio")));
+                return true;
+            }
+        }
+        let speed = match &b["speed"] {
+            Value::Null => 1.0,
+            v => match v.as_f64().filter(|x| x.is_finite() && *x > 0.0) {
+                Some(x) => x.clamp(0.25, 4.0),
+                None => {
+                    cx.json(400, &err("speed: a number from 0.25 to 4.0"));
+                    return true;
+                }
+            },
+        };
+        let base = cx.base();
+        // the stretches: speech's text in whole sentences (one seed for all, so a voice made up from instructions
+        // stays the same voice); a script of several speakers, and a song, whole
+        let mut whole = b.clone();
+        whole["response_format"] = json!("wav");
+        let texts: Vec<String> = match &list {
+            Some(t) => t.clone(),
+            None => vec![["input", "text"].iter().find_map(|k| b[*k].as_str()).unwrap_or("").to_string()],
+        };
+        let text = texts.join(" ");
+        let many = b["speakers"].as_array().is_some_and(|a| !a.is_empty());
+        if list.is_some() && many {
+            cx.json(400, &err("input as a list: not with speakers (a script says its own parts)"));
+            return true;
+        }
+        // None: the pause between two texts of a list
+        let pieces: Vec<Option<Value>> = if speech && !many && !text.trim().is_empty() {
+            let seed = b["seed"].as_u64().unwrap_or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos() as u64 % 1_000_000).unwrap_or(7));
+            let mut v = Vec::new();
+            for (i, t) in texts.iter().enumerate() {
+                if i > 0 && gap > 0.0 {
+                    v.push(None);
+                }
+                for c in stream::chunks(t, 160, 400) {
+                    let mut x = whole.clone();
+                    if let Some(o) = x.as_object_mut() {
+                        o.remove("text");
+                    }
+                    x["input"] = json!(c);
+                    x["seed"] = json!(seed);
+                    v.push(Some(x));
+                }
+            }
+            v
+        } else {
+            vec![Some(whole)]
+        };
+        let gone = AtomicBool::new(false);
+        // speech's stretches are not kept (they are not the whole of anything); a song is, as before
+        let one = |x: &Value| -> Result<stream::Pcm, (u16, String)> {
+            let (_, wav) = self.generate_as(x, &base, !speech, Some(&gone))?;
+            let (samples, rate) = nextcuda_audio::decode_wav(&wav).map_err(|e| (500u16, e))?;
+            Ok(stream::Pcm { samples, rate })
+        };
+        // the first stretch decides: its sound starts the answer, its error is the answer
+        let first = match one(pieces[0].as_ref().expect("a text first")) {
+            Ok(p) => p,
+            Err((code, m)) => {
+                cx.json(code, &err(m));
+                return true;
+            }
+        };
+        let first_rate = first.rate;
+        let label = format!("{}, {} stretches, {} characters", w.name, pieces.len(), text.chars().count());
+        let mut rest = pieces[1..].iter();
+        let mut next = || {
+            rest.next().map(|x| match x {
+                Some(x) => one(x).map_err(|(_, m)| m),
+                None => Ok(stream::Pcm { samples: vec![0.0; (gap * first_rate as f64) as usize], rate: first_rate }),
+            })
+        };
+        let cors = cx.cors.clone();
+        if let Err(e) = stream::send(&mut cx.s, w, speed, out_rate, &cors, first, &mut next, &gone) {
+            // the answer has begun: it ends without its closing chunk, and why is said here
+            eprintln!("nextcuda audio: a streamed answer stopped early ({label}): {e}");
+        }
+        true
+    }
+
     fn generate(&self, b: &Value, base: &str) -> Result<(Option<Value>, Vec<u8>), (u16, String)> {
+        self.generate_as(b, base, true, None)
+    }
+
+    /// `generate`; `keep` false: nothing saved to the output directory (a streamed answer's stretches), `stop` set:
+    /// the request stops at its next step (the client of a streamed answer went away)
+    fn generate_as(&self, b: &Value, base: &str, keep: bool, stop: Option<&AtomicBool>) -> Result<(Option<Value>, Vec<u8>), (u16, String)> {
         let bad = |m: String| (400u16, m);
-        if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty() && *m != self.model && *m != "MiniMaxAI/MiniMax-Music3" && !m.starts_with("Qwen/Qwen3-TTS")) {
+        // OpenAI's model names (tts-1, gpt-4o-mini-tts ...) mean the model served here
+        if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty() && *m != self.model && *m != "MiniMaxAI/MiniMax-Music3" && !m.starts_with("Qwen/Qwen3-TTS")
+                                                     && !stream::openai_model(m)) {
             return Err((404, format!("model {m} is not served here (this server: {})", self.model)));
         }
         let text = |k: &[&str]| k.iter().find_map(|k| b[*k].as_str()).filter(|p| !p.trim().is_empty()).map(str::to_string);
         let format = b["response_format"].as_str().unwrap_or("wav");
         if !["wav", "url"].contains(&format) {
-            return Err(bad(format!("response_format {format}: wav or url")));
+            return Err(bad(format!("response_format {format}: mp3, opus, aac, flac, wav, pcm or url")));
         }
         if format == "url" && self.out_dir.is_none() {
             return Err(bad("response_format url: this server keeps no files (start it with an output directory)".into()));
@@ -513,7 +628,7 @@ impl AudioServer {
             return Err((499, "cancelled".into()));
         };
         if source.is_some() && !engine.sources() {
-            return Err(bad(format!("audio: {} makes no song from a recording (acestep-1.5 does: task cover, repaint, edit)", self.model)));
+            return Err(bad(format!("audio: {} makes no song from a recording (acestep-1.5 does: task cover, repaint, edit; yue2-3b-q8 with its sheetsage file: a cover)", self.model)));
         }
         // a song's request option may come as a field of its own (bpm, key, time_signature, task, repaint_start ...):
         // the engine's option of that name, underscores for its dashes (`options` says it first)
@@ -564,6 +679,15 @@ impl AudioServer {
         // carrying on: a voice that is not a saved one (a built-in voice of the chunk before) is in that chunk already
         if carried.is_some() && req.voice.as_ref().is_some_and(|v| !self.voices().is_some_and(|l| l.get(v).is_some())) {
             req.voice = None;
+        }
+        // one of OpenAI's voice names, not a built-in or saved voice here: the built-in voice it maps to (none: the
+        // engine's own voice)
+        if let (Some(sp), Some(v)) = (engine.speech(), req.voice.clone()) {
+            if !sp.voices.iter().any(|x| x.eq_ignore_ascii_case(&v)) && !self.voices().is_some_and(|l| l.get(&v).is_some()) {
+                if let Some(m) = stream::openai_voice(&v, &sp.voices) {
+                    req.voice = m;
+                }
+            }
         }
         // a saved voice: its recording and transcript as the reference, for a model that clones
         if let (Some(sp), Some(v)) = (engine.speech(), req.voice.clone()) {
@@ -620,12 +744,15 @@ impl AudioServer {
         *p.lock().unwrap() = json!({"busy": true, "prompt": prompt, "phase": "prompt", "at": 0, "of": 1, "seconds": 0, "want": want});
         let out = engine.generate(&req, &mut |st| {
             *p.lock().unwrap() = json!({"busy": true, "prompt": prompt, "phase": st.phase, "at": st.at, "of": st.of, "seconds": st.seconds, "want": want});
-            if self.cancel.stopping() {
+            if self.cancel.stopping() || stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
                 return Err(nextcuda_core::Error("cancelled".into()));
             }
             Ok(())
         });
         *p.lock().unwrap() = json!({"busy": false});
+        // the score the song was sung over (an engine that writes one: YuE2) - given back with the same seed, style and
+        // new words, the melody stays
+        let score = out.as_ref().ok().and_then(|_| engine.score());
         drop(engine);
         if let Err(e) = &out {
             // the device failed (out of resources, lost): this process's GPU state is not to be trusted again
@@ -644,6 +771,9 @@ impl AudioServer {
         let created = now();
         let meta = json!({"model": self.model, "seed": seed, "steps": steps, "cfg": f(cfg), "took": took, "wh": wh, "created": created}).to_string();
         let mut meta: Value = serde_json::from_str(&meta).unwrap_or_default();
+        if let Some(sc) = &score {
+            meta["score"] = json!(sc);
+        }
         if speech {
             meta["voice"] = json!(req.voice.clone().or(saved));
             meta["language"] = json!(req.language);
@@ -654,7 +784,7 @@ impl AudioServer {
         let meta = meta.to_string();
         let wav = audio.wav(&[("INAM", &prompt), ("ILYR", lyrics.as_deref().unwrap_or("")), ("ICMT", &meta)]);
         let mut answer = None;
-        if let Some(dir) = &self.out_dir {
+        if let Some(dir) = self.out_dir.as_ref().filter(|_| keep) {
             let name = format!("{created}-{}-{seed}.wav", self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"));
             let path = dir.join(&name);
             std::fs::write(&path, &wav).map_err(|e| (500u16, format!("{}: {e}", dir.display())))?;
@@ -666,7 +796,7 @@ impl AudioServer {
                     let mut v = e;
                     v["url"] = json!(format!("{base}/v1/audio/files/{name}"));
                     answer = Some(json!({"created": created, "data": [v], "nextsycl": {"took": took, "seconds": audio.seconds(), "seed": seed, "steps": steps,
-                                                                                     "cfg": f(cfg), "wh": wh}}));
+                                                                                     "cfg": f(cfg), "wh": wh, "score": score}}));
                 }
             }
         }
@@ -824,3 +954,213 @@ mod tests {
     }
 }
 
+
+/// /v1/audio/speech streamed, end to end: the server on a socket, a fake speech engine behind it
+#[cfg(test)]
+mod streamed {
+    use super::stream::tests::{decoded_secs, dechunk};
+    use super::*;
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    /// Speaks each request as a second of sound at 12 kHz (resampled to OpenAI's 24) after `delay`, noting the text and
+    /// voice it was given
+    /// what the fake was asked: the text, the voice, the seed
+    type Said = Arc<Mutex<Vec<(String, Option<String>, u64)>>>;
+
+    struct Fake {
+        delay: Duration,
+        said: Said,
+        /// when each request was done being spoken: the fake's own clock, to set the first byte against
+        made: Arc<Mutex<Vec<Instant>>>,
+    }
+
+    impl AudioEngine for Fake {
+        fn arch(&self) -> &'static str {
+            "fake"
+        }
+        fn defaults(&self) -> nextcuda_audio::Defaults {
+            nextcuda_audio::Defaults { seconds: 10.0, max_seconds: 60.0, steps: 1, cfg: 1.0, rate: 12_000 }
+        }
+        fn speech(&self) -> Option<nextcuda_audio::Speech> {
+            Some(nextcuda_audio::Speech { voices: vec!["vivian".into(), "ryan".into(), "aiden".into(), "serena".into()], instructions: true, ..Default::default() })
+        }
+        fn load_seconds(&self) -> f64 {
+            0.0
+        }
+        fn generate(&self, req: &AudioRequest, progress: &mut dyn FnMut(nextcuda_audio::Step) -> nextcuda_core::Result<()>)
+                    -> nextcuda_core::Result<nextcuda_audio::Audio> {
+            self.said.lock().unwrap().push((req.prompt.clone(), req.voice.clone(), req.seed));
+            for at in 0..10 {
+                std::thread::sleep(self.delay / 10);
+                progress(nextcuda_audio::Step { phase: "tokens", at, of: 10, seconds: 0.0 })?;
+            }
+            if req.prompt.contains("FAIL") {
+                return Err(nextcuda_core::Error("the engine refused it".into()));
+            }
+            self.made.lock().unwrap().push(Instant::now());
+            Ok(nextcuda_audio::Audio { rate: 12_000, channels: 1, samples: (0..12_000).map(|i| 0.2 * (i as f32 * 0.2).sin()).collect() })
+        }
+    }
+
+    fn serve(delay: Duration) -> (String, Said) {
+        let (addr, said, _) = serve_stamped(delay);
+        (addr, said)
+    }
+
+    fn serve_stamped(delay: Duration) -> (String, Said, Arc<Mutex<Vec<Instant>>>) {
+        let said = Arc::new(Mutex::new(Vec::new()));
+        let made = Arc::new(Mutex::new(Vec::new()));
+        let srv = AudioServer::new("qwen3-tts-custom".into(), Gpu::detached("none"), Box::new(Fake { delay, said: said.clone(), made: made.clone() }), None, None, vec![]).unwrap();
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        drop(l);
+        let a = addr.clone();
+        std::thread::spawn(move || Arc::new(srv).run(&a));
+        for _ in 0..100 {
+            if std::net::TcpStream::connect(&addr).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        (addr, said, made)
+    }
+
+    /// POST it as curl does: (the raw answer, when its first body bytes came, when it ended); `stop_after` bytes of
+    /// body: hang up there
+    fn post(addr: &str, body: &str, stop_after: Option<usize>) -> (Vec<u8>, Duration, Duration) {
+        let (raw, _, first, total) = post_from(addr, body, stop_after);
+        (raw, first, total)
+    }
+
+    /// `post`, and the instant it started, to set against the fake engine's own clock
+    fn post_from(addr: &str, body: &str, stop_after: Option<usize>) -> (Vec<u8>, Instant, Duration, Duration) {
+        let mut c = std::net::TcpStream::connect(addr).unwrap();
+        let t0 = Instant::now();
+        write!(c, "POST /v1/audio/speech HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer sk-test\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+        let (mut raw, mut buf, mut first) = (Vec::new(), vec![0u8; 65536], None);
+        loop {
+            let n = c.read(&mut buf).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            raw.extend_from_slice(&buf[..n]);
+            if let Some(h) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                if raw.len() > h + 4 && first.is_none() {
+                    first = Some(t0.elapsed());
+                }
+                if stop_after.is_some_and(|s| raw.len() > h + 4 + s) {
+                    break;
+                }
+            }
+        }
+        (raw, t0, first.unwrap_or_default(), t0.elapsed())
+    }
+
+    const TEXT: &str = "Streaming raw audio chunks directly to standard output. It is said a sentence or so at a time, and each stretch \
+                        goes out as soon as it is made. This third sentence is here to make the text long enough for three stretches.";
+
+    /// The user's own client: model tts-1, voice alloy, pcm - raw 24 kHz mono s16le, chunked, the first sound out
+    /// long before the last stretch is spoken
+    #[test]
+    fn an_openai_client_gets_pcm_streamed() {
+        let (addr, said, made) = serve_stamped(Duration::from_millis(800));
+        let body = json!({"model": "tts-1", "input": TEXT, "voice": "alloy", "response_format": "pcm"}).to_string();
+        let (raw, t0, first, total) = post_from(&addr, &body, None);
+        let (head, pcm, closed) = dechunk(&raw);
+        assert!(head.starts_with("HTTP/1.1 200") && head.contains("Transfer-Encoding: chunked") && head.contains("Content-Type: audio/L16"), "{head}");
+        assert!(closed);
+        let s = said.lock().unwrap().clone();
+        assert!(s.len() >= 2, "{} stretches", s.len());
+        assert!(s.iter().all(|(_, v, _)| v.as_deref() == Some("vivian")), "alloy is vivian: {s:?}");
+        assert!(s.windows(2).all(|w| w[0].2 == w[1].2), "one seed for every stretch");
+        assert!((pcm.len() as i64 - s.len() as i64 * 48_000).abs() < 400, "{} bytes for {} s", pcm.len(), s.len());
+        // the first sound reached the client before the engine had made the last stretch (its own clock, not a margin on
+        // the wall clock: how long ffmpeg takes to start is up to the machine, but it cannot take the stretches between)
+        let made = made.lock().unwrap().clone();
+        assert_eq!(made.len(), s.len());
+        let last = made.last().unwrap().duration_since(t0);
+        assert!(first < last, "first {first:?}, the last stretch made at {last:?}, total {total:?}");
+        eprintln!("pcm over HTTP: {} stretches of 0.8 s, first byte {first:?}, total {total:?}", s.len());
+    }
+
+    #[test]
+    fn every_openai_format_and_speed() {
+        let (addr, said) = serve(Duration::from_millis(20));
+        for (fmt, speed) in [("mp3", 1.0), ("opus", 1.0), ("aac", 1.0), ("flac", 1.0), ("wav", 2.0)] {
+            let n0 = said.lock().unwrap().len();
+            let body = json!({"model": "gpt-4o-mini-tts", "input": TEXT, "voice": "onyx", "response_format": fmt, "speed": speed}).to_string();
+            let (raw, _, _) = post(&addr, &body, None);
+            let (head, b, closed) = dechunk(&raw);
+            assert!(closed && head.contains("200"), "{fmt}: {head}");
+            let n = (said.lock().unwrap().len() - n0) as f64;
+            let secs = decoded_secs(&b, fmt);
+            assert!((secs - n / speed).abs() < 0.15, "{fmt}: {secs} s of {n} stretches at {speed}");
+        }
+        // no response_format: mp3, as OpenAI's default
+        let (raw, _, _) = post(&addr, &json!({"input": "Hello.", "voice": "nova"}).to_string(), None);
+        assert!(dechunk(&raw).0.contains("Content-Type: audio/mpeg"));
+        assert_eq!(said.lock().unwrap().last().unwrap().1.as_deref(), Some("serena"));
+    }
+
+    /// input as a list: one stream, one voice and seed, `gap` seconds between; sample_rate; the refusals
+    #[test]
+    fn a_list_of_texts_is_one_stream_with_a_gap_and_a_rate() {
+        let (addr, said) = serve(Duration::from_millis(10));
+        let body = json!({"input": ["One.", "Two."], "voice": "alloy", "response_format": "pcm", "gap": 1.0}).to_string();
+        let (raw, _, _) = post(&addr, &body, None);
+        let (_, pcm, closed) = dechunk(&raw);
+        assert!(closed);
+        let s = said.lock().unwrap().clone();
+        assert_eq!(s.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["One.", "Two."]);
+        assert!(s[0].2 == s[1].2 && s[0].1 == s[1].1, "one voice and seed: {s:?}");
+        // two seconds of speech and one of silence, at 24 kHz
+        assert!((pcm.len() as i64 - 3 * 48_000).abs() < 400, "{} bytes", pcm.len());
+        // no gap given: 0.3 s
+        let body = json!({"input": ["One.", "Two."], "voice": "alloy", "response_format": "pcm"}).to_string();
+        let (raw, _, _) = post(&addr, &body, None);
+        assert!((dechunk(&raw).1.len() as i64 - (2.3 * 48_000.0) as i64).abs() < 400);
+        // a rate of its own
+        let body = json!({"input": "One.", "voice": "alloy", "response_format": "pcm", "sample_rate": 16000}).to_string();
+        let (raw, _, _) = post(&addr, &body, None);
+        let (head, pcm, _) = dechunk(&raw);
+        assert!(head.contains("X-Sample-Rate: 16000") && (pcm.len() as i64 - 32_000).abs() < 400, "{head} {}", pcm.len());
+        for (body, want) in [
+            (json!({"input": ["a", ""], "voice": "alloy"}), "input"),
+            (json!({"input": [], "voice": "alloy"}), "input"),
+            (json!({"input": ["a", "b"], "response_format": "url"}), "url"),
+            (json!({"input": "a", "gap": 9}), "gap"),
+            (json!({"input": "a", "sample_rate": 100}), "sample_rate"),
+            (json!({"input": "a", "sample_rate": 44100, "response_format": "opus"}), "opus"),
+        ] {
+            let (raw, _, _) = post(&addr, &body.to_string(), None);
+            let s = String::from_utf8_lossy(&raw);
+            let v: Value = serde_json::from_str(s.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert!(v["error"]["message"].as_str().unwrap().contains(want), "{v}");
+        }
+    }
+
+    #[test]
+    fn errors_before_the_sound_are_json_and_a_hang_up_stops_the_rest() {
+        let (addr, said) = serve(Duration::from_millis(200));
+        for (body, want) in [
+            (json!({"input": "FAIL now.", "voice": "alloy", "response_format": "mp3"}), "refused"),
+            (json!({"input": "hi", "voice": "alloy", "response_format": "ogg"}), "response_format"),
+            (json!({"input": "hi", "voice": "alloy", "stream_format": "sse"}), "sse"),
+            (json!({"input": "hi", "voice": "nobody", "response_format": "pcm"}), "voice nobody"),
+        ] {
+            let (raw, _, _) = post(&addr, &body.to_string(), None);
+            let s = String::from_utf8_lossy(&raw);
+            let (head, b) = s.split_once("\r\n\r\n").unwrap();
+            assert!(head.contains("Content-Type: application/json"), "{head}");
+            let v: Value = serde_json::from_str(b).unwrap();
+            assert!(v["error"]["message"].as_str().unwrap().contains(want), "{v}");
+        }
+        let n0 = said.lock().unwrap().len();
+        let long = TEXT.repeat(4);
+        post(&addr, &json!({"input": long, "voice": "alloy", "response_format": "mp3"}).to_string(), Some(100));
+        std::thread::sleep(Duration::from_millis(1200));
+        let n = said.lock().unwrap().len() - n0;
+        assert!(n <= 3, "{n} stretches spoken after the hang-up (of {})", stream::chunks(&long, 160, 400).len());
+    }
+}

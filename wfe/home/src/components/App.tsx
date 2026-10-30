@@ -5,19 +5,23 @@ import { act, autoPull, copy, maintenance, render, setTab, ui } from "../main.js
 import type { Available, Card, Model, Proc, Service } from "../types.js";
 import { Api } from "./Api.js";
 import { ConfigView } from "./Config.js";
+import { NonCommercial } from "./Licence.js";
+import { Spinner } from "./Spinner.js";
 
 const gib = (mb: number) => (mb / 1024).toFixed(1);
-const short = (n: string) => n.replace("Intel(R) Arc(TM) ", "").replace(" Graphics", "");
+/** A GPU as the pages show it (the same function in every app's util.ts). */
+const short = (n: string) => n.replace(/^Intel\(R\) Arc\(TM\) /, "").replace(/^NVIDIA GeForce /, "").replace(/ Graphics$/, "");
 /** a link to a service on this box, as the browser reaches it */
 const at = (port: number, path = "/") => `${location.protocol}//${location.hostname}:${port}${path}`;
 
-const COLORS: Record<string, string> = { llm: "#06b6d4", image: "#f59e0b", video: "#ec4899", audio: "#8b5cf6" };
+const COLORS: Record<string, string> = { llm: "#06b6d4", image: "#f59e0b", video: "#ec4899", audio: "#8b5cf6", model3d: "#10b981" };
 const color = (k?: string) => COLORS[k ?? ""] ?? "#64748b";
 const KINDS: { kind: Model["kind"]; title: string; icon: string }[] = [
   { kind: "llm", title: "Chat", icon: "&#xf086;" },
   { kind: "image", title: "Images", icon: "&#xf03e;" },
   { kind: "audio", title: "Audio", icon: "&#xf001;" },
   { kind: "video", title: "Video", icon: "&#xf03d;" },
+  { kind: "model3d", title: "3D", icon: "&#xf1b2;" },
 ];
 
 /** A vouched figure: the weights, then the headroom - the working memory it needs to run without erroring (KV for its
@@ -50,7 +54,7 @@ function CardView(c: Card) {
         {short(c.name)} <span class="idx">GPU {c.index} · {c.pci}</span>
       </h3>
       <div class="meter" attrs={{ title: `${gib(c.vram_used_mb)} of ${gib(c.vram_total_mb)} GiB in use` }}>
-        {c.procs.map((p) => <i style={{ width: `${(p.vram_mb / total) * 100}%`, background: color(p.kind) }} />)}
+        {c.procs.map((p) => <i style={{ width: `${(p.vram_mb / total) * 100}%`, background: color(p.kind ?? undefined) }} />)}
       </div>
       <div class="meter vouch" attrs={{ title: `${gib(c.vouched_mb)} GiB vouched for by the enabled models` }}>
         {/* each model's weights, then its headroom: the same color, the stripes the other way */}
@@ -79,7 +83,7 @@ function CardView(c: Card) {
           const v = c.vouched.find((x) => x.model === p.model_id && ["loaded", "busy"].includes(x.state));
           return (
           <li attrs={{ title: p.args ?? `pid ${p.pid}` }}>
-            <span class="sw" style={{ background: color(p.kind) }} />
+            <span class="sw" style={{ background: color(p.kind ?? undefined) }} />
             <span class="what">{procName(p)}{p.port ? <span class="hint"> :{p.port}</span> : null}
               {v && v.headroom_mb > 0 ? <span class="hint"> · vouched {Alloc(v.mb, v.headroom_mb, v.kind, v.headroom_given)}</span> : null}</span>
             <span class="mb">{gib(p.vram_mb)} GiB</span>
@@ -110,7 +114,7 @@ function GpuPicker(m: Model) {
   const pick = m.enabled ? m.gpus : (ui.pick[m.id] ??= [...m.gpus]);
   const loaded = ["loaded", "busy", "loading"].includes(m.state);
   return (
-    <span class="gpus" attrs={{ title: (m.kind === "image" || m.kind === "audio" ? "the cards it may load on (the first with room)" : "the cards it may use")
+    <span class="gpus" attrs={{ title: (m.kind === "image" || m.kind === "audio" || m.kind === "model3d" ? "the cards it may load on (the first with room)" : "the cards it may use")
       + (m.enabled ? " - click to change (more than fit is allowed; a loaded model moved off its card unloads)" : "") }}>
       {cards.map((c) => (
         <label class={{ gpu: true, on: pick.includes(c.index) }}>
@@ -159,7 +163,7 @@ function ModelRow(m: Model) {
     <div class={{ mrow: true, off: !m.enabled }}>
       <span class={{ dot: true, off: !loaded, busy: m.state === "busy" || m.state === "loading" }} />
       <div class="mname">
-        <div class="name">{m.title ?? m.id}</div>
+        <div class="name">{m.title ?? m.id}{NonCommercial(m)}</div>
         <div class="sub">{m.id} · <span attrs={{ title: m.measured ? "as seen while it ran" : "an estimate from its files, until it has run" }}>{vouch}{m.measured ? "" : " (est.)"}</span></div>
       </div>
       <div class="mstate"><span class={{ tag: true, [m.state]: true }}>{STATE_TEXT[m.state] ?? m.state}</span></div>
@@ -197,7 +201,7 @@ function ModelRow(m: Model) {
 
 function Models() {
   const st = ui.state;
-  if (!st) return null;
+  if (!st) return <section class="panel"><div class="pbody"><Spinner label="Loading the models…" /></div></section>;
   return (
     <section class="panel">
       <div class="phead"><span class="i" props={{ innerHTML: "&#xf1b3;" }} /><span class="ptitle">Models</span>
@@ -237,13 +241,13 @@ function AvailableRow(a: Available) {
     <div class="mrow off">
       <span class={{ dot: true, off: !going, busy: going }} />
       <div class="mname">
-        <div class="name">{a.title ?? a.id}</div>
+        <div class="name">{a.title ?? a.id}{NonCommercial(a)}</div>
         <div class="sub">{a.id} · {size(a.bytes)} · to {a.drive}{a.fits ? "" : <span class="bad"> - not enough room ({size(a.free)} free)</span>}</div>
         {a.runs_here === false ? <div class="hint bad">won't run here: {a.why_not}</div> : null}
         {going && d
           ? <div>
               <div class="meter" attrs={{ title: `${size(d.bytes_done)} of ${size(d.bytes_total)}` }}>
-                <i style={{ width: `${d.pct}%`, background: color(a.kind) }} />
+                <i style={{ width: `${d.pct}%`, background: color(a.kind ?? undefined) }} />
               </div>
               <div class="hint">{d.state === "queued" ? "queued behind another download to the same folder"
                 : d.state === "verifying" ? "checking its SHA-256…"

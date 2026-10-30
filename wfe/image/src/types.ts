@@ -1,61 +1,9 @@
-/** What the image server answers (glue/serve/src/image.rs). */
+/** What the image server answers: its routes' types (src/gen/routes.ts, made from glue/serve/src/image/routes.rs), and what the page keeps. */
 
-export interface Defaults {
-  width: number;
-  height: number;
-  steps: number;
-  cfg: number;
-  sampler: string;
-  schedule: string;
-  shift: number;
-}
+export type { Defaults, Gpu, Info, LoraInfo, Progress } from "./gen/routes.js";
+import type { Pictures } from "./gen/routes.js";
 
-export interface LoraInfo {
-  id: string;
-  title: string;
-  /** the scale it is merged at now; null: not loaded */
-  loaded: number | null;
-}
-
-export interface Info {
-  model: string;
-  loading?: boolean;
-  arch?: string;
-  edits?: boolean;
-  /** whether it takes guidance: cfg above 1 and a negative prompt */
-  guidance?: boolean;
-  defaults?: Defaults;
-  samplers?: string[];
-  schedules?: string[];
-  loras?: LoraInfo[];
-  /** the engine's own per-request options (sent as `options`) */
-  options?: { name: string; value: string; help: string }[];
-  saves?: boolean;
-  /** the most pictures an edit takes */
-  max_pictures?: number;
-}
-
-export interface Progress {
-  busy: boolean;
-  loading?: boolean;
-  prompt?: string;
-  picture?: number;
-  pictures?: number;
-  at?: number;
-  of?: number;
-  seconds?: number;
-  waiting?: number;
-}
-
-export interface Gpu {
-  name: string;
-  vram_used_mb: number;
-  vram_total_mb: number;
-  power_w: number | null;
-  temp_pkg: number | null;
-  temp_vram: number | null;
-}
-
+/** A picture made, as the page keeps it (from a history entry or an answer) */
 export interface Picture {
   url: string;
   prompt: string;
@@ -71,11 +19,8 @@ export interface Picture {
   created: number;
 }
 
-export interface GenAnswer {
-  created: number;
-  data: { url?: string; b64_json?: string; seed: number; revised_prompt: string; width?: number; height?: number }[];
-  nextsycl: { seconds: number; steps: number; seed: number; loras: string[]; wh: number | null };
-}
+/** What a generation or an edit answers */
+export type GenAnswer = Pictures;
 
 /** The form: every option a request can carry. */
 export interface Form {

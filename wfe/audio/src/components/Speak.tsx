@@ -2,7 +2,7 @@
  *  recording - whichever the model does), the language, the most to make, the seed; under Advanced the engine's own
  *  options. Each field writes straight into state.form. */
 import { jsx } from "../jsx.js";
-import { canGo, cancel, deleteVoice, generate, pickReference, randomSeed, saveVoice } from "../actions.js";
+import { canGo, cancel, cast, deleteVoice, generate, pickReference, randomSeed, saveVoice } from "../actions.js";
 import { panelOpen, render, saveForm, state, togglePanel } from "../state.js";
 
 type Text = "text" | "instructions" | "refText" | "voice" | "language";
@@ -25,7 +25,8 @@ const area = (k: "text" | "instructions" | "refText", cls: string, placeholder: 
   />
 );
 
-const pretty = (v: string) => v.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+/** A name for people: "voice_design" -> "Voice Design"; a language code ("en", "zh") in capitals */
+const pretty = (v: string) => (v.length <= 3 ? v.toUpperCase() : v.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()));
 
 export function Speak() {
   const f = state.form;
@@ -35,7 +36,7 @@ export function Speak() {
   const open = panelOpen("advanced");
   return (
     <div class="create">
-      <div class="lab">text <span class="hint">what to say; punctuation sets the pauses</span></div>
+      <div class="lab">text <span class="hint">{`what to say; punctuation sets the pauses${sp.events.length ? `; vocal events inline: ${sp.events.join(" ")}` : ""}`}</span></div>
       {area("text", "", "Good morning. The bread is still warm, and the coffee is ready.")}
       {sp.voices.length
         ? <div>
@@ -51,12 +52,36 @@ export function Speak() {
         ? <div>
             <div class="lab">{sp.requires === "instructions" ? "the voice" : sp.design ? "the voice, or the style" : "how to say it"}
               <span class="hint">{sp.requires === "instructions" ? "who speaks: age, gender, timbre, pace, emotion, accent"
-                : sp.design ? "optional: a voice to make up (who speaks: age, gender, timbre, pace), or with a cloned voice its style"
+                : sp.design ? `optional: a voice to make up (who speaks: age, gender, timbre, pace)${sp.direction ? ", or with a cloned voice its style" : ""}`
                 : "optional: the mood, the pace, the delivery"}</span>
             </div>
             {area("instructions", "", sp.design
               ? "A calm elderly woman with a soft, slightly raspy voice, speaking slowly and warmly."
               : "Cheerful and a little hurried, as if late for a train.")}
+          </div>
+        : null}
+      {sp.clone && (sp.speakers ?? 0) > 1
+        ? <div>
+            <div class="lab">a script of several speakers <span class="hint">{`write it as "Speaker 1: ..." / "Speaker 2: ..." lines and give each speaker a saved voice (up to ${sp.speakers}); with fewer than two chosen, one voice speaks`}</span></div>
+            {state.voices.length
+              ? <div class="row">
+                  {Array.from({ length: sp.speakers ?? 0 }, (_, i) => (
+                    <label>{`speaker ${i + 1}`}
+                      <select on={{ change: (e: Event) => {
+                        const v = [...(state.form.voices ?? [])];
+                        v[i] = (e.target as HTMLSelectElement).value;
+                        state.form.voices = v;
+                        saveForm();
+                        render();
+                      } }}>
+                        <option attrs={{ value: "" }} props={{ selected: !(state.form.voices ?? [])[i] }}>—</option>
+                        {state.voices.map((sv) => <option attrs={{ value: sv.name }} props={{ selected: (state.form.voices ?? [])[i] === sv.name }}>{sv.name}</option>)}
+                      </select>
+                    </label>
+                  ))}
+                  {cast(sp).length ? <span class="hint">{`${cast(sp).length} speakers cast`}</span> : null}
+                </div>
+              : <div class="hint">save two or more voices first (a recording, then "save as voice…" below)</div>}
           </div>
         : null}
       {sp.clone
@@ -134,7 +159,10 @@ export function Speak() {
                   </label>
                 ))}
               </div>
-              <div class="hint">The talker draws a frame 12.5 times a second of speech, its code predictor the other fifteen codes; the codec turns them into sound.</div>
+              {state.info?.arch === "qwen3-tts"
+                ? <div class="hint">The talker draws a frame 12.5 times a second of speech, its code predictor the other fifteen codes; the codec turns them into sound.</div>
+                : null}
+              {(state.info?.options ?? []).length ? null : <div class="hint">This model has no options of its own.</div>}
             </div>
           : null}
       </div>

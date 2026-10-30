@@ -1,35 +1,8 @@
-/** What the server sends (glue/serve/src/image.rs) and what the page keeps. */
+/** What the server sends: its routes' types (src/gen/routes.ts, made from glue/serve/src/image/routes.rs), and what the page keeps. */
 
-export interface Info {
-  model: string;
-  arch?: string;
-  reads?: boolean;
-  max_pages?: number;
-  loading?: boolean;
-  /** the instructions the model reads by (the first its default) */
-  prompts?: { id: string; prompt: string; title: string }[];
-}
+export type { Gpu, Info, Progress } from "./gen/routes.js";
 
-export interface Progress {
-  busy: boolean;
-  reading?: boolean;
-  pages?: number;
-  text?: string;
-  tokens?: number;
-  seconds?: number;
-  waiting?: number;
-}
-
-export interface Gpu {
-  name: string;
-  vram_used_mb: number;
-  vram_total_mb: number;
-  power_w?: number | null;
-  temp_pkg?: number | null;
-  temp_vram?: number | null;
-}
-
-/** A reading: what /v1/ocr answers (and /api/history keeps) */
+/** A reading, as the page keeps it: from /v1/ocr's answer or a history entry (api.ts) */
 export interface Reading {
   text: string;
   prompt?: string;
@@ -41,7 +14,6 @@ export interface Reading {
   read_tok_s?: number;
   wh?: number | null;
   created?: number;
-  kind?: string;
 }
 
 /** A page given: its name and data URL (kept for the boxes view) */

@@ -14,6 +14,7 @@ pub mod home;
 pub mod idle;
 pub mod maintenance;
 pub mod model3d;
+pub mod page;
 pub mod http;
 pub mod image;
 pub mod serve;
@@ -21,6 +22,7 @@ pub mod switch;
 pub mod telemetry;
 pub mod video;
 pub mod voices;
+pub mod wfe;
 
 pub use serve::Server;
 

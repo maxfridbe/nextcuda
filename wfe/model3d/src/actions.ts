@@ -1,6 +1,7 @@
 /** What the buttons do. */
 import { api } from "./api.js";
 import { render, saveForm, state } from "./state.js";
+import type { Model3dGenerateBody } from "./gen/routes.js";
 import type { Made } from "./types.js";
 
 export async function refreshHistory(): Promise<void> {
@@ -10,6 +11,7 @@ export async function refreshHistory(): Promise<void> {
   } catch {
     /* transient */
   }
+  state.historyLoaded = true;
   render();
 }
 
@@ -49,13 +51,18 @@ export function show(m: Made): void {
   render();
 }
 
+/** Whether steps and guidance mean anything here: the engine reports a step count (a rigger, which only seeds, reports none) */
+export function takesSteps(): boolean {
+  return (state.info?.defaults?.steps ?? 0) > 0;
+}
+
 /** The request: generate from the pictures, or rig the mesh */
 export async function go(): Promise<void> {
   const f = state.form;
-  const body: Record<string, unknown> = { response_format: "url" };
+  const body: Model3dGenerateBody = { response_format: "url" };
   if (f.seed !== null) body["seed"] = f.seed;
-  if (f.steps !== null) body["steps"] = f.steps;
-  if (f.cfg !== null) body["cfg"] = f.cfg;
+  if (f.steps !== null && takesSteps()) body["steps"] = f.steps;
+  if (f.cfg !== null && takesSteps()) body["cfg"] = f.cfg;
   if (Object.keys(f.options).length) body["options"] = f.options;
   saveForm();
   state.busy = true;

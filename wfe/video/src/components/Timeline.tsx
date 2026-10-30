@@ -13,6 +13,7 @@ import { fmtMS, fmtT, here } from "../util.js";
 import { ClipProgress } from "./Progress.js";
 import { Detail } from "./Detail.js";
 import { Panel } from "./Panel.js";
+import { Spinner } from "./Spinner.js";
 
 function exportScene(): void {
   if (state.timelineProject) {
@@ -26,9 +27,11 @@ async function joinFilm(): Promise<void> {
   if (!project) return;
   const done = state.timelineClips.filter((c) => c.state === "done").length;
   if (!window.confirm(`Join the ${done} finished clips of "${project}" into one film?`)) return;
-  const r = await api.join(project);
-  if (!r.ok || !r.join) {
-    window.alert(`join failed: ${r.error ?? "?"}`);
+  let r;
+  try {
+    r = await api.join(project);
+  } catch (e) {
+    window.alert(`join failed: ${e instanceof Error ? e.message : String(e)}`);
     return;
   }
   state.joins = [...state.joins, r.join];
@@ -56,10 +59,6 @@ async function importScene(file: File): Promise<void> {
     const name = window.prompt("Queue this scene as project:", suggested);
     if (name === null) return;
     const r = await api.importScene(scene, name, true);
-    if (r.error) {
-      window.alert(`import failed: ${r.error}`);
-      return;
-    }
     window.alert(`imported ${r.imported} clips as "${r.project}" (held — resume when ready)`);
     navigate({ tab: "jobs", project: r.project ?? name, clip: null });
   } catch (e) {
@@ -198,6 +197,8 @@ export function Timeline() {
         tool("types.ts", () => { location.href = "api/types.ts"; }),
       ]}
     >
+      <div style={{ display: state.timelineLoading ? "" : "none" }}><Spinner label={`Loading the clips of ${project}…`} /></div>
+      <div style={{ display: state.timelineLoading ? "none" : "" }}>
       <ClipProgress />
       <ProjectProgress clips={clips} total={total} />
       <div class="tl">
@@ -208,6 +209,7 @@ export function Timeline() {
         </div>
       </div>
       <Detail />
+      </div>
       <input
         attrs={{ type: "file", id: "sceneFile", accept: "application/json,.json" }}
         style={{ display: "none" }}

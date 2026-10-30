@@ -2,10 +2,13 @@
  *  used - the pages and the instructions, the reading, the readings made here. */
 import { jsx } from "../jsx.js";
 import { state } from "../state.js";
+import { gpuName } from "../util.js";
 import { History } from "./History.js";
+import { NonCommercial } from "./Licence.js";
 import { Output } from "./Output.js";
 import { Panel } from "./Panel.js";
 import { Read } from "./Read.js";
+import { Spinner } from "./Spinner.js";
 import { Stats } from "./Stats.js";
 
 function GpuPill() {
@@ -15,7 +18,7 @@ function GpuPill() {
   const busy = !!state.progress?.busy;
   const chip = (k: string, v: string) => <span class="gc"><span class="gk">{k}</span> <b>{v}</b></span>;
   const parts = [
-    chip("GPU", g.name.replace("Intel(R) Arc(TM) ", "").replace(" Graphics", "")),
+    chip("GPU", gpuName(g.name)),
     g.power_w != null ? chip("power", `${Math.round(g.power_w)} W`) : null,
     chip("VRAM", `${(g.vram_used_mb / 1024).toFixed(1)}/${(g.vram_total_mb / 1024).toFixed(0)} GB (${used}%)`),
     g.temp_pkg != null ? chip("temp", `${Math.round(g.temp_pkg)}°C`) : null,
@@ -34,9 +37,10 @@ export function App() {
   return (
     <div id="app">
       <div class="top">
-        <h1><span class="i" props={{ innerHTML: "&#xf15c;" }} /> {info ? info.model : "nextsycl ocr"}</h1>
+        <h1><span class="i" props={{ innerHTML: "&#xf15c;" }} /> {info ? info.model : "nextcuda ocr"}{NonCommercial(info)}</h1>
         <GpuPill />
       </div>
+      {!info ? <Spinner label="Connecting to the model…" /> : info.loading ? <Spinner label="Loading the model…" /> : null}
       <Stats />
       {state.error && !state.busy ? <pre class="err">{state.error}</pre> : null}
       {info && !info.loading && info.reads === false

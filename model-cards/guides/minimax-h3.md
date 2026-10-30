@@ -50,6 +50,9 @@ non_diegetic_music: <a score the people in the scene cannot hear, or "None.">
 - `control_video` (canny / depth / HED / MLSD / pose frames) the clip follows; `control_mask` + `control_source`
   regenerate the white part of the mask: describe the whole result.
 - Steps: 8 for a draft, 12-20 when dialogue or motion matter. Canvases: 768x576 is the house size; 4-15 s.
+- `soundtrack` + `soundtrack_start` (a song, `video.upload`): the clip's length of it from that second is held under
+  the whole clip as an audio keyframe and the picture is made to it - describe someone singing it, with the lines
+  sung in that stretch in `<d>`. The clip carries the song itself.
 
 ## Films: a recipe for each kind
 A clip is 4-15 s; a film is several, each carrying on from the last, then joined (`nextcuda video join`, or your
@@ -101,6 +104,29 @@ The motion must carry through the cuts, and the sound with it.
 - The music is the film's, not the clips': make each clip's `non_diegetic_music: None.` and lay a song (the
   audio kind, `minimax-music3`) under the joined cuts; a 2-frame cross-fade or plain cuts.
 
+### A singer to a song (one continuous shot, lip-synced)
+The song is given; the picture is made to it. H3 is a joint sound-and-picture model: a stretch of sound pinned as
+an audio keyframe over the whole clip comes back as the clip's own sound (its loudness envelope against the take's:
+r = 0.99), and the singer's mouth is drawn to it. Without it H3 writes and sings its own song (r = 0.03); a Ref2VA
+`<Audio 1>` is a voice to sing *in*, not the song (r = -0.15).
+- Each clip: `soundtrack` (the take, uploaded once) and `soundtrack_start` = where the clip's first frame is in the
+  song. A box without `soundtrack` (nextsycl) does the same with the stretch cut to its own file:
+  `first_audio` = that file, `first_audio_s` = the clip's length.
+- The prompt: one person, one place, one continuous shot - "<who> (S1) sings into the microphone: `<d>[English]` the
+  lines sung in this stretch`</d>`. Her lips shape every sung word." A small camera move and where she looks (into
+  the lens on some lines, away on others) keep it alive; vary only those two from clip to clip, keep every other word
+  the same. Moves that undo each other (drift left, drift back right, arc right, arc back left, small amplitude,
+  slow) and "the medium close-up keeps its size": push-ins compound over a chain (the face grew clip by clip).
+- A whole song: clips of 243 frames (10.125 s) chained with `chain: {from: <the last clip>, context_frames: 22,
+  color_reanchor: <the first clip>}` (the chain carries the picture only: the sound is the song's), clip i from
+  `start + i x 221 / 24` s, the same seed. Join dissolving over the 22 frames each clip replays (a hard cut in their
+  middle was the largest frame-to-frame jump of the film; the dissolve brings it within the shot's own motion),
+  then lay the take itself under the joined picture from `start` - never the clips' sound.
+- The face: the same singer picture as `ref_images` on every clip (Ref2VA, "the woman from `<Picture 1>`") held one
+  face over a chain; the chain alone kept the dress, the light and the room but let the face drift. A picture given,
+  or the first clip's own frame at 0.5 s for the clips after it.
+- Time: on hardac1 (nextsycl, B70) a 243-frame clip at 768x576, 12 steps is ~290 s - a 4-minute song ~28 clips,
+  ~2.3 h. On brainiac (nextcuda, 5070 + 3060, Q4_K_M) the same clip at 512x384 is ~950 s (74 s a step).
 ### A cut: what to carry, by kind (docs/video/scenes.md has the measurements)
 | The cut | Use |
 |---|---|

@@ -151,9 +151,7 @@ pub fn start(cfg: &Config, raw: &[String]) -> Result<(), String> {
     }
     ce.need_image()?;
     for f in ["nextcuda", "libnextcuda-video.so"] {
-        if !cfg.dist.join(f).exists() {
-            return Err(format!("{}: not built yet (./build.sh)", cfg.dist.join(f).display()));
-        }
+        crate::service::need_dist(cfg, f)?;
     }
     ce.remove(ENGINE); // a stopped one from before
     let out = out_dir(cfg);
@@ -354,7 +352,7 @@ pub fn serve(cfg: &Config, raw: &[String]) -> Result<(), String> {
         println!("the studio is already running ({})", web_line(cfg));
         return Ok(());
     }
-    if !cfg.dist.join("wfe/video/index.html").exists() {
+    if !nextcuda_serve::wfe::exists(&cfg.dist.join("wfe"), "video/index.html") {
         return Err(format!("{}: the front end is not built yet (./build.sh wfe)", cfg.dist.join("wfe").display()));
     }
     let sock_dir = cfg.socket_dir();
@@ -422,6 +420,9 @@ pub fn studio(raw: &[String]) -> Result<(), String> {
         gpustat: super::opt(raw, "--gpustat").unwrap_or("/run/gpustat.json").into(),
         llm_modes: super::opt(raw, "--llm-modes").map(PathBuf::from),
         engines,
+        // each video model's licence (the registry's entries, an old one's from its card): the denoiser picker tags a non-commercial one
+        licenses: models::all(&Config::load()).unwrap_or_default().iter().filter(|m| models::kind_of(m) == "video")
+            .map(|m| (m["id"].as_str().unwrap_or("").to_string(), nextcuda_serve::page::licence_of(m))).collect(),
     })
     .map_err(|e| e.0)
 }

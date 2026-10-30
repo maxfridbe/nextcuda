@@ -1,0 +1,13 @@
+[package]
+name = "nextcuda-model3d-unimate"
+description = "UniMate: a rigged mesh's skeleton animated from a sentence (a flan-T5 text encoder, a graph spatio-temporal flow transformer) on NVIDIA GPUs (CUDA)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextcuda-core.workspace = true
+nextcuda-diffusion.workspace = true
+nextcuda-gguf.workspace = true
+nextcuda-model3d.workspace = true
+serde_json.workspace = true

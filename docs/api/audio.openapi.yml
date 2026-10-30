@@ -1,0 +1,1221 @@
+openapi: 3.1.0
+info:
+  title: nextcuda audio server (nextcuda audio serve)
+  version: generated
+  description: 'A server''s own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextcuda gen-api`: do not edit.'
+servers:
+- url: /
+paths:
+  /api/gpu:
+    get:
+      operationId: gpu
+      summary: 'The card: its name, memory, power and temperatures'
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gpu'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /health:
+    get:
+      operationId: health
+      summary: Whether the server answers
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/models:
+    get:
+      operationId: models
+      summary: The model served, as OpenAI lists models
+      tags:
+      - openai
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /models
+  /api/info:
+    get:
+      operationId: info
+      summary: 'The model and what it takes: its defaults, options, a speech engine''s voices, a recogniser''s languages'
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Info'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/progress:
+    get:
+      operationId: progress
+      summary: What the server is doing now (the page polls it)
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Progress'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/history:
+    get:
+      operationId: history
+      summary: The songs and speech made here, newest first (their settings from the WAVs)
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/History'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/cancel:
+    post:
+      operationId: cancel
+      summary: 'Stops a request: the one named (running or waiting), else the one running (between frames or steps)'
+      tags:
+      - page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelReq'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cancelled'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/audio/files/{name}:
+    get:
+      operationId: file
+      summary: A song or speech an answer links, whole or the byte range asked for (the player seeks)
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the answer's url has it
+      - name: Range
+        in: header
+        required: false
+        schema:
+          type: string
+        description: 'bytes=a-b, bytes=a- or bytes=-n (one span): answered 206 with Content-Range'
+      responses:
+        '200':
+          description: the file
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+        '206':
+          description: the span asked for
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+  /api/voices:
+    get:
+      operationId: voices
+      summary: The saved voices (none without an output directory)
+      tags:
+      - voices
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Voices'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/audio/voices/{name}:
+    get:
+      operationId: voiceSample
+      summary: A saved voice's sample
+      tags:
+      - voices
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: the file
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/voices/add:
+    post:
+      operationId: voiceAdd
+      summary: 'Saves a voice: a recording sent, or a file made here (its text, description and language with it)'
+      tags:
+      - voices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoiceAdd'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedVoice'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/voices/remove:
+    post:
+      operationId: voiceRemove
+      summary: Removes a saved voice
+      tags:
+      - voices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoiceRemove'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceRemoved'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/audio/transcriptions:
+    post:
+      operationId: transcriptions
+      summary: 'A recording written down (a recogniser: whisper): its text, language, timed stretches and words (JSON only, no multipart form)'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AudioTranscribeBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transcript'
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /audio/transcriptions
+  /v1/audio/speech:
+    post:
+      operationId: speech
+      summary: 'A song or speech, as the model is (the reference server''s speech endpoint, and OpenAI''s): speech streamed (chunked, sent as each stretch of the text is spoken) in mp3 (the default), opus, aac, flac, wav or pcm (raw s16le, 24 kHz, mono); a song''s WAV, or another of those formats streamed; with response_format url JSON with its link'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AudioSpeechBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/ogg:
+              schema:
+                type: string
+                format: binary
+            audio/aac:
+              schema:
+                type: string
+                format: binary
+            audio/flac:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            audio/L16:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /audio/speech
+components:
+  schemas:
+    AudioSpeechBody:
+      type: object
+      properties:
+        input:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'a song: the lyrics ([verse] / [chorus] tags on lines of their own; empty: instrumental); speech: the text to say (required; also as text), or a list of texts said in turn as one stream (the same voice and seed, `gap` seconds between; not with url)'
+        gap:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0.0
+          maximum: 5.0
+          default: 0.3
+          description: 'a list of texts: the silence between them in seconds, 0-5 (0.3 by default)'
+        sample_rate:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 8000
+          maximum: 96000
+          default: 24000
+          description: the rate of the sound in Hz, 8000-96000 (24000 by default, OpenAI's; pcm and wav say it in X-Sample-Rate); not with url
+        stream:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'a song: true sends its wav as it is made too (speech''s wav is streamed anyway)'
+        instructions:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a song: the music - genre, mood, tempo, instruments, voice (required unless a recording is given; also as prompt or description); speech: how to say it, the voice to make up, or a cloned voice''s direction'
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: guidance (also as guidance_scale)
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a song: the lyrics'' language as a code; speech: the language spoken (auto by default)'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the model's id (this server's; OpenAI's and the reference servers' names are taken for it)
+        options:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: 'the engine''s own options, {NAME: value} (/api/info lists them)'
+        seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'a song: its length; speech: the most to make (also as duration, or max_new_tokens: frames)'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: also as num_inference_steps
+        response_format:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'OpenAI''s mp3, opus, aac, flac, wav or pcm, streamed as it is made (speech: mp3 by default; pcm is raw s16le, 24 kHz, mono; wav a header of unknown length, then that), or url (JSON with its link; needs an output directory); a song: wav (the default: the whole file), url, or another format streamed'
+        speed:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0.25
+          maximum: 4.0
+          default: 1.0
+          description: how fast it is said, 0.25-4 (OpenAI's; beyond it clamped), over the whole answer; not with url
+        stream_format:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'audio (the default: the audio bytes, streamed); OpenAI''s sse is refused'
+        normalize:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'speech: false says the text as written (default: symbols as words, no markdown)'
+        abc:
+          anyOf:
+          - type: string
+          - type: 'null'
+          maxLength: 200000
+          description: 'yue2-3b-q8: a score (ABC text) to sing over instead of one drawn (cot melody or full) - a cover''s melody, or the score an earlier song came back with (its score) to sing it again with new words: the same seed and style keep the melody'
+        cot:
+          anyOf:
+          - $ref: '#/components/schemas/SongCot'
+          - type: 'null'
+          description: 'yue2-3b-q8: what it writes before the music - full (a melody and chords score; default), melody (a melody alone: covers), off (none; the codes guided 1.01 by default)'
+        audio:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'acestep-1.5, a task on a recording: the recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL, or upload:<name> from audio.upload); the song is as long as it (repaint: to repaint_end). yue2-3b-q8, a cover: the recording whose score (SheetSage2: its melody for cot melody - the default then -, melody and chords for full) is sung in the new style with input''s words (the song''s own or new ones); option score-only true: the score alone'
+        bpm:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'acestep-1.5: the tempo (else the planner''s, or none said)'
+        cover_noise:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'cover: how close the start is to the recording, 0 (from noise) to 1 (0)'
+        cover_strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'cover / repaint: the share of the steps conditioned on the recording, 0 to 1 (0.5)'
+        key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'acestep-1.5: key and scale, "C major", "F# minor"'
+        planner:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'acestep-1.5 text2music: the 5 Hz planner LM writes the metas, the caption and the song''s audio codes first (true, as the platform''s use_lm)'
+        repaint_end:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'repaint: seconds; -1 or none: the recording''s end; past it: the song extended to it'
+        repaint_mode:
+          anyOf:
+          - $ref: '#/components/schemas/RepaintMode'
+          - type: 'null'
+          description: 'repaint: how much of the recording is kept at the span''s edges (balanced)'
+        repaint_start:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'repaint: seconds into the recording (0)'
+        repaint_strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'repaint, balanced: 0 keeps the most, 1 the least (0.5)'
+        source_lyrics:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'edit: the words the recording sings now'
+        task:
+          anyOf:
+          - $ref: '#/components/schemas/AudioTask'
+          - type: 'null'
+          description: 'acestep-1.5: text2music (default: from the words alone); with audio - cover (the recording performed anew: input its words, instructions its sound), repaint (repaint_start to repaint_end made again; an end past the recording extends it), edit (new words sung over the recording: source_lyrics the words it sings now), lego (a vocal track over an instrumental: acestep-1.5-base)'
+        time_signature:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'acestep-1.5: beats a bar: "4", "3", "6"'
+        continue_from:
+          anyOf:
+          - type: string
+          - type: 'null'
+          maxLength: 200
+          description: 'carry on from speech made here (a book in chunks): the file name (or url) of the chunk before; its last sentences (up to 15 s, cut at a pause) are the in-context reference, after the saved voice''s sample when voice names one - pace and voice go on, anchored to the voice. Needs a model that clones (picked for you when model is not given); a built-in voice name is dropped'
+        ref_audio:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a recording of the voice to clone: WAV as base64 or a data: URL, or upload:<name> (audio.upload, any format it takes) - the Base model'
+        ref_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what the recording says: the closer, in-context clone (Breeze TTS 2: required, the exact transcript)'
+        speakers:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          maxItems: 4
+          description: 'several speakers (VibeVoice: input a script of "Speaker N: words" lines): each speaker''s voice, Speaker 1''s first - a saved voice''s name, a recording (WAV, MP3, FLAC, Ogg, M4A as base64 or a data: URL) or upload:<name>, or {ref_audio | voice, ref_text}; a model that takes them is picked when model is not given'
+        voice:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices). /v1/audio/speech also takes OpenAI''s names (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse): built-in voices of qwen3-tts-custom (vivian, ryan, aiden, serena), or a model''s own voice'
+      additionalProperties: true
+      description: 'What /v1/audio/speech takes: a song (a song model: input the lyrics, instructions the music) or speech (a speech model: input the text; voice, language, instructions, ref_audio, ref_text ...), as the model this server runs is'
+    AudioTask:
+      type: string
+      enum:
+      - text2music
+      - cover
+      - repaint
+      - edit
+      - lego
+      description: 'ACE-Step 1.5''s task: text2music | cover | repaint | edit | lego'
+    AudioTranscribeBody:
+      type: object
+      properties:
+        audio:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono (or file: the same, OpenAI''s name; one of them is required)'
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a code or a name (en, english, de, german ...); none or auto: detected on the first 30 s'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        options:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: 'the engine''s own: condition (each window prompted with the text before it), no-speech (the silence threshold), fallback (decode an unsure window again, warmer)'
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'text that leads the first window: names, spelling, style (Whisper''s initial_prompt)'
+        translate:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: into English instead of the language spoken
+        words:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: true
+          description: each word's start and end (and the model's probability for it)
+      additionalProperties: true
+      description: 'What audio.transcribe makes from: the body its kind''s server takes.'
+    CancelReq:
+      type: object
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'that request only (the front door''s job), running or waiting; none: the one running'
+      description: What a cancel takes
+    Cancelled:
+      type: object
+      properties:
+        cancelled:
+          type: boolean
+          description: a request running was told to stop
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+      required:
+      - cancelled
+      description: What a cancel did
+    Defaults:
+      type: object
+      properties:
+        seconds:
+          type: number
+        max_seconds:
+          type: number
+          description: the longest it makes
+        steps:
+          type: integer
+        cfg:
+          type: number
+        rate:
+          type: integer
+          description: samples a second of what it returns
+      required:
+      - seconds
+      - max_seconds
+      - steps
+      - cfg
+      - rate
+      description: The engine's own defaults (a request's absent fields)
+    EngineOptionInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        value:
+          type: string
+          description: what its value looks like ("" a flag)
+        help:
+          type: string
+      required:
+      - name
+      - value
+      - help
+      description: An option of the engine's own (a request sends it in `options`)
+    FileName:
+      type: object
+      properties:
+        name:
+          type: string
+          description: the file's name as the answer's url has it
+      required:
+      - name
+      description: A file a link names (`.../files/{name}`)
+    Gpu:
+      type: object
+      properties:
+        name:
+          type: string
+        vram_used_mb:
+          type: integer
+        vram_total_mb:
+          type: integer
+        power_w:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'watts now (none: the driver does not say)'
+        temp_pkg:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: °C
+        temp_vram:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the memory's °C
+      required:
+      - name
+      - vram_used_mb
+      - vram_total_mb
+      description: The card a model server runs on, as its page shows it
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          description: ok, or loading (HTTP 503 then)
+      required:
+      - status
+      description: Whether the server answers (and has its model loaded)
+    History:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SoundItem'
+      required:
+      - data
+      description: The songs and speech in the output directory, newest first
+    Info:
+      type: object
+      properties:
+        model:
+          type: string
+        license:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the licence of its weights, whether it allows commercial use (false: the page tags it non-commercial), the conditions it puts on it'
+        commercial:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        license_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+        busy:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'the engine is running a request: what changes is not reported'
+        arch:
+          anyOf:
+          - type: string
+          - type: 'null'
+        lyrics:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it sings words
+        guidance:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: '`cfg` changes the sound (false: a distilled checkpoint runs unguided)'
+        wfe:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it serves its page
+        recogniser:
+          anyOf:
+          - $ref: '#/components/schemas/RecogniserInfo'
+          - type: 'null'
+          description: 'a recogniser: what it writes down (none: it makes sound)'
+        speech:
+          anyOf:
+          - $ref: '#/components/schemas/SpeechInfo'
+          - type: 'null'
+          description: 'a speech engine: its voices and what it takes (none: songs)'
+        defaults:
+          anyOf:
+          - $ref: '#/components/schemas/Defaults'
+          - type: 'null'
+        options:
+          anyOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/EngineOptionInfo'
+          - type: 'null'
+          description: the engine's own per-request options (sent as `options`)
+        report:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: what the engine says of itself (its files, its precision ...)
+        saves:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'it keeps what it makes (an output directory: links, the history, saved voices)'
+      required:
+      - model
+      description: The model and what it takes; while a request runs, the model and `busy` only
+    ModelEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          description: model
+        owned_by:
+          type: string
+        created:
+          type: integer
+      required:
+      - id
+      - object
+      - owned_by
+      - created
+      description: A model in OpenAI's list
+    ModelList:
+      type: object
+      properties:
+        object:
+          type: string
+          description: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelEntry'
+      required:
+      - object
+      - data
+      description: 'OpenAI''s list of models: the one this server serves'
+    Progress:
+      type: object
+      properties:
+        busy:
+          type: boolean
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+        phase:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the engine''s: prompt, tokens, flow, decode (a song); listen ... (a transcript)'
+        at:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the units done (frames, steps, windows) of `of`
+        of:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: seconds since it started
+        want:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the length asked for (seconds of sound)
+        waiting:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: requests waiting for the engine
+        request_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the front door's job running, if it named one
+      required:
+      - busy
+      description: 'What the server is doing: busy false, or what it is making and how far it is'
+    RecogniserInfo:
+      type: object
+      properties:
+        languages:
+          type: array
+          items:
+            type: string
+          description: the languages it writes down (codes)
+        words:
+          type: boolean
+          description: it times the words
+        translate:
+          type: boolean
+          description: it translates into English
+      required:
+      - languages
+      - words
+      - translate
+      description: What a recogniser writes down
+    RepaintMode:
+      type: string
+      enum:
+      - balanced
+      - conservative
+      - aggressive
+      description: 'A repaint''s balance: balanced | conservative | aggressive'
+    SavedVoice:
+      type: object
+      properties:
+        name:
+          type: string
+        text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what the sample says (none: an x-vector clone)'
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: a designed voice's description
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+        kind:
+          type: string
+          description: clone or design
+        seconds:
+          type: number
+          description: the sample's length
+        rate:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: its samples a second
+        created:
+          type: integer
+        from:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'where it came from: a recording, made here (and by which model)'
+      required:
+      - name
+      - kind
+      - seconds
+      - created
+      additionalProperties: true
+      description: A saved voice (the voices library beside the output directory)
+    SongCot:
+      type: string
+      enum:
+      - full
+      - melody
+      - off
+      description: 'YuE2''s plan before the music: full (a melody and chords score) | melody (a melody alone) | off (none)'
+    Sound:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SoundItem'
+        nextsycl:
+          $ref: '#/components/schemas/SoundRun'
+      required:
+      - created
+      - data
+      - nextsycl
+      description: 'A sound made (response_format url): its link and settings, and how it was made (`nextsycl`: the key nextsycl''s contract names it; the front door''s methods call it run)'
+    SoundItem:
+      type: object
+      properties:
+        url:
+          type: string
+          description: the WAV (GET it here; byte ranges)
+        prompt:
+          type: string
+          description: 'a song: its description; speech: the text said'
+        lyrics:
+          type: string
+          description: a song's lyrics ("" none)
+        seconds:
+          type: number
+          description: seconds of sound
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+        took:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: seconds it took to make
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the card's energy, watt-hours
+        created:
+          type: integer
+          description: unix seconds
+        voice:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'speech: the voice (built-in or saved)'
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+        instructions:
+          anyOf:
+          - type: string
+          - type: 'null'
+        cloned:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'speech: spoken in a recording''s voice'
+        continued:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'speech: the file it carried on from (continue_from)'
+      required:
+      - url
+      - prompt
+      - lyrics
+      - seconds
+      - created
+      additionalProperties: true
+      description: 'A song or speech made here: its link, what it was made from (the WAV''s own tags) and how'
+    SoundRun:
+      type: object
+      properties:
+        took:
+          type: number
+        seconds:
+          type: number
+          description: seconds of sound
+        seed:
+          type: integer
+        steps:
+          type: integer
+        cfg:
+          type: number
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - took
+      - seconds
+      - seed
+      - steps
+      - cfg
+      description: How a sound was made
+    SpeechInfo:
+      type: object
+      properties:
+        voices:
+          type: array
+          items:
+            type: string
+          description: its built-in voices
+        languages:
+          type: array
+          items:
+            type: string
+          description: the languages it speaks (besides auto)
+        instructions:
+          type: boolean
+          description: it styles the speech by instructions
+        design:
+          type: boolean
+          description: it makes a voice from instructions alone
+        clone:
+          type: boolean
+          description: it clones a recording
+        clone_needs_text:
+          type: boolean
+        clone_takes_text:
+          type: boolean
+          description: a transcript of the recording makes a closer clone
+        direction:
+          type: boolean
+          description: it styles a cloned voice by instructions (voice direction)
+        events:
+          type: array
+          items:
+            type: string
+          description: the vocal events it reads inline ("(laugh)", "[笑]" ...)
+        requires:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what a request must carry besides the text: voice, instructions or reference; none: nothing'
+        speakers:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'the speakers a script may have, each its own saved voice ("Speaker 1: ...", "Speaker 2: ...": VibeVoice); 0: one voice'
+      required:
+      - voices
+      - languages
+      - instructions
+      - design
+      - clone
+      - clone_needs_text
+      - clone_takes_text
+      - direction
+      - events
+      description: What a speech engine takes
+    Timed:
+      type: object
+      properties:
+        start:
+          type: number
+          description: seconds from the recording's start
+        end:
+          type: number
+        text:
+          type: string
+        probability:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'a word: the model''s mean probability of its tokens'
+      required:
+      - start
+      - end
+      - text
+      description: A stretch or a word of a transcript, timed
+    Transcript:
+      type: object
+      properties:
+        model:
+          type: string
+        text:
+          type: string
+          description: the whole transcript
+        language:
+          type: string
+          description: 'the language written down (a code: en), detected or as asked'
+        duration:
+          type: number
+          description: seconds of recording
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Timed'
+          description: stretches timed by the model's timestamp tokens
+        words:
+          type: array
+          items:
+            $ref: '#/components/schemas/Timed'
+          description: 'each word timed (empty with words: false)'
+        created:
+          type: integer
+        nextsycl:
+          $ref: '#/components/schemas/TranscriptRun'
+      required:
+      - model
+      - text
+      - language
+      - duration
+      - segments
+      - words
+      - created
+      - nextsycl
+      description: A recording written down
+    TranscriptRun:
+      type: object
+      properties:
+        took:
+          type: number
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+        seconds:
+          type: number
+          description: seconds of recording
+      required:
+      - took
+      - seconds
+      description: How a transcript was made
+    VoiceAdd:
+      type: object
+      properties:
+        name:
+          type: string
+          description: lowercase letters, digits, - and _ (a letter first, at most 40)
+        sample:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the recording: any format, base64 or a data: URL (1 s at least; 3-15 s is best; past 60 s it is cut)'
+        file:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'or a WAV made here (its name or url): what it says, its voice''s description and language come with it'
+        text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: what the recording says (else a file's own)
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+        replace:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: over a voice of that name
+      required:
+      - name
+      description: 'A voice to save: a recording sent, or a file made here'
+    VoiceName:
+      type: object
+      properties:
+        name:
+          type: string
+      required:
+      - name
+      description: A saved voice's sample (`.../voices/{name}`, with or without .wav)
+    VoiceRemove:
+      type: object
+      properties:
+        name:
+          type: string
+      required:
+      - name
+      description: A voice to remove
+    VoiceRemoved:
+      type: object
+      properties:
+        removed:
+          type: string
+      required:
+      - removed
+      description: A voice removed
+    Voices:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SavedVoice'
+      required:
+      - data
+      description: The saved voices

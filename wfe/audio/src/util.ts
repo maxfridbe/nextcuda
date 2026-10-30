@@ -17,3 +17,6 @@ export const TAGS = ["intro", "verse", "pre-chorus", "chorus", "bridge", "instru
 
 /** Length presets, seconds. */
 export const LENGTHS: [string, number][] = [["0:30", 30], ["1:00", 60], ["2:00", 120], ["3:00", 180], ["4:00", 240], ["6:00", 360]];
+
+/** A GPU as the pages show it: "NVIDIA GeForce RTX 5070" -> "RTX 5070", "Intel(R) Arc(TM) B70 Graphics" -> "B70" (the same in every app). */
+export const gpuName = (n: string) => n.replace(/^Intel\(R\) Arc\(TM\) /, "").replace(/^NVIDIA GeForce /, "").replace(/ Graphics$/, "");

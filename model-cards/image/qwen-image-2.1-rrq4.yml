@@ -3,6 +3,9 @@
 id: qwen-image-2.1-rrq4
 kind: image
 arch: qwen-image-2.1
+license: qwen-research
+commercial: false
+license_note: 'Qwen Research Licence: the weights may be used for non-commercial purposes only (research or evaluation); commercial use needs a separate licence from Qwen.'
 title: 'Qwen-Image 2.1 Q4 (realrebelai GGUF, 6.0 GB; stable-diffusion.cpp on CUDA)'
 about: 'The 2.1 transformer as realrebelai''s Q4 GGUF (5.96 GB: the 12 GB cards hold it with room), with the same Qwen3-VL text encoder, projector and VAE as the Q8 card'
 gpus: '0'

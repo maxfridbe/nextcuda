@@ -1,0 +1,33 @@
+# MOSS-Image SFT DMD2 Q8_0 (8 steps, no guidance; text to image; Rust + CUDA)
+# model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets.
+# moss-image-sft-q8's files and an 8-step distillation LoRA (fp32, rank 128) merged into the DiT at load before its
+# matrices are made int8, as moss-image-sft-turbo4-q8; NS_MOSS_STEPS makes 8 its default.
+id: moss-image-sft-dmd2-q8
+kind: image
+arch: moss-image
+license: apache-2.0
+commercial: true
+title: 'MOSS-Image SFT DMD2 Q8_0 (8 steps, no guidance; text to image; Rust + CUDA)'
+about: 'MOSS-Image-SFT with lodestones'' 8-steps-dmd2 LoRA from Kromoss (Apache-2.0; DMD from MOSS-Image-Base, then the DMD2 GAN stage against real images; transfers to SFT) merged at load: 8 steps at cfg 1, about 5 s a 1024 x 1024 picture; natural light and detail'
+gpus: '0,1'
+split: true                      # as moss-image-sft-q8: the DiT and the VAE on the first card, the text encoder on the second
+vram_gib: 7.0
+defaults:
+  steps: 8
+  cfg: 1.0
+  sampler: euler
+  schedule: shift
+  size: 1024x1024
+env:
+  NS_MOSS_STEPS: '8'
+files:
+  transformer: moss-image-sft-q80
+  text-encoder: qwen35-9b-q80
+  vae: moss-image-sft-vae
+  turbo-lora:
+    key: moss-8step-dmd2-lora
+    url: https://huggingface.co/lodestones/Kromoss/resolve/a4fe97449297af2e3be7841e1c18e431f3b06031/8-steps-dmd2-lora.safetensors
+    size: 1189176800
+    sha256: 7683fe1fb51f73f5d690f24dd6b7f46f31ab9a9873729a854ac5c9a420ffe6f2
+    path: moss-image-sft/loras/moss_8step_dmd2.safetensors
+guide: guides/moss-image.md

@@ -36,6 +36,7 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 | songs | `minimax-music3-int8` | MiniMax Music 3, its language model in int8: songs from lyrics and a description, up to 6 minutes, 44.1 kHz stereo | (music3's) | served, both cards |
 | songs | `minimax-music3` | MiniMax Music 3 in half | 26.6 GiB | too big (23 GB a card) |
 | songs | `acestep-1.5` | ACE-Step 1.5 turbo: songs in 50 languages from a description and lyrics, covers, repaints, lyric edits; 48 kHz stereo | 9.4 GiB | served |
+| songs | `yue2-3b-q8` | YuE2-3B Q8_0 (non-commercial, CC BY-NC 4.0): songs with vocals from a style and lyrics, English and Mandarin, a melody / chords score first (sung again with new words over the same score), up to 6 minutes, 48 kHz stereo | 4.2 GiB | served, both cards |
 | songs | `acestep-1.5-base` | ACE-Step 1.5 base: a vocal track made in a recording's context (lego) | 9.4 GiB | served |
 | video | `minimax-h3-q4km` | MiniMax H3 Q4_K_M: text, pictures and a voice to video with sound; the denoiser in 10.6 GiB | 10.6 GiB | served, both cards |
 | video | `minimax-h3-q6k` | MiniMax H3 Q6_K: the denoiser in 15.4 GiB | 15.4 GiB | download |
@@ -45,8 +46,10 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 | 3D | `trellis2-512` | TRELLIS.2 4B Q8_0 at 512: picture to textured mesh, the light path (MIT) | 1.3 GiB | served |
 | 3D | `hunyuan3d-2mini-turbo` | Hunyuan3D-2mini-turbo: a mesh from a picture in seconds (shape) | 3.9 GiB | served |
 | 3D | `unirig` | UniRig: a skeleton and skin weights for any mesh (MIT) | 5.4 GiB | served |
+| 3D | `skintokens` | SkinTokens / TokenRig: a skeleton and skin weights as one token sequence (MIT) | 1.5 GiB | served |
 | 3D | `rignet` | RigNet: a skeleton and skin weights for a character mesh (GPLv3) | 0.2 GiB | served |
 | 3D | `animateanymesh` | AnimateAnyMesh: text-driven mesh animation, 16 frames as morph targets (Apache-2.0) | 0.9 GiB | served |
+| 3D | `unimate` | UniMate: a rigged mesh's skeleton animated from a sentence, 60 frames of glTF skeletal animation (weights CC BY-NC 4.0: non-commercial) | 2.1 GiB | served |
 | 3D | `trellis2` | TRELLIS.2 4B Q8_0, the 1024 cascade | 8.8 GiB | download |
 | 3D | `pixal3d` | Pixal3D Q8_0: pixel-aligned TRELLIS.2, the 1024 cascade (MIT) | 8.9 GiB | download |
 | 3D | `hunyuan3d-2.1` | Hunyuan3D 2.1: a detailed mesh with PBR textures | 15.5 GiB | too big |
@@ -63,7 +66,7 @@ Each model's guide (how to ask it, what it takes, what it answers) is in `model-
 | speech | `breeze-tts-2`, `qwen3-tts`, `voxcpm2`, `vibevoice` (several speakers) | one card each; VoxCPM2 int8 fits beside the chat model |
 | songs | `minimax-music3` (int8), `acestep-1.5` | MiniMax: the language model on the 5070, the flow stage and decoder on the 3060 |
 | video | `minimax-h3` (the native daemon, `--span`) and the video studio (scenes, plans, a film's clips joined) | the denoiser over both cards, nothing streamed: a clip in ~62 s from the SSD |
-| 3D | TRELLIS.2, Hunyuan3D-2mini and 2.1 (its paint alone too), UniRig, RigNet, AnimateAnyMesh | one card each |
+| 3D | TRELLIS.2, Hunyuan3D-2mini and 2.1 (its paint alone too), UniRig, SkinTokens, RigNet, AnimateAnyMesh, UniMate | one card each |
 | listening | `whisper` (large-v3-turbo) | one card |
 | upscale | `realesrgan`, `waifu2x` (their ncnn graphs) | one card |
 | vectors | `starvector` (StarVector-1B im2svg) | one card |

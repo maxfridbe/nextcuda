@@ -3,17 +3,22 @@
 # glibc 2.41 the GPU host (Debian 13) has. `./build.sh` -> dist/nextcuda plus what it needs beside it.
 #   TOOLCHAIN_IMAGE   the image (default localhost/nextcuda-toolchain: Rust on debian:trixie; made from
 #                     tooling/Containerfile when it is missing)
+#   NS_LIB_DIST       a directory (under this one: the container sees it at /build) of built kernel libraries to embed
+#                     in the binary (crates/sys/build.rs; tooling/deploy.sh with EMBED=1 sets it); default dist/
 set -euo pipefail
 cd "$(dirname "$0")"
 IMAGE="${TOOLCHAIN_IMAGE:-localhost/nextcuda-toolchain}"
 TOOL="${CONTAINER_TOOL:-$(command -v podman || command -v docker)}"
 mkdir -p dist
+# the web front ends first (node is the build's only use of it): the binary embeds dist/wfe (glue/serve/build.rs)
+./wfe/build.sh >/dev/null
 "$TOOL" image exists "$IMAGE" 2>/dev/null || "$TOOL" build -q -t "$IMAGE" -f tooling/Containerfile tooling >/dev/null
-"$TOOL" run --rm -v "$PWD":/build:Z -w /build -e CARGO_TARGET_DIR=/build/target-trixie "$IMAGE" \
+# the libraries to embed, by value: a bare `-e NS_LIB_DIST` reached the container empty
+LIBDIST=()
+[ -z "${NS_LIB_DIST:-}" ] || LIBDIST=(-e "NS_LIB_DIST=$NS_LIB_DIST")
+"$TOOL" run --rm -v "$PWD":/build:Z -w /build -e CARGO_TARGET_DIR=/build/target-trixie "${LIBDIST[@]}" "$IMAGE" \
     cargo build --release -p nextcuda
 install -m 0755 target-trixie/release/nextcuda dist/nextcuda
-# the web front ends (node is the build's only use of it)
-./wfe/build.sh >/dev/null
 # what the binary finds beside itself: the python worker, the model cards, the docs it serves
 rm -rf dist/python dist/model-cards
 mkdir -p dist/python

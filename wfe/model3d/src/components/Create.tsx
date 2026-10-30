@@ -1,7 +1,7 @@
 /** What to make: pictures of an object (one, or several views for a multi-view model) and the settings - or, for a
  *  rigging or animating model, the mesh and the motion. */
 import { jsx } from "../jsx.js";
-import { addPictures, cancel, chooseMesh, go } from "../actions.js";
+import { addPictures, cancel, chooseMesh, go, takesSteps } from "../actions.js";
 import { render, saveForm, state } from "../state.js";
 import { SIDES } from "../util.js";
 
@@ -53,13 +53,13 @@ function Mesh() {
   const ab = state.info?.abilities;
   return (
     <div>
-      <div class="lab">the mesh <span class="hint">GLB or OBJ, or one made here</span></div>
+      <div class="lab">the mesh <span class="hint">{ab?.skeletal ? "a rigged GLB (rig it first: UniRig, SkinTokens, RigNet), or one rigged here" : "GLB or OBJ, or one made here"}</span></div>
       <div class="row">
         <input attrs={{ type: "file", accept: ".glb,.obj,model/gltf-binary" }}
                on={{ change: (e: Event) => { const fl = (e.target as HTMLInputElement).files; if (fl?.[0]) void chooseMesh(fl[0]); } }} />
         <select class="sel" on={{ change: (e: Event) => { f.file = (e.target as HTMLSelectElement).value; if (f.file) { f.mesh = ""; f.meshName = ""; } render(); } }}>
           <option attrs={{ value: "" }}>…or one made here</option>
-          {state.history.filter((m) => !m.rigged && !m.animated).map((m) => {
+          {state.history.filter((m) => ab?.skeletal ? !!m.rigged : !m.rigged && !m.animated).map((m) => {
             const name = m.url.split("/").pop() ?? "";
             return <option attrs={{ value: name }} props={{ selected: f.file === name }}>{name}</option>;
           })}
@@ -68,7 +68,7 @@ function Mesh() {
       </div>
       {ab?.animate
         ? <div><div class="lab">the motion</div>
-            <input attrs={{ type: "text", placeholder: "a dragon flapping its wings" }} props={{ value: f.prompt }}
+            <input attrs={{ type: "text", placeholder: ab.skeletal ? "An object walks forward." : "a dragon flapping its wings" }} props={{ value: f.prompt }}
                    on={{ input: (e: Event) => { f.prompt = (e.target as HTMLInputElement).value; saveForm(); } }} /></div>
         : null}
     </div>
@@ -107,8 +107,8 @@ export function Create() {
         {!make && ab?.animate ? num("frames", "frames", d?.frames) : null}
       </div>
       <div class="row">
-        {num("steps", "steps", d?.steps)}
-        {num("guidance", "cfg", d?.cfg, 0.1)}
+        {takesSteps() ? num("steps", "steps", d?.steps) : null}
+        {takesSteps() ? num("guidance", "cfg", d?.cfg, 0.1) : null}
         {make ? num("resolution", "resolution", d?.resolution) : null}
         {make && ab?.texture ? num("texture", "textureSize", d?.texture_size) : null}
       </div>

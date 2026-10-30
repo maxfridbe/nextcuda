@@ -4,6 +4,10 @@
 # until the new files are in place, and the kernels build only what changed.
 #   NEXTCUDA_HOST    the GPU host, when not given as the argument     SKIP_BUILD=1   use dist/ as it is
 #   SKIP_KERNELS=1   do not rebuild the CUDA libraries            RESTART=0      put the files there, leave the service
+#   EMBED=1          the kernel libraries inside the binary: built on the host first, brought back here
+#                    (target-trixie/embed-libs) and embedded by the build (NS_LIB_DIST); the host's files stay as they
+#                    are (NS_LIB_FROM_DISK=1 there opens them). Unset: the binary carries none and opens the host's.
+# The web front ends are inside the binary either way; dist/wfe is still copied (NS_WFE_FROM_DISK=1 reads it).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 HOST=${1:-${NEXTCUDA_HOST:-}}
@@ -11,10 +15,28 @@ HOST=${1:-${NEXTCUDA_HOST:-}}
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST")
 RSYNC=(rsync -a -e "ssh -o BatchMode=yes")
 quiet() { grep -v 'alacritty\|^\]11\|snapshot' || true; }
+# the kernel sources to the host and (unless SKIP_KERNELS) the libraries built there
+kernels() {
+  "${RSYNC[@]}" --delete kernels/ "$HOST":nextcuda/src/kernels/ 2>&1 | quiet
+  if [ -z "${SKIP_KERNELS:-}" ]; then
+    echo "==> $HOST: kernels"
+    "${SSH[@]}" 'export PATH=/usr/local/cuda/bin:$PATH; cd ~/nextcuda/src/kernels && OUT=$HOME/nextcuda/dist OBJ=$HOME/nextcuda/src/obj ./build.sh 2>&1 | tail -8' 2>&1 | quiet
+  fi
+}
 
-[ -n "${SKIP_BUILD:-}" ] || ./build.sh
-echo "==> $HOST: files"
 "${SSH[@]}" 'mkdir -p ~/nextcuda/dist ~/nextcuda/src ~/.config/systemd/user' 2>&1 | quiet
+if [ -n "${EMBED:-}" ]; then
+  # the libraries first: the build embeds them (crates/sys/build.rs)
+  kernels
+  echo "==> $HOST: the kernel libraries, back here to embed"
+  rm -rf target-trixie/embed-libs && mkdir -p target-trixie/embed-libs
+  "${RSYNC[@]}" --include 'libnextcuda-*.so' --include 'libstable-diffusion.so' --exclude '*' "$HOST":nextcuda/dist/ target-trixie/embed-libs/ 2>&1 | quiet
+  ls target-trixie/embed-libs/libnextcuda-*.so >/dev/null 2>&1 || { echo "==> $HOST: no kernel libraries in ~/nextcuda/dist to embed" >&2; exit 1; }
+  [ -n "${SKIP_BUILD:-}" ] || NS_LIB_DIST=/build/target-trixie/embed-libs ./build.sh
+else
+  [ -n "${SKIP_BUILD:-}" ] || ./build.sh
+fi
+echo "==> $HOST: files"
 # the libraries in dist/ on the host are built there (nvcc): a copy of dist/ must not remove them
 "${RSYNC[@]}" --exclude 'lib*.so' dist/ "$HOST":nextcuda/dist/ 2>&1 | quiet
 # the program there is this one (a copy that failed - a full drive - once left the old one running, said nothing)
@@ -24,11 +46,7 @@ if [ "$(echo "$have" | head -1)" != "$want" ]; then
   echo "==> $HOST: the copy of dist/nextcuda did not arrive (the drive there: $(echo "$have" | tail -1)); nothing restarted" >&2
   exit 1
 fi
-"${RSYNC[@]}" --delete kernels/ "$HOST":nextcuda/src/kernels/ 2>&1 | quiet
-if [ -z "${SKIP_KERNELS:-}" ]; then
-  echo "==> $HOST: kernels"
-  "${SSH[@]}" 'export PATH=/usr/local/cuda/bin:$PATH; cd ~/nextcuda/src/kernels && OUT=$HOME/nextcuda/dist OBJ=$HOME/nextcuda/src/obj ./build.sh 2>&1 | tail -8' 2>&1 | quiet
-fi
+[ -n "${EMBED:-}" ] || kernels
 "${RSYNC[@]}" tooling/nextcuda.service "$HOST":.config/systemd/user/nextcuda.service 2>&1 | quiet
 [ "${RESTART:-1}" = 0 ] && { echo "==> files are there; the service is as it was"; exit 0; }
 echo "==> $HOST: service"

@@ -35,6 +35,7 @@ struct Api {
     linear_q: unsafe extern "C" fn(M, P, c_int, i64, i64, P, c_int, i64, *const f32, M, c_int, i64) -> c_int,
     int8_linear: unsafe extern "C" fn(M, P, c_int, i64, i64, *const i8, i64, *const f32, *const f32, M, c_int, c_int, i64) -> c_int,
     int8_prepare: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, c_int, *mut i8, *mut f32) -> c_int,
+    int8_product: unsafe extern "C" fn(M, P, c_int, i64, i64, *const i8, i64, c_int, *mut i32, *mut f32) -> c_int,
     dequant: unsafe extern "C" fn(M, P, c_int, i64, M, c_int) -> c_int,
     rms_norm_mod: unsafe extern "C" fn(M, P, c_int, i64, i64, *const f32, f32, *const i32, *const f32, *const f32, M, c_int) -> c_int,
     rms_rope: unsafe extern "C" fn(M, M, c_int, i64, i64, i64, i64, *const f32, f32, *const f32, c_int) -> c_int,
@@ -46,6 +47,7 @@ struct Api {
     attention_causal: unsafe extern "C" fn(M, P, P, P, c_int, i64, i64, i64, i64, i64, i64, M) -> c_int,
     attention_causal_rows: unsafe extern "C" fn(M, P, P, P, c_int, i64, i64, i64, i64, i64, i64, i64, M) -> c_int,
     attention_qk: unsafe extern "C" fn(M, P, i64, i64, P, P, i64, i64, c_int, i64, i64, M, c_int) -> c_int,
+    flash_attention: unsafe extern "C" fn(M, P, i64, i64, P, P, i64, i64, i64, i64, M) -> c_int,
     conv2d: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, i64, P, i64, i64, *const f32, M) -> c_int,
     attention: unsafe extern "C" fn(M, P, P, P, c_int, i64, i64, i64, i64, M, c_int) -> c_int,
     attention_batch: unsafe extern "C" fn(M, P, P, P, c_int, i64, i64, i64, i64, i64, M, c_int) -> c_int,
@@ -54,6 +56,7 @@ struct Api {
     snake: unsafe extern "C" fn(M, *const f32, i64, i64, i64, *const f32, *mut f32) -> c_int,
     scale: unsafe extern "C" fn(M, *mut f32, i64, f32) -> c_int,
     conv3d_ex: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, i64, P, i64, i64, i64, i64, i64, i64, i64, *const f32, M) -> c_int,
+    group_norm_silu: unsafe extern "C" fn(M, P, c_int, i64, i64, i64, i64, *const f32, *const f32, f32, *const f32, *const f32, M) -> c_int,
 }
 
 // SAFETY: function pointers into the library, which stays loaded for the process.
@@ -87,6 +90,7 @@ fn api() -> Result<&'static Api> {
             linear_q: sym!("nsd_linear_q"),
             int8_linear: sym!("nsd_int8_linear"),
             int8_prepare: sym!("nsd_int8_prepare"),
+            int8_product: sym!("nsd_int8_product"),
             dequant: sym!("nsd_dequant"),
             rms_norm_mod: sym!("nsd_rms_norm_mod"),
             rms_rope: sym!("nsd_rms_rope"),
@@ -98,6 +102,7 @@ fn api() -> Result<&'static Api> {
             attention_causal: sym!("nsd_attention_causal"),
             attention_causal_rows: sym!("nsd_attention_causal_rows"),
             attention_qk: sym!("nsd_attention_qk"),
+            flash_attention: sym!("nsd_flash_attention"),
             conv2d: sym!("nsd_conv2d"),
             conv3d_ex: sym!("nsd_conv3d_ex"),
             attention: sym!("nsd_attention"),
@@ -106,6 +111,7 @@ fn api() -> Result<&'static Api> {
             conv_transpose1d: sym!("nsd_conv_transpose1d"),
             snake: sym!("nsd_snake"),
             scale: sym!("nsd_scale"),
+            group_norm_silu: sym!("nsd_group_norm_silu"),
         })
     })
     .as_ref()
@@ -205,6 +211,16 @@ impl Nsd {
                                                group as c_int, ldo as i64) }, "int8 linear")
     }
 
+    /// `int8_linear` without its epilogue, for an engine that fuses its own: acc int32 [m, n] the int8 product (x's rows
+    /// quantized, rotated by H when `group` > 0), xs float32 [m] their scales; out = acc * xs[r] * wscale[c]. m a
+    /// multiple of 4
+    #[allow(clippy::too_many_arguments)]
+    pub fn int8_product(&self, x: P, x_dt: Dt, m: usize, k: usize, w: P, n: usize, group: usize, acc: M, xs: M) -> Result<()> {
+        // SAFETY: the caller's buffers hold the sizes named.
+        self.ok(unsafe { (self.k.int8_product)(self.ctx, x, x_dt as c_int, m as i64, k as i64, w.cast(), n as i64, group as c_int, acc.cast(), xs.cast()) },
+                "int8 product")
+    }
+
     /// Rows [row0, row0 + n) of a [_, K] matrix of GGUF type `qtype` as int8 rows (rotated by H when `group` > 0) with
     /// a scale each: q int8 [n, K], scale float32 [n]
     #[allow(clippy::too_many_arguments)]
@@ -293,6 +309,15 @@ impl Nsd {
                 "attention")
     }
 
+    /// Attention for head size 128 in one fused kernel (FlashAttention-2's scheme): `sq` query rows (stride `qs`) over
+    /// `skv` key / value rows (stride `kvs`), `hq` heads over `hkv`, half in and out, out [sq, hq * 128]
+    #[allow(clippy::too_many_arguments)]
+    pub fn flash_attention(&self, q: P, sq: usize, qs: usize, k: P, v: P, skv: usize, kvs: usize, hq: usize, hkv: usize, out: M) -> Result<()> {
+        // SAFETY: the caller's buffers hold the sizes named.
+        self.ok(unsafe { (self.k.flash_attention)(self.ctx, q, sq as i64, qs as i64, k, v, skv as i64, kvs as i64, hq as i64, hkv as i64, out) },
+                "flash attention")
+    }
+
     /// A k x k convolution of N channels-last frames, zero padded
     #[allow(clippy::too_many_arguments)]
     pub fn conv2d(&self, x: P, dt: Dt, n: usize, h: usize, w_: usize, ci: usize, w: P, co: usize, k: usize, bias: P, out: M) -> Result<()> {
@@ -348,6 +373,18 @@ impl Nsd {
     pub fn snake(&self, x: P, b: usize, c: usize, l: usize, alpha: P, out: M) -> Result<()> {
         // SAFETY: the caller's buffers hold the sizes named.
         self.ok(unsafe { (self.k.snake)(self.ctx, x.cast(), b as i64, c as i64, l as i64, alpha.cast(), out.cast()) }, "snake")
+    }
+
+    /// silu(group norm(x) * weight + bias), statistics per frame and group: x, out [F, N, C] in dt (F frames of N
+    /// pixels), G groups; weight, bias float32 [C] (or null); then * (1 + scale) + shift when they are given
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_silu(&self, x: P, dt: Dt, f: usize, n: usize, c: usize, g: usize, weight: P, bias: P, eps: f32, out: M) -> Result<()> {
+        // SAFETY: f x n x c values each way, weight and bias c floats (the caller's sizes)
+        let rc = unsafe {
+            (self.k.group_norm_silu)(self.ctx, x, dt as c_int, f as i64, n as i64, c as i64, g as i64, weight.cast(), bias.cast(), eps, std::ptr::null(),
+                                     std::ptr::null(), out)
+        };
+        self.ok(rc, "group_norm_silu")
     }
 
     /// x *= s, float32

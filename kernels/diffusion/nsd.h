@@ -59,6 +59,10 @@ int nsd_linear_q(void* ctx, const void* x, int dt, int64_t M, int64_t K, const v
  * out_dt, its rows `ldo` elements apart (0: N). group = 0: no rotation, else a power of 4, at most 256, dividing K. */
 int nsd_int8_linear(void* ctx, const void* x, int x_dt, int64_t M, int64_t K, const int8_t* w, int64_t N, const float* wscale,
                     const float* bias, void* out, int out_dt, int group, int64_t ldo);
+/* nsd_int8_linear without its epilogue, for an engine that fuses its own: acc int32 [M, N] = the int8 product (rows of
+ * x quantized to int8, rotated by H when `group` > 0), xs float32 [M] their scales; out = acc * xs[r] * wscale[n].
+ * M a multiple of 4; acc and xs the caller's. */
+int nsd_int8_product(void* ctx, const void* x, int x_dt, int64_t M, int64_t K, const int8_t* w, int64_t N, int group, int32_t* acc, float* xs);
 /* The weights for it from a matrix of any GGUF type (or half / float32 with qtype 1 / 0): rows [row0, row0 + n) of
  * src [N_total, K] are dequantized, rotated by H (along K, groups of `group`), and quantized per row into
  * q int8 [n, K] and scale float32 [n] (scale[r] = max|row| / 127, q = round(row / scale)). */
@@ -104,6 +108,10 @@ int nsd_attention_causal(void* ctx, const void* q, const void* k, const void* v,
                          int64_t D, int64_t qs, int64_t kvs, void* out);
 int nsd_attention_causal_rows(void* ctx, const void* q, const void* k, const void* v, int dt, int64_t row0, int64_t rows,
                               int64_t Hq, int64_t Hkv, int64_t D, int64_t qs, int64_t kvs, void* out);
+/* Attention for head size 128 in one fused kernel (nsd_flash.inc): Sq query rows (stride qs) over Skv key / value rows
+ * (stride kvs), Hq heads over Hkv, half in and out, no mask, out [Sq, Hq * 128]. Strides multiples of 8. */
+int nsd_flash_attention(void* ctx, const void* q, int64_t Sq, int64_t qs, const void* k, const void* v, int64_t Skv, int64_t kvs,
+                        int64_t Hq, int64_t Hkv, void* out);
 int nsd_attention_qk(void* ctx, const void* q, int64_t Sq, int64_t qs, const void* k, const void* v, int64_t Skv, int64_t kvs,
                      int dt, int64_t H, int64_t D, void* out, int out_dt);
 

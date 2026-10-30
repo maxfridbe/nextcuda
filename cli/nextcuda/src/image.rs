@@ -27,7 +27,7 @@ nextcuda image engines | selftest [--gpu N]";
 pub fn engines() -> Vec<nextcuda_image::ImageKind> {
     vec![nextcuda_image_qwenimage21::kind(), nextcuda_image_qwenimage21::kind_2512(), nextcuda_image_unlimitedocr::kind(), nextcuda_image_paddleocrvl::kind(),
          nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind(), nextcuda_image_upscale::kind(),
-         nextcuda_image_starvector::kind()]
+         nextcuda_image_starvector::kind(), nextcuda_image_mossimage::kind()]
 }
 
 /// `--gpu 0` or `--gpu 0,1` (an engine that splits over two cards takes the second too: olmOCR 2's vision tower)
@@ -518,8 +518,17 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         println!("worst relative error {worst:.2e}");
         return Ok(());
     }
+    if m["arch"].as_str() == Some(nextcuda_image_mossimage::ARCH) {
+        let gs = gpus(args)?;
+        let mut log = |s: String| eprintln!("{s}");
+        let e = nextcuda_image_mossimage::MossImage::load(&files, &gs, &[], &mut log).map_err(|e| e.0)?;
+        let st = opt(args, "--stages").unwrap_or("tokens,te,sched,dit,steps,vae");
+        let worst = nextcuda_image_mossimage::check::run(&e, dir, &st.split(',').collect::<Vec<_>>(), &mut log).map_err(|e| e.0)?;
+        println!("lowest cosine {worst:.6}");
+        return Ok(());
+    }
     let _ = cfg;
-    Err(format!("check knows the OCR engines and Ming-Image here ({}, {}, {}); Qwen-Image's stage checks are nextsycl's (docs/PHASES.md)",
+    Err(format!("check knows the OCR engines, Ming-Image and MOSS-Image here ({}, {}, {}); Qwen-Image's stage checks are nextsycl's (docs/PHASES.md)",
                 nextcuda_image_unlimitedocr::ARCHS.join("/"), nextcuda_image_paddleocrvl::ARCHS.join("/"), nextcuda_image_olmocr2::ARCHS.join("/")))
 }
 
@@ -578,11 +587,9 @@ fn run(cfg: &Config, args: &[String], detach: bool) -> Result<(), String> {
     let ce = Ce::new(cfg)?;
     ce.need_image()?;
     for f in ["nextcuda", "libnextcuda-image.so"] {
-        if !cfg.dist.join(f).exists() {
-            return Err(format!("{}: not built yet (./build.sh)", cfg.dist.join(f).display()));
-        }
+        crate::service::need_dist(cfg, f)?;
     }
-    if args.iter().any(|a| a == "--wfe") && !cfg.dist.join("wfe/image/index.html").exists() {
+    if args.iter().any(|a| a == "--wfe") && !nextcuda_serve::wfe::exists(&cfg.dist.join("wfe"), "image/index.html") {
         return Err(format!("{}: the web front end is not built yet (./build.sh wfe)", cfg.dist.join("wfe").display()));
     }
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -675,6 +682,7 @@ fn serve_here(cfg: &Config, m: &Value, files: ModelFiles, args: &[String], out: 
     let addr = format!("{}:{}", opt(args, "--host").unwrap_or("127.0.0.1"), opt(args, "--port").unwrap_or("8086"));
     let mut srv = ImageServer::new(m["id"].as_str().unwrap_or("image").to_string(), gpu, loader, first.merge_loras, known, Some(out), wfe, cors)?;
     srv.idle = crate::served::idle_exit(args)?;
+    srv.license = nextcuda_serve::page::licence_of(m);
     std::sync::Arc::new(srv).run(&addr)
 }
 

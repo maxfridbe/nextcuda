@@ -46,6 +46,17 @@ pub fn log_path(cfg: &Config, name: &str) -> PathBuf {
     file(cfg, name, "log")
 }
 
+/// The last line in the server's log (its last 4 KiB read)
+pub fn last_line(cfg: &Config, name: &str) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(log_path(cfg, name)).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(4096))).ok()?;
+    let mut b = Vec::new();
+    f.read_to_end(&mut b).ok()?;
+    String::from_utf8_lossy(&b).lines().rev().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
+}
+
 /// `exe args` as a detached process named `name`, listening on `port`; its output goes to the log. `foreground`: run
 /// it here and return when it ends.
 pub fn launch(cfg: &Config, name: &str, port: &str, exe: &std::path::Path, args: &[String], foreground: bool) -> Result<(), String> {

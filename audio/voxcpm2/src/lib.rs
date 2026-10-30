@@ -1,6 +1,8 @@
 //! VoxCPM2 on Intel Arc (SYCL): tokenizer-free speech in 30 languages at 48 kHz. One model does it all: plain text
 //! (the model picks a voice), a voice designed by a description in parentheses ahead of the text, a voice cloned
 //! from a recording (its timbre; with the recording's transcript also its delivery, continued).
+//! The parenthesised description also steers a cloned voice (VoxCPM2's controllable cloning: the recording as the reference, no
+//! continued prompt); `speech().direction` says so, and the card's `direction` has the front door route such a request here.
 //!
 //! ```text
 //!   text (+ a recording) -> the prompt (lib.rs): token rows, the recording's AudioVAE latents as patches of 4
@@ -362,7 +364,7 @@ impl AudioEngine for VoxCpm2 {
     }
     fn speech(&self) -> Option<Speech> {
         Some(Speech { voices: Vec::new(), languages: Vec::new(), instructions: true, design: true, clone: true, clone_needs_text: false,
-                      clone_takes_text: true, direction: false, events: Vec::new(), requires: None })
+                      clone_takes_text: true, direction: true, events: Vec::new(), requires: None, speakers: 0 })
     }
     fn options(&self) -> &'static [EngineOption] {
         OPTIONS

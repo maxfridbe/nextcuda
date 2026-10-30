@@ -3,12 +3,16 @@
 //!
 //! The library is opened at run time (`dlopen`), not linked: the Rust side builds anywhere without the CUDA
 //! toolchain, and the kernels rebuild without relinking the runtime. Nothing here is safe to call directly;
-//! `nextcuda-core` wraps it.
+//! `nextcuda-core` wraps it. A binary built with the libraries beside it (build.rs) carries them and opens them from
+//! anonymous memory files; NS_LIB_FROM_DISK=1 or NEXTCUDA_LIB opens the files instead.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 
+include!(concat!(env!("OUT_DIR"), "/libs_embedded.rs"));
+
 extern "C" {
+    fn memfd_create(name: *const c_char, flags: u32) -> c_int;
     fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     fn dlerror() -> *const c_char;
@@ -23,14 +27,17 @@ pub type Gpu = *mut c_void;
 pub struct Api {
     /// the library's handle: an engine binds its own ABI from it (`symbol`)
     handle: *mut c_void,
-    /// where it was opened from: the silos are in `silo/` beside it
+    /// where it was opened from (a name, for a library out of the binary)
     path: PathBuf,
+    /// the directory the silos are in (`silo/`): beside the library, or beside the executable for one out of the binary
+    dir: PathBuf,
     pub last_error: unsafe extern "C" fn() -> *const c_char,
     pub version: unsafe extern "C" fn() -> *const c_char,
     pub gpu_count: unsafe extern "C" fn() -> c_int,
     pub gpu_name: unsafe extern "C" fn(c_int, *mut c_char, usize) -> c_int,
     pub gpu_pci: unsafe extern "C" fn(c_int, *mut c_char, usize) -> c_int,
     pub gpu_units: unsafe extern "C" fn(c_int, *mut c_int, *mut c_int) -> c_int,
+    pub gpu_cc: unsafe extern "C" fn(c_int, *mut c_int) -> c_int,
     pub gpu_open: unsafe extern "C" fn(c_int, *mut Gpu) -> c_int,
     pub gpu_close: unsafe extern "C" fn(Gpu),
     pub gpu_queue: unsafe extern "C" fn(Gpu) -> *mut c_void,
@@ -62,6 +69,77 @@ pub struct Api {
 unsafe impl Send for Api {}
 unsafe impl Sync for Api {}
 
+/// NS_LIB_FROM_DISK=1: the kernel libraries from files, not from the binary (rebuild a kernel without relinking)
+fn from_disk() -> bool {
+    std::env::var("NS_LIB_FROM_DISK").is_ok_and(|v| v == "1")
+}
+
+/// A library of the binary by file name
+fn embedded(name: &str) -> Option<&'static [u8]> {
+    LIBS.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
+}
+
+/// The libraries a kind's library needs by name, opened before it: the image library links stable-diffusion.cpp's
+/// (found through its RUNPATH $ORIGIN beside a file; out of the binary, by its soname once it is open)
+fn deps(name: &str) -> &'static [&'static str] {
+    match name {
+        "libnextcuda-image.so" => &["libstable-diffusion.so"],
+        _ => &[],
+    }
+}
+
+/// An embedded library as a file the loader can open: an anonymous memory file (the descriptor stays open), its
+/// /proc/self/fd path. Once a name.
+fn materialize(name: &str) -> Result<PathBuf, String> {
+    use std::io::Write;
+    use std::os::fd::FromRawFd;
+    static MADE: std::sync::Mutex<Vec<(String, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+    let mut made = MADE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((_, p)) = made.iter().find(|(n, _)| n == name) {
+        return Ok(p.clone());
+    }
+    let bytes = embedded(name).ok_or_else(|| format!("{name}: not in this binary"))?;
+    let c = CString::new(name).map_err(|e| e.to_string())?;
+    // SAFETY: memfd_create with a valid C string; the descriptor is checked.
+    let fd = unsafe { memfd_create(c.as_ptr(), 0) };
+    if fd < 0 {
+        return Err(format!("{name}: memfd_create: {}", std::io::Error::last_os_error()));
+    }
+    // SAFETY: a descriptor just made and owned here.
+    let mut f = unsafe { std::fs::File::from_raw_fd(fd) };
+    f.write_all(bytes).map_err(|e| format!("{name}: {e}"))?;
+    std::mem::forget(f);
+    let p = PathBuf::from(format!("/proc/self/fd/{fd}"));
+    made.push((name.to_string(), p.clone()));
+    Ok(p)
+}
+
+/// Whether this binary carries the kind's library (and NS_LIB_FROM_DISK=1 does not turn it off): a check for the file
+/// beside the executable is then moot
+pub fn has_embedded(kind: &str) -> bool {
+    !from_disk() && embedded(&format!("libnextcuda-{kind}.so")).is_some()
+}
+
+/// The kind's library out of the binary as a path (`/proc/self/fd/N`, which a child process that inherits the
+/// descriptor opens too: `ldd` can check it), None when this binary has none or NS_LIB_FROM_DISK=1
+pub fn embedded_path(kind: &str) -> Option<PathBuf> {
+    if !has_embedded(kind) {
+        return None;
+    }
+    materialize(&format!("libnextcuda-{kind}.so")).ok()
+}
+
+/// dlopen a path globally (its symbols and its soname are then found by the libraries opened after it)
+fn open(path: &Path) -> Result<(), String> {
+    let c = CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    // SAFETY: dlopen with a valid C string; the handle is checked.
+    let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
+    if h.is_null() {
+        return Err(format!("{}: {}", path.display(), dl_error()));
+    }
+    Ok(())
+}
+
 fn dl_error() -> String {
     // SAFETY: dlerror returns null or a C string valid until the next dl* call on this thread.
     let p = unsafe { dlerror() };
@@ -75,9 +153,15 @@ fn dl_error() -> String {
 
 impl Api {
     /// A kind's kernel library (`libnextcuda-<kind>.so`: "llm", "image", "video"): `NEXTCUDA_LIB` when set, else the
-    /// library beside the executable, else in `dist/` of the working directory.
+    /// copy inside the binary (unless NS_LIB_FROM_DISK=1), else the library beside the executable, else in `dist/` of
+    /// the working directory.
     pub fn load(kind: &str) -> Result<Api, String> {
         let name = format!("libnextcuda-{kind}.so");
+        if std::env::var_os("NEXTCUDA_LIB").is_none() && !from_disk() {
+            if let Some(api) = Api::load_embedded(&name)? {
+                return Ok(api);
+            }
+        }
         let p = std::env::var_os("NEXTCUDA_LIB").map(PathBuf::from).or_else(|| {
             let exe = std::env::current_exe().ok()?;
             let beside = exe.parent()?.join(&name);
@@ -86,8 +170,30 @@ impl Api {
         Api::load_from(&p.unwrap_or_else(|| PathBuf::from("dist").join(&name)))
     }
 
-    #[allow(clippy::missing_transmute_annotations)] // the target type is each field's, from ns.h
+    /// The kind's library out of the binary (None when this binary has none): the libraries it needs by name first
+    /// (`deps`), each as an anonymous memory file opened by its /proc/self/fd path
+    fn load_embedded(name: &str) -> Result<Option<Api>, String> {
+        if embedded(name).is_none() {
+            return Ok(None);
+        }
+        for d in deps(name) {
+            if embedded(d).is_some() {
+                open(&materialize(d)?)?;
+            }
+        }
+        let p = materialize(name)?;
+        let dir = std::env::var_os("NS_SILO_DIR").map(PathBuf::from).and_then(|d| d.parent().map(Path::to_path_buf))
+            .or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf))).unwrap_or_else(|| PathBuf::from("dist"));
+        Api::load_at(&p, PathBuf::from(format!("{name} (in the binary)")), dir).map(Some)
+    }
+
     pub fn load_from(path: &Path) -> Result<Api, String> {
+        let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        Api::load_at(path, path.to_path_buf(), dir)
+    }
+
+    #[allow(clippy::missing_transmute_annotations)] // the target type is each field's, from ns.h
+    fn load_at(path: &Path, shown: PathBuf, dir: PathBuf) -> Result<Api, String> {
         let c = CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
         // SAFETY: dlopen with a valid C string; the handle is checked.
         let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
@@ -108,13 +214,15 @@ impl Api {
         }
         Ok(Api {
             handle: h,
-            path: path.to_path_buf(),
+            path: shown,
+            dir,
             last_error: sym!("ns_last_error"),
             version: sym!("ns_version"),
             gpu_count: sym!("ns_gpu_count"),
             gpu_name: sym!("ns_gpu_name"),
             gpu_pci: sym!("ns_gpu_pci"),
             gpu_units: sym!("ns_gpu_units"),
+            gpu_cc: sym!("ns_gpu_cc"),
             gpu_open: sym!("ns_gpu_open"),
             gpu_close: sym!("ns_gpu_close"),
             gpu_queue: sym!("ns_gpu_queue"),
@@ -143,6 +251,11 @@ impl Api {
         })
     }
 
+    /// Where the library was opened from (a name and "in the binary" for an embedded one)
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// A symbol of the library by name (null when it has none): an engine's own ABI (`kernels/<kind>/<arch>`) is
     /// bound by its crate, not here.
     pub fn symbol(&self, name: &str) -> *mut c_void {
@@ -151,10 +264,18 @@ impl Api {
         unsafe { dlsym(self.handle, n.as_ptr()) }
     }
 
-    /// A model's silo (`<the library's directory>/silo/libnextcuda-<arch>.so`, or `NS_SILO_DIR`): kernels tuned for
-    /// that one model, built from `kernels/<kind>/<arch>/silo/`, opened on demand. None when there is none or
-    /// `NS_SILO=0` (the shared kernels then); an error when the file is there but does not open.
+    /// A model's silo (`<the library's directory>/silo/libnextcuda-<arch>.so` - beside the executable for a library
+    /// out of the binary -, or `NS_SILO_DIR`): kernels tuned for that one model, built from
+    /// `kernels/<kind>/<arch>/silo/`, opened on demand. None when there is none or `NS_SILO=0` (the shared kernels
+    /// then); an error when the file is there but does not open.
     pub fn silo(&self, arch: &str) -> Result<Option<Silo>, String> {
+        self.silo_for(arch, 0)
+    }
+
+    /// A model's silo for a card of compute capability `cc` (86, 120): `libnextcuda-<arch>.sm<cc>.so` when the silo
+    /// is built a card at a time (its `per-card` file: kernels tuned to each card, an FP8 path on the one that has
+    /// it), else the one built for every card; `cc` 0: the latter.
+    pub fn silo_for(&self, arch: &str, cc: u32) -> Result<Option<Silo>, String> {
         if std::env::var("NS_SILO").is_ok_and(|v| v == "0") {
             return Ok(None);
         }
@@ -163,8 +284,9 @@ impl Api {
         let name = std::env::var("NS_SILO_NAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| arch.to_string());
         let required = std::env::var("NS_SILO_REQUIRED").is_ok_and(|v| v == "1");
         let dir = std::env::var_os("NS_SILO_DIR").map(PathBuf::from)
-                                                  .unwrap_or_else(|| self.path.parent().unwrap_or(Path::new(".")).join("silo"));
-        let path = dir.join(format!("libnextcuda-{name}.so"));
+                                                  .unwrap_or_else(|| self.dir.join("silo"));
+        let card = dir.join(format!("libnextcuda-{name}.sm{cc}.so"));
+        let path = if cc > 0 && card.exists() { card } else { dir.join(format!("libnextcuda-{name}.so")) };
         if !path.exists() {
             if required {
                 return Err(format!("{}: the model's silo is not built (NS_SILO_REQUIRED=1; kernels/build.sh builds the silos)", path.display()));

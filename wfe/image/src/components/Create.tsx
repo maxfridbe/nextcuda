@@ -1,10 +1,10 @@
 /** The request, every option the engine has: prompt, negative, size (aspect presets), steps, pictures, seed, the
  *  sampler and schedule, guidance, shift, transparency, LoRAs. Each field writes straight into state.form. */
 import { jsx } from "../jsx.js";
-import { addPicture, generate, movePicture, randomSeed, removePicture, setAspect } from "../actions.js";
+import { addPicture, capSide, generate, movePicture, randomSeed, removePicture, setAspect, setBudget, sizeFits, sizeNow } from "../actions.js";
 import { panelOpen, render, saveForm, state, togglePanel } from "../state.js";
 import type { Form } from "../types.js";
-import { ASPECTS, clamp, r16 } from "../util.js";
+import { ASPECTS, clamp, fitSize, pixelLabel, ratioOf, snap } from "../util.js";
 
 type Key = keyof Form;
 
@@ -15,7 +15,7 @@ function set<K extends Key>(k: K, v: Form[K]): void {
   render();
 }
 
-const num = (k: Key, opts: { min?: number; max?: number; step?: number; placeholder?: string; nullable?: boolean; snap16?: boolean }) => {
+const num = (k: Key, opts: { min?: number; max?: number; step?: number; placeholder?: string; nullable?: boolean; snap?: boolean }) => {
   const v = state.form[k] as number | null;
   return (
     <input
@@ -28,13 +28,43 @@ const num = (k: Key, opts: { min?: number; max?: number; step?: number; placehol
           let x = Number(t);
           if (!Number.isFinite(x)) return render();
           if (opts.min !== undefined || opts.max !== undefined) x = clamp(x, opts.min ?? -Infinity, opts.max ?? Infinity);
-          if (opts.snap16) x = r16(x);
+          if (opts.snap) x = snap(x, state.info?.grid ?? 16, state.info?.min_side ?? 256);
+          // a side that would take the picture past the engine's pixel budget is held to it
+          if (k === "width") x = capSide(x, state.form.height);
+          if (k === "height") x = capSide(x, state.form.width);
           set(k, x as Form[typeof k]);
         },
       }}
     />
   );
 };
+
+/** An engine that gives its sizes (MOSS-Image: OpenMOSS's presets): its ratios, and the pixel budgets - a click
+ *  computes the sides (the budget's root at the ratio, each to the grid); the ones outside its range are not offered. */
+function Presets(props: { ratios: string[]; pixels: number[] }) {
+  const f = state.form;
+  const g = state.info?.grid ?? 16;
+  const now = sizeNow();
+  return (
+    <div>
+      <div class="chips">
+        {props.ratios.filter((r) => { const [w, h] = fitSize(now.pixels, ratioOf(r), g); return sizeFits(w, h); }).map((r) => (
+          <button type="button" class={{ chip: true, on: Math.abs(ratioOf(r) - f.width / f.height) < 0.02 }}
+                  on={{ click: () => setBudget(null, ratioOf(r)) }}>{r}</button>
+        ))}
+      </div>
+      <div class="chips">
+        {props.pixels.filter((p) => { const [w, h] = fitSize(p, now.ratio, g); return sizeFits(w, h); }).map((p) => {
+          const [w, h] = fitSize(p, now.ratio, g);
+          return (
+            <button type="button" class={{ chip: true, on: w === f.width && h === f.height }}
+                    attrs={{ title: `${w} × ${h}` }} on={{ click: () => setBudget(p, null) }}>{pixelLabel(p)}</button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function Aspects() {
   const f = state.form;
@@ -53,7 +83,7 @@ function Aspects() {
 
 function Loras() {
   const list = state.info?.loras ?? [];
-  if (!list.length) return <div class="hint">No LoRAs for this model are registered (nextsycl models search --kind lora).</div>;
+  if (!list.length) return <div class="hint">No LoRAs for this model are registered (nextcuda models search --kind lora).</div>;
   return (
     <div>
       {list.map((l) => {
@@ -67,8 +97,9 @@ function Loras() {
               on={{ change: () => {
                 if (on) delete state.form.loras[l.id];
                 else state.form.loras[l.id] = 1;
-                // another set may bring its own steps (a few-step LoRA): the model's then
+                // another set may bring its own steps and guidance (a few-step LoRA): the model's then
                 state.form.steps = null;
+                state.form.cfg = null;
                 saveForm(); render();
               } }}
             />
@@ -85,7 +116,7 @@ function Loras() {
           </div>
         );
       })}
-      <div class="hint">A change of LoRAs reloads the model with them merged (a few seconds); a few-step LoRA brings its own steps.</div>
+      <div class="hint">A change of LoRAs reloads the model with them merged (a few seconds); a few-step LoRA brings its own steps and guidance.</div>
     </div>
   );
 }
@@ -155,33 +186,54 @@ export function Create() {
   const f = state.form;
   const info = state.info;
   const d = info?.defaults;
-  const ready = !!info && !info.loading;
-  const select = (k: "sampler" | "schedule", list: string[]) => (
-    <select on={{ change: (e: Event) => set(k, (e.target as HTMLSelectElement).value) }}>
-      {list.map((x) => <option attrs={{ value: x }} props={{ selected: x === f[k] }}>{x}</option>)}
-    </select>
-  );
+  // a model that enlarges or vectorizes pictures has no prompt to draw from
+  const other = !!info && !info.loading && (!!info.vectorize || (info.upscale ?? []).length > 0);
+  const ready = !!info && !info.loading && !other;
+  if (other) return <div class="create"><div class="hint">{info?.vectorize ? "This model writes pictures as SVG; it does not draw from a prompt." : "This model enlarges pictures; it does not draw from a prompt."}</div></div>;
+  const editing = state.pictures.length > 0;
+  const followsPictures = editing && state.sizeFromPictures;
+  const grid = info?.grid ?? 16;
+  const lo = info?.min_side ?? 256;
+  const hi = info?.max_side ?? 4096;
+  const guided = info?.guidance !== false;
+  const select = (k: "sampler" | "schedule", list: string[]) => list.length > 1
+    ? <select on={{ change: (e: Event) => set(k, (e.target as HTMLSelectElement).value) }}>
+        {list.map((x) => <option attrs={{ value: x }} props={{ selected: x === f[k] }}>{x}</option>)}
+      </select>
+    // the engine runs the one: nothing to choose
+    : <span class="hint">{list[0] ?? "—"} (the only one)</span>;
+  const pictures = info?.edits
+    ? <Section id="pictures" title={`Pictures to edit (${editing ? `${state.pictures.length}: an edit` : "none: a new picture"})`}>
+        <Pictures />
+      </Section>
+    : null;
   return (
     <div class="create">
+      {pictures}
       <textarea
-        attrs={{ placeholder: "a red fox in fresh snow, morning light, photograph" }}
+        attrs={{ placeholder: editing ? "what to change: put the hat from picture 2 on the fox in picture 1" : "a red fox in fresh snow, morning light, photograph" }}
         props={{ value: f.prompt }}
         on={{
           input: (e: Event) => { state.form.prompt = (e.target as HTMLTextAreaElement).value; saveForm(); render(); },
           keydown: (e: KeyboardEvent) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void generate(); },
         }}
       />
-      {info?.guidance === false ? null : <div class="row">
+      {guided && info?.negative !== false ? <div class="row">
         <label class="wide">negative prompt
-          <input attrs={{ type: "text", placeholder: d && d.cfg <= 1 ? "needs guidance (cfg above 1)" : "" }} props={{ value: f.negative }}
+          <input attrs={{ type: "text", placeholder: d && d.cfg <= 1 ? "used when guidance (cfg) is above 1" : "" }} props={{ value: f.negative }}
                  on={{ change: (e: Event) => set("negative", (e.target as HTMLInputElement).value) }} />
         </label>
-      </div>}
-      <div class="row"><label>size</label><Aspects /></div>
+      </div> : null}
+      {followsPictures
+        ? <div class="row"><label>size</label><span class="hint">follows the pictures (untick "size from the pictures" to set it)</span></div>
+        : <div class="row"><label>size</label>{info?.sizes ? <Presets ratios={info.sizes.ratios} pixels={info.sizes.pixels} /> : <Aspects />}</div>}
       <div class="row">
-        <label>width {num("width", { min: 256, max: 4096, step: 16, snap16: true })}</label>
-        <label>height {num("height", { min: 256, max: 4096, step: 16, snap16: true })}</label>
-        <label>steps {num("steps", { min: 1, max: 200, placeholder: d ? String(d.steps) : "", nullable: true })}</label>
+        {followsPictures ? null : <label>width {num("width", { min: lo, max: hi, step: grid, snap: true })}</label>}
+        {followsPictures ? null : <label>height {num("height", { min: lo, max: hi, step: grid, snap: true })}</label>}
+        {followsPictures || !info?.max_pixels ? null : <span class="hint">{`up to ${Math.round(info.max_pixels / 1048576)} megapixels a picture`}</span>}
+        {info?.steps_free === false
+          ? <label>steps <span class="hint">{d ? `${d.steps} (this entry's own)` : "its own"}</span></label>
+          : <label>steps {num("steps", { min: 1, max: 200, placeholder: d ? String(d.steps) : "", nullable: true })}</label>}
         <label>pictures {num("n", { min: 1, max: 8 })}</label>
         <label>seed
           <span class="seed">
@@ -198,15 +250,15 @@ export function Create() {
       <Section id="sampling" title={`Sampling (${f.sampler || "—"} · ${f.schedule || "—"})`}>
         <div class="row">
           <label>sampler {select("sampler", info?.samplers ?? [])}</label>
-          <label attrs={{ title: "karras, exponential and polyexponential crowd the steps at the clean end: flow models want shift, simple, beta or normal" }}>
+          <label attrs={{ title: (info?.schedules ?? []).length > 1 ? "karras, exponential and polyexponential crowd the steps at the clean end: flow models want shift, simple, beta or normal" : "" }}>
             schedule {select("schedule", info?.schedules ?? [])}</label>
-          {info?.guidance === false
-            ? null
-            : <label>guidance (cfg) {num("cfg", { min: 1, max: 20, step: 0.1, placeholder: d ? String(d.cfg) : "", nullable: true })}</label>}
-          <label>shift {num("shift", { min: 0, max: 20, step: 0.1, placeholder: "model's", nullable: true })}</label>
-          <label class="inline">
+          {guided
+            ? <label>guidance (cfg) {num("cfg", { min: 1, max: 20, step: 0.1, placeholder: d ? String(d.cfg) : "", nullable: true })}</label>
+            : <label>guidance (cfg) <span class="hint">{d ? `${d.cfg} (this entry runs unguided)` : "off"}</span></label>}
+          {info?.shift === false || (info?.shift_schedules ?? [f.schedule]).indexOf(f.schedule) < 0 ? null : <label>shift {num("shift", { min: 0, max: 20, step: 0.1, placeholder: d && d.shift > 0 ? String(d.shift) : "model's", nullable: true })}</label>}
+          {info?.transparent === false ? null : <label class="inline">
             <input attrs={{ type: "checkbox" }} props={{ checked: f.rgba }} on={{ change: () => set("rgba", !f.rgba) }} /> transparent (RGBA)
-          </label>
+          </label>}
         </div>
         {(info?.options ?? []).length
           ? <div class="row">
@@ -225,17 +277,14 @@ export function Create() {
             </div>
           : null}
       </Section>
-      {info?.edits
-        ? <Section id="pictures" title={`Pictures (${state.pictures.length ? `${state.pictures.length}: an edit` : "none: a new picture"})`}>
-            <Pictures />
-          </Section>
-        : null}
-      <Section id="loras" title={`LoRAs (${Object.keys(f.loras).length} on)`}>
-        <Loras />
-      </Section>
+      {info?.takes_loras === false
+        ? null
+        : <Section id="loras" title={`LoRAs (${Object.keys(f.loras).length} on)`}>
+            <Loras />
+          </Section>}
       <div class="row">
         <button type="button" attrs={{ id: "go", disabled: !ready || state.busy || !f.prompt.trim() }} on={{ click: () => void generate() }}>
-          <span class="i" props={{ innerHTML: "&#xf0d0;" }} />{state.busy ? "Generating…" : state.pictures.length ? "Edit" : "Generate"}
+          <span class="i" props={{ innerHTML: "&#xf0d0;" }} />{state.busy ? "Generating…" : editing ? "Edit" : "Generate"}
         </button>
       </div>
     </div>

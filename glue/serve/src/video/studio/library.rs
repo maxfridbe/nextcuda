@@ -6,16 +6,16 @@ use std::process::Command;
 
 use serde_json::{json, Map, Value};
 
-use super::queue::{dialogue_of, label_number, label_prefix, project_of, s, Queue};
+use super::queue::{clip_number, dialogue_of, label_prefix, project_of, s, Queue};
 use super::runner::snap_seconds;
 use super::{now, pyround, RpcError, Studio};
 
 /// The keys a scene file may lift into its defaults.
-const SCENE_DEFAULTABLE: [&str; 34] = [
+const SCENE_DEFAULTABLE: [&str; 36] = [
     "steps", "seed", "te", "engine", "width", "height", "chain_mode", "upscale", "first_frame", "last_frame", "exposure_ref", "first_audio",
     "first_audio_s", "cond_noise_aug", "loras", "ref_images", "ref_audios", "ref_image_size", "guide_clip", "shift_video", "shift_audio", "source",
     "regen", "sampler", "schedule", "ref_videos", "ref_video_sound", "te_pictures", "control_video", "control_mask", "control_source",
-    "control_strength", "control_start", "control_end",
+    "control_strength", "control_start", "control_end", "soundtrack", "soundtrack_start",
 ];
 
 pub const CANVASES: [(i64, i64, &str, &str); 10] = [
@@ -179,7 +179,7 @@ impl Studio {
             if !belongs(j) || !self.out.join(format!("{stem}.mp4")).exists() {
                 continue;
             }
-            let n = label_number(&s(j, "label")).unwrap_or(0);
+            let n = clip_number(j);
             if !seen.insert(n) {
                 continue;
             }
@@ -191,7 +191,7 @@ impl Studio {
             if project_of(it) != project {
                 continue;
             }
-            let n = label_number(&s(it, "label")).unwrap_or(0);
+            let n = clip_number(it);
             if !seen.insert(n) {
                 continue;
             }
@@ -334,8 +334,12 @@ impl Studio {
             .iter()
             .filter_map(|e| {
                 let path = e["path"].as_str()?;
-                Some(json!({"quant": super::queue::engine_quant(e["name"].as_str().unwrap_or("")), "file": path.rsplit('/').next().unwrap_or(path), "path": path,
-                            "gib": (e["gib"].as_f64().unwrap_or(0.0) * 100.0).round() / 100.0, "ready": true, "default": e["default"]}))
+                let mut row = json!({"quant": super::queue::engine_quant(e["name"].as_str().unwrap_or("")), "file": path.rsplit('/').next().unwrap_or(path), "path": path,
+                                     "gib": (e["gib"].as_f64().unwrap_or(0.0) * 100.0).round() / 100.0, "ready": true, "default": e["default"]});
+                if let Some(l) = super::queue::licence_of(e["name"].as_str().unwrap_or("")) {
+                    row.as_object_mut()?.extend(l.as_object().cloned().unwrap_or_default());
+                }
+                Some(row)
             })
             .collect();
         if listed.is_empty() {

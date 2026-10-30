@@ -27,10 +27,116 @@ mod disks;
 mod jobs;
 mod life;
 mod maint;
+pub(crate) mod methods;
 mod precheck;
 mod pulls;
 mod spec;
 pub mod registry;
+mod routes;
+
+/// What the #[rpc] methods make (methods.rs, rpcgen), as (path under the repo, content): the typed client of the
+/// front door's methods for the wfe pages. `nextcuda gen-api` writes them; a test fails when the committed ones
+/// are stale.
+pub fn api_files() -> Vec<(&'static str, String)> {
+    let ts = rpcgen::typescript("nextcuda's front door (POST /rpc/<kind>.<method>; the answer in {ok, result | error})", &methods::infos())
+        .expect("the methods describe consistent types");
+    let mut out = vec![("wfe/home/src/gen/nextcuda.ts", ts)];
+    // the video studio's own methods (POST /rpc/<method> on its port): the TypeScript it serves at /api/types.ts, and wfe/video's
+    let studio = crate::video::studio::methods::typescript();
+    out.push(("glue/serve/src/video/studio/types.ts", studio.clone()));
+    out.push(("wfe/video/src/gen/studio.ts", studio));
+    // each server's own routes (#[route]): its page's client and its document
+    for (name, title, infos, pages) in route_tables() {
+        let ts = rpcgen::routes_typescript(title, &infos).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for p in pages {
+            out.push((p, ts.clone()));
+        }
+        let info = serde_json::json!({"title": title, "version": "generated",
+            "description": "A server's own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextcuda gen-api`: do not edit."});
+        let doc = rpcgen::routes_openapi(info, "/", &infos).unwrap_or_else(|e| panic!("{name}: {e}"));
+        out.push((Box::leak(format!("docs/api/{name}.openapi.yml").into_boxed_str()), doc));
+    }
+    out
+}
+
+/// Every server's route table: (its name, its title, its routes, the pages whose client it is)
+pub fn route_tables() -> Vec<(&'static str, &'static str, Vec<rpcgen::RouteInfo>, Vec<&'static str>)> {
+    vec![
+        ("image", "nextcuda image server (nextcuda image serve)", crate::image::route_infos(), vec!["wfe/image/src/gen/routes.ts", "wfe/ocr/src/gen/routes.ts"]),
+        ("audio", "nextcuda audio server (nextcuda audio serve)", crate::audio::route_infos(), vec!["wfe/audio/src/gen/routes.ts"]),
+        ("model3d", "nextcuda 3D server (nextcuda model3d serve)", crate::model3d::route_infos(), vec!["wfe/model3d/src/gen/routes.ts"]),
+        ("video", "nextcuda video studio (nextcuda video serve)", crate::video::studio::routes::infos(), vec!["wfe/video/src/gen/routes.ts"]),
+        // the daemon's (its Unix socket; the studio passes /engine/... on): a document, no page
+        ("video-engine", "nextcuda video daemon (nextcuda video start: /engine/... on its socket)", crate::video::daemon::route_infos(), vec![]),
+        ("llm", "nextcuda chat server (nextcuda serve FILE)", crate::serve::route_infos(), vec![]),
+        ("home", "nextcuda's front door: its page's API and documents (nextcuda serve)", routes::infos(), vec!["wfe/home/src/gen/routes.ts"]),
+        ("v1", "nextcuda's front door: the OpenAI-compatible routes and the files (Authorization: Bearer <token>)", api::openai::infos(), vec![]),
+    ]
+}
+
+#[cfg(test)]
+mod api_files_tests {
+    use sha2::{Digest, Sha256};
+    use std::path::Path;
+
+    fn root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// The committed client is what the methods make: a method changed without `nextcuda gen-api` fails here.
+    #[test]
+    fn the_committed_client_is_up_to_date() {
+        for (name, text) in super::api_files() {
+            let have = std::fs::read_to_string(root().join(name)).unwrap_or_default();
+            assert!(have == text, "{name} is stale: run `cargo run -p nextcuda -- gen-api`");
+        }
+    }
+
+    /// The document and the client say the same things: every field, limit, default, enum and example is in both.
+    #[test]
+    fn the_document_and_the_client_agree() {
+        if let Err(e) = rpcgen::parity(&super::methods::infos()) {
+            panic!("{e}");
+        }
+        if let Err(e) = rpcgen::parity(&crate::video::studio::methods::infos()) {
+            panic!("the studio: {e}");
+        }
+        for (name, _, infos, _) in super::route_tables() {
+            if let Err(e) = rpcgen::route_parity(&infos) {
+                panic!("{name}: {e}");
+            }
+        }
+    }
+
+    /// vendor/rpcgen is the platform's rpcgen as tooling/sync_rpcgen.sh copied it: the tree hash it recorded is the
+    /// copy's (sha256 of the "sha256  path" lines, sorted by path). Edit rpcgen in vibe-creative-platform, then sync.
+    #[test]
+    fn the_vendored_rpcgen_is_unchanged() {
+        let dir = root().join("vendor/rpcgen");
+        let mut files = Vec::new();
+        let mut stack = vec![dir.clone()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") || p.file_name().is_some_and(|n| n == "Cargo.toml") {
+                    files.push(p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        files.sort();
+        let mut listing = String::new();
+        for f in &files {
+            let h = Sha256::digest(std::fs::read(dir.join(f)).unwrap());
+            listing.push_str(&format!("{}  {f}\n", h.iter().map(|b| format!("{b:02x}")).collect::<String>()));
+        }
+        let tree: String = Sha256::digest(listing.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        let recorded = std::fs::read_to_string(dir.join("VENDORED")).unwrap_or_default();
+        let want = recorded.lines().find_map(|l| l.strip_prefix("tree: ")).unwrap_or_default().trim().to_string();
+        assert_eq!(tree, want, "vendor/rpcgen was changed here: change it in vibe-creative-platform/rpcgen, then tooling/sync_rpcgen.sh");
+    }
+}
 mod yaml;
 
 use std::collections::BTreeMap;
@@ -99,6 +205,9 @@ pub struct Home {
     kind_lock: BTreeMap<&'static str, Mutex<()>>,
     /// model id -> card -> MiB, the most seen while it ran
     seen: Mutex<BTreeMap<String, BTreeMap<usize, u64>>>,
+    /// model id -> MiB a card must have free (as the front door counts it) for its server to start: learned when the
+    /// server refused to load for want of memory (its own check asks more than its seen peak)
+    asked: Mutex<BTreeMap<String, u64>>,
     /// the requests sent on to each image and audio server and not answered yet, by its port
     pub(crate) inflight: Mutex<BTreeMap<u16, usize>>,
     /// what each image, audio and 3D server last said of itself (model, loading, busy), by its port
@@ -202,7 +311,7 @@ impl Home {
             o, token, state_file, jobs,
             cards: Mutex::new(json!([])), runs: Mutex::new(Vec::new()), next: Mutex::new(1), loading: Mutex::new(BTreeMap::new()),
             kind_lock: ["llm", "image", "audio", "model3d", "video"].into_iter().map(|k| (k, Mutex::new(()))).collect(),
-            seen: Mutex::new(seen), inflight: Mutex::new(BTreeMap::new()), answers: Mutex::new(BTreeMap::new()), stages: Mutex::new(BTreeMap::new()), chat_keep: Mutex::new(BTreeMap::new()),
+            seen: Mutex::new(seen), asked: Mutex::new(BTreeMap::new()), inflight: Mutex::new(BTreeMap::new()), answers: Mutex::new(BTreeMap::new()), stages: Mutex::new(BTreeMap::new()), chat_keep: Mutex::new(BTreeMap::new()),
             maint_file, maint_bypass, disks: disks::Disks::new(&st), pulls: pulls::Pulls::default(),
         });
         let me = h.clone();
@@ -308,33 +417,18 @@ impl Home {
         if let Some(rest) = p.strip_prefix("/open/") {
             return self.open(&mut s, &req, rest);
         }
-        match (req.method.as_str(), p) {
-            ("GET", "/") | ("GET", "/index.html") => self.page(&mut s),
-            ("GET", p) if p.starts_with("/ui/") || p.starts_with("/static/") => self.asset(&mut s, p),
-            ("GET", "/health") => http::respond(&mut s, 200, &json!({"status": "ok"})),
-            ("GET", "/openapi.yml") | ("GET", "/openapi.yaml") => {
-                let spec = self.openapi(&req, false);
-                http::respond_bytes(&mut s, 200, "application/yaml; charset=utf-8", yaml::to_yaml(&spec).as_bytes(), "Cache-Control: no-cache\r\n")
-            }
-            ("GET", "/openapi.json") => http::respond(&mut s, 200, &self.openapi(&req, false)),
-            ("GET", "/api/state") => http::respond(&mut s, 200, &self.state()),
-            ("GET", "/api/config") => http::respond(&mut s, 200, &self.config()),
-            ("GET", "/api/spec") => http::respond(&mut s, 200, &json!({"token": self.token, "spec": self.openapi(&req, true)})),
-            ("GET", p) if p.starts_with("/api/runs/") => {
-                let id: u64 = p["/api/runs/".len()..].parse().unwrap_or(0);
-                match self.run_json(id, 64 * 1024) {
-                    Some(v) => http::respond(&mut s, 200, &v),
-                    None => http::respond(&mut s, 404, &err(format!("no run {id}"))),
-                }
-            }
-            ("POST", "/api/action") => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-                match self.action(&body) {
-                    Ok(v) => http::respond(&mut s, 200, &v),
-                    Err((c, m)) => http::respond(&mut s, c, &err(m)),
-                }
-            }
-            _ => http::respond(&mut s, 404, &err(format!("no route {} {}", req.method, req.path))),
+        if req.method == "GET" && (p == "/" || p == "/index.html") {
+            return self.page(&mut s);
+        }
+        if req.method == "GET" && (p.starts_with("/ui/") || p.starts_with("/static/")) {
+            let p = p.to_string();
+            return self.asset(&mut s, &p);
+        }
+        // the page's API and the documents: what routes.rs declares
+        let mut cx = crate::page::Cx { s, req, cors: String::new() };
+        if !crate::page::serve(routes::table(), self, &mut cx, routes::fail) {
+            let m = format!("no route {} {}", cx.req.method, cx.req.path);
+            cx.json(404, &err(m));
         }
     }
 
@@ -391,8 +485,8 @@ impl Home {
 
     fn page(&self, s: &mut Conn) {
         let dir = self.o.wfe.join("home");
-        match (std::fs::read_to_string(dir.join("index.html")), std::fs::read_to_string(dir.join("style.css"))) {
-            (Ok(h), Ok(c)) => http::respond_bytes(s, 200, "text/html; charset=utf-8", h.replace("__CSS__", &c).as_bytes(), "Cache-Control: no-cache\r\n"),
+        match (crate::wfe::text(&self.o.wfe, "home/index.html"), crate::wfe::text(&self.o.wfe, "home/style.css")) {
+            (Some(h), Some(c)) => http::respond_bytes(s, 200, "text/html; charset=utf-8", h.replace("__CSS__", &c).as_bytes(), "Cache-Control: no-cache\r\n"),
             _ => http::respond(s, 500, &err(format!("{}: the page is not built (./build.sh wfe)", dir.display()))),
         }
     }
@@ -409,7 +503,7 @@ impl Home {
             Some("svg") => "image/svg+xml",
             _ => "application/octet-stream",
         };
-        match std::fs::read(self.o.wfe.join(rel)) {
+        match crate::wfe::read(&self.o.wfe, rel).ok_or(()) {
             Ok(b) => http::respond_bytes(s, 200, kind, &b, "Cache-Control: no-cache\r\n"),
             Err(_) => http::respond(s, 404, &err(format!("no file {rel}"))),
         }

@@ -47,6 +47,10 @@
 //! session when that is longer, and reads only the rest. GLM's thinking comes back as `reasoning_content`, the
 //! answer as `content`.
 
+pub(crate) mod routes;
+
+pub use routes::infos as route_infos;
+
 use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::mpsc;
@@ -58,6 +62,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use nextcuda_llm::{Decoder, Engine, Session};
+
+use crate::page::{self, Cx};
 
 use crate::cache::PromptCache;
 use crate::telemetry::Telemetry;
@@ -659,77 +665,38 @@ impl Server {
             return respond(&mut s, 404, &json!({"error": {"message": format!("no route {method} {path} (the control routes are on the server's socket)")}}));
         }
         let cors = cors_headers(req.origin.as_deref(), &self.cors);
-        match (method, path) {
-            ("OPTIONS", _) => {
-                let _ = write!(s, "HTTP/1.1 204 No Content\r\n{cors}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-                                   Access-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 600\r\n\
-                                   Content-Length: 0\r\nConnection: close\r\n\r\n");
-            }
-            ("GET", "/health") => respond(&mut s, 200, &json!({"status": "ok"})),
-            ("GET", "/status") => {
-                let st = self.status_json();
-                respond(&mut s, 200, &json!({"busy": st["busy"], "prompt_cache": st["prompt_cache"]}))
-            }
-            ("GET", "/server/status") => respond(&mut s, 200, &self.status_json()),
-            ("GET", "/server/requests") => {
-                let done: Vec<Value> = self.done.lock().unwrap().iter().rev().cloned().collect();
-                let running: Vec<Value> = self.running.lock().unwrap().values().cloned().collect();
-                respond(&mut s, 200, &json!({"running": running.first().cloned(), "active": running, "done": done, "keep": self.keep}))
-            }
-            ("GET", p) if p.starts_with("/server/requests/") => {
-                let id: Option<u64> = p["/server/requests/".len()..].trim_start_matches('#').parse().ok();
-                let running = id.and_then(|i| self.running.lock().unwrap().get(&i).cloned());
-                let found = running.or_else(|| self.done.lock().unwrap().iter().find(|r| r["id"].as_u64() == id).cloned());
-                match found {
-                    Some(r) => respond(&mut s, 200, &r),
-                    None => respond(&mut s, 404, &json!({"error": {"message": format!("no request {} (the server keeps the last {})",
-                                                                                    &p["/server/requests/".len()..], self.keep)}})),
-                }
-            }
-            ("GET", "/server/cache") => match self.cache.try_lock() {
-                Ok(c) => {
-                    let list: Vec<Value> = c.list().iter().map(|(t, b, _, disk)| json!({"tokens": t, "bytes": b, "disk": disk})).collect();
-                    respond(&mut s, 200, &json!({"entries": list, "bytes": c.bytes(), "budget": c.budget(), "evictions": c.evictions,
-                                                 "disk": c.disk().map(|(n, b, g)| json!({"entries": n, "bytes": b, "budget": g}))}))
-                }
-                Err(_) => respond(&mut s, 409, &json!({"error": {"message": "a prompt is being read; ask again when it is done"}})),
-            },
-            ("POST", "/server/cache/clear") => match self.cache.try_lock() {
-                Ok(mut c) => {
-                    let n = c.clear();
-                    respond(&mut s, 200, &json!({"dropped": n}))
-                }
-                Err(_) => respond(&mut s, 409, &json!({"error": {"message": "a prompt is being read; ask again when it is done"}})),
-            },
-            ("POST", "/server/shutdown") => {
-                STOP.store(true, Ordering::SeqCst);
-                respond(&mut s, 200, &json!({"stopping": true, "running": self.inflight.load(Ordering::SeqCst) > 0}))
-            }
-            ("GET", "/v1/models") | ("GET", "/models") => http::respond_with(&mut s, 200, &json!({"object": "list", "data": [
-                {"id": self.name, "object": "model", "owned_by": "nextcuda", "created": now(), "status": {"value": "loaded"},
-                 "context": self.max_ctx}]}), &cors),
-            ("POST", "/v1/chat/completions") | ("POST", "/chat/completions") | ("POST", "/api/chat") => {
-                let api = if path == "/api/chat" { Api::Lines } else { Api::OpenAi };
-                let ask = match serde_json::from_slice::<Value>(&req.body).map_err(|e| format!("the body is not JSON: {e}"))
-                    .and_then(|b| self.ask(&b, api)) {
-                    Ok(a) => a,
-                    Err(e) => return http::respond_with(&mut s, 400, &json!({"error": {"message": e}}), &cors),
-                };
-                let via = if api == Api::Lines { "web" } else { s.kind() };
-                let mut rid = 0;
-                let r = self.chat(&mut s, &ask, api, &cors, via, &mut rid);
-                // a request that ended on an error is still recorded
-                if let Some(mut row) = self.running.lock().unwrap().remove(&rid) {
-                    row["state"] = json!("failed");
-                    row["error"] = json!(r.as_ref().err());
-                    self.remember(row);
-                }
-                if let Err(e) = r {
-                    http::respond_with(&mut s, 500, &json!({"error": {"message": e}}), &cors);
-                }
-            }
-            _ => respond(&mut s, 404, &json!({"error": {"message": format!("no route {method} {path}")}})),
+        if method == "OPTIONS" {
+            let _ = write!(s, "HTTP/1.1 204 No Content\r\n{cors}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+                               Access-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 600\r\n\
+                               Content-Length: 0\r\nConnection: close\r\n\r\n");
+            return;
         }
+        // the API: what routes.rs declares
+        let mut cx = Cx { s, req, cors };
+        if !page::serve(routes::table(), self, &mut cx, routes::fail) {
+            let m = format!("no route {} {}", cx.req.method, cx.req.path);
+            respond(&mut cx.s, 404, &routes::fail(m));
+        }
+    }
+
+    /// A chat route's work: the body as an Ask, the answer written (streamed or whole) on the connection, the request
+    /// recorded however it ended
+    fn chat_route(&self, cx: &mut Cx, req: routes::ChatBody, api: Api) -> Result<rpcgen::Sent<Value>, page::Fail> {
+        let b = serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?;
+        let ask = self.ask(&b, api).map_err(|e| (400, e))?;
+        let via = if api == Api::Lines { "web" } else { cx.s.kind() };
+        let mut rid = 0;
+        let r = self.chat(&mut cx.s, &ask, api, &cx.cors, via, &mut rid);
+        // a request that ended on an error is still recorded
+        if let Some(mut row) = self.running.lock().unwrap().remove(&rid) {
+            row["state"] = json!("failed");
+            row["error"] = json!(r.as_ref().err());
+            self.remember(row);
+        }
+        if let Err(e) = r {
+            cx.json(500, &routes::fail(e));
+        }
+        Ok(rpcgen::Sent::new())
     }
 
     fn remember(&self, row: Value) {

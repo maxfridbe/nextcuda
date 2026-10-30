@@ -3,12 +3,12 @@ resolver = "2"
 # the layout (docs/architecture.md): the shared foundation (crates/), one group a kind - its contract and one engine
 # crate an architecture (llm/, image/, video/) -, the glue that makes them a service (glue/), the program (cli/)
 members = [
-    "crates/sys", "crates/core", "crates/gguf", "crates/tok", "crates/diffusion", "crates/qwen3vl", "crates/mesh", "crates/codec12hz", "crates/remover",
+    "crates/sys", "crates/core", "crates/gguf", "crates/tok", "crates/diffusion", "crates/qwen3vl", "crates/qwen35", "crates/mesh", "crates/codec12hz", "crates/remover",
     "llm/contract", "llm/nemotronh", "llm/qwen35",
-    "image/contract", "image/qwenimage21", "image/paddleocrvl", "image/unlimitedocr", "image/olmocr2", "image/mingimage", "image/upscale", "image/starvector",
+    "image/contract", "image/qwenimage21", "image/paddleocrvl", "image/unlimitedocr", "image/olmocr2", "image/mingimage", "image/mossimage", "image/upscale", "image/starvector",
     "video/contract", "video/h3", "video/ltx2",
-    "model3d/contract", "model3d/trellis2", "model3d/hunyuan3d", "model3d/unirig", "model3d/rignet", "model3d/animateanymesh",
-    "audio/contract", "audio/minimaxmusic3", "audio/qwen3tts", "audio/voxcpm2", "audio/breezetts2", "audio/whisper", "audio/vibevoice", "audio/acestep",
+    "model3d/contract", "model3d/trellis2", "model3d/hunyuan3d", "model3d/unirig", "model3d/skintokens", "model3d/rignet", "model3d/animateanymesh", "model3d/unimate",
+    "audio/contract", "audio/minimaxmusic3", "audio/qwen3tts", "audio/voxcpm2", "audio/breezetts2", "audio/whisper", "audio/vibevoice", "audio/acestep", "audio/yue2",
     "glue/models", "glue/serve",
     "cli/nextcuda",
 ]
@@ -25,6 +25,7 @@ nextcuda-gguf = { path = "crates/gguf" }
 nextcuda-tok = { path = "crates/tok" }
 nextcuda-diffusion = { path = "crates/diffusion" }
 nextcuda-qwen3vl = { path = "crates/qwen3vl" }
+nextcuda-qwen35 = { path = "crates/qwen35" }
 nextcuda-mesh = { path = "crates/mesh" }
 nextcuda-codec12hz = { path = "crates/codec12hz" }
 nextcuda-remover = { path = "crates/remover" }
@@ -37,6 +38,7 @@ nextcuda-image-paddleocrvl = { path = "image/paddleocrvl" }
 nextcuda-image-unlimitedocr = { path = "image/unlimitedocr" }
 nextcuda-image-olmocr2 = { path = "image/olmocr2" }
 nextcuda-image-mingimage = { path = "image/mingimage" }
+nextcuda-image-mossimage = { path = "image/mossimage" }
 nextcuda-image-upscale = { path = "image/upscale" }
 nextcuda-image-starvector = { path = "image/starvector" }
 nextcuda-video = { path = "video/contract" }
@@ -46,8 +48,10 @@ nextcuda-model3d = { path = "model3d/contract" }
 nextcuda-model3d-trellis2 = { path = "model3d/trellis2" }
 nextcuda-model3d-hunyuan3d = { path = "model3d/hunyuan3d" }
 nextcuda-model3d-unirig = { path = "model3d/unirig" }
+nextcuda-model3d-skintokens = { path = "model3d/skintokens" }
 nextcuda-model3d-rignet = { path = "model3d/rignet" }
 nextcuda-model3d-animateanymesh = { path = "model3d/animateanymesh" }
+nextcuda-model3d-unimate = { path = "model3d/unimate" }
 nextcuda-audio = { path = "audio/contract" }
 nextcuda-audio-minimaxmusic3 = { path = "audio/minimaxmusic3" }
 nextcuda-audio-qwen3tts = { path = "audio/qwen3tts" }
@@ -56,6 +60,7 @@ nextcuda-audio-breezetts2 = { path = "audio/breezetts2" }
 nextcuda-audio-whisper = { path = "audio/whisper" }
 nextcuda-audio-vibevoice = { path = "audio/vibevoice" }
 nextcuda-audio-acestep = { path = "audio/acestep" }
+nextcuda-audio-yue2 = { path = "audio/yue2" }
 nextcuda-models = { path = "glue/models" }
 nextcuda-serve = { path = "glue/serve" }
 serde_json = { version = "1", features = ["preserve_order"] }

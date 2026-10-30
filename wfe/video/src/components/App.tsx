@@ -21,7 +21,8 @@ function GpuPill() {
   if (!g) return <div class="pill"><span class="dot off" /><span>GPU telemetry…</span></div>;
   // an error answer (no telemetry) has no numbers: say so rather than show NaN
   if (typeof g.vram_total_mb !== "number") return <div class="pill"><span class="dot off" /><span>GPU telemetry unavailable</span></div>;
-  const used = Math.round((g.vram_used_mb / Math.max(g.vram_total_mb, 1)) * 100);
+  const vramUsed = g.vram_used_mb ?? 0, busy = g.busy_pct ?? 0;
+  const used = Math.round((vramUsed / Math.max(g.vram_total_mb, 1)) * 100);
   const p = g.pcie;
   const link = p && p.cur.gen ? `PCIe ${p.cur.gen}.0 x${p.cur.width}` : null;
   // the card can do more than the slot gives it (Gen5 x16 card in a Gen3 x8 slot): say so on hover
@@ -44,16 +45,16 @@ function GpuPill() {
   // label + value chips with separators: the bar wraps instead of running off the header
   const chip = (k: string, v: string) => <span class="gc"><span class="gk">{k}</span> <b>{v}</b></span>;
   const parts = [
-    chip("GPU", `${Math.round(g.busy_pct)}%`),
+    chip("GPU", `${Math.round(busy)}%`),
     g.power_w != null ? chip("power", `${Math.round(g.power_w)} W`) : null,
-    chip("VRAM", `${(g.vram_used_mb / 1024).toFixed(1)}/${(g.vram_total_mb / 1024).toFixed(0)} GB (${used}%)`),
+    chip("VRAM", `${(vramUsed / 1024).toFixed(1)}/${(g.vram_total_mb / 1024).toFixed(0)} GB (${used}%)`),
     g.temp_pkg != null ? chip("temp", `${g.temp_pkg}°C` + (vramT != null ? ` · mem ${vramT}°C` : "")) : null,
     link ? chip("link", link) : null,
     g.host_load1 != null ? chip("host load", g.host_load1.toFixed(1)) : null,
   ].filter((x) => x != null);
   return (
     <div class="pill gpu" attrs={{ title: tip }}>
-      <span class={{ dot: true, on: g.busy_pct > 1 }} />
+      <span class={{ dot: true, on: busy > 1 }} />
       {parts.flatMap((c, i) => (i ? [<span class="sep">|</span>, c] : [c]))}
     </div>
   );

@@ -1,0 +1,25 @@
+# MOSS-Image SFT
+
+A general text-to-image model: photographs, illustration, product shots, scenes with legible text in them.
+
+- **Describe the picture as a caption would:** the subject, what it does, where, the light, the medium ("photograph",
+  "watercolour"). The prompt reaches the model through Qwen3.5-9B's chat template as it is: no quality tags are
+  added, and none are needed.
+- **Text in the picture:** quote the words ("a shop sign that reads "OPEN"").
+- **Size:** 1024 x 1024 is the default and the recommended size; any multiple of 16 from 64 to 4096 a side works, up to 4 megapixels in all (2048 x 2048, 4096 x 1024, 1:8 to 8:1 ratios as OpenMOSS's app offers them)
+  (larger is slower: the attention runs over every position).
+- **Steps 50, cfg 3** (the pipeline's own). Guidance runs a second pass a step against the negative prompt (empty by
+  default) with one block left out; cfg 1 turns it off and halves the time, at a cost in detail and prompt-following.
+  Fewer steps (20-30) are faster and usually close.
+- **Turbo (`moss-image-sft-turbo4-q8`):** the same model with akhaliq's 4-step distillation LoRA merged in at load:
+  4 steps at cfg 1 (no guidance, so no negative prompt), a 1024 x 1024 picture in a few seconds. Use about 6 steps
+  near 1536 wide and 8 at 2048 x 2048 (4 there come out hazy); its steps are the scheduler's own levels, so other
+  counts work too. Fine detail and small text are a little softer than the full model's 50 guided steps.
+- **8-step turbos:** `moss-image-sft-turbo8-q8` (lodestones' SFT 8-step DMD: warm, contrasty, the crispest text)
+  and `moss-image-sft-dmd2-q8` (lodestones' DMD2 from Kromoss: more natural light and detail), about 5 s a
+  1024 x 1024 picture at 8 steps and cfg 1; 4 steps also work.
+- **Seed:** the same seed, prompt and settings make the same picture.
+- **Time:** a 1024 x 1024 picture at the defaults takes about 48 s on an RTX 5070 (0.93 s a step), about 2.3 s a step
+  with the DiT on an RTX 3060; loading takes about a minute. Each card runs its own build of the model's kernels
+  (dist/silo/libnextcuda-mossimage.sm86.so / .sm120.so). `NS_MOSS_ATTN=fp8` (5070 only) is offered but no faster and
+  less exact; `NS_MOSS_INT8=0` keeps the stored weights (about twice as long).

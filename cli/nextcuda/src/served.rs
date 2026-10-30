@@ -108,7 +108,9 @@ impl Served {
                 return Ok(());
             }
             if !(if let Some(ce) = &ce { ce.running(&name) } else { native::running(cfg, &name) }) {
-                return Err(format!("{name} ended while loading: {} {} logs", me(), self.kind));
+                // why, as the server's log ends (a refusal for want of memory: what it needs, what is free)
+                let why = if ce.is_none() { native::last_line(cfg, &name).map(|l| format!(" ({l})")).unwrap_or_default() } else { String::new() };
+                return Err(format!("{name} ended while loading{why}: {} {} logs", me(), self.kind));
             }
             if t0.elapsed() > Duration::from_secs(600) {
                 return Err(format!("{name} did not answer in 10 minutes ({} logs)", self.kind));

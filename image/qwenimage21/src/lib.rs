@@ -279,6 +279,17 @@ impl ImageEngine for QwenImage21 {
         OPTIONS
     }
 
+    fn transparent(&self) -> bool {
+        true
+    }
+    /// the worker is not sent a shift
+    fn shift(&self) -> bool {
+        false
+    }
+    fn steps_free(&self) -> bool {
+        !self.turbo
+    }
+
     fn steps_for(&self, req: &ImageRequest) -> u32 {
         if self.turbo {
             self.defaults().steps

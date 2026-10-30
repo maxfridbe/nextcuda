@@ -56,6 +56,15 @@ int ns_gpu_units(int index, int* units, int* mhz) {
     return 0;
 }
 
+// GPU `index`'s compute capability, major * 10 + minor (86, 120): which of a model's per-card silos it runs
+int ns_gpu_cc(int index, int* cc) {
+    int major = 0, minor = 0;
+    NS_CU(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, index));
+    NS_CU(cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, index));
+    *cc = major * 10 + minor;
+    return 0;
+}
+
 // the PCI address of GPU `index` ("0000:09:00.0") into buf
 int ns_gpu_pci(int index, char* buf, size_t len) {
     char id[32] = {0};

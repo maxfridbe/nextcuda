@@ -4,6 +4,7 @@ import { reuse, saveVoice } from "../actions.js";
 import { render, state } from "../state.js";
 import type { Song } from "../types.js";
 import { fmtT, mss } from "../util.js";
+import { Spinner } from "./Spinner.js";
 
 function meta(s: Song): string {
   const who = s.cloned ? "cloned voice · " : s.voice ? `${s.voice} · ` : "";
@@ -28,7 +29,7 @@ export function SongCard(props: { s: Song; big: boolean }) {
           {s.lyrics && !props.big
             ? <button type="button" class="tbtn" on={{ click: () => { state.shown[s.url] = !shown; render(); } }}>{shown ? "hide lyrics" : "lyrics"}</button>
             : null}
-          <button type="button" class="tbtn" attrs={{ title: "use this description, lyrics and seed again" }} on={{ click: () => reuse(s) }}>reuse</button>
+          <button type="button" class="tbtn" attrs={{ title: state.info?.speech ? "use this text, voice and seed again" : "use this description, lyrics and seed again" }} on={{ click: () => reuse(s) }}>reuse</button>
           {s.cloned !== undefined && state.info?.speech
             ? <button type="button" class="tbtn" attrs={{ title: "keep this voice by name: any model that clones speaks it" }}
                       on={{ click: () => void saveVoice({ file: s.url, description: s.instructions }) }}>save voice…</button>
@@ -42,6 +43,7 @@ export function SongCard(props: { s: Song; big: boolean }) {
 }
 
 export function Songs() {
+  if (!state.historyLoaded) return <Spinner label="Loading what was made…" />;
   // a speech server lists its speech, a song server its songs (they share the output directory)
   const speech = !!state.info?.speech;
   const list = state.history.filter((s) => (s.cloned !== undefined) === speech);

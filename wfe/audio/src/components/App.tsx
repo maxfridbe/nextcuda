@@ -2,9 +2,12 @@
  *  used - what to make, its progress, the song it made, the songs made here. */
 import { jsx } from "../jsx.js";
 import { state } from "../state.js";
+import { gpuName } from "../util.js";
 import { Create } from "./Create.js";
+import { NonCommercial } from "./Licence.js";
 import { Panel } from "./Panel.js";
 import { Progress } from "./Progress.js";
+import { Spinner } from "./Spinner.js";
 import { SongCard, Songs } from "./Songs.js";
 import { Speak } from "./Speak.js";
 import { Stats } from "./Stats.js";
@@ -16,7 +19,7 @@ function GpuPill() {
   const busy = !!state.progress?.busy;
   const chip = (k: string, v: string) => <span class="gc"><span class="gk">{k}</span> <b>{v}</b></span>;
   const parts = [
-    chip("GPU", g.name.replace("Intel(R) Arc(TM) ", "").replace(" Graphics", "")),
+    chip("GPU", gpuName(g.name)),
     g.power_w != null ? chip("power", `${Math.round(g.power_w)} W`) : null,
     chip("VRAM", `${(g.vram_used_mb / 1024).toFixed(1)}/${(g.vram_total_mb / 1024).toFixed(0)} GB (${used}%)`),
     g.temp_pkg != null ? chip("temp", `${Math.round(g.temp_pkg)}°C` + (g.temp_vram != null ? ` · mem ${Math.round(g.temp_vram)}°C` : "")) : null,
@@ -31,13 +34,14 @@ function GpuPill() {
 
 export function App() {
   const info = state.info;
-  const title = info ? `${info.model}` : "nextsycl audio";
+  const title = info ? `${info.model}` : "nextcuda audio";
   return (
     <div id="app">
       <div class="top">
-        <h1><span class="i" props={{ innerHTML: info?.speech ? "&#xf130;" : "&#xf001;" }} /> {title}</h1>
+        <h1><span class="i" props={{ innerHTML: info?.speech ? "&#xf130;" : "&#xf001;" }} /> {title}{NonCommercial(info)}</h1>
         <GpuPill />
       </div>
+      {!info ? <Spinner label="Connecting to the model…" /> : null}
       <Stats />
       {state.error && !state.busy ? <pre class="err">{state.error}</pre> : null}
       <Panel id="create" icon="&#xf040;" title="Create" hint={info?.arch ?? "connecting…"}>

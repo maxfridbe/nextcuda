@@ -68,6 +68,12 @@ pub fn kind_of(m: &Value) -> &str {
     m.get("kind").and_then(|v| v.as_str()).unwrap_or("llm")
 }
 
+/// What an entry or a card says of its weights' licence: `license`, `commercial` (false: it forbids commercial use),
+/// `license_note` (the conditions it puts on it) - the keys it has, for a model's row
+pub fn licence(src: &Value) -> serde_json::Map<String, Value> {
+    ["license", "commercial", "license_note"].iter().filter_map(|k| Some((k.to_string(), src.get(*k)?.clone()))).collect()
+}
+
 pub fn all(s: &dyn Store) -> Result<Vec<Value>, String> {
     s.models()
 }

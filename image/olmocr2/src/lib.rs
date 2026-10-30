@@ -367,6 +367,9 @@ impl ImageEngine for OlmOcr {
     fn guidance(&self) -> bool {
         false
     }
+    fn takes_loras(&self) -> bool {
+        false
+    }
     fn load_seconds(&self) -> f64 {
         self.load_s
     }
@@ -378,6 +381,9 @@ impl ImageEngine for OlmOcr {
     }
     fn ocr(&self, req: &OcrRequest, text: &mut dyn FnMut(&str)) -> Result<OcrOutput> {
         self.read(req, text)
+    }
+    fn ocr_takes(&self) -> &'static [&'static str] {
+        &["columns"]
     }
     fn ocr_prompts(&self) -> Vec<OcrPrompt> {
         vec![OcrPrompt { id: "page", prompt: DEFAULT_PROMPT, title: "Page → Markdown (the model's own)" }]

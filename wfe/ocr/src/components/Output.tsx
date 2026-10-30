@@ -66,26 +66,29 @@ export function Output() {
     );
   }
   const raw = r.text;
+  // boxes are only there where the model wrote them
+  const drawn = raw.includes("<|det|>");
+  const view: View = state.view === "boxes" && !drawn ? "doc" : state.view;
   const tools = (
     <div class="row">
       <div class="tabs">
-        {VIEWS.map(([v, t]) => (
-          <button type="button" class={{ tab: true, on: state.view === v }} on={{ click: () => { state.view = v; saveForm(); render(); } }}>{t}</button>
+        {VIEWS.filter(([v]) => v !== "boxes" || drawn).map(([v, t]) => (
+          <button type="button" class={{ tab: true, on: view === v }} on={{ click: () => { state.view = v; saveForm(); render(); } }}>{t}</button>
         ))}
       </div>
       <span class="hint">{`${r.pages} page${r.pages === 1 ? "" : "s"} · ${r.prompt_tokens ?? "?"} read${r.read_tok_s ? ` (${r.read_tok_s.toFixed(0)} tok/s)` : ""} · ${r.tokens} written in ${fmtT(r.seconds)}${r.tok_s ? ` (${r.tok_s.toFixed(0)} tok/s)` : ""}`}</span>
-      <button type="button" class="tbtn" on={{ click: () => void navigator.clipboard?.writeText(state.view === "raw" ? raw : plain(raw)) }}>copy</button>
+      <button type="button" class="tbtn" on={{ click: () => void navigator.clipboard?.writeText(view === "raw" ? raw : plain(raw)) }}>copy</button>
       <button type="button" class="tbtn" on={{ click: () => download(raw, "reading.md") }}>.md</button>
       <button type="button" class="tbtn" on={{ click: () => download(plain(raw), "reading.txt") }}>.txt</button>
     </div>
   );
   const body =
-    state.view === "raw" ? <pre class="raw">{raw}</pre>
-    : state.view === "text" ? <pre class="raw">{plain(raw)}</pre>
-    : state.view === "boxes" ? Boxes(raw)
+    view === "raw" ? <pre class="raw">{raw}</pre>
+    : view === "text" ? <pre class="raw">{plain(raw)}</pre>
+    : view === "boxes" ? Boxes(raw)
     : Doc(raw);
   const empty = !raw.trim()
-    ? <pre class="err">{`The model wrote nothing for this (it ended at once). ${r.pages > 1 ? "" : "A small picture or one that is not a page can do this; try \"Free OCR.\" or \"Describe this image in detail.\", or a larger, sharper picture."}`}</pre>
+    ? <pre class="err">{`The model wrote nothing for this (it ended at once). ${r.pages > 1 ? "" : "A small picture or one that is not a page can do this; try another instruction, or a larger, sharper picture."}`}</pre>
     : null;
   return <div>{tools}{empty}{body}</div>;
 }

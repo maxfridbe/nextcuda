@@ -1,0 +1,1431 @@
+openapi: 3.1.0
+info:
+  title: nextcuda image server (nextcuda image serve)
+  version: generated
+  description: 'A server''s own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextcuda gen-api`: do not edit.'
+servers:
+- url: /
+paths:
+  /api/gpu:
+    get:
+      operationId: gpu
+      summary: 'The card: its name, memory, power and temperatures'
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gpu'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /health:
+    get:
+      operationId: health
+      summary: 'Whether the server answers: ok, or loading (HTTP 503) while its engine loads'
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/models:
+    get:
+      operationId: models
+      summary: The model served, as OpenAI lists models
+      tags:
+      - openai
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /models
+  /api/info:
+    get:
+      operationId: info
+      summary: 'The model and what it takes: its defaults, samplers, LoRAs, options; an OCR model''s instructions, an upscaler''s variants'
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Info'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/progress:
+    get:
+      operationId: progress
+      summary: What the server is doing now (the page polls it)
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Progress'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/history:
+    get:
+      operationId: history
+      summary: What the server made, newest first
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/History'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/cancel:
+    post:
+      operationId: cancel
+      summary: 'Stops a request: the one named (running or waiting), else the one running'
+      tags:
+      - page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelReq'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cancelled'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/images/files/{name}:
+    get:
+      operationId: file
+      summary: A picture (or an upscaled clip) an answer links
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the answer's url has it
+      responses:
+        '200':
+          description: the file
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/images/generations:
+    post:
+      operationId: generations
+      summary: 'Pictures from a prompt (OpenAI''s images API, and ours: steps, seed, sampler, schedule, cfg, negative_prompt, loras); an init picture (image) makes it an img2img'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageGenerateBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pictures'
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /images/generations
+  /v1/images/edits:
+    post:
+      operationId: edits
+      summary: 'An edit: pictures (up to 8) and the instructions, as OpenAI''s multipart form (image, image[] files) or JSON with images (base64 / data URLs)'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageEditBody'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ImageEditBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pictures'
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /images/edits
+  /v1/images/vectorize:
+    post:
+      operationId: vectorize
+      summary: A picture written as SVG by a vectorizer (StarVector)
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageVectorizeBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Vectorized'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/images/upscale:
+    post:
+      operationId: upscale
+      summary: 'A picture upscaled (Real-ESRGAN, waifu2x): a link, or the PNG as base64'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageUpscaleBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upscaled'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/videos/upscale:
+    post:
+      operationId: upscaleVideo
+      summary: 'A clip upscaled frame by frame (ffmpeg decodes and encodes, the audio copied): the MP4 linked, or as base64'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoUpscaleBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upscaled'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/ocr:
+    post:
+      operationId: ocr
+      summary: 'Pages read (an OCR model): pictures or PDFs, the text as the model writes it'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageOcrReq'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reading'
+        default:
+          description: 'an error: the body''s `error` says what'
+components:
+  schemas:
+    CancelReq:
+      type: object
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'that request only (the front door''s job), running or waiting; none: the one running'
+      description: What a cancel takes
+    Cancelled:
+      type: object
+      properties:
+        cancelled:
+          type: boolean
+          description: a request running was told to stop
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+      required:
+      - cancelled
+      description: What a cancel did
+    Defaults:
+      type: object
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+        steps:
+          type: integer
+        cfg:
+          type: number
+        sampler:
+          type: string
+        schedule:
+          type: string
+        shift:
+          type: number
+      required:
+      - width
+      - height
+      - steps
+      - cfg
+      - sampler
+      - schedule
+      - shift
+      description: The engine's own defaults (a request's absent fields)
+    EngineOptionInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        value:
+          type: string
+          description: what its value looks like ("" a flag)
+        help:
+          type: string
+      required:
+      - name
+      - value
+      - help
+      description: An option of the engine's own (a request sends it in `options`)
+    FileName:
+      type: object
+      properties:
+        name:
+          type: string
+          description: the file's name as the answer's url has it
+      required:
+      - name
+      description: A file a link names (`.../files/{name}`)
+    Gpu:
+      type: object
+      properties:
+        name:
+          type: string
+        vram_used_mb:
+          type: integer
+        vram_total_mb:
+          type: integer
+        power_w:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'watts now (none: the driver does not say)'
+        temp_pkg:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: °C
+        temp_vram:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the memory's °C
+      required:
+      - name
+      - vram_used_mb
+      - vram_total_mb
+      description: The card a model server runs on, as its page shows it
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          description: ok, or loading (HTTP 503 then)
+      required:
+      - status
+      description: Whether the server answers (and has its model loaded)
+    History:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistoryEntry'
+      required:
+      - data
+      description: What the server made, newest first (files deleted since drop out)
+    HistoryEntry:
+      type: object
+      properties:
+        kind:
+          anyOf:
+          - $ref: '#/components/schemas/HistoryKind'
+          - type: 'null'
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the file (GET it here): a picture, an upscale, a clip'
+        prompt:
+          type: string
+          description: the prompt, or what the work was ("realesrgan-x4plus 4x")
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        width:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        height:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        loras:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+        pictures:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'the pictures it was made from (an edit; 0: none)'
+        pages:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: a reading's pages, text and tokens
+        text:
+          anyOf:
+          - type: string
+          - type: 'null'
+        tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        prompt_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        tok_s:
+          anyOf:
+          - type: number
+          - type: 'null'
+        seconds:
+          type: number
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the card's energy, watt-hours
+        created:
+          type: integer
+          description: unix seconds
+      required:
+      - prompt
+      - seconds
+      - created
+      description: 'Something the server made, newest first: a picture (with its settings), or a reading, an SVG, an upscale'
+    HistoryKind:
+      type: string
+      enum:
+      - ocr
+      - vectorize
+      - upscale
+      - upscale-video
+      description: 'What a history entry was: a picture made (none), or another kind of work'
+    ImageEditBody:
+      type: object
+      properties:
+        images:
+          type: array
+          items:
+            type: string
+          description: 'up to 8, base64, data: URLs or upload:<name> (image.upload) - PNG, JPEG, WebP; each at most 40 MP, the request at most 256 MiB; each is resized to about 1 MP, so 2048 px on the long side is plenty'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        prompt:
+          type: string
+          description: the instructions
+        reference:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: true
+          description: 'true (default): the pictures condition the model as an edit''s references (its vision tower reads them) as well as being where strength starts; false: a plain img2img - the denoise starts from the first picture and the prompt alone guides it, comparable with other tools'' img2img (needs strength below 1)'
+        response_format:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: url (default) or b64_json
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        size:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'default: the last picture''s aspect'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0.05
+          maximum: 1
+          default: 1
+          description: 'how far from the first picture: 1 (default) makes a new picture guided by it; below 1 starts from the first picture, encoded and noised to the level strength reaches: the run is the last steps of a round(steps / strength)-step schedule, exactly ComfyUI''s KSampler denoise (a few-step model such as turbo starts at strength itself, then takes its own levels below it). With reference true the picture also conditions the model, which holds it closer than a plain img2img at the same number: measured on Qwen-Image 2.1, 0.9 keeps the framing, face, hair and clothes and still makes the change asked; 0.75 and below give back nearly the same picture. With reference false it behaves as other tools'' img2img. The first picture is resized to the output''s size'
+      required:
+      - images
+      - prompt
+      additionalProperties: true
+      description: 'What image.edit makes from: the body its kind''s server takes.'
+    ImageGenerateBody:
+      type: object
+      properties:
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: true guidance (needs negative_prompt)
+        image:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'an init picture (base64, a data: URL, or upload:<name> from image.upload; at most 40 MP): a plain img2img - the denoise starts from it at strength and the prompt guides it (it is no reference: for an edit that reads the picture use image.edit). Needs strength below 1'
+        loras:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          description: each "name:scale" (a registered LoRA's id or a file) or {"name", "scale"}; [] unloads them
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        n:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: pictures
+        negative_prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+        prompt:
+          type: string
+        response_format:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: url (default) or b64_json
+        sampler:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: ComfyUI's names (euler, euler_ancestral, dpmpp_2m ...)
+        schedule:
+          anyOf:
+          - type: string
+          - type: 'null'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        size:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'WxH, e.g. 1024x1024, both multiples of 16 (default: the model''s, or the init picture''s aspect)'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'image.info''s steps: a few-step model (turbo) runs only its own count (6)'
+        strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0.05
+          maximum: 1
+          description: 'with image: how far from it (ComfyUI''s denoise: the last steps of a round(steps / strength)-step schedule); 0.3-0.6 is the usual img2img range'
+      required:
+      - prompt
+      additionalProperties: true
+      description: 'What image.generate makes from: the body its kind''s server takes.'
+    ImageOcrReq:
+      type: object
+      properties:
+        columns:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: find blocks set side by side (a gutter between) and read each on its own (default true)
+        each_page:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'several pages: each read on its own with its tiles (default true); false: the model''s one-pass multi-page reading'
+        figures:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: read the text inside the pictures the model marks (a second pass each; default true)
+        images:
+          type: array
+          items:
+            type: string
+          description: 'the pages, base64, data: URLs or upload:<name> (image.upload), in order: pictures, or PDFs (split into their pages, 150 dpi)'
+        max_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: default 8192
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'an OCR model''s id (default: the first enabled)'
+        ngram:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'no n-gram of this many tokens repeated (35; 0: off)'
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: '"document parsing." (default), "Free OCR.", "<|grounding|>Convert the document to markdown.", "Parse the figure."; several pages: each page under it, or (each_page false) the model''s "Multi page parsing."; a <PAGE> mark before each page'
+        temperature:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: '0 (default): greedy'
+        tiles:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'one page: read its 640-pixel tiles too (default true)'
+      required:
+      - images
+      additionalProperties: true
+      description: What image.ocr takes.
+    ImageUpscaleBody:
+      type: object
+      properties:
+        image:
+          type: string
+          description: 'the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload)'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        noise:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: -1
+          maximum: 3
+          description: 'waifu2x''s denoise level (-1: none)'
+        response_format:
+          anyOf:
+          - $ref: '#/components/schemas/ResponseFormat'
+          - type: 'null'
+        scale:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'the factor: Real-ESRGAN 2, 3 (animevideov3) or 4; waifu2x 1 (denoise only), 2, 4 ... 32 (its 2x model again each time)'
+        tile:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 32
+          description: 'the tile''s side in input pixels (Real-ESRGAN 200, waifu2x 400 by default: as the ncnn programs)'
+        variant:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the upscaler''s model (image.info''s upscale list): realesrgan-x4plus (default at 4x), realesr-animevideov3 (default at 2x / 3x), ..., models-cunet (waifu2x''s default)'
+      required:
+      - image
+      additionalProperties: true
+      description: 'What image.upscale makes from: the body its kind''s server takes.'
+    ImageVectorizeBody:
+      type: object
+      properties:
+        beams:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 1
+          maximum: 8
+          default: 2
+        image:
+          type: string
+          description: 'the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload)'
+        max_length:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 260
+          maximum: 8192
+          default: 5000
+          description: 'the sequence at most as the model counts it (the picture''s 257 rows and the prompt first: 5000 leaves 4741 tokens of SVG)'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        repetition_penalty:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: 1.0
+        sample:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: true
+          description: 'false: the likeliest tokens (beam search, or greedy with beams 1)'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        temperature:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: 1.0
+        top_p:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: 0.9
+      required:
+      - image
+      additionalProperties: true
+      description: 'What image.vectorize makes from: the body its kind''s server takes.'
+    Info:
+      type: object
+      properties:
+        model:
+          type: string
+        license:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the licence of its weights, whether it allows commercial use (false: the page tags it non-commercial), the conditions it puts on it'
+        commercial:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        license_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+        loading:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        arch:
+          anyOf:
+          - type: string
+          - type: 'null'
+        edits:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it takes pictures (edits)
+        reads:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'it reads pictures (an OCR model: the OCR page)'
+        guidance:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'it takes guidance: cfg above 1 and a negative prompt'
+        grid:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the grid the picture's sides are multiples of
+        transparent:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: '"transparent" gives an alpha channel'
+        shift:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: the schedule's shift can be set
+        shift_schedules:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: the schedules the shift changes (a page offers it only for those)
+        sizes:
+          anyOf:
+          - $ref: '#/components/schemas/SizesInfo'
+          - type: 'null'
+          description: the aspect ratios and pixel budgets it offers for a size (a size is a budget at a ratio)
+        negative:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it takes a negative prompt
+        steps_free:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'the step count changes the picture (false: a few-step entry runs its own)'
+        takes_loras:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it merges per-request LoRAs
+        ocr_takes:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: 'what a reading takes besides the pages and the instruction: tiles, figures, columns, guard, each_page; boxes when it writes them'
+        min_side:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the shortest and longest side it draws
+        max_side:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        max_pixels:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the most pixels a picture may have, when the card's room limits it below the longest sides squared
+        max_pictures:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the most pictures an edit takes
+        max_pages:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the most pages a reading takes
+        prompts:
+          anyOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/OcrPromptInfo'
+          - type: 'null'
+          description: an OCR model's instructions
+        defaults:
+          anyOf:
+          - $ref: '#/components/schemas/Defaults'
+          - type: 'null'
+        samplers:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+        schedules:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+        options:
+          anyOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/EngineOptionInfo'
+          - type: 'null'
+          description: the engine's own per-request options (sent as `options`)
+        loras:
+          anyOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/LoraInfo'
+          - type: 'null'
+        saves:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'it keeps what it makes (an output directory: links, the history)'
+        wfe:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it serves its page
+        vectorize:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it writes pictures as SVG (a vectorizer)
+        upscale:
+          anyOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/UpscaleInfo'
+          - type: 'null'
+          description: 'an upscaler''s variants (empty: it draws)'
+      required:
+      - model
+      description: The model and what it takes; while it loads, the model and `loading` only
+    LoraInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        loaded:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'the scale it is merged at now; null: not loaded'
+      required:
+      - id
+      - title
+      description: A LoRA registered for the model
+    ModelEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          description: model
+        owned_by:
+          type: string
+        created:
+          type: integer
+      required:
+      - id
+      - object
+      - owned_by
+      - created
+      description: A model in OpenAI's list
+    ModelList:
+      type: object
+      properties:
+        object:
+          type: string
+          description: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelEntry'
+      required:
+      - object
+      - data
+      description: 'OpenAI''s list of models: the one this server serves'
+    OcrPromptInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        prompt:
+          type: string
+        title:
+          type: string
+          description: what it reads
+      required:
+      - id
+      - prompt
+      - title
+      description: An instruction an OCR model is trained on
+    PictureMade:
+      type: object
+      properties:
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+        b64_json:
+          anyOf:
+          - type: string
+          - type: 'null'
+        revised_prompt:
+          type: string
+        seed:
+          type: integer
+        width:
+          type: integer
+        height:
+          type: integer
+      required:
+      - revised_prompt
+      - seed
+      - width
+      - height
+      description: 'A picture made: its link (response_format url) or its PNG (b64_json)'
+    Pictures:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PictureMade'
+        nextsycl:
+          $ref: '#/components/schemas/PicturesRun'
+      required:
+      - created
+      - data
+      - nextsycl
+      description: 'OpenAI''s images answer, with how they were made (`nextsycl`: the key nextsycl''s contract names it; the front door''s methods call it run)'
+    PicturesRun:
+      type: object
+      properties:
+        seconds:
+          type: number
+        steps:
+          type: integer
+        seed:
+          type: integer
+          description: the first picture's; the n-th is seed + n
+        loras:
+          type: array
+          items:
+            type: string
+          description: name:scale, as merged
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the card's energy, watt-hours
+      required:
+      - seconds
+      - steps
+      - seed
+      - loras
+      description: How pictures were made
+    Progress:
+      type: object
+      properties:
+        busy:
+          type: boolean
+        loading:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: LoRAs being merged (the engine reloaded)
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+        picture:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the picture being made (1-based) of `pictures`
+        pictures:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        at:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the step (or tile, or token) done of `of`
+        of:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        phase:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what is counted: tiles (an upscale), frames (a clip''s), tokens (a vectorize)'
+        reading:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'a reading (OCR): its pages, the text so far and its tokens'
+        pages:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        text:
+          anyOf:
+          - type: string
+          - type: 'null'
+        tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: seconds since it started
+        waiting:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: requests waiting for the engine
+        request_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the front door's job running, if it named one
+      required:
+      - busy
+      description: 'What the server is doing: busy false, or what it is making and how far it is'
+    Reading:
+      type: object
+      properties:
+        created:
+          type: integer
+        model:
+          type: string
+        text:
+          type: string
+          description: 'as the model wrote it (its layout markup kept; several pages: a <PAGE> mark before each)'
+        prompt:
+          type: string
+        pages:
+          type: integer
+        tokens:
+          type: integer
+        prompt_tokens:
+          type: integer
+        prompt_seconds:
+          type: number
+        read_tok_s:
+          type: number
+        write_seconds:
+          type: number
+        tok_s:
+          type: number
+        seconds:
+          type: number
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - created
+      - model
+      - text
+      - prompt
+      - pages
+      - tokens
+      - prompt_tokens
+      - prompt_seconds
+      - read_tok_s
+      - write_seconds
+      - tok_s
+      - seconds
+      description: 'A reading (OCR): the text and how it went'
+    ResponseFormat:
+      type: string
+      enum:
+      - url
+      - b64_json
+      description: 'How a picture comes back: a URL, or the bytes as base64 (OpenAI''s names): url | b64_json'
+    SizesInfo:
+      type: object
+      properties:
+        ratios:
+          type: array
+          items:
+            type: string
+        pixels:
+          type: array
+          items:
+            type: integer
+      required:
+      - ratios
+      - pixels
+      description: 'The sizes an engine offers: aspect ratios ("W:H") and pixel budgets'
+    Svg:
+      type: object
+      properties:
+        svg:
+          type: string
+          description: the SVG as the model wrote it (from <svg)
+        closed:
+          type: boolean
+          description: '</svg> ended it (false: max_length stopped it, an element maybe half written)'
+        tokens:
+          type: integer
+      required:
+      - svg
+      - closed
+      - tokens
+      description: An SVG written
+    UpscaleInfo:
+      type: object
+      properties:
+        variant:
+          type: string
+        about:
+          type: string
+        scales:
+          type: array
+          items:
+            type: integer
+        noise:
+          type: array
+          items:
+            type: integer
+          description: 'the denoise levels it takes (empty: none)'
+      required:
+      - variant
+      - about
+      - scales
+      - noise
+      description: A variant an upscaler offers
+    UpscaleRun:
+      type: object
+      properties:
+        seconds:
+          type: number
+        tiles:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'a picture: its tiles and their side'
+        tile:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        frames:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'a clip: its frames and frames a second made'
+        fps_done:
+          anyOf:
+          - type: number
+          - type: 'null'
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - seconds
+      description: How an upscale went
+    Upscaled:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpscaledItem'
+        nextsycl:
+          $ref: '#/components/schemas/UpscaleRun'
+      required:
+      - created
+      - data
+      - nextsycl
+      description: A picture or a clip upscaled
+    UpscaledItem:
+      type: object
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+        variant:
+          type: string
+        scale:
+          type: integer
+          description: 'the factor made (waifu2x 4x and up: its 2x model again each time)'
+        noise:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+        b64_json:
+          anyOf:
+          - type: string
+          - type: 'null'
+        frames:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'a clip: its frames, frame rate (as ffprobe gives it, 24/1) and file name'
+        fps:
+          anyOf:
+          - type: string
+          - type: 'null'
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+      required:
+      - width
+      - height
+      - variant
+      - scale
+      description: 'A picture or a clip upscaled: its link or its bytes (b64_json)'
+    VectorizeRun:
+      type: object
+      properties:
+        seconds:
+          type: number
+        prompt_seconds:
+          type: number
+        tokens:
+          type: integer
+        tok_s:
+          type: number
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - seconds
+      - prompt_seconds
+      - tokens
+      - tok_s
+      description: How an SVG was written
+    Vectorized:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Svg'
+        nextsycl:
+          $ref: '#/components/schemas/VectorizeRun'
+      required:
+      - created
+      - data
+      - nextsycl
+      description: A picture written as SVG
+    VideoUpscaleBody:
+      type: object
+      properties:
+        crf:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 0
+          maximum: 40
+          default: 16
+          description: 'the H.264 encode''s quality (lower: better, bigger)'
+        file:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: or a clip made here (a video.generate clip's name, h3_..., with or without .mp4)
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        noise:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: as image.upscale
+        response_format:
+          anyOf:
+          - $ref: '#/components/schemas/ResponseFormat'
+          - type: 'null'
+          description: 'url (default): the server keeps the MP4 and links it'
+        scale:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: as image.upscale
+        tile:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: as image.upscale
+        variant:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'as image.upscale (realesr-animevideov3: trained on video frames)'
+        video:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the clip: MP4 / WebM / MOV ... as base64 or a data: URL'
+      additionalProperties: true
+      description: 'What video.upscale makes from: the body its kind''s server takes.'

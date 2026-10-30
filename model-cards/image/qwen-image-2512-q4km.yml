@@ -5,6 +5,8 @@
 id: qwen-image-2512-q4km
 kind: image
 arch: qwen-image-2512
+license: apache-2.0
+commercial: true
 title: 'Qwen-Image 2512 Q4_K_M (20B MMDiT, Qwen2.5-VL; Lightning 4-step LoRA below 20 steps)'
 about: 'Qwen-Image-2512 as unsloth''s Q4_K_M GGUF (13.2 GB, streamed from host memory on a 12 GB card), the Qwen2.5-VL 7B text encoder as Q4_K_M, the 16-channel VAE, and lightx2v''s Lightning 4-step LoRA'
 gpus: '0'

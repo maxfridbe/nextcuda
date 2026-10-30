@@ -42,6 +42,23 @@ fn whole(b: &Value, k: &str, lo: u64, hi: u64) -> Result<Option<u64>, Fail> {
     }
 }
 
+/// The shortest and longest side an image model draws: 64 to 4096 (MOSS-Image's engine as well, within `max_pixels`)
+pub fn size_range(_m: &Value) -> (u32, u32) {
+    (64, 4096)
+}
+
+/// The most pixels an image model draws in one picture, when its card's room sets a limit: MOSS-Image's (its
+/// engine's MAX_PIXELS: the largest of OpenMOSS's 4 M presets, 2512 x 1680)
+pub fn max_pixels(m: &Value) -> Option<u32> {
+    (m["arch"] == "moss-image").then_some(4_220_160)
+}
+
+/// Whether a guidance scale above 1 needs a negative prompt: Qwen-Image's true_cfg_scale does (its engine refuses
+/// without one); MOSS-Image's guidance runs against an empty one, and Ming-Image's against a zero condition
+pub fn cfg_needs_negative(m: &Value) -> bool {
+    m["arch"].as_str().is_some_and(|a| a.starts_with("qwen-image"))
+}
+
 /// The steps an image model takes (image.info's steps): its default, and the only count a few-step model runs
 pub fn steps_of(m: &Value) -> Value {
     let own = m["env"]["NS_QI_SIGMAS"].as_str().map(|v| v.split(',').filter(|x| !x.trim().is_empty()).count());
@@ -88,7 +105,7 @@ impl Home {
         }
     }
 
-    /// A song's task: one made from a recording needs the recording and a model that takes one (acestep)
+    /// A song's task: one made from a recording needs the recording and a model that takes one (acestep; yue2 a cover)
     fn precheck_song(&self, b: &Value, all: &[Value]) -> Result<(), Fail> {
         let task = b["task"].as_str().or(b["options"]["task"].as_str()).unwrap_or("text2music");
         if !["text2music", "cover", "repaint", "edit", "lego"].contains(&task) {
@@ -108,8 +125,24 @@ impl Home {
         number(b, "repaint_end", -1.0, 600.0)?;
         if has_audio || task != "text2music" {
             let id = self.pick("audio", b, all)?;
-            if all.iter().any(|m| m["id"] == id.as_str() && s(m, "arch") != "acestep") {
-                return Err(bad(format!("{id} makes no song from a recording: name a model that does (acestep-1.5)")));
+            if let Some(m) = all.iter().find(|m| m["id"] == id.as_str()) {
+                match s(m, "arch").as_str() {
+                    "acestep" => {}
+                    // yue2: a cover - the recording's score (SheetSage2, its sheetsage file) sung in the new style
+                    "yue2" if task == "text2music" || task == "cover" => {
+                        if m["files"].is_object() && m["files"]["sheetsage"].is_null() {
+                            return Err(bad(format!("{id} makes a cover with its sheetsage file (SheetSage2), which it has not: nextcuda models pull {id}")));
+                        }
+                        if b["abc"].as_str().is_some_and(|a| !a.trim().is_empty()) {
+                            return Err(bad(format!("{id}: a recording (audio) or a score (abc) - the recording's score is its transcription")));
+                        }
+                        if b["cot"].as_str().or(b["options"]["cot"].as_str()) == Some("off") {
+                            return Err(bad(format!("{id}: a cover sings over the recording's score - cot melody (the default) or full")));
+                        }
+                    }
+                    "yue2" => return Err(bad(format!("{id} makes covers (a recording's melody sung anew); task {task} is acestep-1.5's"))),
+                    _ => return Err(bad(format!("{id} makes no song from a recording: name a model that does (acestep-1.5; yue2-3b-q8 for a cover)"))),
+                }
             }
         }
         Ok(())
@@ -129,8 +162,10 @@ impl Home {
             Some(sz) => {
                 let wh = sz.split_once('x').and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
                 match wh {
-                    Some((w, h)) if w >= 64 && h >= 64 && w % 16 == 0 && h % 16 == 0 => {}
-                    Some(_) => return Err(bad(format!("size {sz}: both sides multiples of 16, at least 64"))),
+                    Some((w, h)) if w >= size_range(&m).0 && h >= size_range(&m).0 && w <= size_range(&m).1 && h <= size_range(&m).1 && w % 16 == 0 && h % 16 == 0
+                        && max_pixels(&m).is_none_or(|p| w * h <= p) => {}
+                    Some(_) => return Err(bad(format!("size {sz}: both sides multiples of 16, {} to {}{}", size_range(&m).0, size_range(&m).1,
+                                                      max_pixels(&m).map_or(String::new(), |p| format!(", at most {p} pixels"))))),
                     None => return Err(bad(format!("size {sz}: WIDTHxHEIGHT"))),
                 }
             }
@@ -156,7 +191,7 @@ impl Home {
             }
         }
         let cfg = number(b, "cfg", 0.0, 30.0)?.unwrap_or(1.0);
-        if cfg > 1.0 && s(b, "negative_prompt").trim().is_empty() {
+        if cfg > 1.0 && cfg_needs_negative(&m) && s(b, "negative_prompt").trim().is_empty() {
             return Err(bad(format!("cfg {cfg}: guidance above 1 needs a negative_prompt (the model's true_cfg_scale)")));
         }
         let strength = number(b, "strength", 0.05, 1.0)?.unwrap_or(1.0);
@@ -282,8 +317,21 @@ pub fn speech_lists(m: &Value) -> (Vec<String>, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{number, speech_lists, steps_of, whole};
+    use super::{cfg_needs_negative, number, size_range, speech_lists, steps_of, whole};
     use serde_json::json;
+
+    #[test]
+    fn each_engine_has_its_own_sides_and_guidance_rule() {
+        assert_eq!(size_range(&json!({"arch": "moss-image"})), (64, 4096));
+        assert_eq!(super::max_pixels(&json!({"arch": "moss-image"})), Some(2512 * 1680));
+        assert_eq!(super::max_pixels(&json!({"arch": "qwen-image-2.1"})), None);
+        assert_eq!(size_range(&json!({"arch": "qwen-image-2.1"})), (64, 4096));
+        assert!(cfg_needs_negative(&json!({"arch": "qwen-image-2.1"})));
+        assert!(cfg_needs_negative(&json!({"arch": "qwen-image-2512"})));
+        // MOSS-Image's guidance (cfg 3 by default) runs against an empty negative prompt, Ming-Image's has none
+        assert!(!cfg_needs_negative(&json!({"arch": "moss-image"})));
+        assert!(!cfg_needs_negative(&json!({"arch": "ming-image"})));
+    }
 
     #[test]
     fn a_few_step_model_locks_its_steps() {

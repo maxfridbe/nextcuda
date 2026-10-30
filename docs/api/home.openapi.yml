@@ -1,0 +1,1062 @@
+openapi: 3.1.0
+info:
+  title: 'nextcuda''s front door: its page''s API and documents (nextcuda serve)'
+  version: generated
+  description: 'A server''s own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextcuda gen-api`: do not edit.'
+servers:
+- url: /
+paths:
+  /health:
+    get:
+      operationId: health
+      summary: Whether the front door answers
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /openapi.yml:
+    get:
+      operationId: openapiYml
+      summary: The OpenAPI document of what the enabled kinds offer (no token needed; its examples say <token>)
+      tags:
+      - documents
+      responses:
+        '200':
+          description: the file
+          content:
+            application/yaml:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /openapi.yaml
+  /openapi.json:
+    get:
+      operationId: openapiJson
+      summary: The same document as JSON
+      tags:
+      - documents
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {}
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/state:
+    get:
+      operationId: state
+      summary: 'The box at a glance: the cards, the models, the services, the drives, the downloads (the page polls it)'
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/State'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/config:
+    get:
+      operationId: config
+      summary: The settings file and what each setting is
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/spec:
+    get:
+      operationId: spec
+      summary: 'The API tab: the token and the document with it in the examples'
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Spec'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/runs/{id}:
+    get:
+      operationId: run
+      summary: A run's output (its last 64 KiB)
+      tags:
+      - page
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunView'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/action:
+    post:
+      operationId: action
+      summary: 'A page button: enable, disable, gpus, load, unload, config, restart, maintenance, measure, move, move_cancel, pull, pull_cancel, auto_pull; a load, a measurement and a move run on (the state shows them), the others answer when done'
+      tags:
+      - page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Action'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: the body''s `error` says what'
+components:
+  schemas:
+    Action:
+      type: object
+      properties:
+        do:
+          $ref: '#/components/schemas/ActionDo'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the model (enable, disable, gpus, load, unload, move, pull, pull_cancel)
+        gpus:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'enable, gpus: the cards ([] or none: any)'
+        force:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'disable: even while it runs'
+        service:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'restart: serve, switch, studio, video, or a kind'
+        drive:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'measure, move: the drive'
+        on:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'auto_pull, maintenance: on or off'
+      required:
+      - do
+      additionalProperties: true
+      description: 'A page button: what it does and to what'
+    ActionDo:
+      type: string
+      enum:
+      - enable
+      - disable
+      - gpus
+      - load
+      - unload
+      - config
+      - restart
+      - maintenance
+      - measure
+      - move
+      - move_cancel
+      - pull
+      - pull_cancel
+      - auto_pull
+      description: What a page button does
+    Available:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+        about:
+          anyOf:
+          - type: string
+          - type: 'null'
+        gpus:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the cards it is made for, as its model card says
+        bytes:
+          type: integer
+        downloaded:
+          type: boolean
+        drive:
+          type: string
+          description: where it would go
+        folder:
+          type: string
+        fits:
+          type: boolean
+        free:
+          type: integer
+        pull:
+          anyOf:
+          - $ref: '#/components/schemas/PullView'
+          - type: 'null'
+        runs_here:
+          type: boolean
+        why_not:
+          anyOf:
+          - type: string
+          - type: 'null'
+        license:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the licence of its weights, whether it allows commercial use (false: the pages tag it non-commercial), the conditions it puts on it'
+        commercial:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        license_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+      required:
+      - id
+      - kind
+      - bytes
+      - downloaded
+      - drive
+      - folder
+      - fits
+      - free
+      - runs_here
+      description: A model a card offers that is not here yet
+    CardState:
+      type: object
+      properties:
+        index:
+          type: integer
+        name:
+          type: string
+        pci:
+          type: string
+        ts:
+          type: number
+          description: when it was read (unix seconds)
+        vram_used_mb:
+          type: integer
+        vram_total_mb:
+          type: integer
+        busy_pct:
+          type: number
+        temp_pkg:
+          anyOf:
+          - type: number
+          - type: 'null'
+        temp_vram:
+          anyOf:
+          - type: number
+          - type: 'null'
+        temp_vram_max:
+          anyOf:
+          - type: number
+          - type: 'null'
+        temp_pcie:
+          anyOf:
+          - type: number
+          - type: 'null'
+        temp_mctrl:
+          anyOf:
+          - type: number
+          - type: 'null'
+        power_w:
+          anyOf:
+          - type: number
+          - type: 'null'
+        pkg_power_w:
+          anyOf:
+          - type: number
+          - type: 'null'
+        power_cap_w:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        pcie:
+          $ref: '#/components/schemas/Pcie'
+        host_load1:
+          type: number
+        host_cpus:
+          type: integer
+        energy_j:
+          type: number
+          description: the energy counter since the front door started, joules
+        fan_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+        fan_rpm:
+          anyOf:
+          - type: number
+          - type: 'null'
+        freq_mhz:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        procs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Proc'
+        vouched:
+          type: array
+          items:
+            $ref: '#/components/schemas/Vouched'
+        vouched_mb:
+          type: integer
+        vouched_headroom_mb:
+          type: integer
+        overbooked:
+          type: boolean
+          description: the models vouched for pass the card
+      required:
+      - index
+      - name
+      - pci
+      - ts
+      - vram_used_mb
+      - vram_total_mb
+      - busy_pct
+      - pcie
+      - host_load1
+      - host_cpus
+      - energy_j
+      - procs
+      - vouched
+      - vouched_mb
+      - vouched_headroom_mb
+      - overbooked
+      description: 'A card: its readings, its processes, the memory vouched for'
+    Config:
+      type: object
+      properties:
+        path:
+          type: string
+        text:
+          type: string
+        settings:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingRow'
+        other:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingRow'
+          description: the file's lines that are no setting listed
+        prefixes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingPrefix'
+      required:
+      - path
+      - text
+      - settings
+      - other
+      - prefixes
+      description: The settings file and what each setting is
+    DriveView:
+      type: object
+      properties:
+        id:
+          type: string
+        disk:
+          type: string
+        model:
+          type: string
+        link:
+          anyOf:
+          - type: string
+          - type: 'null'
+        link_gb_s:
+          anyOf:
+          - type: number
+          - type: 'null'
+        device:
+          type: string
+        fstype:
+          type: string
+        mount:
+          type: string
+        folder:
+          type: string
+        size:
+          type: integer
+        free:
+          type: integer
+        margin:
+          type: integer
+          description: what is kept free
+        models_bytes:
+          type: integer
+        models:
+          type: array
+          items:
+            type: string
+        measured:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'its read speed as measured (system.drive.measure); null: not measured'
+        measuring:
+          type: boolean
+        rate_gb_s:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - id
+      - disk
+      - model
+      - device
+      - fstype
+      - mount
+      - folder
+      - size
+      - free
+      - margin
+      - models_bytes
+      - models
+      - measuring
+      description: A drive the models are (or may be) on
+    DrivesView:
+      type: object
+      properties:
+        drives:
+          type: array
+          items:
+            $ref: '#/components/schemas/DriveView'
+        models:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelFiles'
+        move:
+          anyOf:
+          - {}
+          - type: 'null'
+        measuring:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the drive being measured
+        folders:
+          type: array
+          items:
+            type: string
+      required:
+      - drives
+      - models
+      - folders
+      description: The drives, the models' files on them, a move under way
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          description: ok, or loading (HTTP 503 then)
+      required:
+      - status
+      description: Whether the server answers (and has its model loaded)
+    HostStat:
+      type: object
+      properties:
+        mem_total_mb:
+          type: integer
+        mem_avail_mb:
+          type: integer
+        load1:
+          anyOf:
+          - type: number
+          - type: 'null'
+        cpus:
+          type: integer
+      required:
+      - mem_total_mb
+      - mem_avail_mb
+      - cpus
+      description: 'The machine: memory, load, CPUs'
+    Link:
+      type: object
+      properties:
+        gen:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        width:
+          type: integer
+      required:
+      - width
+      description: 'A PCIe link: its generation and lanes'
+    Maintenance:
+      type: object
+      properties:
+        on:
+          type: boolean
+        message:
+          type: string
+        since:
+          type: number
+          description: unix seconds
+        until:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'about when it ends; null: unknown'
+        retry_after_s:
+          type: number
+        notice:
+          type: string
+          description: the words a refused call gets
+        bypass:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the key that lets a call through (the page's own copy)
+      required:
+      - on
+      - message
+      - since
+      - retry_after_s
+      - notice
+      description: Maintenance mode's notice, as callers see it
+    ModelFiles:
+      type: object
+      properties:
+        bytes:
+          type: integer
+        files:
+          type: integer
+        missing:
+          type: integer
+        drives:
+          type: object
+          additionalProperties:
+            type: integer
+          description: drive -> bytes on it
+        streams:
+          type: boolean
+          description: it streams weights from its drive while it runs
+        moving:
+          type: boolean
+        move:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/MoveCheck'
+          description: drive -> whether it may move there
+      required:
+      - bytes
+      - files
+      - missing
+      - drives
+      - streams
+      - moving
+      - move
+      description: A model's files on the drives
+    ModelState:
+      type: string
+      enum:
+      - disabled
+      - unloaded
+      - loading
+      - loaded
+      - busy
+      - ready
+      description: A model's state
+    ModelView:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+        arch:
+          anyOf:
+          - type: string
+          - type: 'null'
+        enabled:
+          type: boolean
+        gpus:
+          type: array
+          items:
+            type: integer
+        state:
+          $ref: '#/components/schemas/ModelState'
+        spans:
+          type: boolean
+          description: a chat model that spans every card
+        capabilities:
+          type: array
+          items:
+            type: string
+        methods:
+          type: array
+          items:
+            type: string
+          description: the methods it serves (image.generate ...)
+        vouch_mb:
+          type: object
+          additionalProperties:
+            type: integer
+          description: card index -> MiB
+        measured:
+          type: boolean
+        headroom_mb:
+          type: object
+          additionalProperties:
+            type: integer
+        headroom_given:
+          type: boolean
+        page:
+          type: integer
+          description: the port its page is on
+        license:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the licence of its weights, whether it allows commercial use (false: the pages tag it non-commercial), the conditions it puts on it'
+        commercial:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        license_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+      required:
+      - id
+      - kind
+      - enabled
+      - gpus
+      - state
+      - spans
+      - capabilities
+      - methods
+      - vouch_mb
+      - measured
+      - headroom_mb
+      - headroom_given
+      - page
+      description: 'A registered model: kind, enabled, its cards, its state, the memory vouched for'
+    MoveCheck:
+      type: object
+      properties:
+        need:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        why:
+          anyOf:
+          - type: string
+          - type: 'null'
+      description: 'Whether a model''s files may move to a drive: what they need there, or why not'
+    Pcie:
+      type: object
+      properties:
+        cur:
+          $ref: '#/components/schemas/Link'
+        card_max:
+          $ref: '#/components/schemas/Link'
+        slot_max:
+          $ref: '#/components/schemas/Link'
+      required:
+      - cur
+      - card_max
+      - slot_max
+      description: A card's PCIe link now, the most the card does and the most its slot does
+    Ports:
+      type: object
+      properties:
+        video:
+          type: integer
+        chat_ui:
+          type: integer
+      required:
+      - video
+      - chat_ui
+      description: The ports the page links
+    Proc:
+      type: object
+      properties:
+        pid:
+          type: integer
+        vram_mb:
+          type: integer
+        program:
+          type: string
+          description: 'nextcuda, or another program (python: its script)'
+        args:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: another program's command line (its start)
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'nextcuda''s: the kind and command it runs (llm, image serve ...)'
+        command:
+          anyOf:
+          - type: string
+          - type: 'null'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the model's file, or its registry id where it is a registered one (model_id, title)
+        model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+        port:
+          anyOf:
+          - type: string
+          - type: 'null'
+        gpus:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+      required:
+      - pid
+      - vram_mb
+      - program
+      description: A process on a card
+    PullState:
+      type: string
+      enum:
+      - queued
+      - downloading
+      - verifying
+      - done
+      - failed
+      - cancelled
+      description: A model download's state
+    PullView:
+      type: object
+      properties:
+        model:
+          type: string
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+        drive:
+          type: string
+        folder:
+          type: string
+        state:
+          $ref: '#/components/schemas/PullState'
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+        bytes_total:
+          type: integer
+        bytes_done:
+          type: integer
+        pct:
+          type: number
+        speed:
+          type: number
+          description: bytes a second
+        eta_s:
+          anyOf:
+          - type: number
+          - type: 'null'
+        started:
+          type: number
+        ended:
+          anyOf:
+          - type: number
+          - type: 'null'
+        run:
+          type: integer
+          description: the run its output is in
+      required:
+      - model
+      - drive
+      - folder
+      - state
+      - bytes_total
+      - bytes_done
+      - pct
+      - speed
+      - started
+      - run
+      description: A model's download
+    RunId:
+      type: object
+      properties:
+        id:
+          type: integer
+      required:
+      - id
+      description: A run by its id
+    RunView:
+      type: object
+      properties:
+        id:
+          type: integer
+        label:
+          type: string
+        started:
+          type: number
+        rc:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'its exit code; null: running'
+        out:
+          type: string
+      required:
+      - id
+      - label
+      - started
+      - out
+      description: 'Something the page ran (this program with arguments): its output''s tail'
+    Service:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        what:
+          type: string
+        port:
+          type: integer
+        up:
+          type: boolean
+        detail:
+          anyOf:
+          - type: string
+          - type: 'null'
+        link:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: its page, on its own port
+        href:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: its page through this door
+        api:
+          anyOf:
+          - type: string
+          - type: 'null'
+      required:
+      - id
+      - title
+      - what
+      - port
+      - up
+      description: A front end or helper beside the models
+    SettingPrefix:
+      type: object
+      properties:
+        prefix:
+          type: string
+        what:
+          type: string
+        readers:
+          type: array
+          items:
+            type: string
+      required:
+      - prefix
+      - what
+      - readers
+      description: A family of settings (a prefix)
+    SettingRow:
+      type: object
+      properties:
+        name:
+          type: string
+        group:
+          anyOf:
+          - type: string
+          - type: 'null'
+        default:
+          anyOf:
+          - type: string
+          - type: 'null'
+        what:
+          type: string
+        readers:
+          type: array
+          items:
+            type: string
+          description: the programs that read it
+        file:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'its value in the file; null: not there'
+        env:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: its value in this service's environment (which wins over the file)
+      required:
+      - name
+      - what
+      - readers
+      description: A setting this program reads
+    Spec:
+      type: object
+      properties:
+        token:
+          type: string
+          description: the bearer token (this page's own copy)
+        spec:
+          description: the OpenAPI document of what the enabled kinds offer
+      required:
+      - token
+      - spec
+      description: 'The API tab: the token and the document with it filled in'
+    State:
+      type: object
+      properties:
+        ts:
+          type: number
+        host:
+          $ref: '#/components/schemas/HostStat'
+        cards:
+          type: array
+          items:
+            $ref: '#/components/schemas/CardState'
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelView'
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/Service'
+        runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/RunView'
+          description: the last runs, newest first
+        idle_minutes:
+          type: integer
+        ports:
+          $ref: '#/components/schemas/Ports'
+        maintenance:
+          anyOf:
+          - $ref: '#/components/schemas/Maintenance'
+          - type: 'null'
+        drives:
+          $ref: '#/components/schemas/DrivesView'
+        available:
+          type: array
+          items:
+            $ref: '#/components/schemas/Available'
+        pulls:
+          type: array
+          items:
+            $ref: '#/components/schemas/PullView'
+        auto_pull:
+          type: boolean
+          description: a request for a model not downloaded fetches it (NS_AUTO_PULL)
+      required:
+      - ts
+      - host
+      - cards
+      - models
+      - services
+      - runs
+      - idle_minutes
+      - ports
+      - drives
+      - available
+      - pulls
+      - auto_pull
+      description: The box at a glance (the page polls it)
+    Vouched:
+      type: object
+      properties:
+        model:
+          type: string
+        kind:
+          type: string
+        mb:
+          type: integer
+        headroom_mb:
+          type: integer
+        headroom_given:
+          type: boolean
+        measured:
+          type: boolean
+          description: the memory is what it took when it ran (else an estimate)
+        state:
+          type: string
+        of:
+          anyOf:
+          - type: integer
+          - type: 'null'
+      required:
+      - model
+      - kind
+      - mb
+      - headroom_mb
+      - headroom_given
+      - measured
+      - state
+      description: 'An enabled model''s memory vouched for on a card (chat and video models: one of the group, `of` them)'

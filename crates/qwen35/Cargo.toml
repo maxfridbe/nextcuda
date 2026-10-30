@@ -1,0 +1,11 @@
+[package]
+name = "nextcuda-qwen35"
+description = "Qwen3.5 / Qwen3.8's language model core, from a llama.cpp GGUF: gated DeltaNet and gated full attention, sessions, a hidden-state tap - what the llm engine serves and MOSS-Image encodes its prompts with"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextcuda-core.workspace = true
+nextcuda-diffusion.workspace = true
+nextcuda-gguf.workspace = true

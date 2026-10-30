@@ -1,0 +1,11 @@
+/* libnextcuda-image.so's exports: its C API (ns_*, nsd_*) and what the silos call back (ns_fail, ns_cuda); every
+ * other symbol stays inside it (build.sh: the llm kernels' ggml-cuda copies must not stand in for sd.cpp's) */
+{
+  global:
+    ns_*;
+    nsd_*;
+    extern "C++" {
+      ns_*;
+    };
+  local: *;
+};

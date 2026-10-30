@@ -1,5 +1,7 @@
-/** The only module that talks to the server. */
-import type { Answer, Gpu, Info, Made, Progress } from "./types.js";
+/** The only module that talks to the server: its routes' typed client (src/gen/routes.ts). */
+import { routes } from "./gen/routes.js";
+import type { Model3dGenerateBody, Model3dRigBody } from "./gen/routes.js";
+import type { Answer, Made } from "./types.js";
 
 /** A server path made relative to the page, so the page works on its server's own port and through the front door
  *  (`/open/<id>/`) alike; a link the server made absolute (from the Host it was asked on) keeps only its path. */
@@ -11,28 +13,23 @@ export function here(u: string): string {
 
 const linked = (m: Made): Made => ({ ...m, url: here(m.url), picture: m.picture ? here(m.picture) : m.picture });
 
-async function getJSON<T>(path: string): Promise<T> {
-  const r = await fetch(path);
-  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
-  return (await r.json()) as T;
-}
+const r = routes();
 
-async function post(path: string, body: Record<string, unknown>): Promise<Answer> {
-  const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const j = (await r.json()) as Answer & { error?: { message: string } };
-  if (!r.ok) throw new Error(j.error?.message ?? `HTTP ${r.status}`);
+/** The JSON answer (response_format url), its links made relative */
+function answer(j: Answer | Blob): Answer {
+  if (j instanceof Blob) throw new Error("the server answered the GLB itself, not its link");
   if (Array.isArray(j.data)) j.data = j.data.map(linked);
   return j;
 }
 
 export const api = {
-  info: () => getJSON<Info>("api/info"),
-  progress: () => getJSON<Progress>("api/progress"),
-  gpu: () => getJSON<Gpu>("api/gpu"),
-  history: async () => (await getJSON<{ data: Made[] }>("api/history")).data.map(linked),
-  cancel: async () => { await fetch("api/cancel", { method: "POST" }); },
+  info: r.info,
+  progress: r.progress,
+  gpu: r.gpu,
+  history: async (): Promise<Made[]> => (await r.history()).data.map(linked),
+  cancel: async (): Promise<void> => { await r.cancel(); },
   /** a mesh from pictures; its answer links the GLB (an error carries the server's message) */
-  generate: (body: Record<string, unknown>) => post("v1/model3d/generate", body),
+  generate: async (body: Model3dGenerateBody): Promise<Answer> => answer(await r.generate({ ...body, response_format: "url" })),
   /** a mesh rigged or animated */
-  rig: (body: Record<string, unknown>) => post("v1/model3d/rig", body),
+  rig: async (body: Model3dRigBody): Promise<Answer> => answer(await r.rig({ ...body, response_format: "url" })),
 };

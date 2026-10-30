@@ -3,6 +3,9 @@
 id: animateanymesh
 kind: model3d
 arch: animateanymesh
+license: apache-2.0
+commercial: true
+license_note: 'Its tokenizer files come from Stable Diffusion 1.5 (CreativeML OpenRAIL-M: commercial use allowed, with use restrictions).'
 title: 'AnimateAnyMesh (text-driven mesh animation: 16 frames as morph targets; Apache-2.0)'
 about: Wu et al., ICCV 2025 - DyMeshVAE (neighbour attention over the mesh's edges, farthest-point trajectory tokens) and a 12-layer rectified-flow MMDiT conditioned on SD 1.5's CLIP-L text tower; float32; the output keeps the input mesh (UVs, textures) and adds one morph target a frame
 does: [animate]

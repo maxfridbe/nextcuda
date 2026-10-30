@@ -1,8 +1,18 @@
 /** What the buttons do: build the request from the form, send it, keep the results. */
 import { api } from "./api.js";
 import { render, saveForm, state } from "./state.js";
+import type { ImageEditBody, ImageGenerateBody } from "./gen/routes.js";
 import type { Picture } from "./types.js";
-import { r16 } from "./util.js";
+import { fitSize, ratioOf, snap } from "./util.js";
+
+/** A side of the form held to the engine's pixel budget (MOSS-Image: 4 M) against the other side: the largest grid
+ *  step that keeps width x height inside it. */
+export function capSide(x: number, other: number): number {
+  const most = state.info?.max_pixels;
+  const g = state.info?.grid ?? 16;
+  if (!most || x * other <= most) return x;
+  return Math.max(state.info?.min_side ?? g, Math.floor(most / other / g) * g);
+}
 
 /** The first time the model is known: the form's empty fields take its defaults. */
 export function adoptDefaults(): void {
@@ -12,10 +22,15 @@ export function adoptDefaults(): void {
   if (!f.sampler || !(state.info?.samplers ?? []).includes(f.sampler)) f.sampler = d.sampler;
   if (!f.schedule || !(state.info?.schedules ?? []).includes(f.schedule)) f.schedule = d.schedule;
   // LoRAs the server no longer offers drop out; one merged at start shows ticked
+  // a size from another model (the form is kept across reloads) is brought inside this one's sides and grid
+  const [lo, hi] = [state.info?.min_side ?? 256, state.info?.max_side ?? 4096];
+  const g = state.info?.grid ?? 16;
+  f.width = Math.min(hi, snap(f.width, g, lo));
+  f.height = capSide(Math.min(hi, snap(f.height, g, lo)), f.width);
   const known = new Set((state.info?.loras ?? []).map((l) => l.id));
   for (const id of Object.keys(f.loras)) if (!known.has(id)) delete f.loras[id];
   if (!Object.keys(f.loras).length) {
-    for (const l of state.info?.loras ?? []) if (l.loaded !== null) f.loras[l.id] = l.loaded;
+    for (const l of state.info?.loras ?? []) if (l.loaded != null) f.loras[l.id] = l.loaded;
   }
 }
 
@@ -23,8 +38,38 @@ export function setAspect(a: number, b: number): void {
   const d = state.info?.defaults;
   const area = (d?.width ?? 1024) * (d?.height ?? 1024);
   const h = Math.sqrt((area * b) / a);
-  state.form.width = r16((h * a) / b);
-  state.form.height = r16(h);
+  const g = state.info?.grid ?? 16;
+  const [lo, hi] = [state.info?.min_side ?? 256, state.info?.max_side ?? 4096];
+  state.form.width = Math.min(hi, snap((h * a) / b, g, lo));
+  state.form.height = capSide(Math.min(hi, snap(h, g, lo)), state.form.width);
+  saveForm();
+  render();
+}
+
+/** The size the form holds as a budget and a ratio: the budget of the preset it matches, else its own area. */
+export function sizeNow(): { pixels: number; ratio: number } {
+  const f = state.form;
+  const s = state.info?.sizes;
+  const g = state.info?.grid ?? 16;
+  const own = f.width / f.height;
+  const ratio = (s?.ratios ?? []).map(ratioOf).find((r) => Math.abs(r - own) < 0.02) ?? own;
+  const pixels = (s?.pixels ?? []).find((p) => { const [w, h] = fitSize(p, ratio, g); return w === f.width && h === f.height; });
+  return { pixels: pixels ?? f.width * f.height, ratio };
+}
+
+/** Whether a size is one the engine draws (its sides within its range). */
+export function sizeFits(w: number, h: number): boolean {
+  const [lo, hi] = [state.info?.min_side ?? 256, state.info?.max_side ?? 4096];
+  return w >= lo && h >= lo && w <= hi && h <= hi && (!state.info?.max_pixels || w * h <= state.info.max_pixels);
+}
+
+/** A size from a budget at a ratio (either may be kept from the form's own). */
+export function setBudget(pixels: number | null, ratio: number | null): void {
+  const now = sizeNow();
+  const [w, h] = fitSize(pixels ?? now.pixels, ratio ?? now.ratio, state.info?.grid ?? 16);
+  if (!sizeFits(w, h)) return;
+  state.form.width = w;
+  state.form.height = h;
   saveForm();
   render();
 }
@@ -93,37 +138,39 @@ export async function refreshHistory(): Promise<void> {
     render();
   } catch {
     /* transient */
+  } finally {
+    state.historyLoaded = true;
+    render();
   }
 }
 
-function body(): Record<string, unknown> {
+function body(): ImageGenerateBody & Partial<ImageEditBody> {
   const f = state.form;
   const d = state.info?.defaults;
   const editing = state.pictures.length > 0;
-  const b: Record<string, unknown> = {
+  const b: ImageGenerateBody & Partial<ImageEditBody> = {
     model: state.info?.model, prompt: f.prompt.trim(), n: f.n, response_format: "url",
   };
   if (!editing || !state.sizeFromPictures) b.size = `${f.width}x${f.height}`;
   if (editing) b.images = state.pictures.map((p) => p.url);
-  if (f.steps) b.steps = f.steps;
+  // only what the engine takes: a value left in the form from another model is not sent
+  if (f.steps && state.info?.steps_free !== false) b.steps = f.steps;
   if (f.seed !== null) b.seed = f.seed;
-  if (state.info?.guidance !== false) {
-    if (f.negative.trim()) b.negative_prompt = f.negative.trim();
-    if (f.cfg !== null && f.cfg !== d?.cfg) b.cfg = f.cfg;
-  }
-  if (f.shift !== null) b.shift = f.shift;
+  if (state.info?.guidance !== false && f.cfg !== null && f.cfg !== d?.cfg) b.cfg = f.cfg;
+  if (state.info?.negative !== false && state.info?.guidance !== false && f.negative.trim()) b.negative_prompt = f.negative.trim();
+  if (f.shift !== null && state.info?.shift !== false && (state.info?.shift_schedules ?? [f.schedule]).includes(f.schedule)) b.shift = f.shift;
   if (f.sampler && f.sampler !== d?.sampler) b.sampler = f.sampler;
   if (f.schedule && f.schedule !== d?.schedule) b.schedule = f.schedule;
-  if (f.rgba) b.background = "transparent";
+  if (f.rgba && state.info?.transparent !== false) b.background = "transparent";
   const opts = Object.fromEntries(Object.entries(f.options).filter(([k, v]) =>
     v.trim() !== "" && (state.info?.options ?? []).some((o) => o.name === k)));
   if (Object.keys(opts).length) b.options = opts;
-  if ((state.info?.loras ?? []).length) b.loras = Object.entries(f.loras).map(([name, scale]) => ({ name, scale }));
+  if ((state.info?.loras ?? []).length && state.info?.takes_loras !== false) b.loras = Object.entries(f.loras).map(([name, scale]) => ({ name, scale }));
   return b;
 }
 
 export async function generate(): Promise<void> {
-  if (state.busy || !state.info || state.info.loading || !state.form.prompt.trim()) return;
+  if (state.busy || !state.info || state.info.loading || state.info.vectorize || (state.info.upscale ?? []).length || !state.form.prompt.trim()) return;
   saveForm();
   state.busy = true;
   state.started = performance.now();

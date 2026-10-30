@@ -8,3 +8,6 @@ export const fmtT = (x: number | null | undefined): string => {
 };
 
 export const clamp = (x: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, x));
+
+/** A GPU as the pages show it: "NVIDIA GeForce RTX 5070" -> "RTX 5070", "Intel(R) Arc(TM) B70 Graphics" -> "B70" (the same in every app). */
+export const gpuName = (n: string) => n.replace(/^Intel\(R\) Arc\(TM\) /, "").replace(/^NVIDIA GeForce /, "").replace(/ Graphics$/, "");

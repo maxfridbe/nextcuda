@@ -6,6 +6,8 @@ export interface AppState {
   progress: Progress | null;
   gpu: Gpu | null;
   history: Song[];
+  /** false until the history's first answer (a spinner stands in for the list) */
+  historyLoaded: boolean;
   /** the saved voices (spoken by a model that clones) */
   voices: SavedVoice[];
   form: Form;
@@ -25,6 +27,7 @@ export const state: AppState = {
   progress: null,
   gpu: null,
   history: [],
+  historyLoaded: false,
   voices: [],
   form: { prompt: "", lyrics: "", seconds: 60, steps: null, cfg: null, seed: null, options: {}, text: "", voice: "", language: "", instructions: "",
           refAudio: "", refName: "", refText: "" },

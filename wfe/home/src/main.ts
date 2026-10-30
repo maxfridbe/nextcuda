@@ -8,6 +8,11 @@ import { styleModule } from "../../vendor/snabbdom/modules/style.js";
 import type { VNode } from "../../vendor/snabbdom/vnode.js";
 import { App } from "./components/App.js";
 import type { Config, ConfigSaved, Spec, State } from "./types.js";
+import { routes } from "./gen/routes.js";
+import type { Action, ActionDo } from "./gen/routes.js";
+
+/** The front door's routes (src/gen/routes.ts): absolute, as the page is served at the root */
+const api = routes("/");
 
 export const ui = {
   state: null as State | null,
@@ -65,9 +70,7 @@ function settle(): void {
 
 async function poll(): Promise<void> {
   try {
-    const r = await fetch("/api/state");
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    ui.state = (await r.json()) as State;
+    ui.state = await api.state();
     ui.error = null;
     settle();
   } catch (e) {
@@ -81,8 +84,7 @@ async function poll(): Promise<void> {
 
 export async function loadSpec(): Promise<void> {
   try {
-    const r = await fetch("/api/spec");
-    ui.spec = (await r.json()) as Spec;
+    ui.spec = (await api.spec()) as Spec;
   } catch (e) {
     ui.error = String(e);
   }
@@ -94,20 +96,13 @@ export async function act(what: string, model: string, extra: Record<string, unk
   ui.pending[model] = { what, since: Date.now() };
   render();
   try {
-    const r = await fetch("/api/action", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ do: what, model, ...extra }),
-    });
-    const j = (await r.json()) as { error?: string };
-    if (!r.ok) {
-      ui.error = j.error ?? `HTTP ${r.status}`;
-      delete ui.pending[model];
-    }
+    await api.action({ do: what as ActionDo, model, ...extra });
     // a change of cards is done when answered (an unload it needed was made before); a download started or
     // cancelled too (its progress is in the state's pulls)
-    if (r.ok && ["gpus", "pull", "pull_cancel"].includes(what)) delete ui.pending[model];
+    if (["gpus", "pull", "pull_cancel"].includes(what)) delete ui.pending[model];
     if (what === "enable" || what === "disable" || what === "gpus") void loadSpec();
   } catch (e) {
-    ui.error = String(e);
+    ui.error = e instanceof Error ? e.message : String(e);
     delete ui.pending[model];
   }
   render();
@@ -117,9 +112,7 @@ export async function act(what: string, model: string, extra: Record<string, unk
 /** NS_AUTO_PULL from the page's checkbox: a request for a model not downloaded fetches it (no restart needed) */
 export async function autoPull(on: boolean): Promise<void> {
   try {
-    const r = await fetch("/api/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ do: "auto_pull", on }) });
-    const j = (await r.json()) as { error?: string };
-    if (!r.ok) ui.error = j.error ?? `HTTP ${r.status}`;
+    await api.action({ do: "auto_pull", on });
   } catch (e) {
     ui.error = String(e);
   }
@@ -128,7 +121,7 @@ export async function autoPull(on: boolean): Promise<void> {
 
 /** Maintenance mode on (asking what to tell callers and for how long) or off */
 export async function maintenance(on: boolean): Promise<void> {
-  const body: Record<string, unknown> = { do: "maintenance", on };
+  const body: Action = { do: "maintenance", on };
   if (on) {
     const message = prompt("Maintenance: what should callers be told?", "development on the GPUs");
     if (message === null) return;
@@ -141,11 +134,9 @@ export async function maintenance(on: boolean): Promise<void> {
     return;
   }
   try {
-    const r = await fetch("/api/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    const j = (await r.json()) as { error?: string };
-    if (!r.ok) ui.error = j.error ?? `HTTP ${r.status}`;
+    await api.action(body);
   } catch (e) {
-    ui.error = String(e);
+    ui.error = e instanceof Error ? e.message : String(e);
   }
   render();
   void poll();
@@ -155,7 +146,7 @@ export type Tab = "status" | "api" | "config";
 
 export async function loadConfig(): Promise<void> {
   try {
-    ui.config = (await (await fetch("/api/config")).json()) as Config;
+    ui.config = await api.config();
   } catch (e) {
     ui.error = String(e);
   }
@@ -164,13 +155,10 @@ export async function loadConfig(): Promise<void> {
 
 /** Save the edited settings (or the raw file); the answer says what to restart */
 export async function saveConfig(raw: boolean): Promise<void> {
-  const body = raw ? { do: "config", text: ui.raw ?? "" }
+  const body: Action = raw ? { do: "config", text: ui.raw ?? "" }
     : { do: "config", set: Object.fromEntries(Object.entries(ui.edits).map(([k, v]) => [k, v.trim() === "" ? null : v])) };
   try {
-    const r = await fetch("/api/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    const j = (await r.json()) as ConfigSaved & { error?: string };
-    if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
-    ui.saved = j;
+    ui.saved = (await api.action(body)) as unknown as ConfigSaved;
     ui.edits = {};
     ui.raw = null;
     ui.error = null;
@@ -184,9 +172,7 @@ export async function restartService(service: string): Promise<void> {
   ui.restarting[service] = true;
   render();
   try {
-    const r = await fetch("/api/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ do: "restart", service }) });
-    const j = (await r.json()) as { error?: string };
-    if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+    await api.action({ do: "restart", service });
     if (ui.saved) ui.saved.restart = ui.saved.restart.filter((x) => x !== service);
   } catch (e) {
     // this page restarting itself drops the connection: that is the answer

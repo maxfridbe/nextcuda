@@ -1,9 +1,10 @@
 /** Everything to do with making a new clip. Deliberately separate from Jobs. */
 import { jsx } from "../jsx.js";
-import { rpc } from "../api.js";
+import { api, rpc } from "../api.js";
 import { load, refresh, render, save, state } from "../state.js";
 import { navigate } from "../router.js";
 import type { Canvas, Engine, GenerateRequest } from "../types.js";
+import type { Upscaler } from "../gen/studio.js";
 import { CanvasPicker, estimate } from "./CanvasPicker.js";
 import { ClipProgress } from "./Progress.js";
 import { Panel } from "./Panel.js";
@@ -13,14 +14,13 @@ interface Form {
   seconds: number;
   steps: number;
   seed: number;
-  te: "teacher" | "student";
   label: string;
   width: number;
   height: number;
   engine: Engine;
   upscale: number;
   /** "latent" (default), or an ESRGAN-type network on the decoded frames */
-  upscaler: string;
+  upscaler: Upscaler;
   /** "" = the engine's own Euler / shifted schedule */
   sampler: string;
   schedule: string;
@@ -35,6 +35,9 @@ interface Form {
   controlMask: string;
   controlSource: string;
   controlStrength: number;
+  /** a song the clip is made to (an upload's name) and the second of it at the clip's first frame */
+  soundtrack: string;
+  soundtrackStart: number;
 }
 
 export const form: Form = {
@@ -47,7 +50,6 @@ export const form: Form = {
   seconds: 10,
   steps: 8,
   seed: 0,
-  te: "teacher",
   label: "",
   width: 768,
   height: 576,
@@ -66,11 +68,13 @@ export const form: Form = {
   controlMask: "",
   controlSource: "",
   controlStrength: 1,
+  soundtrack: "",
+  soundtrackStart: 0,
 };
 
 /** The settings a reload keeps (canvas, length, steps, engine, ...): the last ones used, in localStorage. References and
  *  controls are left out - they name uploads that may be gone. */
-const KEPT = ["prompt", "seconds", "steps", "seed", "te", "width", "height", "engine", "upscale", "upscaler", "sampler",
+const KEPT = ["prompt", "seconds", "steps", "seed", "width", "height", "engine", "upscale", "upscaler", "sampler",
               "schedule"] as const;
 
 function remember(): void {
@@ -91,7 +95,6 @@ export function useSettings(j: GenerateRequest): void {
   if (j.seconds) form.seconds = j.seconds;
   if (j.steps) form.steps = j.steps;
   if (j.seed != null) form.seed = j.seed;
-  if (j.te) form.te = j.te;
   if (j.width) form.width = j.width;
   if (j.height) form.height = j.height;
   if (j.engine) form.engine = j.engine === "Q8_0" ? "INT8" : j.engine;
@@ -108,6 +111,8 @@ export function useSettings(j: GenerateRequest): void {
   form.controlMask = j.control_mask ?? "";
   form.controlSource = j.control_source ?? "";
   form.controlStrength = j.control_strength ?? 1;
+  form.soundtrack = j.soundtrack ?? "";
+  form.soundtrackStart = j.soundtrack_start ?? 0;
   form.label = j.label ?? "";
   form.chain = !!j.first_frame;
   remember();
@@ -124,7 +129,6 @@ async function generate(): Promise<void> {
     seconds: form.seconds,
     steps: form.steps,
     seed: form.seed,
-    te: form.te,
     label: form.label,
     width: form.width,
     height: form.height,
@@ -143,13 +147,20 @@ async function generate(): Promise<void> {
   }
   if (form.refAudios.length) body.ref_audios = form.refAudios;
   if (form.refImages.length && form.refImageMax) body.ref_image_size = "max";
-  if (form.controlVideo) body.control_video = form.controlVideo;
-  if (form.controlMask) {
-    body.control_mask = form.controlMask;
-    if (form.controlSource) body.control_source = form.controlSource;
+  // references and control do not mix (the server refuses): the one the form shows is the one sent
+  if (!hasRefs()) {
+    if (form.controlVideo) body.control_video = form.controlVideo;
+    if (form.controlMask) {
+      body.control_mask = form.controlMask;
+      if (form.controlSource) body.control_source = form.controlSource;
+    }
+    if (form.controlVideo || form.controlMask) body.control_strength = form.controlStrength;
   }
-  if (form.controlVideo || form.controlMask) body.control_strength = form.controlStrength;
   if (form.chain) body.first_frame = "prev";
+  if (form.soundtrack) {
+    body.soundtrack = form.soundtrack;
+    body.soundtrack_start = form.soundtrackStart;
+  }
   submitted = "sending…";
   render();
   try {
@@ -162,6 +173,10 @@ async function generate(): Promise<void> {
   }
   await refresh();
 }
+
+/** References chosen (a clip with them runs the Ref2VA denoiser, which takes no control) */
+const hasRefs = (): boolean => form.refImages.length + form.refVideos.length + form.refAudios.length > 0;
+const hasControl = (): boolean => !!(form.controlVideo || form.controlMask);
 
 /** What the last Generate did ("started", "queued at position 2"): the click answered on the page itself */
 let submitted = "";
@@ -229,9 +244,7 @@ async function addRefs(kind: RefKind, files: FileList | null): Promise<void> {
   for (const f of Array.from(files ?? [])) {
     if (form[kind].length >= REF_MAX[kind]) break;
     try {
-      const r = await fetch(`api/upload?name=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
-      const j = (await r.json()) as { ok: boolean; name?: string; error?: string };
-      if (!j.ok || !j.name) throw new Error(j.error ?? `HTTP ${r.status}`);
+      const j = await api.upload(f);
       form[kind] = [...form[kind], j.name];
       state.error = null;
     } catch (e) {
@@ -305,15 +318,59 @@ function References() {
   );
 }
 
+async function setSoundtrack(files: FileList | null): Promise<void> {
+  const f = files?.[0];
+  if (!f) return;
+  try {
+    form.soundtrack = (await api.upload(f)).name;
+    state.error = null;
+  } catch (e) {
+    state.error = `${f.name}: ${String(e)}`;
+  }
+  render();
+}
+
+/** A song the clip is made to: its stretch from the start second is pinned under the whole clip (an audio keyframe)
+ *  and the picture follows it - a singer's mouth to the singing. The clip carries the song itself. */
+function Soundtrack() {
+  return (
+    <div>
+      <div class="row">
+        <span class="ref">
+          <label class="tbtn">
+            <span class="i" props={{ innerHTML: "&#xf093;" }} />song
+            <input attrs={{ type: "file", accept: "audio/*", style: "display:none" }}
+              on={{ change: (e: Event) => void setSoundtrack((e.target as HTMLInputElement).files) }} />
+          </label>
+          {form.soundtrack
+            ? <span><span class="hint">{form.soundtrack.replace(/^ref_\d+_/, "")}</span>
+                <a attrs={{ href: "#", title: "remove" }} on={{ click: (e: Event) => { e.preventDefault(); form.soundtrack = ""; render(); } }}> ✕</a></span>
+            : null}
+        </span>
+        {form.soundtrack
+          ? <label attrs={{ title: "the second of the song at the clip's first frame" }}>
+              from (s)
+              <input attrs={{ type: "number", min: 0, step: 0.01, value: form.soundtrackStart }}
+                on={{ input: (e: Event) => { form.soundtrackStart = Math.max(0, Number((e.target as HTMLInputElement).value) || 0); } }} />
+            </label>
+          : null}
+      </div>
+      <div class="hint">
+        The clip's length of the song from that second is held under the whole clip and the picture is made to it:
+        describe someone singing it ("the woman (S1) sings into the microphone: &lt;d&gt;[English] the line&lt;/d&gt;").
+        For a whole song, chain clips (each from where its first frame falls in the song) and lay the song under the join.
+      </div>
+    </div>
+  );
+}
+
 type ControlKey = "controlVideo" | "controlMask" | "controlSource";
 
 async function setControl(key: ControlKey, files: FileList | null): Promise<void> {
   const f = files?.[0];
   if (!f) return;
   try {
-    const r = await fetch(`api/upload?name=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
-    const j = (await r.json()) as { ok: boolean; name?: string; error?: string };
-    if (!j.ok || !j.name) throw new Error(j.error ?? `HTTP ${r.status}`);
+    const j = await api.upload(f);
     form[key] = j.name;
     state.error = null;
   } catch (e) {
@@ -379,21 +436,21 @@ export function Creation() {
       />
       <div class="hint">
         Dialogue: <code>{"(S1) says: <d>[English] line</d>"}</code> · no negations (cfg is 1.0,
-        so every word renders) · 4–15 s per clip
+        so every word renders) · up to 15 s per clip
       </div>
       <div class="row">
         {num("seconds", "seconds", 1, 15, 0.01)}
         {num("steps", "steps", 1, 40, 1)}
         {num("seed", "seed", 0, 2147483647, 1)}
         {num("upscale", "upscale", 1, 4, 0.5)}
-        <label attrs={{ title: "ESRGAN: decoded at the sampled size, the frames enlarged by a network on the GPU - about half the decode stage's time (a 5 s clip at 1152x864 on a B65: 19.6 s against 41.9). latent: the latents enlarged, then decoded at the larger size - the decoder's own fine texture." }}>
+        {form.upscale > 1 ? <label attrs={{ title: "ESRGAN: decoded at the sampled size, the frames enlarged by a network on the GPU - about half the decode stage's time. latent: the latents enlarged, then decoded at the larger size - the decoder's own fine texture." }}>
           upscaler
-          <select on={{ change: (e: Event) => { form.upscaler = (e.target as HTMLSelectElement).value; remember(); render(); } }}>
+          <select on={{ change: (e: Event) => { form.upscaler = (e.target as HTMLSelectElement).value as Upscaler; remember(); render(); } }}>
             <option attrs={{ value: "esrgan-general", selected: form.upscaler === "esrgan-general" }}>ESRGAN general-x4v3 (default)</option>
             <option attrs={{ value: "esrgan-anime", selected: form.upscaler === "esrgan-anime" }}>ESRGAN animevideov3 (sharper, drawn look)</option>
             <option attrs={{ value: "latent", selected: form.upscaler === "latent" }}>latent (slowest, most natural texture)</option>
           </select>
-        </label>
+        </label> : null}
         <EffectPicker />
         {named("sampler", "sampler", state.plan?.samplers, "euler (default)",
           "ComfyUI's samplers on the flow model. euler is the distilled default; ancestral and sde samplers add fresh noise each step; the multistep ones (dpmpp_2m, uni_pc) reuse earlier steps. Some take two or three model calls a step.")}
@@ -401,10 +458,7 @@ export function Creation() {
           "The sigma schedule. shifted is the model's own; karras and exponential suit noise-prediction models and do poorly here.")}
         <label>
           encoder
-          <select on={{ change: (e: Event) => { form.te = (e.target as HTMLSelectElement).value as "teacher" | "student"; remember(); render(); } }}>
-            <option attrs={{ value: "teacher", selected: form.te === "teacher" }}>teacher 32B</option>
-            <option attrs={{ value: "student", selected: form.te === "student" }}>student 4B</option>
-          </select>
+          <span class="hint">Qwen3-VL 32B, Q4_K_M (the only one the box has)</span>
         </label>
         <label>
           label
@@ -421,15 +475,15 @@ export function Creation() {
           chain from previous clip
         </label>
       </div>
-      <Panel
+      {hasControl() ? null : <Panel
         id="refs"
         icon="&#xf03e;"
         title="References"
         hint={refTags().length ? refTags().map((t) => t.tag).join(" · ") : "pictures, clips, sounds the prompt names"}
       >
         <References />
-      </Panel>
-      <Panel
+      </Panel>}
+      {hasRefs() ? null : <Panel
         id="control"
         icon="&#xf1de;"
         title="Control"
@@ -437,6 +491,14 @@ export function Creation() {
           : "a pose / depth / edge video to follow, or a region to regenerate"}
       >
         <ControlNet />
+      </Panel>}
+      <Panel
+        id="soundtrack"
+        icon="&#xf001;"
+        title="Soundtrack"
+        hint={form.soundtrack ? `${form.soundtrack.replace(/^ref_\d+_/, "")} from ${form.soundtrackStart} s` : "a song the picture is made to (lip-sync)"}
+      >
+        <Soundtrack />
       </Panel>
       <Panel
         id="canvas"

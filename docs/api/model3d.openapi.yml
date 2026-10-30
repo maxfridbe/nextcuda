@@ -1,0 +1,764 @@
+openapi: 3.1.0
+info:
+  title: nextcuda 3D server (nextcuda model3d serve)
+  version: generated
+  description: 'A server''s own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextcuda gen-api`: do not edit.'
+servers:
+- url: /
+paths:
+  /api/gpu:
+    get:
+      operationId: gpu
+      summary: 'The card: its name, memory, power and temperatures'
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gpu'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /health:
+    get:
+      operationId: health
+      summary: Whether the server answers
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/models:
+    get:
+      operationId: models
+      summary: The model served, as OpenAI lists models
+      tags:
+      - openai
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /models
+  /api/info:
+    get:
+      operationId: info
+      summary: 'The model and what it does: its abilities, defaults, options'
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Info'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/progress:
+    get:
+      operationId: progress
+      summary: What the server is doing now (the page polls it)
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Progress'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/history:
+    get:
+      operationId: history
+      summary: The meshes made here, newest first
+      tags:
+      - page
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/History'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /api/cancel:
+    post:
+      operationId: cancel
+      summary: 'Stops a request: the one named (running or waiting), else the one running (between steps)'
+      tags:
+      - page
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelReq'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cancelled'
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/model3d/files/{name}:
+    get:
+      operationId: file
+      summary: 'A file made here: the GLB, its picture (<f>.png) or its settings (<f>.json)'
+      tags:
+      - files
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: the file's name as the answer's url has it
+      responses:
+        '200':
+          description: the file
+          content:
+            model/gltf-binary:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/model3d/generate:
+    post:
+      operationId: generate
+      summary: 'A mesh from pictures (image, or images: several views [{image, side}]), textured or not; or a mesh given (mesh / file) painted. response_format glb (default: the file) or url (JSON with its link)'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Model3dGenerateBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Meshes'
+            model/gltf-binary:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+  /v1/model3d/rig:
+    post:
+      operationId: rig
+      summary: 'A mesh (mesh: GLB or OBJ, base64 / a data: URL; or file: a GLB made here) rigged - a skeleton and skin weights - or animated (prompt: the motion). response_format glb (default) or url'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Model3dRigBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Meshes'
+            model/gltf-binary:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+components:
+  schemas:
+    Abilities:
+      type: object
+      properties:
+        generate:
+          type: boolean
+          description: makes meshes from pictures
+        texture:
+          type: boolean
+          description: paints them (a texture)
+        views:
+          type: integer
+          description: the most views (pictures) a mesh is made from
+        rig:
+          type: boolean
+          description: rigs a mesh (a skeleton and skin weights)
+        animate:
+          type: boolean
+          description: animates one (a motion in words)
+        skeletal:
+          type: boolean
+          description: animate moves a rigged mesh's skeleton (the mesh must carry a skin; glTF skeletal animation), not its vertices (morph targets)
+      required:
+      - generate
+      - texture
+      - views
+      - rig
+      - animate
+      description: What the engine does
+    CancelReq:
+      type: object
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'that request only (the front door''s job), running or waiting; none: the one running'
+      description: What a cancel takes
+    Cancelled:
+      type: object
+      properties:
+        cancelled:
+          type: boolean
+          description: a request running was told to stop
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+      required:
+      - cancelled
+      description: What a cancel did
+    Defaults:
+      type: object
+      properties:
+        steps:
+          type: integer
+        cfg:
+          type: number
+        resolution:
+          type: integer
+        faces:
+          type: integer
+        texture_size:
+          type: integer
+        frames:
+          type: integer
+        fps:
+          type: number
+      required:
+      - steps
+      - cfg
+      - resolution
+      - faces
+      - texture_size
+      - frames
+      - fps
+      description: The engine's own defaults (a request's absent fields)
+    EngineOptionInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        value:
+          type: string
+          description: what its value looks like ("" a flag)
+        help:
+          type: string
+      required:
+      - name
+      - value
+      - help
+      description: An option of the engine's own (a request sends it in `options`)
+    FileName:
+      type: object
+      properties:
+        name:
+          type: string
+          description: the file's name as the answer's url has it
+      required:
+      - name
+      description: A file a link names (`.../files/{name}`)
+    Gpu:
+      type: object
+      properties:
+        name:
+          type: string
+        vram_used_mb:
+          type: integer
+        vram_total_mb:
+          type: integer
+        power_w:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'watts now (none: the driver does not say)'
+        temp_pkg:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: °C
+        temp_vram:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the memory's °C
+      required:
+      - name
+      - vram_used_mb
+      - vram_total_mb
+      description: The card a model server runs on, as its page shows it
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          description: ok, or loading (HTTP 503 then)
+      required:
+      - status
+      description: Whether the server answers (and has its model loaded)
+    History:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Mesh'
+      required:
+      - data
+      description: The meshes in the output directory, newest first (read from it each time)
+    Info:
+      type: object
+      properties:
+        model:
+          type: string
+        license:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the licence of its weights, whether it allows commercial use (false: the page tags it non-commercial), the conditions it puts on it'
+        commercial:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        license_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+        busy:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'the engine is running a request: what changes is not reported'
+        arch:
+          anyOf:
+          - type: string
+          - type: 'null'
+        wfe:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it serves its page
+        abilities:
+          anyOf:
+          - $ref: '#/components/schemas/Abilities'
+          - type: 'null'
+        defaults:
+          anyOf:
+          - $ref: '#/components/schemas/Defaults'
+          - type: 'null'
+        options:
+          anyOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/EngineOptionInfo'
+          - type: 'null'
+          description: the engine's own per-request options (sent as `options`)
+        report:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: what the engine says of itself (its files, its precision ...)
+        saves:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'it keeps what it makes (an output directory: links, the history)'
+      required:
+      - model
+      description: The model and what it does; while a request runs, the model and `busy` only
+    Mesh:
+      type: object
+      properties:
+        url:
+          type: string
+          description: 'the GLB (glTF binary): GET it here'
+        picture:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the picture it was made from (PNG)
+        bytes:
+          type: integer
+        created:
+          type: integer
+          description: unix seconds
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+        arch:
+          anyOf:
+          - type: string
+          - type: 'null'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+        resolution:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        faces:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the triangle budget asked
+        triangles:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: what it has
+        texture:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: a texture was asked for
+        textured:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it has one
+        rigged:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'rigged: its joints'
+        animated:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'animated: its frames'
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: a rig's motion
+        frames:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'rig: the frames asked'
+        views:
+          anyOf:
+          - type: array
+            items:
+              anyOf:
+              - type: string
+              - type: 'null'
+          - type: 'null'
+          description: 'each picture''s side (null: not said)'
+        took:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: seconds it took
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: the card's energy, watt-hours
+      required:
+      - url
+      - bytes
+      - created
+      additionalProperties: true
+      description: 'A mesh made here: its links, and its settings (its sidecar <name>.json)'
+    MeshRun:
+      type: object
+      properties:
+        took:
+          type: number
+        seed:
+          type: integer
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+        triangles:
+          type: integer
+      required:
+      - took
+      - seed
+      - triangles
+      description: How a mesh was made
+    Meshes:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Mesh'
+        nextcuda:
+          $ref: '#/components/schemas/MeshRun'
+      required:
+      - created
+      - data
+      - nextcuda
+      description: 'A mesh made (response_format url): its links and settings, and how it was made (`nextcuda`: this server''s key)'
+    Model3dGenerateBody:
+      type: object
+      properties:
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: guidance
+        faces:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: at most this many triangles (decimated to it)
+        file:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: or a GLB made here to paint (its file name or url), as mesh
+        image:
+          anyOf:
+          - {}
+          - type: 'null'
+          description: 'the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (model3d.upload); a transparent background is the object''s outline, an opaque one is cut out (remove_background) (or {image, side}, as an item of images)'
+        images:
+          anyOf:
+          - type: array
+            items: {}
+          - type: 'null'
+          maxItems: 8
+          items:
+            oneOf:
+            - type: string
+            - properties:
+                image:
+                  type: string
+                side:
+                  description: front, back, left, right, top, bottom, or an azimuth in degrees
+                  type: string
+              type: object
+          description: 'several views of the object (a multi-view model: model3d.info''s abilities.views); each a picture or {image, side}'
+        mesh:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a mesh to paint instead of making one (a model that textures: Hunyuan3D 2.1, hunyuan3d-2.1-paint): a GLB or OBJ as base64 or a data: URL; image says how it is painted'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        options:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: the engine's own (model3d.info lists them)
+        remove_background:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: true
+          description: cut the background out of an opaque picture
+        resolution:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'the shape''s grid / octree resolution: detail against time and memory'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: denoising steps of each stage
+        texture:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'PBR textures too (base colour, metallic-roughness); default: what the model does (model3d.info)'
+        texture_size:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the texture's side in texels
+      additionalProperties: true
+      description: 'What model3d.generate makes from: the body its kind''s server takes.'
+    Model3dRigBody:
+      type: object
+      properties:
+        cfg:
+          anyOf:
+          - type: number
+          - type: 'null'
+        file:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: or a GLB made here (model3d.generate's file name or url)
+        fps:
+          anyOf:
+          - type: number
+          - type: 'null'
+        frames:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'an animating model: frames to make (UniMate: its 60-frame clip resampled to this many, 2 to 600)'
+        mesh:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the mesh: GLB or OBJ as base64, a data: URL or upload:<name> (model3d.upload); UniMate''s a rigged GLB (a skin of at most 71 joints under one root)'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id; none: the loaded one, else the first enabled'
+        options:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: the engine's own
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'an animating model: the motion, in words ("a dragon flapping its wings"; UniMate: plain ASCII, "An object walks forward.")'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+      additionalProperties: true
+      description: 'What model3d.rig makes from: the body its kind''s server takes.'
+    ModelEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          description: model
+        owned_by:
+          type: string
+        created:
+          type: integer
+      required:
+      - id
+      - object
+      - owned_by
+      - created
+      description: A model in OpenAI's list
+    ModelList:
+      type: object
+      properties:
+        object:
+          type: string
+          description: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelEntry'
+      required:
+      - object
+      - data
+      description: 'OpenAI''s list of models: the one this server serves'
+    Progress:
+      type: object
+      properties:
+        busy:
+          type: boolean
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the pictures it is made from, or the motion
+        phase:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the engine's
+        at:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        of:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: seconds since it started
+        waiting:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: requests waiting for the engine
+        request_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the front door's job running, if it named one
+      required:
+      - busy
+      description: 'What the server is doing: busy false, or what it is making and how far it is'

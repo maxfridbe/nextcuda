@@ -4,6 +4,7 @@
 /// A queue item: a video.generate body as the studio checked it (defaults filled in, files reduced to their names)
 const ITEM: &str = r#"{"type": "object", "description": "the request as checked: every video.generate key, defaults filled in (absent ones null)",
   "properties": {"prompt": {"type": "string"}, "label": {"type": "string"}, "project": {"type": "string"}, "batch": {"type": "string"},
+    "clip": {"type": "integer", "nullable": true, "description": "the clip's place in its project's timeline (1 and up); absent: read from the label's NN/MM, else the reentrant_id's #N"},
     "seconds": {"type": "number"}, "steps": {"type": "integer"}, "seed": {"type": "integer"}, "width": {"type": "integer"}, "height": {"type": "integer"},
     "engine": {"type": "string"}, "priority": {"type": "integer"}, "te": {"type": "string"}, "chain_mode": {"type": "string"},
     "first_frame": {"type": "string", "nullable": true}, "last_frame": {"type": "string", "nullable": true}, "camera": {"type": "string", "nullable": true}},
@@ -139,6 +140,9 @@ const MODEL_STATE: &str = r#"{"type": "object", "properties": {"id": {"type": "s
   "vouch_mb": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "VRAM it is counted for, by card"},
   "spans": {"type": "boolean", "description": "a chat model spread over every card (its model card: gpus all): its cards are not a choice"},
   "measured": {"type": "boolean"}, "headroom_mb": {"type": "object", "additionalProperties": {"type": "integer"}}, "headroom_given": {"type": "boolean"},
+  "license": {"type": "string", "description": "the licence of its weights (an SPDX-style id or a short name)"},
+  "commercial": {"type": "boolean", "description": "false: the licence forbids commercial use (the pages tag the model non-commercial)"},
+  "license_note": {"type": "string", "description": "the conditions the licence puts on commercial use (territories, user or revenue limits, a notice to show)"},
   "page": {"type": "integer", "description": "the port of its own page"},
   "capabilities": {"type": "array", "items": {"type": "string"}, "description": "what it does, in neutral words: chat, stream, tools; generate, edit, compose, img2img, loras, few_step; ocr, read_pages, pdf; song, lyrics, instrumental; speech, builtin_voices, clone, saved_voices, continue_from, voice_design, voice_direction, vocal_events; text_to_video, image_to_video, sound, chain, first_last_frame, voice_reference, controlnet, inpaint, reference_images, reference_videos"},
   "methods": {"type": "array", "items": {"type": "string"}, "description": "the /rpc methods that take it as model"}}}"#;
@@ -285,7 +289,8 @@ pub fn result(method: &str) -> Option<String> {
     "message": {"type": "object", "properties": {"role": {"type": "string"}, "content": {"type": "string", "nullable": true}, "reasoning_content": {"type": "string", "nullable": true}, "tool_calls": {"type": "array", "items": {"type": "object"}}}}}}},
   "usage": {"type": "object", "properties": {"prompt_tokens": {"type": "integer"}, "completion_tokens": {"type": "integer"}, "total_tokens": {"type": "integer"}}}}, "additionalProperties": true}"#.into(),
         "llm.requests" => format!(r#"{{"type": "object", "properties": {{"active": {{"type": "array", "items": {CHAT_REQUEST}}}, "done": {{"type": "array", "description": "the last 10", "items": {CHAT_REQUEST}}}}}}}"#),
-        "llm.models" => r#"{"type": "object", "properties": {"models": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "gpus": {"type": "array", "items": {"type": "integer"}}, "loaded": {"type": "boolean"}}}}}}"#.into(),
+        "llm.models" => r#"{"type": "object", "properties": {"models": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "gpus": {"type": "array", "items": {"type": "integer"}}, "loaded": {"type": "boolean"},
+  "license": {"type": "string"}, "commercial": {"type": "boolean", "description": "false: the licence forbids commercial use"}, "license_note": {"type": "string"}}}}}}"#.into(),
         "image.generate" | "image.edit" => format!(r#"{{"oneOf": [{{"allOf": [{PICTURES}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the pictures, and the job"}},
   {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (image.status {{label}} for the rest)"}}]}}"#),
         "image.vectorize" => format!(r#"{{"oneOf": [{{"allOf": [{VECTORIZED}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the SVG, and the job"}},
@@ -373,7 +378,7 @@ pub fn result(method: &str) -> Option<String> {
   "paused_projects": {"type": "array", "items": {"type": "string"}}, "paused_batches": {"type": "array", "items": {"type": "string"}}}}"#.into(),
         "video.projects.list" => format!(r#"{{"type": "object", "properties": {{"projects": {{"type": "array", "items": {PROJECT}}}, "paused_all": {{"type": "boolean"}}}}}}"#),
         "video.timeline" => r#"{"type": "object", "properties": {"clips": {"type": "array", "description": "by n; for each n the newest finished clip, else the running / queued one", "items": {"type": "object", "properties": {
-  "n": {"type": "integer", "description": "the NN of the label (0: no number)"}, "name": {"type": "string", "nullable": true, "description": "the clip (done or running)"},
+  "n": {"type": "integer", "description": "the request's clip; else the NN of the label, else the reentrant_id's #N (0: none)"}, "name": {"type": "string", "nullable": true, "description": "the clip (done or running)"},
   "state": {"type": "string", "enum": ["done", "running", "held", "queued"]}, "seconds": {"type": "number"}, "camera": {"type": "string", "nullable": true},
   "label": {"type": "string"}, "dialogue": {"type": "string", "description": "the spoken lines"},
   "file": {"type": "string", "nullable": true, "description": "done: the clip's URL"}, "thumb": {"type": "string", "nullable": true, "description": "done: a 240-pixel still's URL (webp)"}}}}}}"#.into(),
@@ -491,20 +496,15 @@ reentrant_id (every generate, video's too): a submit naming the id of a job queu
 
 #[cfg(test)]
 mod tests {
-    use super::super::api::METHODS;
+    use super::super::methods::methods;
 
     #[test]
     fn every_schema_parses() {
-        for m in METHODS {
-            let op = format!("{}.{}", m.kind, m.name);
-            for (f, ty, _, _) in m.fields {
-                if ty.starts_with('{') {
-                    serde_json::from_str::<serde_json::Value>(ty).unwrap_or_else(|e| panic!("{op} {f}: {e}"));
-                }
-            }
-            let r = super::result(&op).unwrap_or_else(|| panic!("{op}: no answer described"));
+        // every method's answer is described here (its request is its struct's, methods.rs)
+        for m in methods() {
+            let op = m.full();
+            let r = super::result(op).unwrap_or_else(|| panic!("{op}: no answer described"));
             serde_json::from_str::<serde_json::Value>(&r).unwrap_or_else(|e| panic!("{op} result: {e}"));
-            serde_json::from_str::<serde_json::Value>(m.example).unwrap_or_else(|e| panic!("{op} example: {e}"));
         }
         let w: serde_json::Value = serde_json::from_str(&super::result("video.wait").unwrap()).unwrap();
         assert!(w["properties"]["changed"].is_object() && w["required"][0] == "changed");

@@ -1,62 +1,13 @@
-/** What the 3D server answers (glue/serve/src/model3d.rs). */
+/** What the 3D server answers: its routes' types (src/gen/routes.ts, made from glue/serve/src/model3d/routes.rs), and what the page keeps. */
 
-export interface Abilities { generate: boolean; texture: boolean; views: number; rig: boolean; animate: boolean }
-
-export interface Info {
-  model: string;
-  arch?: string;
-  busy?: boolean;
-  abilities?: Abilities;
-  defaults?: { steps: number; cfg: number; resolution: number; faces: number; texture_size: number; frames: number; fps: number };
-  options?: { name: string; value: string; help: string }[];
-  report?: string[];
-  saves?: boolean;
-}
-
-export interface Progress {
-  busy: boolean;
-  waiting?: number;
-  prompt?: string;
-  phase?: string;
-  at?: number;
-  of?: number;
-  seconds?: number;
-}
-
-export interface Gpu {
-  name: string;
-  vram_used_mb: number;
-  vram_total_mb: number;
-  power_w: number | null;
-  temp_pkg: number | null;
-  temp_vram: number | null;
-}
+export type { Abilities, Gpu, Info, Progress } from "./gen/routes.js";
+import type { Mesh, Meshes } from "./gen/routes.js";
 
 /** A mesh made here (its settings from the sidecar JSON) */
-export interface Made {
-  url: string;
-  picture?: string;
-  model?: string;
-  arch?: string;
-  seed?: number;
-  steps?: number;
-  cfg?: number;
-  resolution?: number;
-  faces?: number;
-  triangles?: number;
-  texture?: boolean;
-  textured?: boolean;
-  rigged?: number | null;
-  animated?: number | null;
-  prompt?: string | null;
-  views?: (string | null)[];
-  bytes?: number;
-  took?: number;
-  wh?: number | null;
-  created?: number;
-}
+export type Made = Mesh;
 
-export interface Answer { created: number; data: Made[] }
+/** What a generation or a rig answers with response_format url */
+export type Answer = Meshes;
 
 /** A picture chosen for the request */
 export interface Pic { name: string; data: string; side: string }

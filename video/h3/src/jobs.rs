@@ -956,6 +956,10 @@ pub struct ClipInputs<'a> {
     pub guides: Vec<(&'a Path, usize, i64)>,
     /// the last seconds of a sound (`.lastaud.safetensors` or any media file) pinned at frame 0
     pub first_audio: Option<(&'a Path, f64)>,
+    /// a driving soundtrack: the clip's length of a sound file from a start second, laid under the whole clip and
+    /// never denoised - the picture is generated to it (a singer's mouth to the singing); the clip's .mp4 carries
+    /// the file's own sound. Not with `first_audio` or `source`.
+    pub soundtrack: Option<Soundtrack<'a>>,
     /// how much to trust the video keyframes (0.999 by default; lower = trust a degraded anchor less)
     pub cond_noise_aug: Option<f32>,
     /// the flow shifts (12 and 3 by default)
@@ -993,6 +997,57 @@ pub struct ClipInputs<'a> {
     pub regen: Option<(f64, f64)>,
     /// and only inside this box, in pixels (x0, y0, x1, y1)
     pub regen_box: Option<(usize, usize, usize, usize)>,
+}
+
+/// A clip's driving soundtrack (`ClipInputs::soundtrack`).
+#[derive(Clone, Copy)]
+pub struct Soundtrack<'a> {
+    pub path: &'a Path,
+    /// where in the file the clip's first frame is, in seconds
+    pub start: f64,
+    pub hold: SoundHold,
+}
+
+/// How a soundtrack is held in the clip.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SoundHold {
+    /// the clip's own sound rows are the soundtrack, kept clean at every step while the picture is generated (a
+    /// masked run over the sound alone: the picture's tokens attend to it where they are)
+    Keep,
+    /// the soundtrack as an audio keyframe at frame 0 (conditioning rows beside the clip's own; the clip's sound is
+    /// generated beside them)
+    Keyframe,
+}
+
+impl SoundHold {
+    pub fn parse(s: &str) -> Option<SoundHold> {
+        match s {
+            "keep" => Some(SoundHold::Keep),
+            "keyframe" => Some(SoundHold::Keyframe),
+            _ => None,
+        }
+    }
+}
+
+/// The soundtrack's stretch under a clip of `frames` frames, encoded and fitted to the clip's `at` audio latent
+/// frames (cut, or the last frame repeated: the encoder rounds the length up to whole 800-sample hops)
+fn soundtrack_latents(dev: &Arc<Device>, st: &Soundtrack, vaes: &Vaes, frames: usize, at: usize, ctl: &mut Ctl) -> Result<Vec<f32>> {
+    let rate = crate::audio::SAMPLE_RATE;
+    let secs = frames as f64 / 24.0;
+    let chans = crate::media::read_audio_span(st.path, st.start, secs, rate)?;
+    let t0 = Instant::now();
+    let aenc = crate::audio::AudioEncoder::load(dev, &Checkpoint::open(vaes.audio.ok_or("a soundtrack needs the audio decoder's checkpoint (audio_vae)")?)?)?;
+    let (z, rt) = aenc.encode(&chans)?;
+    drop(aenc);
+    let mut out = vec![0f32; 32 * 2 * at];
+    for c in 0..64 {
+        for i in 0..at {
+            out[c * at + i] = z[c * rt + i.min(rt - 1)];
+        }
+    }
+    ctl.say(format!("sound  : soundtrack {} from {:.2} s, {secs:.2} s ({rt} latent frames for the clip's {at}) held {:?}, encoded in {:.1} s",
+                    st.path.display(), st.start, st.hold, t0.elapsed().as_secs_f64()));
+    Ok(out)
 }
 
 /// The masks of a masked run from the source latents and the stretch / box to regenerate.
@@ -1336,6 +1391,23 @@ pub fn generate(e: &Engine, c: &ClipSpec, out: &Path, ctl: &mut Ctl) -> Result<V
     }
     let (keyframes, kf_pictures) = clip_keyframes(&e.dev, &c.inputs, &c.vaes, (c.width, c.height, frames), ctl)?;
     cond.keyframes = keyframes;
+    // a driving soundtrack: its stretch encoded once, then held as the clip's own sound or as a keyframe
+    let soundtrack = match c.inputs.soundtrack {
+        Some(st) => {
+            if c.inputs.first_audio.is_some() || c.inputs.source.is_some() {
+                return Err(Error("a soundtrack is the clip's whole sound: not with first_audio or a source".into()));
+            }
+            Some((st, soundtrack_latents(&e.dev, &st, &c.vaes, frames, at, ctl)?))
+        }
+        None => None,
+    };
+    if let Some((st, z)) = soundtrack.as_ref().filter(|(st, _)| st.hold == SoundHold::Keyframe) {
+        let _ = st;
+        match cond.keyframes.iter_mut().find(|k| k.frame_index == 0 && k.audio.is_none()) {
+            Some(k) => k.audio = Some((z.clone(), at)),
+            None => cond.keyframes.push(KeyframeIn { frame_index: 0, video: None, audio: Some((z.clone(), at)) }),
+        }
+    }
     let (mut pieces, refs) = clip_refs(&e.dev, &c.inputs, &c.vaes, (c.width, c.height, frames), ctl)?;
     cond.refs = refs;
     if pieces.is_empty() && c.inputs.te_pictures && !kf_pictures.is_empty() {
@@ -1379,7 +1451,16 @@ pub fn generate(e: &Engine, c: &ClipSpec, out: &Path, ctl: &mut Ctl) -> Result<V
         schedule.shift_video = sv;
         schedule.shift_audio = sa;
     }
-    let inpaint = clip_inpaint(&c.inputs, shape)?;
+    let inpaint = match soundtrack.as_ref().filter(|(st, _)| st.hold == SoundHold::Keep) {
+        // the picture generated whole, the sound kept: the soundtrack is the clip's sound from the first step
+        Some((_, z)) => Some(denoiser::Inpaint {
+            source_v: vec![0f32; 24 * shape.t * shape.h * shape.w],
+            source_a: z.clone(),
+            mask_v: vec![1f32; shape.t * shape.h * shape.w],
+            mask_a: vec![0f32; shape.audio_t],
+        }),
+        None => clip_inpaint(&c.inputs, shape)?,
+    };
     // the ControlNet: its hint, and its blocks beside the denoiser's
     let hint = clip_control_hint(&e.dev, &c.inputs, &c.vaes, (c.width, c.height, frames), shape, ctl)?;
     let control = match (&hint, c.inputs.controlnet) {
@@ -1490,6 +1571,12 @@ pub fn generate(e: &Engine, c: &ClipSpec, out: &Path, ctl: &mut Ctl) -> Result<V
         ]), &BTreeMap::new())?;
     }
     let mut rep = decode_latents_chain(&e.dev, e.threads, Latents { video: v, t: shape.t, h: shape.h, w: shape.w, audio: Some((a, shape.audio_t)) }, &c.vaes, Some(out), None, Some(out), ctl)?;
+    if let Some((st, _)) = &soundtrack {
+        // the song itself under the picture, not the decoder's rendering of its latents
+        crate::media::mux_sound(out, st.path, st.start, frames as f64 / 24.0)?;
+        ctl.say(format!("sound  : {} from {:.2} s laid under the clip", st.path.display(), st.start));
+        rep["soundtrack"] = json!({"path": st.path, "start": st.start, "seconds": frames as f64 / 24.0, "hold": format!("{:?}", st.hold).to_lowercase()});
+    }
     let total = t_all.elapsed().as_secs_f64();
     rep["text_encoder_seconds"] = json!(te_secs);
     rep["sample_seconds"] = json!(sample_secs);
@@ -1638,6 +1725,17 @@ pub fn run(e: &Engine, spec: &Value, ctl: &mut Ctl) -> Result<Value> {
                         None => Vec::new(),
                     },
                     first_audio: s("first_audio").map(|p| (Path::new(p), n("first_audio_s").unwrap_or(1.0))),
+                    soundtrack: match s("soundtrack") {
+                        Some(p) => Some(Soundtrack {
+                            path: Path::new(p),
+                            start: n("soundtrack_start").unwrap_or(0.0),
+                            hold: match s("soundtrack_hold") {
+                                Some(h) => SoundHold::parse(h).ok_or_else(|| Error(format!("soundtrack_hold {h}? (keep, keyframe)")))?,
+                                None => SoundHold::Keyframe,
+                            },
+                        }),
+                        None => None,
+                    },
                     cond_noise_aug: n("cond_noise_aug").map(|v| v as f32),
                     shift: match (n("shift_video"), n("shift_audio")) {
                         (None, None) => None,
@@ -1698,5 +1796,20 @@ pub fn run(e: &Engine, spec: &Value, ctl: &mut Ctl) -> Result<Value> {
             encode_with(&e.dev, e.threads, &pictures, &prompt, &files, s("out").map(Path::new), s("check").map(Path::new), ctl)
         }
         other => Err(Error(format!("unknown job kind {other:?} (known: bench-blocks, check-block, denoise, decode, encode, generate)"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn soundtrack_holds() {
+        assert_eq!(SoundHold::parse("keyframe"), Some(SoundHold::Keyframe));
+        assert_eq!(SoundHold::parse("keep"), Some(SoundHold::Keep));
+        assert_eq!(SoundHold::parse("pinned"), None);
+        // a clip's sound latents: 40 a second over the clip's frames (the soundtrack is fitted to these)
+        let (frames, _, at) = temporal_shape(10.125);
+        assert_eq!((frames, at), (243, 405));
     }
 }
