@@ -5,6 +5,9 @@ kind: video
 arch: ltx2
 title: 'LTX-2.5 fast (the distilled DiT Q4_K_M: 8 steps, a preview)'
 about: 'the distilled DiT on its own eight sigmas (the movie maker''s fast mode); the rest as ltx-2.5'
+license: ltx-2-community
+commercial: true
+license_note: 'License date August 11, 2026 (Lightricks Ltd., embedded in the GGUF files). Free for any lawful purpose, commercial included, for an Entity (with all its subsidiaries and affiliates counted together) under US$10,000,000 annual revenue; an Entity at or above US$10,000,000 needs a paid Commercial Use Agreement (ltxv-licensing@lightricks.com) for any use except a Non-Commercial Purpose (personal research or hobby use by an individual, or testing and evaluation in a non-production environment, with no payment received and no effect on end users). Everyone: the Acceptable Use Policy and Attachment A apply (no deepfakes of people without consent, no unlabelled machine-made content passed off as human, no military use, ...) and must be passed to your users; the watermark, provenance and latent-disclosure features and metadata must not be removed or circumvented (EU AI Act, California AI Transparency Act duties are yours); for commercial use the outputs and the model may not train another model; no product that competes with Lightricks'' offerings without a separate license; the licensor may revoke it on breach. Lightricks claims no rights in the Output.'
 gpus: '0,1'
 split: true
 defaults:
