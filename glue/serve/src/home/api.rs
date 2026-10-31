@@ -447,6 +447,13 @@ impl Home {
             v["error"] = e;
             return Some((st, v));
         }
+        // rsvp_s on a clip: the hold starts when the clip ends, not now (the studio's queue is its own)
+        if method == "generate" {
+            if let (Some(g), Some(label)) = (super::rsvp::granted(super::rsvp::asked(), self.max_rsvp()), v["result"]["label"].as_str()) {
+                let model = self.eta_model(name, b, &all);
+                self.watch_clip(label.to_string(), model, g, 3.0);
+            }
+        }
         let url = |kind: &str, n: &str| format!("http://{host}/v1/video/{kind}/{n}");
         let r = &mut v["result"];
         for k in ["file", "preview"] {
@@ -1284,7 +1291,7 @@ impl Home {
         let envelope = json!({"type": "object", "properties": {
             "ok": {"type": "boolean"}, "result": {"description": "the method's answer"},
             "error": {"type": "object", "required": ["code", "message", "retryable", "status"], "description": "ok false: everything about the failure (the HTTP status is 200 all the same)", "properties": {
-                "code": {"type": "string", "description": "the convention to branch on (the list in the description above): invalid_request, invalid_params, unauthorized, not_found, conflict, busy, not_running, model_not_downloaded, no_room, cancelled, unavailable, timeout, request_too_large, internal"},
+                "code": {"type": "string", "description": "the convention to branch on (the list in the description above): invalid_request, invalid_params, unauthorized, not_found, conflict, busy, not_running, model_not_downloaded, no_room, wait_too_long, cancelled, unavailable, timeout, request_too_large, internal"},
                 "message": {"type": "string", "description": "what was wrong, in words: the value, the limit or the nearest legal one, what to do"},
                 "retryable": {"type": "boolean", "description": "true: the same call may work later unchanged (no_room, unavailable, timeout, busy); false: change the request"},
                 "status": {"type": "integer", "description": "the code's number by convention (400, 404, 409, 499, 502, 503 ...): in the body, not the HTTP status, so another transport carries it"},

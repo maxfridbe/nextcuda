@@ -117,6 +117,17 @@ fn serve_studio(l: TcpListener, dir: PathBuf) {
                     }
                     Err(_) => reply(&mut s, "502 Bad Gateway", &json!({"error": "the daemon does not answer"})),
                 }
+            } else if head.contains("/engine/keep") {
+                let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("keeps")).unwrap();
+                let _ = writeln!(f, "keep");
+                reply(&mut s, "200 OK", &json!({"keep_until": 0}));
+            } else if let Some(i) = head.find("/api/clip?label=") {
+                let label: String = head[i + 16..].chars().take_while(|c| c.is_ascii_alphanumeric() || "-_.".contains(*c)).collect();
+                if dir.join(format!("clip-{label}")).exists() {
+                    reply(&mut s, "200 OK", &json!({"label": label, "state": "running"}));
+                } else {
+                    reply(&mut s, "404 Not Found", &json!({"error": "no queued clip with that label"}));
+                }
             } else if head.contains("/rpc/status") {
                 reply(&mut s, "200 OK", &json!({"result": {"idle": !dir.join("renders").exists()}}));
             } else {
@@ -145,6 +156,17 @@ esac
 exit 0
 "#;
 
+/// The chat server: /v1/models names the model in the `llm-model` file (no file: nothing answers)
+fn serve_llm(l: TcpListener, dir: PathBuf) {
+    std::thread::spawn(move || {
+        for mut s in l.incoming().flatten() {
+            let _ = read_head(&mut s);
+            let Ok(m) = std::fs::read_to_string(dir.join("llm-model")) else { continue };
+            reply(&mut s, "200 OK", &json!({"data": [{"id": m.trim()}]}));
+        }
+    });
+}
+
 /// A box with one audio server slot (one 12 GiB card) and a video studio; `idle_minutes` 10
 fn world(name: &str, models: Vec<Value>) -> World {
     let dir = std::env::temp_dir().join(format!("nextcuda-fx-{name}-{}", std::process::id()));
@@ -158,8 +180,11 @@ fn world(name: &str, models: Vec<Value>) -> World {
     std::fs::write(dir.join("ports-audio"), format!("{audio}\n")).unwrap();
     serve_kind(la, dir.clone(), audio);
     serve_studio(ls, dir.clone());
+    let ll = TcpListener::bind("127.0.0.1:0").unwrap();
+    let llm = ll.local_addr().unwrap().port();
+    serve_llm(ll, dir.clone());
     let mem = Arc::new(Mem { models: Mutex::new(models), settings: Mutex::new(Default::default()), file: dir.join("models.json") });
-    let ports = Ports { llm: 1, switch: 1, image: 0, audio, model3d: 0, image2: 0, audio2: 0, model3d2: 0, video, chat_ui: 0 };
+    let ports = Ports { llm, switch: 1, image: 0, audio, model3d: 0, image2: 0, audio2: 0, model3d2: 0, video, chat_ui: 0 };
     let o = Options { wfe: PathBuf::new(), exe, ports, serve_host: "127.0.0.1".into(), cfg: Box::new(Shared(mem.clone())), idle_minutes: 10 };
     let home = Home::build(o).unwrap();
     *home.cards.lock().unwrap() = cards_of(&dir, audio, &mem);
@@ -358,19 +383,6 @@ fn no_video_model_enabled_starts_no_daemon() {
     let w = world("video-off", vec![off]);
     w.home.video_ensure_within(Duration::from_secs(2)).unwrap();
     assert_eq!(w.count("video start"), 0);
-}
-
-#[test]
-fn a_pinned_video_model_runs_the_daemon_with_no_worker_idle_unload() {
-    let mut l = model("ltx2", "video", 20.0);
-    l["pinned"] = json!(true);
-    let w = world("video-pin", vec![l]);
-    w.home.video_ensure_within(Duration::from_secs(10)).unwrap();
-    assert!(w.log().contains("video start --model ltx2 --gpu 0 |idle=0"), "{}", w.log());
-    // unpinned: the default idle rules
-    let w = world("video-nopin", vec![model("ltx2", "video", 20.0)]);
-    w.home.video_ensure_within(Duration::from_secs(10)).unwrap();
-    assert!(w.log().contains("|idle=\n") || w.log().trim_end().ends_with("|idle="), "{}", w.log());
 }
 
 /// Serve one request for `id` under an rsvp_s of `ask` (as `work` does): the lease is held while `f` runs
@@ -602,4 +614,95 @@ fn rsvp_s_is_in_the_methods_that_run_a_model() {
     let has = |n: &str| super::methods::find(n).unwrap().fields.iter().any(|f| f.name == "rsvp_s" && f.optional);
     assert!(has("audio.speak") && has("image.generate") && has("llm.chat") && has("video.generate"));
     assert!(!has("system.models"));
+}
+
+fn chat(id: &str) -> Value {
+    json!({"id": id, "title": id, "kind": "llm", "arch": "x", "enabled": true, "gpus": "0", "vram_gib": 6.0, "file": ""})
+}
+
+#[test]
+fn a_pinned_or_held_chat_model_is_not_swapped_out_for_another() {
+    let w = world("chat", vec![chat("a"), chat("b")]);
+    std::fs::write(w.dir.join("llm-model"), "a").unwrap();
+    assert!(w.home.chat_loaded(&w.home.models()).as_deref() == Some("a"));
+    assert!(!w.home.kept_ids(&w.home.models()).contains("a"));
+    // pinned: b is answered no_room naming the pin
+    w.mem.models.lock().unwrap()[0]["pinned"] = json!(true);
+    let e = w.home.chat_room("b").err().expect("a is pinned");
+    assert!(e.1.contains("pinned: a"), "{}", e.1);
+    assert_eq!(code_of(&e)["code"], "no_room");
+    // the pinned model itself is fine
+    assert!(w.home.chat_room("a").is_ok());
+    // held (an rsvp_s) instead of pinned
+    w.mem.models.lock().unwrap()[0]["pinned"] = json!(false);
+    w.home.hold_after("a", 300.0);
+    let e = w.home.chat_room("b").err().expect("a is held");
+    assert!(e.1.contains("held by rsvp_s: a"), "{}", e.1);
+    assert!(w.home.chat_idle().is_none(), "a held chat model is not an idle holder");
+}
+
+#[test]
+fn a_pinned_or_held_video_model_asks_the_daemon_to_keep_its_workers() {
+    let w = world("video-keep", vec![model("ltx2", "video", 20.0), model("minimax-h3", "video", 20.0)]);
+    w.home.keep_tick();
+    assert!(!w.dir.join("keeps").exists(), "nothing pinned or held: the daemon's own idle rule");
+    w.mem.models.lock().unwrap()[0]["pinned"] = json!(true);
+    w.home.keep_tick();
+    assert_eq!(std::fs::read_to_string(w.dir.join("keeps")).unwrap().lines().count(), 1);
+    // unpinned: it stops asking (the daemon is back to its normal idle with no restart)
+    w.mem.models.lock().unwrap()[0]["pinned"] = json!(false);
+    w.home.keep_tick();
+    assert_eq!(std::fs::read_to_string(w.dir.join("keeps")).unwrap().lines().count(), 1);
+    assert_eq!(w.count("video stop"), 0);
+    // a hold does the same
+    w.home.hold_after("minimax-h3", 120.0);
+    w.home.keep_tick();
+    assert_eq!(std::fs::read_to_string(w.dir.join("keeps")).unwrap().lines().count(), 2);
+}
+
+#[test]
+fn a_clips_hold_starts_when_the_clip_ends() {
+    let w = world("clip", vec![model("ltx2", "video", 20.0)]);
+    std::fs::write(w.dir.join("clip-x"), "").unwrap();
+    w.home.watch_clip("x".into(), "ltx2".into(), 300.0, 0.1);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(w.home.held_s("ltx2"), 0.0, "the clip is still running: no hold yet");
+    std::fs::remove_file(w.dir.join("clip-x")).unwrap();
+    let t0 = Instant::now();
+    while w.home.held_s("ltx2") == 0.0 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "no hold after the clip ended");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(w.home.held_s("ltx2") > 290.0);
+}
+
+#[test]
+fn a_jobs_rsvp_starts_its_hold_when_the_job_ends() {
+    let w = world("job-hold", vec![big("a")]);
+    let job = w.home.submit("audio.speak", &json!({"model": "a", "input": "hello", "wait": false, "rsvp_s": 300.0})).unwrap();
+    let id = job["id"].as_str().unwrap().to_string();
+    let t0 = Instant::now();
+    loop {
+        if w.home.jobs.get(&id).is_some_and(|j| matches!(j["state"].as_str(), Some("done" | "failed" | "cancelled"))) {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(15), "the job did not end");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // (the fake server cannot speak: it ended, ok or failed - the hold starts at its end all the same)
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(w.home.held_s("a") > 290.0, "{} {:?}", w.home.held_s("a"), w.home.jobs.get(&id));
+    w.home.history.sync();
+    assert_eq!(w.home.history.of("model|a").len(), 1);
+}
+
+#[test]
+fn the_wait_answers_keep_their_outcome_in_the_body() {
+    // the /rpc envelope is HTTP 200; error.status says 503 for both, the contract is code + retryable + the fields
+    let nr = super::api::rpc_error("audio.speak", 503, None, "its card is held by work that is not idle - GPU 0; x needs ~8.0 GiB; pinned: a (unpin to free the room)");
+    assert_eq!((nr["code"].as_str(), nr["retryable"].as_bool(), nr["status"].as_u64()), (Some("no_room"), Some(true), Some(503)));
+    let wt = super::api::rpc_error("audio.speak", 503, None, &super::rsvp::wait_tag(json!({"eta": {"wait_s": 60.0}, "max_willing_to_wait_s": 10.0}), "later"));
+    assert_eq!((wt["code"].as_str(), wt["retryable"].as_bool(), wt["status"].as_u64()), (Some("wait_too_long"), Some(true), Some(503)));
+    assert_eq!(wt["eta"]["wait_s"], 60.0);
+    assert_eq!(wt["max_willing_to_wait_s"], 10.0);
 }

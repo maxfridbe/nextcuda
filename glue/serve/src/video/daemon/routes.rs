@@ -377,6 +377,28 @@ fn remove(d: &Daemon, _cx: &mut Cx, req: JobRef) -> Result<Removed, Fail> {
     }
 }
 
+/// How long to keep the workers loaded
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct KeepReq {
+    /// seconds from now: no worker is unloaded for idleness before then (a later, shorter ask never shortens it)
+    pub seconds: f64,
+}
+
+/// The time workers are kept until
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct Kept {
+    /// unix seconds
+    pub keep_until: f64,
+}
+
+/// Keeps the loaded workers from unloading for idleness for a while (the front door asks this of a pinned or held model, and stops asking when the pin or hold ends)
+#[route(post = "/engine/keep", tags = "engine")]
+fn keep(d: &Daemon, _cx: &mut Cx, req: KeepReq) -> Result<Kept, Fail> {
+    let mut k = d.keep_until.lock().unwrap();
+    *k = k.max(now() + req.seconds.clamp(0.0, 86400.0));
+    Ok(Kept { keep_until: *k })
+}
+
 /// Unloads a GPU's engine (every GPU's without one named): now, or after its running job
 #[route(post = "/engine/unload", tags = "engine")]
 fn unload(d: &Daemon, _cx: &mut Cx, req: UnloadReq) -> Result<Unloads, Fail> {
@@ -413,7 +435,7 @@ fn shutdown(d: &Daemon, _cx: &mut Cx) -> Result<ShuttingDown, Fail> {
     Ok(ShuttingDown { shutdown: "running jobs stop at their next block boundary, then the engines unload".into() })
 }
 
-routes![sync Daemon, Cx, Fail; status, gpus, jobs, job, submit, cancel, remove, unload, shutdown];
+routes![sync Daemon, Cx, Fail; status, gpus, jobs, job, submit, cancel, remove, keep, unload, shutdown];
 
 /// The table, made once
 pub fn table() -> &'static [SyncRoute<Daemon, Cx, Fail>] {

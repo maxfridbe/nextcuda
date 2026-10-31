@@ -138,6 +138,27 @@ paths:
                 $ref: '#/components/schemas/Removed'
         default:
           description: 'an error: the body''s `error` says what'
+  /engine/keep:
+    post:
+      operationId: keep
+      summary: Keeps the loaded workers from unloading for idleness for a while (the front door asks this of a pinned or held model, and stops asking when the pin or hold ends)
+      tags:
+      - engine
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeepReq'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Kept'
+        default:
+          description: 'an error: the body''s `error` says what'
   /engine/unload:
     post:
       operationId: unload
@@ -386,6 +407,24 @@ components:
       - state
       - created
       description: A job, in short
+    KeepReq:
+      type: object
+      properties:
+        seconds:
+          type: number
+          description: 'seconds from now: no worker is unloaded for idleness before then (a later, shorter ask never shortens it)'
+      required:
+      - seconds
+      description: How long to keep the workers loaded
+    Kept:
+      type: object
+      properties:
+        keep_until:
+          type: number
+          description: unix seconds
+      required:
+      - keep_until
+      description: The time workers are kept until
     Queued:
       type: object
       properties:

@@ -31,13 +31,13 @@ Every enabled model, of every kind (chat, image, audio, 3D, video), is **on dema
   card - naming a pin or a hold.
 - **Pin (the page's `pin` / `unpin` buttons, `system.pin` / `system.unpin`, `{"do": "pin"}`):** the only manual
   control. A pinned model is **hot**: loaded now (in the background), never unloaded for idleness (its server starts
-  without `--idle-exit`, the backplane keeps a running one's idle clock fresh, the video daemon runs with
-  `NS_VIDEO_IDLE=0`, the switcher leaves it), never chosen as an evictable idle holder. Kept in the registry entry
+  without `--idle-exit`, the backplane keeps a running one's idle clock fresh, the video daemon is asked every 10 s
+  to keep its workers (`POST /engine/keep`, which its idle unload respects), the switcher leaves it), never chosen as an evictable idle holder. Kept in the registry entry
   (`pinned`, beside `enabled`): after a restart of `nextcuda serve` the pinned, enabled models are loaded again, the
   video daemon first. Unpin only clears the flag; the model stays loaded until the idle rules take it. Disabling a model
   unpins it. A pin that cannot load (no room) stays set; the failure is a run on the page and the backplane tries again.
   `system.load` / `system.unload` stay as RPC actions for tools; the page no longer has buttons for them.
-- **Keep-alive (`rsvp_s`):** see below. A pin is a hold with no end.
+- **Keep-alive (`rsvp_s`):** see below. A pin is a hold with no end. The chat server holds one model at a time: a pinned or held chat model is never swapped out - a request for another chat model gets `no_room` naming the pin or hold (the switcher answers the same).
 
 ### `rsvp_s`: keep the model loaded after this request
 
@@ -48,8 +48,10 @@ an error, the object result says `rsvp_granted_s`. The hold is the latest of the
 never shortens it). A held model is not idle for the idle timers and room planning leaves it (the backplane keeps its
 server's idle clock fresh every 10 s), then the normal idle rules begin. `rsvp_s: 0` releases: the model goes as soon
 as it is idle. No `rsvp_s`: the normal idle time. The page shows "held for N more s". Video: the hold keeps the model
-out of room planning; the worker's idle unload is the daemon's `NS_VIDEO_IDLE` (only a pin turns it off). Chat holds are
-written to the registry (`hold_until`) for the switcher.
+out of room planning, and the front door asks the daemon (`/engine/keep`, every 10 s) not to unload its workers for
+idleness while a pin or hold lasts; a video request's hold starts when its clip leaves the studio's queue (finished,
+failed or cancelled; the front door watches the clip). Unpin or the end of a hold just stops the asking: the normal
+idle unload is back, no restart. Chat holds are written to the registry (`hold_until`) for the switcher.
 
 ### ETAs and `max_willing_to_wait_s`
 
@@ -71,8 +73,13 @@ Every such method also takes `max_willing_to_wait_s`: the longest you will wait 
 A known `eta.wait_s` over it is answered at once, `{code: "wait_too_long", retryable: true, eta, max_willing_to_wait_s}`,
 with nothing queued, loaded or evicted; with an unknown ETA the request goes on but is withdrawn with the same code
 (`waited_s`) if it has not started in time, a queued job likewise (its status says `wait_too_long`); a loaded model with
-a free server always starts. Absent: the waits are the server's (90 s a request, 30 min a job). All of this is
-independent of `rsvp_s`.
+a free server always starts. Absent: the waits are the server's (90 s a request, 30 min a job); when given, the
+limit replaces them for requests and jobs alike. All of this is independent of `rsvp_s`.
+
+The outcome is in the JSON body, never the HTTP status: a `/rpc` answer is HTTP 200 with `{ok: false, error: {code,
+message, retryable, status, ...}}`; `no_room` and `wait_too_long` both carry `error.status` 503 and `retryable: true`
+(`wait_too_long` adds `eta`, `max_willing_to_wait_s`, and `waited_s` when it was withdrawn after waiting; `no_room`'s
+message names a pin or hold that blocks). The `/v1` routes (OpenAI's shape) answer the HTTP status itself.
 
 ## The front door and the model servers
 

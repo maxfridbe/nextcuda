@@ -64,6 +64,12 @@ enum Free {
 /// The video daemon's engines (model ids), and (engine, GPU) per loaded worker
 type VideoDaemon = (Vec<String>, Vec<(String, usize)>);
 
+/// How long a request waits to start: the caller's `max_willing_to_wait_s` when it gave one (it replaces the default,
+/// for a job's 30 minutes too, and enforces itself: wait_too_long), else the default
+fn wait_limit(default: Duration, max_wait: Option<f64>) -> Duration {
+    max_wait.map_or(default, |_| Duration::MAX)
+}
+
 /// How long a video request waits for the daemon to come up before 503
 const VIDEO_WAIT_S: u64 = 120;
 
@@ -109,16 +115,6 @@ fn video_engines(enabled: &[String]) -> (String, Vec<String>) {
 /// running: `running` none)
 fn video_missing(enabled: &[String], running: Option<&[String]>) -> bool {
     !enabled.is_empty() && running.is_none_or(|r| enabled.iter().any(|e| !r.contains(e)))
-}
-
-/// Whether a running daemon with the right engines is restarted for the pin: pinned and it unloads its workers when
-/// idle (now), or - nothing pinned, nothing loaded - it keeps them
-fn video_pin_restart(pin: bool, unloads: Option<bool>, any_loaded: bool) -> bool {
-    match unloads {
-        Some(true) => pin,
-        Some(false) => !pin && !any_loaded,
-        None => false,
-    }
 }
 
 /// Whether something listens on 127.0.0.1:`port`
@@ -872,7 +868,7 @@ impl Home {
         let default = Duration::from_secs(if job.is_some() { JOB_ROOM_WAIT_S } else { ROOM_WAIT_S });
         // the caller's max_willing_to_wait_s bounds the wait for the request to start (and never lengthens the default)
         let max_wait = super::rsvp::max_wait();
-        let limit = max_wait.map_or(default, |m| default.min(Duration::from_secs_f64(m)));
+        let limit = wait_limit(default, max_wait);
         let t0 = Instant::now();
         loop {
             if job.is_some_and(|j| self.job_cancelled(j)) {
@@ -1181,7 +1177,7 @@ impl Home {
     /// The chat model loaded, when it may be preempted: answering nothing, not changing, and not kept - a request
     /// that sent X-Keep-Up-S (Open WebUI's connection does: 300 s) keeps it that long after it ended, here or through
     /// the switcher (its GET /keep); a request without the header keeps nothing
-    fn chat_idle(&self) -> Option<String> {
+    pub(crate) fn chat_idle(&self) -> Option<String> {
         let all = self.models();
         let id = self.chat_loaded(&all)?;
         if self.kept_ids(&all).contains(&id) {
@@ -1222,8 +1218,15 @@ impl Home {
     pub(crate) fn chat_room(&self, id: &str) -> Result<(), (u16, String)> {
         let all = self.models();
         let Some(m) = all.iter().find(|m| m["id"] == id && registry::kind_of(m) == "llm") else { return Ok(()) };
-        if self.chat_loaded(&all).as_deref() == Some(id) {
+        let cur = self.chat_loaded(&all);
+        if cur.as_deref() == Some(id) {
             return Ok(());
+        }
+        // the chat server holds one model at a time: a pinned or held one is not swapped out for this one
+        if let Some(c) = cur.filter(|c| self.kept_ids(&all).contains(c)) {
+            let why = if pinned_ids(&all).contains(&c) { "pinned: ".to_string() + &c + " (unpin to free the room)" }
+                      else { format!("held by rsvp_s: {c} ({:.0} s more)", self.held_s(&c)) };
+            return Err((503, format!("the chat server holds one model at a time and {why}; {id} loads once it is released")));
         }
         let gpus = self.gpus_of(m);
         let t0 = Instant::now();
@@ -1328,9 +1331,9 @@ impl Home {
     }
 
     /// The video daemon as the enabled video models say: their engines on their cards, or stopped when none is
-    /// enabled; restarted only when that changes (and not while a clip renders, unless `force`). With a video model
-    /// pinned it runs with no worker idle unload (NS_VIDEO_IDLE=0); the daemon is restarted for that when the pin
-    /// comes, and for an unpin only before it has anything loaded (a pin never costs a loaded worker)
+    /// enabled; restarted only when that changes (and not while a clip renders, unless `force`). A pin or hold on a
+    /// video model never restarts it: the keeper asks the daemon to keep its workers (`/engine/keep`) for as long as
+    /// one lasts, and an unpin or the end of a hold simply stops the asking - the daemon's idle unload is back
     pub(crate) fn video_apply(&self, force: bool) -> Result<(), String> {
         let all = self.models();
         let enabled: Vec<&Value> = all.iter().filter(|m| registry::kind_of(m) == "video" && m["enabled"] != false).collect();
@@ -1360,7 +1363,6 @@ impl Home {
         let (first, others) = video_engines(&video_enabled(&all));
         let mut want: Vec<String> = vec![first.clone()];
         want.extend(others);
-        let pin = enabled.iter().any(|m| registry::pinned(m));
         let mut gpus: Vec<usize> = enabled.iter().flat_map(|m| self.gpus_of(m)).collect();
         gpus.sort();
         gpus.dedup();
@@ -1368,7 +1370,8 @@ impl Home {
             let (mut a, mut b) = (names.clone(), want.clone());
             a.sort();
             b.sort();
-            if a == b && !video_pin_restart(pin, self.video_unloads_idle(), !loaded.is_empty()) {
+            let _ = &loaded;
+            if a == b {
                 return Ok(());
             }
             if !force && self.rendering() {
@@ -1383,15 +1386,7 @@ impl Home {
         for g in gpus {
             args.extend(["--gpu".into(), g.to_string()]);
         }
-        let env: &[(&str, &str)] = if pin { &[("NS_VIDEO_IDLE", "0")] } else { &[] };
-        self.exec_env(format!("video start ({}){}", want.join(", "), if pin { ", pinned: workers stay loaded" } else { "" }), &args, env).map(|_| ())
-    }
-
-    /// Whether the running daemon unloads an idle worker (its status: unload_after_idle_seconds)
-    fn video_unloads_idle(&self) -> Option<bool> {
-        let v = call_for(&self.target("video"), "GET", "/engine/status", None, 4).ok()?;
-        v["engines"].as_array()?;
-        Some(v["unload_after_idle_seconds"].as_i64().is_some_and(|s| s > 0))
+        self.exec(format!("video start ({})", want.join(", ")), &args).map(|_| ())
     }
 
     /// A video request's first step: an enabled video model whose engine the daemon lacks (not running, crashed, or
@@ -1423,6 +1418,25 @@ impl Home {
         Err((504, format!("the video engine did not come up in {} s (nextcuda video start; the runs on this page have its log)", limit.as_secs())))
     }
 
+    /// A queued video clip watched to its end (it leaves the studio's queue when it finishes, fails or is cancelled): the
+    /// hold of its rsvp_s starts then. `every`: seconds between looks. Runs on its own thread.
+    pub(crate) fn watch_clip(&self, label: String, model: String, granted: f64, every: f64) {
+        let Some(me) = self.me.get().and_then(std::sync::Weak::upgrade) else { return };
+        std::thread::spawn(move || {
+            let q: String = label.chars().map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c.to_string() } else { format!("%{:02X}", c as u32 & 0xff) }).collect();
+            let t0 = Instant::now();
+            while t0.elapsed() < Duration::from_secs(7 * 86400) {
+                // 200 while the clip is running, held or queued; 404 once it is not
+                match crate::http::call_status(&me.target("video"), "GET", &format!("/api/clip?label={q}"), None, 5) {
+                    Ok((200, _)) | Err(_) => {}
+                    Ok(_) => break,
+                }
+                std::thread::sleep(Duration::from_secs_f64(every));
+            }
+            me.hold_after(&model, granted);
+        });
+    }
+
     /// The pinned, enabled models (not video: its daemon is video_apply's) loaded in the background: at serve start
     pub(crate) fn load_pinned(self: &Arc<Self>) {
         for m in self.models().iter().filter(|m| registry::pinned(m) && m["enabled"] != false && registry::kind_of(m) != "video") {
@@ -1449,8 +1463,7 @@ impl Home {
             let all = self.models();
             let enabled = video_enabled(&all);
             gone = if video_missing(&enabled, self.video_daemon().map(|d| d.0).as_deref()) { gone + 1 } else { 0 };
-            let pinned_video = all.iter().any(|m| registry::kind_of(m) == "video" && registry::pinned(m) && m["enabled"] != false);
-            if gone >= 2 || (gone == 0 && pinned_video) {
+            if gone >= 2 {
                 if let Err(e) = self.video_apply(false) {
                     eprintln!("video: {e}");
                 }
@@ -1484,6 +1497,10 @@ impl Home {
             }
         }
         self.withdraw_waiting();
+        // a pinned or held video model: the daemon keeps its workers loaded 60 s from this tick (asked again every tick)
+        if all.iter().any(|m| registry::kind_of(m) == "video" && m["enabled"] != false && kept.contains(&s(m, "id"))) {
+            let _ = call_for(&self.target("video"), "POST", "/engine/keep", Some(&json!({"seconds": 60})), 3);
+        }
         for id in releasing {
             if self.chat_idle().as_deref() == Some(id.as_str()) {
                 self.holds.lock().unwrap().remove(&id);
@@ -1819,16 +1836,11 @@ mod tests {
     }
 
     #[test]
-    fn a_pin_restarts_the_daemon_only_when_it_changes_what_it_does() {
-        // pinned and the workers unload when idle: restart (no clip lost: video_apply waits for the queue)
-        assert!(video_pin_restart(true, Some(true), false));
-        // pinned and they already stay
-        assert!(!video_pin_restart(true, Some(false), true));
-        // unpinned: the daemon that keeps its workers is left until nothing is loaded
-        assert!(!video_pin_restart(false, Some(false), true));
-        assert!(video_pin_restart(false, Some(false), false));
-        assert!(!video_pin_restart(false, Some(true), false));
-        // the daemon not answering: nothing to restart
-        assert!(!video_pin_restart(true, None, false));
+    fn a_job_waits_as_long_as_the_caller_will_not_the_default() {
+        let d = Duration::from_secs(90);
+        assert_eq!(wait_limit(d, None), d);
+        // the caller's limit replaces the default whether it is shorter or longer, and enforces itself
+        assert_eq!(wait_limit(d, Some(5.0)), Duration::MAX);
+        assert_eq!(wait_limit(Duration::from_secs(1800), Some(7200.0)), Duration::MAX);
     }
 }

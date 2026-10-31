@@ -487,7 +487,8 @@ unauthorized 401, not_found 404 (also an unknown method), conflict 409 (a model 
 busy 409 (video.generate while a clip is made, or an image / audio job that would wait, without queue: true), not_running 409 (video.cancel with nothing running), \
 model_not_downloaded 409 (the model named is a card's that is not downloaded: error.model, error.bytes, error.fits, error.pull = system.models.pull; NS_AUTO_PULL fetches it instead), \
 cancelled 499 (image.cancel / audio.cancel stopped it), unavailable 502 (the kind's server does not answer), \
-no_room 503 (the model's cards are held by work that is not idle; idle models are stopped for it first), \
+no_room 503 (the model's cards are held by work that is not idle, or by a pinned model or a hold from an rsvp_s - the message names it; idle models are stopped for it first), \
+wait_too_long 503 (max_willing_to_wait_s: the ETA says it would start later than you will wait - error.eta, error.max_willing_to_wait_s - or, with no ETA, it had not started in time - error.waited_s; nothing is queued or started for it; retryable: send it elsewhere or ask again), \
 maintenance 503 (system.maintenance is on: what starts work - chat, generation, edits, speech, system.load / enable - is refused; error.maintenance has the notice, \
 error.retry_after_s when to try again; status, listings and cancels answer as always), timeout 504, internal 500. \
 Every error has retryable: true for no_room, maintenance, unavailable, timeout and video's busy (the same call may work later), false otherwise \

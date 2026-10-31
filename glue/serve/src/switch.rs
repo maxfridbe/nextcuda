@@ -179,6 +179,10 @@ impl Switch {
         if other.as_deref() == Some(want.id.as_str()) {
             return None;
         }
+        if let Some(o) = other.as_deref().filter(|o| unload_exempt(&models, o)) {
+            return Some((503, json!({"error": {"message": format!("{o} is pinned (or held by an rsvp_s) and the chat server holds one model at a time: {} loads once it is unpinned or its hold ends", want.title),
+                                               "type": "model_unavailable", "code": "no_room", "retryable": true}})));
+        }
         if let Some(c) = &cur {
             let recent = other.as_ref().is_some_and(|o| self.last_use.lock().unwrap().get(o).is_some_and(|t| t.elapsed() < self.in_use));
             if recent || self.busy() {

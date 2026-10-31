@@ -200,6 +200,8 @@ struct Daemon {
     s: Mutex<Shared>,
     cv: Condvar,
     hooks: Mutex<Hooks>,
+    /// unix seconds: no worker is unloaded for idleness before then (/engine/keep: the front door's pins and holds)
+    keep_until: Mutex<f64>,
 }
 
 fn now() -> f64 {
@@ -533,7 +535,7 @@ impl Daemon {
                     }
                     let idle = s.slots[k].last_active.elapsed();
                     if let Some(limit) = self.opts.idle {
-                        if proc.is_some() && idle >= limit {
+                        if proc.is_some() && idle >= limit && now() >= *self.keep_until.lock().unwrap() {
                             break Next::Unload;
                         }
                     }
@@ -672,6 +674,7 @@ pub fn serve(opts: Options) -> Result<()> {
     let n = slots.len();
     let socket = opts.socket.clone();
     let d = Arc::new(Daemon {
+        keep_until: Mutex::new(0.0),
         opts,
         found,
         s: Mutex::new(Shared { jobs: BTreeMap::new(), queue: VecDeque::new(), next: 1, shutdown: false, slots }),

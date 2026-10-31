@@ -234,6 +234,8 @@ pub struct Home {
     holds: Mutex<BTreeMap<String, rsvp::Hold>>,
     /// what finished work took (history/ beside serve.json): the ETAs are made from it
     history: history::History,
+    /// this Home as an Arc, for work started from a call that has only `&self` (a clip watched to its end)
+    me: std::sync::OnceLock<std::sync::Weak<Home>>,
 }
 
 pub(crate) fn now() -> f64 {
@@ -344,7 +346,9 @@ impl Home {
             maint_file, maint_bypass, disks: disks::Disks::new(&st), pulls: pulls::Pulls::default(),
             holds: Mutex::new(BTreeMap::new()),
             history: history::History::open(o_dir.with_file_name("history")),
+            me: std::sync::OnceLock::new(),
         });
+        let _ = h.me.set(Arc::downgrade(&h));
         Ok(h)
     }
 
