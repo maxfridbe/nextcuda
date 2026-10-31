@@ -166,6 +166,15 @@ Table to fill in (one row a model; "unmeasured" until a bench is run and its blo
 | `unimate` | model3d | unmeasured | 1 | 1 | shared | | |
 | `unirig` | model3d | unmeasured | 1 | 1 | shared | | |
 
+### The scheduler is a crate
+
+The decisions above - placement, room planning, pins and holds, the concurrency profiles, ETAs and the wait rules - are
+`crates/scheduler` (`backplane-scheduler`), pure code behind a few traits the front door implements (`Sched` in
+`glue/serve/src/home/life.rs`). It is written to be copied into nextsycl (same lineage): `crates/scheduler/README.md` is
+the copy-and-adapt guide, with the scenario suite (`tests/scenarios.rs`, a fake host on a fake clock) that must pass
+there untouched. The method table (rpcgen), the HTTP wiring, process spawning, the card sampler and the job table stay in
+`glue/serve`.
+
 ## The front door and the model servers
 
 - **The front door on :8000:** `/rpc/<kind>.<method>` with a bearer token (`serve.json`, or `NS_API_TOKEN`); every

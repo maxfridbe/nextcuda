@@ -90,6 +90,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "backplane-scheduler"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -666,6 +673,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 name = "nextcuda"
 version = "0.0.0"
 dependencies = [
+ "backplane-scheduler",
  "nextcuda-audio",
  "nextcuda-audio-acestep",
  "nextcuda-audio-breezetts2",
@@ -833,7 +841,6 @@ name = "nextcuda-core"
 version = "0.0.0"
 dependencies = [
  "nextcuda-sys",
- "serde_json",
 ]
 
 [[package]]
@@ -1083,7 +1090,7 @@ dependencies = [
 name = "nextcuda-models"
 version = "0.0.0"
 dependencies = [
- "nextcuda-core",
+ "backplane-scheduler",
  "nextcuda-gguf",
  "serde_json",
  "serde_yaml",
@@ -1123,6 +1130,7 @@ dependencies = [
 name = "nextcuda-serve"
 version = "0.0.0"
 dependencies = [
+ "backplane-scheduler",
  "nextcuda-audio",
  "nextcuda-core",
  "nextcuda-diffusion",

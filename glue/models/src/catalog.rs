@@ -73,7 +73,7 @@ impl Catalog {
                     return Err(format!("{}: its kind is not its folder ({kind})", p.display()));
                 }
                 // the concurrency profile (crates/core profile.rs): bad values are refused here, with the card's name
-                nextcuda_core::profile::Profile::from_card(&v).map_err(|e| format!("{}: {e}", p.display()))?;
+                backplane_scheduler::profile::Profile::from_card(&v).map_err(|e| format!("{}: {e}", p.display()))?;
                 cards.push((p, v));
             }
         }

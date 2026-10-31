@@ -5,7 +5,7 @@
 //! set (`standard`: one place per kind) to every copy at once, and records the total throughput, the wall time of each
 //! request, the peak VRAM of the card and any failure. With `--beside` it also runs the model next to each named model
 //! (each alone, then both together) to see whether either collapses or the pair fails. The decisions are
-//! `nextcuda_core::profile::{recommend, scaling_of, verdict}` (tested with synthetic numbers there).
+//! `backplane_scheduler::profile::{recommend, scaling_of, verdict}` (tested with synthetic numbers there).
 //!
 //! Every GPU run takes `flock ~/.nextcuda-gpu.lock`: the command re-runs itself under flock. It never edits a card
 //! unless `--write` is given, which puts the proposed block into the card's file.
@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use nextcuda_core::profile::{self, Beside, Mode, ScalePoint};
+use backplane_scheduler::profile::{self, Beside, Mode, ScalePoint};
 use nextcuda_models::config::Config;
 use nextcuda_serve::http::{call_for, Target};
 use serde_json::{json, Value};
@@ -339,7 +339,7 @@ pub fn cmd(cfg: &Config, args: &[String]) -> Result<(), String> {
         let new = replace_blocks(&text, &c, &x);
         // the file must still be a valid card
         let v: Value = serde_yaml_check(&new)?;
-        nextcuda_core::profile::Profile::from_card(&v).map_err(|e| format!("the proposed block is not valid: {e}"))?;
+        backplane_scheduler::profile::Profile::from_card(&v).map_err(|e| format!("the proposed block is not valid: {e}"))?;
         std::fs::write(&path, new).map_err(|e| format!("{}: {e}", path.display()))?;
         eprintln!("written to {}", path.display());
     }

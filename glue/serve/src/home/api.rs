@@ -684,7 +684,7 @@ impl Home {
                 }
                 let eta = self.eta_for(&method, &params, None);
                 let max = b["max_willing_to_wait_s"].as_f64();
-                let would = max.is_none_or(|m| eta["wait_s"].as_f64().is_none_or(|w| w <= m));
+                let would = backplane_scheduler::eta::would_accept(&eta, max);
                 Ok(json!({"method": method, "eta": eta, "max_willing_to_wait_s": max, "would_accept": would}))
             }
             ("system", "unpin") => self.unpin(&model()).map(|_| json!({"model": model(), "pinned": false})),

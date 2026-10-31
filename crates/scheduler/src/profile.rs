@@ -77,7 +77,7 @@ impl Profile {
         let c = &card["concurrency"];
         if !c.is_null() {
             let o = c.as_object().ok_or("concurrency: a mapping")?;
-            for k in o.keys().filter(|k| !["max_copies_per_card", "recommended_copies", "scaling", "measured"].contains(&k.as_str())) {
+            if let Some(k) = o.keys().find(|k| !["max_copies_per_card", "recommended_copies", "scaling", "measured"].contains(&k.as_str())) {
                 return Err(format!("concurrency.{k}: unknown (max_copies_per_card, recommended_copies, scaling, measured)"));
             }
             if let Some(v) = o.get("max_copies_per_card").filter(|v| !v.is_null()) {
@@ -114,7 +114,7 @@ impl Profile {
         let x = &card["coexistence"];
         if !x.is_null() {
             let o = x.as_object().ok_or("coexistence: a mapping")?;
-            for k in o.keys().filter(|k| !["mode", "shared_with", "exclusive_reason", "peak_extra_gib", "notes"].contains(&k.as_str())) {
+            if let Some(k) = o.keys().find(|k| !["mode", "shared_with", "exclusive_reason", "peak_extra_gib", "notes"].contains(&k.as_str())) {
                 return Err(format!("coexistence.{k}: unknown (mode, shared_with, exclusive_reason, peak_extra_gib)"));
             }
             p.coexistence.mode = match o.get("mode").and_then(Value::as_str) {

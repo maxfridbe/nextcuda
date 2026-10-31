@@ -507,8 +507,8 @@ fn rsvp_zero_releases_the_model_as_soon_as_it_is_idle_unless_pinned_or_held() {
 }
 
 fn seed(w: &World, model: &str, wait_s: f64, run_s: f64) {
-    let shape = super::history::shape_of("audio.speak", model, &json!({"model": model}));
-    w.home.history.record(super::history::Record { method: "audio.speak".into(), model: model.into(), shape, wait_s, run_s, outcome: "ok".into() });
+    let shape = backplane_scheduler::shape::shape_of("audio.speak", model, &json!({"model": model}));
+    w.home.history.record(backplane_scheduler::history::Record { method: "audio.speak".into(), model: model.into(), shape, wait_s, run_s, outcome: "ok".into() });
 }
 
 fn code_of(e: &(u16, String)) -> Value {

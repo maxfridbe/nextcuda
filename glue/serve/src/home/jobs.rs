@@ -475,8 +475,7 @@ impl Home {
                 let model = self.eta_model(&method, &j["body"], &self.models());
                 let eta = self.history.eta(&method, &model, &j["body"], true, Some(0.0));
                 let ran = now() - j["started"].as_f64().unwrap_or_else(now);
-                let frac = v["progress"]["fraction"].as_f64().filter(|f| *f > 0.02 && *f < 1.0);
-                let left = frac.map(|f| ran * (1.0 - f) / f).or_else(|| eta["run_s"].as_f64().map(|r| (r - ran).max(0.0)));
+                let left = backplane_scheduler::eta::running_left(&eta, ran, v["progress"]["fraction"].as_f64());
                 v["eta_remaining_s"] = json!(left.map(|x| x.round()));
                 v["eta"] = eta;
             } else {

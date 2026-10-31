@@ -33,7 +33,6 @@ mod pulls;
 mod spec;
 pub mod registry;
 pub mod rsvp;
-pub mod history;
 #[cfg(test)]
 mod fixture_tests;
 mod routes;
@@ -233,7 +232,7 @@ pub struct Home {
     /// model id -> its hold (rsvp_s: kept loaded until, from when its last request ended; rsvp.rs)
     holds: Mutex<BTreeMap<String, rsvp::Hold>>,
     /// what finished work took (history/ beside serve.json): the ETAs are made from it
-    history: history::History,
+    history: backplane_scheduler::history::History,
     /// this Home as an Arc, for work started from a call that has only `&self` (a clip watched to its end)
     me: std::sync::OnceLock<std::sync::Weak<Home>>,
     /// the model cards, read at most once a minute (their concurrency profiles)
@@ -347,7 +346,7 @@ impl Home {
             seen: Mutex::new(seen), asked: Mutex::new(BTreeMap::new()), inflight: Mutex::new(BTreeMap::new()), answers: Mutex::new(BTreeMap::new()), stages: Mutex::new(BTreeMap::new()), chat_keep: Mutex::new(BTreeMap::new()),
             maint_file, maint_bypass, disks: disks::Disks::new(&st), pulls: pulls::Pulls::default(),
             holds: Mutex::new(BTreeMap::new()),
-            history: history::History::open(o_dir.with_file_name("history")),
+            history: backplane_scheduler::history::History::open(Box::new(backplane_scheduler::history::FileStorage::new(o_dir.with_file_name("history")))),
             me: std::sync::OnceLock::new(),
             cards_cache: Mutex::new((None, Vec::new())),
         });
