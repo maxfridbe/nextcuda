@@ -26,6 +26,15 @@ ui.state = {
 sc.show("status", App())
   .has(/RTX 3060/).lacks(/NVIDIA GeForce/).has(/Images/).has(/Audio/).has(/Chat/).has(/\b3D\b/).has(/trellis2-q8/).has(/1 of 1 enabled/);
 
+// no start / stop buttons: an enabled model is on demand, and the only manual controls are pin / unpin
+{
+  const pinned = { pinned: true, state: "loaded" };
+  ui.state.models = [model("qwen-image-2.1-q8", "image", { state: "loaded" }), model("trellis2-q8", "model3d", pinned),
+                     model("vibevoice-1.5b", "audio", { held_s: 90 }), model("qwen3-8b", "llm", { enabled: false, state: "disabled" })];
+  const v = sc.show("status-pin", App());
+  v.has(/\bpin\b/).has(/\bunpin\b/).has(/pinned/).has(/held for 90 more s/).lacks(/\bstart\b/).lacks(/\bstop\b/).lacks(/starting/);
+}
+
 // a model whose licence forbids commercial use wears a "non-commercial" tag (the licence in its tooltip); one that allows it
 // does not, nor does one conditioned (a note) or one with no licence known
 {

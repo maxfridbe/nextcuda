@@ -41,10 +41,17 @@ pub struct Model {
     pub title: String,
     pub tools: bool,
     pub tasks: bool,
+    /// pinned on the front door's page, or held by a request's rsvp_s: not unloaded for idleness
+    pub pinned: bool,
 }
 
 /// The registry's enabled chat models, read on every request (an added or disabled model shows at once)
 pub type Models = Box<dyn Fn() -> Vec<Model> + Send + Sync>;
+
+/// Whether the idle timer leaves chat model `id` loaded: it is pinned
+fn unload_exempt(models: &[Model], id: &str) -> bool {
+    models.iter().any(|m| m.id == id && m.pinned)
+}
 
 pub struct Switch {
     pub models: Models,
@@ -115,7 +122,7 @@ impl Switch {
             let models = (self.models)();
             let Some(on) = self.loaded().and_then(|c| self.served(&c, &models)) else { continue };
             let since = *self.last_use.lock().unwrap().entry(on.clone()).or_insert_with(Instant::now);
-            if since.elapsed() < idle || self.busy() {
+            if unload_exempt(&models, &on) || since.elapsed() < idle || self.busy() {
                 continue;
             }
             let Ok(_g) = self.swap.try_lock() else { continue };
@@ -306,6 +313,14 @@ impl Switch {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pinned_chat_model_is_not_unloaded_for_idleness() {
+        let m = |id: &str, pinned| Model { id: id.into(), title: id.into(), tools: true, tasks: true, pinned };
+        let models = vec![m("a", true), m("b", false)];
+        assert!(super::unload_exempt(&models, "a"));
+        assert!(!super::unload_exempt(&models, "b"));
+        assert!(!super::unload_exempt(&models, "gone"));
+    }
     use super::*;
 
     #[test]

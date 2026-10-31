@@ -109,6 +109,16 @@ export interface AudioGenerateReq {
   task?: AudioTask | null;
   /** acestep-1.5: beats a bar: "4", "3", "6" */
   time_signature?: string | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -275,6 +285,16 @@ export interface AudioSpeakReq {
   speakers?: unknown[] | null;
   /** a built-in voice (qwen3-tts-custom: serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan; audio.info lists them) or a saved one (audio.voices.list: spoken by a model that clones). Checked when submitted, the model loaded or not: an unknown name is a 400 at once (the message lists the voices). /v1/audio/speech also takes OpenAI's names (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse): built-in voices of qwen3-tts-custom (vivian, ryan, aiden, serena), or a model's own voice */
   voice?: string | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -353,6 +373,16 @@ export interface AudioTranscribeReq {
    * @default true
    */
   words?: boolean | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -406,6 +436,16 @@ export interface AudioVoicesDesignReq {
   seed?: number | null;
   /** what the sample says (default: a ten-second line in the language) */
   text?: string | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -527,6 +567,16 @@ export interface ImageEditReq {
    * @default 1
    */
   strength?: number | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -603,6 +653,16 @@ export interface ImageGenerateReq {
    * @maximum 1
    */
   strength?: number | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -658,6 +718,16 @@ export interface ImageOcrReq {
   temperature?: number | null;
   /** one page: read its 640-pixel tiles too (default true) */
   tiles?: boolean | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -804,6 +874,16 @@ export interface ImageUpscaleReq {
   tile?: number | null;
   /** the upscaler's model (image.info's upscale list): realesrgan-x4plus (default at 4x), realesr-animevideov3 (default at 2x / 3x), ..., models-cunet (waifu2x's default) */
   variant?: string | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -891,6 +971,16 @@ export interface ImageVectorizeReq {
    * @default 0.9
    */
   top_p?: number | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -911,6 +1001,16 @@ export interface LlmChatReq {
   temperature?: number | null;
   /** OpenAI tool definitions */
   tools?: (Record<string, unknown>)[] | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -1037,6 +1137,16 @@ export interface Model3dGenerateReq {
   texture?: boolean | null;
   /** the texture's side in texels */
   texture_size?: number | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -1188,6 +1298,16 @@ export interface Model3dRigReq {
   prompt?: string | null;
   seed?: number | null;
   steps?: number | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -1305,6 +1425,20 @@ export interface SystemEnableReq {
   [key: string]: unknown;
 }
 
+/** What system.eta takes. */
+export interface SystemEtaReq {
+  /** the method the request would call (image.generate, llm.chat ...) */
+  method: string;
+  /** the request's parameters as the method takes them (only the size-driving ones matter) */
+  params?: unknown | null;
+  /** the model (default: the one the request would pick) */
+  model?: string | null;
+  /** the longest you would wait for it to start: the answer says whether it would be accepted (would_accept) */
+  max_willing_to_wait_s?: number | null;
+  /** other keys */
+  [key: string]: unknown;
+}
+
 /** What system.files.delete takes. */
 export interface SystemFilesDeleteReq {
   kind: FileKind;
@@ -1401,6 +1535,14 @@ export interface SystemMoveReq {
   [key: string]: unknown;
 }
 
+/** What system.pin takes. */
+export interface SystemPinReq {
+  /** the model's registry id (system.models) */
+  model: string;
+  /** other keys */
+  [key: string]: unknown;
+}
+
 /** What system.ping takes. */
 export interface SystemPingReq {
   /** other keys */
@@ -1423,6 +1565,14 @@ export interface SystemStateReq {
 
 /** What system.unload takes. */
 export interface SystemUnloadReq {
+  /** the model's registry id (system.models) */
+  model: string;
+  /** other keys */
+  [key: string]: unknown;
+}
+
+/** What system.unpin takes. */
+export interface SystemUnpinReq {
   /** the model's registry id (system.models) */
   model: string;
   /** other keys */
@@ -1465,6 +1615,16 @@ export interface VideoDescribePromptGuideMdReq {
 
 /** What video.engines.list takes. */
 export interface VideoEnginesListReq {
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -1690,6 +1850,16 @@ export interface VideoGenerateReq {
    * @multipleOf 32
    */
   width?: number | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -1873,6 +2043,16 @@ export interface VideoUpscaleReq {
   variant?: string | null;
   /** the clip: MP4 / WebM / MOV ... as base64 or a data: URL */
   video?: string | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -1972,7 +2152,7 @@ export interface Methods {
    */
   "system.disable": { req: SystemDisableReq; resp: any };
   /**
-   * Load an enabled model now (otherwise its first request does)
+   * Load an enabled model now (otherwise its first request does; the home page has no button for it: pin is the manual control)
    * @tags system
    * @example {"model":"minimax-music3","wait":true}
    */
@@ -1983,6 +2163,24 @@ export interface Methods {
    * @example {"model":"minimax-music3"}
    */
   "system.unload": { req: SystemUnloadReq; resp: any };
+  /**
+   * Pin an enabled model: it loads now (in the background) and stays: no idle unload, never stopped for another model's room (that one answers 503 no_room naming the pin). Kept across a restart of the front door; disabling the model unpins it
+   * @tags system
+   * @example {"model":"minimax-music3"}
+   */
+  "system.pin": { req: SystemPinReq; resp: any };
+  /**
+   * Unpin a model: only the flag is cleared; it stays loaded until the idle rules take it
+   * @tags system
+   * @example {"model":"minimax-music3"}
+   */
+  "system.unpin": { req: SystemUnpinReq; resp: any };
+  /**
+   * The ETA a request would get now - {wait_s, run_s, total_s, samples, basis (shape | model | none), spread} from the last 100 requests of its shape - and whether max_willing_to_wait_s would accept it; nothing is started, queued or loaded, so a caller can ask first and choose another machine
+   * @tags system
+   * @example {"method":"image.generate","params":{"width":1024,"height":1024,"steps":28},"max_willing_to_wait_s":120}
+   */
+  "system.eta": { req: SystemEtaReq; resp: any };
   /**
    * The settings file (nextcuda.conf): its text, every setting the program reads (value, default, what reads it), the file's others
    * @tags system
@@ -2453,6 +2651,7 @@ export interface Methods {
   /**
    * The denoisers the daemon has, and the video.generate keys each takes: INT8 / Q6_K / Q4_K_M (text and image to video: anchors, guides, ControlNet, masked runs) and REF2VA (reference pictures and clips; no ControlNet or masked runs). ref_audios, anchors and guides work with every one
    * @tags video
+   * @example {}
    */
   "video.engines.list": { req: VideoEnginesListReq; resp: any };
   /**
@@ -2480,7 +2679,7 @@ export interface Methods {
 }
 
 /** The methods that take no parameters (their body may be left out). */
-export type NoParamMethods = "system.state" | "system.busy" | "system.ping" | "system.version" | "system.models" | "system.models.pulls" | "system.cards" | "system.config" | "system.drives" | "system.move.cancel" | "llm.requests" | "llm.models" | "image.queue.list" | "image.progress" | "image.history" | "audio.progress" | "audio.history" | "audio.queue.list" | "model3d.progress" | "model3d.history" | "model3d.queue.list" | "video.status" | "video.queue.list" | "video.projects.list" | "video.films.list" | "video.templates.list" | "video.engines.list" | "video.canvases.list" | "video.summary";
+export type NoParamMethods = "system.state" | "system.busy" | "system.ping" | "system.version" | "system.models" | "system.models.pulls" | "system.cards" | "system.config" | "system.drives" | "system.move.cancel" | "llm.requests" | "llm.models" | "image.queue.list" | "image.progress" | "image.history" | "audio.progress" | "audio.history" | "audio.queue.list" | "model3d.progress" | "model3d.history" | "model3d.queue.list" | "video.status" | "video.queue.list" | "video.projects.list" | "video.films.list" | "video.templates.list" | "video.canvases.list" | "video.summary";
 
 /** Every error's body, whatever the HTTP status: branch on `code`, never on the status (docs/RPC_RULES.md). */
 export interface RpcError {
@@ -2579,7 +2778,7 @@ export function client(post: Post, raw?: PostRaw) {
      */
     "system.disable": (req: SystemDisableReq): Promise<any> => post("system.disable", req),
     /**
-     * Load an enabled model now (otherwise its first request does)
+     * Load an enabled model now (otherwise its first request does; the home page has no button for it: pin is the manual control)
      * @tags system
      * @example {"model":"minimax-music3","wait":true}
      */
@@ -2590,6 +2789,24 @@ export function client(post: Post, raw?: PostRaw) {
      * @example {"model":"minimax-music3"}
      */
     "system.unload": (req: SystemUnloadReq): Promise<any> => post("system.unload", req),
+    /**
+     * Pin an enabled model: it loads now (in the background) and stays: no idle unload, never stopped for another model's room (that one answers 503 no_room naming the pin). Kept across a restart of the front door; disabling the model unpins it
+     * @tags system
+     * @example {"model":"minimax-music3"}
+     */
+    "system.pin": (req: SystemPinReq): Promise<any> => post("system.pin", req),
+    /**
+     * Unpin a model: only the flag is cleared; it stays loaded until the idle rules take it
+     * @tags system
+     * @example {"model":"minimax-music3"}
+     */
+    "system.unpin": (req: SystemUnpinReq): Promise<any> => post("system.unpin", req),
+    /**
+     * The ETA a request would get now - {wait_s, run_s, total_s, samples, basis (shape | model | none), spread} from the last 100 requests of its shape - and whether max_willing_to_wait_s would accept it; nothing is started, queued or loaded, so a caller can ask first and choose another machine
+     * @tags system
+     * @example {"method":"image.generate","params":{"width":1024,"height":1024,"steps":28},"max_willing_to_wait_s":120}
+     */
+    "system.eta": (req: SystemEtaReq): Promise<any> => post("system.eta", req),
     /**
      * The settings file (nextcuda.conf): its text, every setting the program reads (value, default, what reads it), the file's others
      * @tags system
@@ -3060,8 +3277,9 @@ export function client(post: Post, raw?: PostRaw) {
     /**
      * The denoisers the daemon has, and the video.generate keys each takes: INT8 / Q6_K / Q4_K_M (text and image to video: anchors, guides, ControlNet, masked runs) and REF2VA (reference pictures and clips; no ControlNet or masked runs). ref_audios, anchors and guides work with every one
      * @tags video
+     * @example {}
      */
-    "video.engines.list": (req: VideoEnginesListReq = {}): Promise<any> => post("video.engines.list", req),
+    "video.engines.list": (req: VideoEnginesListReq): Promise<any> => post("video.engines.list", req),
     /**
      * The canvases and their measured cost
      * @tags video

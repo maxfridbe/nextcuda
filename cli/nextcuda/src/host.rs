@@ -31,7 +31,7 @@ pub fn switch(args: &[String]) -> Result<(), String> {
         // the chat models (entries of other kinds - image, video, audio, lora - are not chat models)
         all.iter().filter(|m| m["enabled"] != false && models::kind_of(m) == "llm").filter_map(|m| {
             let id = m["id"].as_str()?.to_string();
-            Some(Model { title: m["title"].as_str().unwrap_or(&id).to_string(), tools: m["tools"] != false, tasks: m["tasks"] != false, id })
+            Some(Model { title: m["title"].as_str().unwrap_or(&id).to_string(), tools: m["tools"] != false, tasks: m["tasks"] != false, pinned: m["pinned"] == true || m["hold_until"].as_f64().is_some_and(|u| u > std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())), id })
         }).collect()
     });
     let mut aliases = HashMap::new();

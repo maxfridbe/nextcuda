@@ -58,11 +58,12 @@ function settle(): void {
   for (const [id, p] of Object.entries(ui.pending)) {
     const m = st.models.find((x) => x.id === id);
     const done = !m || Date.now() - p.since > 1_200_000
-      || (p.what === "load" && ["loaded", "busy", "ready"].includes(m.state))
+      || (p.what === "pin" && ["loaded", "busy", "ready"].includes(m.state))
+      || (p.what === "unpin" && !m.pinned)
       || (p.what === "unload" && !["loaded", "busy", "loading"].includes(m.state))
       || (p.what === "enable" && m.enabled) || (p.what === "disable" && !m.enabled);
     // a failed load shows in the actions: stop spinning
-    const failed = p.what === "load" && m && m.state === "unloaded" && Date.now() - p.since > 8000
+    const failed = p.what === "pin" && m && m.state === "unloaded" && Date.now() - p.since > 8000
       && st.runs.some((r) => r.label === `load ${id}` && r.started * 1000 > p.since && r.rc !== null && r.rc !== 0);
     if (done || failed) delete ui.pending[id];
   }
@@ -91,7 +92,7 @@ export async function loadSpec(): Promise<void> {
   render();
 }
 
-/** enable / disable / load / unload a model; its button spins until the state shows the result */
+/** enable / disable / pin / unpin a model; its button spins until the state shows the result */
 export async function act(what: string, model: string, extra: Record<string, unknown> = {}): Promise<void> {
   ui.pending[model] = { what, since: Date.now() };
   render();

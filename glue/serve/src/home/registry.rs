@@ -74,6 +74,11 @@ pub fn licence(src: &Value) -> serde_json::Map<String, Value> {
     ["license", "commercial", "license_note"].iter().filter_map(|k| Some((k.to_string(), src.get(*k)?.clone()))).collect()
 }
 
+/// Whether an entry is pinned: loaded and kept (no idle unload, never stopped for another model's room)
+pub fn pinned(m: &Value) -> bool {
+    m.get("pinned").and_then(Value::as_bool) == Some(true)
+}
+
 pub fn all(s: &dyn Store) -> Result<Vec<Value>, String> {
     s.models()
 }
@@ -106,4 +111,63 @@ pub fn paths(m: &Value) -> Vec<PathBuf> {
         }
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A registry kept in a JSON file, as models.json is
+    struct File(PathBuf, Mutex<()>);
+
+    impl Store for File {
+        fn models(&self) -> Result<Vec<Value>, String> {
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&self.0).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            Ok(v["models"].as_array().cloned().unwrap_or_default())
+        }
+        fn update(&self, id: &str, f: &mut dyn FnMut(&mut Value)) -> Result<Value, String> {
+            let _g = self.1.lock().unwrap();
+            let mut models = self.models()?;
+            let m = models.iter_mut().find(|m| m["id"] == id).ok_or("no model")?;
+            f(m);
+            let out = m.clone();
+            std::fs::write(&self.0, serde_json::json!({"models": models}).to_string()).map_err(|e| e.to_string())?;
+            Ok(out)
+        }
+        fn registry_file(&self) -> PathBuf {
+            self.0.clone()
+        }
+        fn get(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn in_env(&self, _: &str) -> bool {
+            false
+        }
+        fn file(&self) -> PathBuf {
+            PathBuf::new()
+        }
+        fn guide(&self, _: &Value) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_pin_is_kept_in_the_registry_file_and_survives_a_restart() {
+        let path = std::env::temp_dir().join(format!("nextcuda-pin-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::json!({"models": [{"id": "a", "enabled": true}, {"id": "b", "enabled": true}]}).to_string()).unwrap();
+        let st = File(path.clone(), Mutex::new(()));
+        update(&st, "a", |e| e["pinned"] = serde_json::json!(true)).unwrap();
+        // a new reader of the same file (serve restarted): a is pinned, b is not
+        let again = File(path.clone(), Mutex::new(()));
+        assert!(pinned(&find(&again, "a").unwrap().unwrap()));
+        assert!(!pinned(&find(&again, "b").unwrap().unwrap()));
+        // disabling unpins (life::disable writes both)
+        update(&again, "a", |e| {
+            e["enabled"] = serde_json::json!(false);
+            e["pinned"] = serde_json::json!(false);
+        }).unwrap();
+        assert!(!pinned(&find(&st, "a").unwrap().unwrap()));
+        let _ = std::fs::remove_file(path);
+    }
 }

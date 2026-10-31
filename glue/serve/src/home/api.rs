@@ -95,6 +95,15 @@ pub(crate) fn error_of(status: u16, m: &str) -> Value {
 /// An /rpc error in full: error_of with the method, the request key at fault when the message starts with one
 /// ("steps 8: ...", "images[0]: ...", "voice bogus: ..."), and a code of its own where the status's is too broad
 pub(crate) fn rpc_error(method: &str, status: u16, code: Option<&str>, m: &str) -> Value {
+    // a request that would not start in the time the caller will wait (history.rs): its own code and the ETA
+    if let Some((fields, words)) = super::rsvp::wait_untag(m) {
+        let mut e = rpc_error(method, status, Some("wait_too_long"), &words);
+        e["retryable"] = json!(true);
+        if let (Some(o), Some(f)) = (e.as_object_mut(), fields.as_object()) {
+            o.extend(f.clone());
+        }
+        return e;
+    }
     // a model a card offers that is not downloaded (pulls.rs): its own code and what fetches it
     if let Some((fields, words)) = super::pulls::untag(m) {
         let mut e = rpc_error(method, status, Some("model_not_downloaded"), &words);
@@ -380,6 +389,9 @@ impl Home {
                 return Err((400, format!("{name} needs \"{}\"", f.name)));
             }
         }
+        if b.get("rsvp_s").is_some_and(|v| !v.is_null() && !v.as_f64().is_some_and(|x| x >= 0.0)) {
+            return Err((400, "rsvp_s: seconds, 0 or more".into()));
+        }
         // the known fields' types (a string where a number goes ...): the request struct's own check
         (m.check)(b).map_err(|e| (400, format!("{name}: {}", e.0)))?;
         if let Some(why) = not_ported(m) {
@@ -407,6 +419,11 @@ impl Home {
         let all = self.models();
         let envelope = |st: u16, m: String| (st, json!({"ok": false, "error": rpc_error(name, st, None, &m)}));
         if let Err((st, m)) = self.checked(name, b, &all) {
+            return Some(envelope(st, m));
+        }
+        // an enabled video model and no daemon (or one without its engine): the daemon comes first, and this waits for it
+        let _rsvp = super::rsvp::scope(b);
+        if let Err((st, m)) = self.video_ensure() {
             return Some(envelope(st, m));
         }
         let (st, mut v) = match http::call_status(&self.target("video"), "POST", &format!("/rpc/{method}"), Some(b), 120) {
@@ -554,6 +571,10 @@ impl Home {
             self.checked(name, b, &all)?;
             // what the server would refuse, refused now (wait: false would answer OK, then fail)
             self.precheck(name, b, &all)?;
+            // the wait the caller will accept, against the ETA: refused now, nothing queued
+            if let Some(max) = b["max_willing_to_wait_s"].as_f64().filter(|x| *x >= 0.0) {
+                self.check_wait(name, b, max)?;
+            }
             return self.submit(name, b);
         }
         self.work(name, b)
@@ -561,6 +582,34 @@ impl Home {
 
     /// A method's work (a job's too)
     pub(super) fn work(self: &Arc<Self>, name: &str, b: &Value) -> Result<Value, Fail> {
+        let _rsvp = super::rsvp::scope(b);
+        // a request that is not a job: its wait against the ETA first (jobs were checked on arrival), its end in the history
+        let runs_model = super::rsvp::takes(name) && !super::jobs::METHODS.contains(&name);
+        if runs_model {
+            if let Some(max) = super::rsvp::max_wait() {
+                self.check_wait(name, b, max)?;
+            }
+        }
+        let t0 = std::time::Instant::now();
+        let out = self.work_inner(name, b);
+        if runs_model {
+            let (model, waited) = super::rsvp::take_start().unwrap_or_else(|| (s(b, "model"), 0.0));
+            let outcome = match &out {
+                Ok(_) => "ok",
+                Err((499, _)) => "cancelled",
+                Err(_) => "failed",
+            };
+            self.record_work(name, b, &model, waited, (t0.elapsed().as_secs_f64() - waited).max(0.0), outcome);
+        }
+        let mut r = out?;
+        // what the keep-alive was granted (clamped to NS_MAX_RSVP_S), in an object result
+        if let (Some(g), Some(o)) = (super::rsvp::granted(super::rsvp::asked(), self.max_rsvp()), r.as_object_mut()) {
+            o.insert("rsvp_granted_s".into(), json!(g));
+        }
+        Ok(r)
+    }
+
+    fn work_inner(self: &Arc<Self>, name: &str, b: &Value) -> Result<Value, Fail> {
         let all = self.models();
         let m = self.checked(name, b, &all)?;
         let model = || s(b, "model");
@@ -607,6 +656,26 @@ impl Home {
             ("system", "load") if b["wait"] == true => self.load(&model()).map(|_| json!({"model": model(), "loaded": true})),
             ("system", "load") => self.load_async(&model()).map(|_| json!({"model": model(), "loading": true})),
             ("system", "unload") => self.unload(&model()).map(|_| json!({"model": model(), "loaded": false})),
+            ("system", "pin") => self.pin(&model()).map(|_| json!({"model": model(), "pinned": true, "loading": true})),
+            ("system", "eta") => {
+                // a real request's ETA, no work done and nothing loaded
+                let method = s(b, "method");
+                if !super::rsvp::takes(&method) {
+                    return Err((400, format!("method {method}: a method that runs a model (image.generate, llm.chat ...)")));
+                }
+                let mut params = b["params"].clone();
+                if !params.is_object() {
+                    params = json!({});
+                }
+                if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty()) {
+                    params["model"] = json!(m);
+                }
+                let eta = self.eta_for(&method, &params, None);
+                let max = b["max_willing_to_wait_s"].as_f64();
+                let would = max.is_none_or(|m| eta["wait_s"].as_f64().is_none_or(|w| w <= m));
+                Ok(json!({"method": method, "eta": eta, "max_willing_to_wait_s": max, "would_accept": would}))
+            }
+            ("system", "unpin") => self.unpin(&model()).map(|_| json!({"model": model(), "pinned": false})),
             ("system", "config") => Ok(self.config()),
             ("system", "configSet") => self.config_set(b),
             ("system", "restart") => self.restart(&s(b, "service")),
@@ -633,6 +702,15 @@ impl Home {
                 body["stream"] = json!(false);
                 let keep = body.as_object_mut().and_then(|o| o.remove("keep_up_s"));
                 let r = relay(&t, "POST", "/v1/chat/completions", Some(&body), 1800);
+                // rsvp_s: the chat model stays loaded that long from now, the end of the answer (the switcher reads the
+                // registry's hold_until; room planning, the hold)
+                if let (Some(g), Some(id)) = (super::rsvp::granted(super::rsvp::asked(), self.max_rsvp()), self.chat_loaded(&self.models())) {
+                    self.hold_after(&id, g);
+                    if g > 0.0 {
+                        let until = self.held_s(&id) + now();
+                        let _ = registry::update(&self.o.cfg, &id, |e| e["hold_until"] = json!(until));
+                    }
+                }
                 // kept from the end of the answer (the model that answered)
                 if let Some(k) = keep.filter(|k| !k.is_null()) {
                     let secs = k.as_f64().filter(|x| *x >= 0.0).map_or(crate::switch::KEEP_UP_S, |x| (x as u64).min(86400));
@@ -897,6 +975,7 @@ impl Home {
                 Ok(r)
             }
             ("video", method) => {
+                self.video_ensure()?;
                 let v = call_for(&t, "POST", &format!("/rpc/{method}"), Some(b), 120).map_err(|e| (502, e))?;
                 Ok(v.get("result").cloned().unwrap_or(v))
             }

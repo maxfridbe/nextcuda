@@ -75,7 +75,9 @@ pub fn methods() -> &'static [Method] {
     M.get_or_init(|| {
         rpc_methods()
             .into_iter()
-            .map(|m| {
+            .map(|mut m| {
+                // (every method that runs a model takes rsvp_s: rsvp.rs)
+                m.info = super::rsvp::with_field(m.info);
                 let (kind, name) = m.info.name.split_once('.').expect("a dotted name");
                 Method {
                     kind,
@@ -400,6 +402,48 @@ pub struct SystemLoadReq {
 pub struct SystemUnloadReq {
     /// the model's registry id (system.models)
     pub model: String,
+    /// what else the caller sent: passed on as it came
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What system.pin takes.
+#[derive(Deserialize, Serialize, Rpc)]
+#[allow(non_snake_case)]
+pub struct SystemPinReq {
+    /// the model's registry id (system.models)
+    pub model: String,
+    /// what else the caller sent: passed on as it came
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What system.unpin takes.
+#[derive(Deserialize, Serialize, Rpc)]
+#[allow(non_snake_case)]
+pub struct SystemUnpinReq {
+    /// the model's registry id (system.models)
+    pub model: String,
+    /// what else the caller sent: passed on as it came
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What system.eta takes.
+#[derive(Deserialize, Serialize, Rpc)]
+#[allow(non_snake_case)]
+pub struct SystemEtaReq {
+    /// the method the request would call (image.generate, llm.chat ...)
+    pub method: String,
+    /// the request's parameters as the method takes them (only the size-driving ones matter)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+    /// the model (default: the one the request would pick)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// the longest you would wait for it to start: the answer says whether it would be accepted (would_accept)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_willing_to_wait_s: Option<f64>,
     /// what else the caller sent: passed on as it came
     #[serde(flatten)]
     pub rest: serde_json::Map<String, serde_json::Value>,
@@ -2288,7 +2332,7 @@ fn system_disable(h: &Arc<Home>, req: SystemDisableReq) -> Answer {
     h.legacy("system.disable", req)
 }
 
-/// Load an enabled model now (otherwise its first request does)
+/// Load an enabled model now (otherwise its first request does; the home page has no button for it: pin is the manual control)
 #[rpc(name = "system.load", tags = "system", example = r#"{"model": "minimax-music3", "wait": true}"#)]
 fn system_load(h: &Arc<Home>, req: SystemLoadReq) -> Answer {
     h.legacy("system.load", req)
@@ -2298,6 +2342,24 @@ fn system_load(h: &Arc<Home>, req: SystemLoadReq) -> Answer {
 #[rpc(name = "system.unload", tags = "system", example = r#"{"model": "minimax-music3"}"#)]
 fn system_unload(h: &Arc<Home>, req: SystemUnloadReq) -> Answer {
     h.legacy("system.unload", req)
+}
+
+/// Pin an enabled model: it loads now (in the background) and stays: no idle unload, never stopped for another model's room (that one answers 503 no_room naming the pin). Kept across a restart of the front door; disabling the model unpins it
+#[rpc(name = "system.pin", tags = "system", example = r#"{"model": "minimax-music3"}"#)]
+fn system_pin(h: &Arc<Home>, req: SystemPinReq) -> Answer {
+    h.legacy("system.pin", req)
+}
+
+/// Unpin a model: only the flag is cleared; it stays loaded until the idle rules take it
+#[rpc(name = "system.unpin", tags = "system", example = r#"{"model": "minimax-music3"}"#)]
+fn system_unpin(h: &Arc<Home>, req: SystemUnpinReq) -> Answer {
+    h.legacy("system.unpin", req)
+}
+
+/// The ETA a request would get now - {wait_s, run_s, total_s, samples, basis (shape | model | none), spread} from the last 100 requests of its shape - and whether max_willing_to_wait_s would accept it; nothing is started, queued or loaded, so a caller can ask first and choose another machine
+#[rpc(name = "system.eta", tags = "system", example = r#"{"method": "image.generate", "params": {"width": 1024, "height": 1024, "steps": 28}, "max_willing_to_wait_s": 120}"#)]
+fn system_eta(h: &Arc<Home>, req: SystemEtaReq) -> Answer {
+    h.legacy("system.eta", req)
 }
 
 /// The settings file (nextcuda.conf): its text, every setting the program reads (value, default, what reads it), the file's others
@@ -2819,7 +2881,7 @@ fn video_describe_prompt_guide_md(h: &Arc<Home>, req: VideoDescribePromptGuideMd
 rpcgen::rpc_methods![sync Arc<Home>, RpcFail;
     system_state, system_busy, system_ping, system_version, system_files_stat, system_files_delete,
     system_models, system_models_pull, system_models_pulls, system_models_pull_cancel, system_cards, system_enable,
-    system_gpus, system_disable, system_load, system_unload, system_config, system_config_set,
+    system_gpus, system_disable, system_load, system_unload, system_pin, system_unpin, system_eta, system_config, system_config_set,
     system_restart, system_maintenance, system_drives, system_drive_measure, system_move, system_move_cancel,
     llm_chat, llm_requests, llm_models, llm_describe_prompt_guide_md, image_generate, image_edit,
     image_upscale, image_vectorize, video_upscale, image_ocr, image_info, image_status,

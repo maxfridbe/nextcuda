@@ -148,10 +148,10 @@ function GpuPicker(m: Model) {
 
 function ModelRow(m: Model) {
   const p = ui.pending[m.id];
-  const spin = (what: string) => p?.what === what || (what === "load" && m.state === "loading");
+  const spin = (what: string) => p?.what === what || (what === "pin" && m.state === "loading");
   const loaded = ["loaded", "busy", "ready"].includes(m.state);
   const btn = (what: string, label: string, cls: string, title: string, extra: Record<string, unknown> = {}) => (
-    <button class={cls} attrs={{ disabled: !!p || (what !== "load" && m.state === "loading"), title }}
+    <button class={cls} attrs={{ disabled: !!p || (what !== "pin" && m.state === "loading"), title }}
       on={{ click: () => void act(what, m.id, extra) }}>
       {spin(what) ? <span class="spin" /> : null}{label}
     </button>
@@ -166,9 +166,11 @@ function ModelRow(m: Model) {
         <div class="name">{m.title ?? m.id}{NonCommercial(m)}</div>
         <div class="sub">{m.id} · <span attrs={{ title: m.measured ? "as seen while it ran" : "an estimate from its files, until it has run" }}>{vouch}{m.measured ? "" : " (est.)"}</span></div>
       </div>
-      <div class="mstate"><span class={{ tag: true, [m.state]: true }}>{STATE_TEXT[m.state] ?? m.state}</span></div>
+      <div class="mstate"><span class={{ tag: true, [m.state]: true }}>{STATE_TEXT[m.state] ?? m.state}</span>
+        {m.pinned ? <span class="hint" attrs={{ title: "pinned: kept loaded, never unloaded for idleness or stopped for another model's room" }}> · pinned</span>
+          : m.held_s > 0 ? <span class="hint" attrs={{ title: "a request's rsvp_s keeps it loaded until then" }}> · held for {Math.round(m.held_s)} more s</span> : null}</div>
       <div class="acts">
-        <span class="onoff" attrs={{ title: m.enabled ? "enabled: it loads on its first request and unloads after the idle time" : "disabled: off the API (and Open WebUI's list)" }}>
+        <span class="onoff" attrs={{ title: m.enabled ? "enabled: it loads on its first request and unloads after the idle time (pin keeps it loaded)" : "disabled: off the API (and Open WebUI's list)" }}>
           <label class={{ on: !m.enabled }}>
             <input attrs={{ type: "radio", name: `en-${m.id}`, disabled: !!p || m.state === "loading" }} props={{ checked: !m.enabled }}
               on={{ change: () => { if (m.enabled) void act("disable", m.id, m.kind === "video" ? { force: false } : {}); } }} /> disabled
@@ -182,9 +184,11 @@ function ModelRow(m: Model) {
         {GpuPicker(m)}
         {m.enabled
           ? [
-              loaded
-                ? btn("unload", "stop", "ghost", "unload now (after the requests it is answering); it stays enabled")
-                : btn("load", m.state === "loading" ? "starting" : "start", "", "load now (otherwise its first request does); the button spins until it answers"),
+              // no start / stop: an enabled model loads on its first request (evicting idle, unpinned holders for room) and
+              // unloads when idle; only a pin keeps it hot
+              m.pinned
+                ? btn("unpin", "unpin", "ghost", "unpin: it stays loaded until the idle time takes it (nothing is unloaded now)")
+                : btn("pin", m.state === "loading" ? "pinning" : "pin", "", "pin: load it now and keep it loaded - never unloaded for idleness or stopped for another model's room; kept across a restart; disabling it unpins; the button spins until it answers"),
               // its own page, loaded or not, through the front door (/open/ID): an image, audio or 3D model's is its server's,
               // so the model starts first; a video model's is the studio's
               <a class="btn" attrs={{ href: m.kind !== "llm" ? `/open/${encodeURIComponent(m.id)}` : page, target: "_blank",

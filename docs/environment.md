@@ -101,6 +101,7 @@ Where the program, its libraries, its models and its sockets are.
 | `NS_VCP_CONTINUE` | 0 | 1: VoxCPM2 continues a saved voice's recording (its transcript the prompt's) instead of taking its timbre alone - continuing led the recording's last words into each sentence | audio voxcpm2 |
 | `NS_CHAT_UI_PORT` | 3000 | Open WebUI's port (the page's link; tooling/open-webui.sh's OWUI_PORT) | serve |
 | `NS_CORS` | loopback origins only | more web origins that may call the servers from a browser, comma-separated (`*`: any) | cli (llm, image, audio start) |
+| `NS_MAX_RSVP_S` | 86400 | the longest keep-alive a request's `rsvp_s` is granted (seconds; larger is clamped, 0 or unset: a day); a model held by an `rsvp_s` is not unloaded when idle nor stopped for another model's room until the hold ends | serve |
 | `NS_AUTO_PULL` | 0 | 1: a request naming a model a card offers that is not downloaded starts its download (`system.models.pull`) and waits for it, a job saying `downloading <model>: N%`; 0: it is refused 409 `model_not_downloaded` (error.model, bytes, fits, pull). Read on every request, so the page's checkbox needs no restart | serve |
 | `NS_IDLE_MINUTES` | 10 | an enabled model unloads after this long without a request (0: never); the switcher uses the same unless --idle-minutes | serve, switch |
 | `NS_IMAGE_PORT` | 8086 | the image server's port, as the front door reaches it | serve |

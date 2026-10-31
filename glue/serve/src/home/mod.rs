@@ -32,6 +32,10 @@ mod precheck;
 mod pulls;
 mod spec;
 pub mod registry;
+pub mod rsvp;
+pub mod history;
+#[cfg(test)]
+mod fixture_tests;
 mod routes;
 
 /// What the #[rpc] methods make (methods.rs, rpcgen), as (path under the repo, content): the typed client of the
@@ -226,6 +230,10 @@ pub struct Home {
     disks: disks::Disks,
     /// models being downloaded, and the last ones (pulls.rs)
     pulls: pulls::Pulls,
+    /// model id -> its hold (rsvp_s: kept loaded until, from when its last request ended; rsvp.rs)
+    holds: Mutex<BTreeMap<String, rsvp::Hold>>,
+    /// what finished work took (history/ beside serve.json): the ETAs are made from it
+    history: history::History,
 }
 
 pub(crate) fn now() -> f64 {
@@ -289,6 +297,27 @@ fn new_token() -> String {
 
 impl Home {
     pub fn new(o: Options) -> Result<Arc<Home>, String> {
+        let h = Self::build(o)?;
+        let me = h.clone();
+        std::thread::spawn(move || me.sample_cards());
+        h.resume_jobs();
+        // the video daemon as the enabled video models say (it is this page's to start and stop)
+        let me = h.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(3));
+            if let Err(e) = me.video_apply(false) {
+                eprintln!("video: {e}");
+            }
+            // then the pinned models (after the daemon, which a pinned video model's workers need), and the watch
+            me.load_pinned();
+            me.keeper();
+        });
+        Ok(h)
+    }
+
+    /// The state, without the threads (`new` starts those)
+    fn build(o: Options) -> Result<Arc<Home>, String> {
+        let o_dir = registry::registry(&o.cfg);
         let state_file = registry::registry(&o.cfg).with_file_name("serve.json");
         let mut st: Value = std::fs::read(&state_file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(json!({}));
         let token = match o.cfg.get("NS_API_TOKEN").or_else(|| st["token"].as_str().map(str::to_string)) {
@@ -313,17 +342,8 @@ impl Home {
             kind_lock: ["llm", "image", "audio", "model3d", "video"].into_iter().map(|k| (k, Mutex::new(()))).collect(),
             seen: Mutex::new(seen), asked: Mutex::new(BTreeMap::new()), inflight: Mutex::new(BTreeMap::new()), answers: Mutex::new(BTreeMap::new()), stages: Mutex::new(BTreeMap::new()), chat_keep: Mutex::new(BTreeMap::new()),
             maint_file, maint_bypass, disks: disks::Disks::new(&st), pulls: pulls::Pulls::default(),
-        });
-        let me = h.clone();
-        std::thread::spawn(move || me.sample_cards());
-        h.resume_jobs();
-        // the video daemon as the enabled video models say (it is this page's to start and stop)
-        let me = h.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(3));
-            if let Err(e) = me.video_apply(false) {
-                eprintln!("video: {e}");
-            }
+            holds: Mutex::new(BTreeMap::new()),
+            history: history::History::open(o_dir.with_file_name("history")),
         });
         Ok(h)
     }
@@ -611,10 +631,15 @@ impl Home {
 
     /// This program with these arguments, to the end; its output to a run's log (the page shows it). Ok: the run.
     fn exec(&self, label: String, args: &[String]) -> Result<u64, String> {
+        self.exec_env(label, args, &[])
+    }
+
+    /// `exec` with variables set for the program (the video daemon's NS_VIDEO_IDLE)
+    fn exec_env(&self, label: String, args: &[String], env: &[(&str, &str)]) -> Result<u64, String> {
         let (id, log) = self.new_run(label.clone());
         let f = std::fs::File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
         let f2 = f.try_clone().map_err(|e| e.to_string())?;
-        let st = std::process::Command::new(&self.o.exe).args(args).stdin(std::process::Stdio::null()).stdout(f).stderr(f2).status();
+        let st = std::process::Command::new(&self.o.exe).args(args).envs(env.iter().copied()).stdin(std::process::Stdio::null()).stdout(f).stderr(f2).status();
         let rc = st.ok().and_then(|s| s.code()).unwrap_or(-1);
         self.finish(id, rc);
         if rc == 0 {
@@ -625,8 +650,9 @@ impl Home {
         }
     }
 
-    /// The page's buttons: {"do": enable | disable | load | unload | measure | move | move_cancel, "model", "gpus": [..],
-    /// "force", "drive"}; a load, a measurement and a move run on (the state shows them), the others answer when done
+    /// The page's buttons: {"do": enable | disable | pin | unpin | measure | move | move_cancel, "model", "gpus": [..],
+    /// "force", "drive"}; a pin (it loads), a measurement and a move run on (the state shows them), the others answer when
+    /// done. `load` and `unload` are also actions, for tools: the page has no buttons for them
     fn action(self: &Arc<Self>, b: &Value) -> Result<Value, (u16, String)> {
         let model = b["model"].as_str().unwrap_or("").to_string();
         match b["do"].as_str().unwrap_or("") {
@@ -638,6 +664,11 @@ impl Home {
                 Ok(json!({"model": model, "loading": true}))
             }
             "unload" => self.unload(&model).map(|_| json!({"model": model, "loaded": false})),
+            "pin" => {
+                self.pin(&model)?;
+                Ok(json!({"model": model, "pinned": true, "loading": true}))
+            }
+            "unpin" => self.unpin(&model).map(|_| json!({"model": model, "pinned": false})),
             "config" => self.config_set(b),
             "restart" => self.restart(b["service"].as_str().unwrap_or("")),
             "maintenance" => self.maintenance_set(b),
@@ -649,7 +680,7 @@ impl Home {
             // the page's checkbox: NS_AUTO_PULL in the settings file (read live: no restart)
             "auto_pull" => self.config_set(&json!({"set": {"NS_AUTO_PULL": if b["on"] == true { json!("1") } else { Value::Null }}}))
                 .map(|_| json!({"auto_pull": self.auto_pull()})),
-            other => Err((400, format!("no action {other:?} (enable, disable, gpus, load, unload, config, restart, maintenance, measure, move, move_cancel, pull, pull_cancel, auto_pull)"))),
+            other => Err((400, format!("no action {other:?} (enable, disable, gpus, load, unload, pin, unpin, config, restart, maintenance, measure, move, move_cancel, pull, pull_cancel, auto_pull)"))),
         }
     }
 }

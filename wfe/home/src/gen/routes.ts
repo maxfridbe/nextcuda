@@ -5,7 +5,7 @@
 /** A page button: what it does and to what */
 export interface Action {
   do: ActionDo;
-  /** the model (enable, disable, gpus, load, unload, move, pull, pull_cancel) */
+  /** the model (enable, disable, gpus, load, unload, pin, unpin, move, pull, pull_cancel) */
   model?: string | null;
   /** enable, gpus: the cards ([] or none: any) */
   gpus?: unknown | null;
@@ -22,7 +22,7 @@ export interface Action {
 }
 
 /** What a page button does */
-export type ActionDo = "enable" | "disable" | "gpus" | "load" | "unload" | "config" | "restart" | "maintenance" | "measure" | "move" | "move_cancel" | "pull" | "pull_cancel" | "auto_pull";
+export type ActionDo = "enable" | "disable" | "gpus" | "load" | "unload" | "pin" | "unpin" | "config" | "restart" | "maintenance" | "measure" | "move" | "move_cancel" | "pull" | "pull_cancel" | "auto_pull";
 
 /** A model a card offers that is not here yet */
 export interface Available {
@@ -184,6 +184,10 @@ export interface ModelView {
   title?: string | null;
   arch?: string | null;
   enabled: boolean;
+  /** pinned (system.pin): loaded and kept - no idle unload, never stopped for another model's room */
+  pinned: boolean;
+  /** seconds a request's rsvp_s still holds it loaded (0: not held) */
+  held_s: number;
   gpus: number[];
   state: ModelState;
   /** a chat model that spans every card */

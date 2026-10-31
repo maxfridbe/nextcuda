@@ -151,7 +151,7 @@ components:
           anyOf:
           - type: string
           - type: 'null'
-          description: the model (enable, disable, gpus, load, unload, move, pull, pull_cancel)
+          description: the model (enable, disable, gpus, load, unload, pin, unpin, move, pull, pull_cancel)
         gpus:
           anyOf:
           - {}
@@ -189,6 +189,8 @@ components:
       - gpus
       - load
       - unload
+      - pin
+      - unpin
       - config
       - restart
       - maintenance
@@ -621,6 +623,12 @@ components:
           - type: 'null'
         enabled:
           type: boolean
+        pinned:
+          type: boolean
+          description: 'pinned (system.pin): loaded and kept - no idle unload, never stopped for another model''s room'
+        held_s:
+          type: number
+          description: 'seconds a request''s rsvp_s still holds it loaded (0: not held)'
         gpus:
           type: array
           items:
@@ -672,6 +680,8 @@ components:
       - id
       - kind
       - enabled
+      - pinned
+      - held_s
       - gpus
       - state
       - spans

@@ -46,7 +46,7 @@ pub const KINDS: [&str; 3] = ["image", "audio", "model3d"];
 const KEEP: usize = 200;
 
 pub struct Jobs {
-    list: Mutex<Vec<Value>>,
+    pub(crate) list: Mutex<Vec<Value>>,
     ended: Condvar,
     file: PathBuf,
     /// by kind: {all, projects: [], batches: []} - what waits until resumed
@@ -81,6 +81,18 @@ pub fn neutral(mut v: Value) -> Value {
 }
 
 impl Jobs {
+    /// A queued job that will not start in time: failed with the wait_too_long error (a running or ended one is left)
+    pub(crate) fn fail_queued(&self, id: &str, method: &str, err: Fail) {
+        self.update(id, |j| {
+            if j["state"] == "queued" {
+                j["state"] = json!("failed");
+                j["ended"] = json!(now());
+                j["error"] = super::api::rpc_error(method, err.0, None, &err.1);
+                j["body"] = Value::Null;
+            }
+        });
+    }
+
     pub fn load(file: PathBuf) -> Jobs {
         let mut list: Vec<Value> = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         // the ones the last run left unfinished go again
@@ -135,7 +147,7 @@ impl Jobs {
         Some(out)
     }
 
-    fn get(&self, id: &str) -> Option<Value> {
+    pub(crate) fn get(&self, id: &str) -> Option<Value> {
         self.list.lock().unwrap().iter().find(|j| j["id"] == id).cloned()
     }
 
@@ -338,8 +350,24 @@ impl Home {
         }
         let mut body = j["body"].clone();
         body["request_id"] = json!(id);
+        // the time it waited in the queue is spent from its max_willing_to_wait_s
+        let queued_s = j["started"].as_f64().zip(j["created"].as_f64()).map_or(0.0, |(a, b)| (a - b).max(0.0));
+        if let Some(m) = body["max_willing_to_wait_s"].as_f64() {
+            body["max_willing_to_wait_s"] = json!((m - queued_s).max(0.0));
+        }
+        let t_run = std::time::Instant::now();
         let r = self.work(&method, &body);
         let cancel = self.job_cancelled(id);
+        {
+            let (model, waited) = super::rsvp::take_start().unwrap_or_else(|| (s(&body, "model"), 0.0));
+            let total = t_run.elapsed().as_secs_f64();
+            let outcome = match &r {
+                Ok(_) => "ok",
+                Err((st, _)) if cancel || *st == 499 => "cancelled",
+                Err(_) => "failed",
+            };
+            self.record_work(&method, &body, &model, queued_s + waited, (total - waited).max(0.0), outcome);
+        }
         self.stages.lock().unwrap().remove(id);
         self.jobs.update(id, |j| {
             j["ended"] = json!(now());
@@ -438,6 +466,24 @@ impl Home {
                 }
             }
             _ => {}
+        }
+        // its ETA while it waits or runs, and the time left of a running one (from its progress when it has one, else
+        // its history's run time less what it has run)
+        if matches!(s(j, "state").as_str(), "queued" | "running") && j["body"].is_object() {
+            let method = s(j, "method");
+            if s(j, "state") == "running" {
+                let model = self.eta_model(&method, &j["body"], &self.models());
+                let eta = self.history.eta(&method, &model, &j["body"], true, Some(0.0));
+                let ran = now() - j["started"].as_f64().unwrap_or_else(now);
+                let frac = v["progress"]["fraction"].as_f64().filter(|f| *f > 0.02 && *f < 1.0);
+                let left = frac.map(|f| ran * (1.0 - f) / f).or_else(|| eta["run_s"].as_f64().map(|r| (r - ran).max(0.0)));
+                v["eta_remaining_s"] = json!(left.map(|x| x.round()));
+                v["eta"] = eta;
+            } else {
+                let eta = self.eta_for(&method, &j["body"], j["id"].as_str());
+                v["eta_remaining_s"] = json!(eta["total_s"].as_f64().map(|x| x.round()));
+                v["eta"] = eta;
+            }
         }
         v["state"] = json!(state);
         v["stage"] = json!(stage);

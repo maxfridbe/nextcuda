@@ -136,6 +136,10 @@ pub struct ModelView {
     pub title: Option<String>,
     pub arch: Option<String>,
     pub enabled: bool,
+    /// pinned (system.pin): loaded and kept - no idle unload, never stopped for another model's room
+    pub pinned: bool,
+    /// seconds a request's rsvp_s still holds it loaded (0: not held)
+    pub held_s: f64,
     pub gpus: Vec<i64>,
     pub state: ModelState,
     /// a chat model that spans every card
@@ -418,6 +422,8 @@ pub enum ActionDo {
     Gpus,
     Load,
     Unload,
+    Pin,
+    Unpin,
     Config,
     Restart,
     Maintenance,
@@ -434,7 +440,7 @@ pub enum ActionDo {
 pub struct Action {
     #[serde(rename = "do")]
     pub act: ActionDo,
-    /// the model (enable, disable, gpus, load, unload, move, pull, pull_cancel)
+    /// the model (enable, disable, gpus, load, unload, pin, unpin, move, pull, pull_cancel)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// enable, gpus: the cards ([] or none: any)
