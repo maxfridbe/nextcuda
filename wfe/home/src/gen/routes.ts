@@ -82,6 +82,27 @@ export interface CardState {
   overbooked: boolean;
 }
 
+/** Whether other models may run on a model's card */
+export interface CoexistenceView {
+  /** "shared" or "exclusive" */
+  mode: string;
+  shared_with: string[];
+  exclusive_reason: string;
+  peak_extra_gib?: number | null;
+}
+
+/** A model card's concurrency profile as the page shows it */
+export interface ConcurrencyView {
+  max_copies_per_card: number;
+  recommended_copies: number;
+  /** copies -> total throughput relative to one copy (null: unmeasured) */
+  scaling: unknown;
+  /** {date, card, method, notes} or null */
+  measured: unknown;
+  /** "measured" or "unmeasured" */
+  status: string;
+}
+
 /** The settings file and what each setting is */
 export interface Config {
   path: string;
@@ -188,6 +209,13 @@ export interface ModelView {
   pinned: boolean;
   /** seconds a request's rsvp_s still holds it loaded (0: not held) */
   held_s: number;
+  /** copies of it loaded now, and its profile's recommended and maximum per card */
+  copies_now: number;
+  recommended_copies: number;
+  max_copies_per_card: number;
+  /** its model card's concurrency profile (status "unmeasured": the defaults) and coexistence */
+  concurrency: ConcurrencyView;
+  coexistence: CoexistenceView;
   gpus: number[];
   state: ModelState;
   /** a chat model that spans every card */

@@ -707,6 +707,7 @@ dependencies = [
  "nextcuda-video-h3",
  "nextcuda-video-ltx2",
  "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]
@@ -832,6 +833,7 @@ name = "nextcuda-core"
 version = "0.0.0"
 dependencies = [
  "nextcuda-sys",
+ "serde_json",
 ]
 
 [[package]]
@@ -1081,6 +1083,7 @@ dependencies = [
 name = "nextcuda-models"
 version = "0.0.0"
 dependencies = [
+ "nextcuda-core",
  "nextcuda-gguf",
  "serde_json",
  "serde_yaml",

@@ -16,6 +16,11 @@
 //!   model enabled and the daemon not running (or running without its engine): the next video request through the
 //!   front door, `video.engines.list` included, applies the daemon first and waits for it (`video_ensure`), and a
 //!   watcher brings back one that crashed (`keeper`).
+//! - concurrency profile (the model card's `concurrency` / `coexistence`, crates/core profile.rs): never more copies of a
+//!   model on a card than `max_copies_per_card`, extra copies (when requests wait) only up to `recommended_copies`;
+//!   an `exclusive` model has its card to itself - idle residents are stopped for it, nothing else is placed there
+//!   while it is loaded, and a busy, pinned or held resident makes it wait / answer no_room naming it; `shared_with`
+//!   limits what may be a resident beside a model. Unmeasured models: one copy, shared with anything that fits.
 //! - pinned (the page's pin / unpin; `pinned` in the registry entry beside `enabled`): a model loaded now and kept
 //!   there - its server starts without `--idle-exit`, the keeper loads it again after a restart and keeps a running
 //!   server touched, the video daemon runs with no worker idle unload, the switcher does not unload it, and no room
@@ -30,6 +35,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use super::{now, Home};
+use nextcuda_core::profile::{self, Profile};
 use crate::http::{call_for, Target};
 use super::registry;
 
@@ -609,6 +615,19 @@ impl Home {
                                                       .find(|x| x.model.as_deref() == Some(id.as_str())).map_or(self.port_of(&kind), |x| x.port)),
                                                   "video" => json!(self.o.ports.video), _ => json!(self.o.ports.chat_ui) }});
             row.as_object_mut().unwrap().extend(licence);
+            // its concurrency profile (the card's; "unmeasured" until a bench says otherwise) and the copies running now
+            let prof = if m.get("concurrency").is_some() || m.get("coexistence").is_some() { Profile::of_entry(m) }
+                       else { card.map_or_else(Profile::default, Profile::of_entry) };
+            let (pc, px) = prof.to_json();
+            let copies_now = match kind.as_str() {
+                "image" | "audio" | "model3d" => slots_of(&kind).iter().filter(|x| x.model.as_deref() == Some(id.as_str())).count(),
+                _ => usize::from(matches!(state, "loaded" | "busy")),
+            };
+            row["recommended_copies"] = pc["recommended_copies"].clone();
+            row["max_copies_per_card"] = pc["max_copies_per_card"].clone();
+            row["copies_now"] = json!(copies_now);
+            row["concurrency"] = pc;
+            row["coexistence"] = px;
             row
         }).collect()
     }
@@ -932,9 +951,12 @@ impl Home {
             // picture and sound servers there stop), in a slot no server holds or one an idle model holds - else the copy
             // with the fewest requests (its server queues it)
             let on: Vec<usize> = mine.iter().filter_map(|x| card_of_port(&cards, x.port)).collect();
+            // copies per card: extra ones up to the profile's recommended count (the default 1: one a card), never past its max
+            let prof = self.profile_of(m);
+            let per_card = prof.concurrency.recommended_copies.min(prof.concurrency.max_copies_per_card) as usize;
             let spare = sv.iter().find(|x| x.model.is_none()).or_else(|| sv.iter().find(idle_other));
-            let plan = pick_card(gpus.iter().copied().filter(|g| !on.contains(g))
-                .map(|g| (g, card_free(&cards, g), self.room_plan(&cards, g, want(g), kind, true))));
+            let plan = pick_card(gpus.iter().copied().filter(|g| extra_copy_allowed(&on, *g, per_card))
+                .map(|g| (g, card_free(&cards, g), self.room_plan_for(&cards, g, want(g), kind, true, Some(m)))));
             if let (Some(x), Some((gpu, plan))) = (spare, plan) {
                 // (a plan another request's lock stands in the way of: no copy now, the requests share the first)
                 let started = self.free(&plan, kind, id).and_then(|_| {
@@ -960,7 +982,7 @@ impl Home {
         // not loaded: a card of its with the room now (the one with the most free), else the first that has it once idle
         // models there go (picture and sound servers, an idle video worker, a chat model not kept by X-Keep-Up-S); a
         // slot no server holds, else one an idle model holds, else one a busy model of the kind holds, after its requests
-        let plan = pick_card(gpus.iter().map(|&g| (g, card_free(&cards, g), self.room_plan(&cards, g, want(g), kind, false))));
+        let plan = pick_card(gpus.iter().map(|&g| (g, card_free(&cards, g), self.room_plan_for(&cards, g, want(g), kind, false, Some(m)))));
         let empty = sv.iter().find(|x| x.model.is_none());
         let idle = sv.iter().filter(idle_other).min_by_key(|x| card_of_port(&cards, x.port).is_none_or(|g| Some(g) != plan.as_ref().map(|p| p.0)));
         let on_mine = |x: &&Slot| x.model.is_some() && !kept(x) && card_of_port(&cards, x.port).is_some_and(|g| gpus.contains(&g));
@@ -972,7 +994,7 @@ impl Home {
                     .map(|p| p["vram_mb"].as_u64().unwrap_or(0)).sum::<u64>();
                 (g, mb)
             });
-            let frees = |x: &&Slot| held(x).is_some_and(|(g, mb)| self.room_plan(&cards, g, want(g).saturating_sub(mb), kind, false).is_some());
+            let frees = |x: &&Slot| held(x).is_some_and(|(g, mb)| self.room_plan_for(&cards, g, want(g).saturating_sub(mb), kind, false, Some(m)).is_some());
             if let Some(x) = sv.iter().filter(on_mine).filter(frees).min_by_key(|x| inflight(x.port)) {
                 self.drain(x, kind, id, job)?;
                 return Ok(Err(format!("server {} stopped for {id}", x.slot + 1)));
@@ -1052,7 +1074,14 @@ impl Home {
         let all = self.models();
         let pinned = pinned_holders(cards, gpus, &pinned_ids(&all));
         let held = pinned_holders(cards, gpus, &self.kept_ids(&all).difference(&pinned_ids(&all)).cloned().collect());
+        let excl: Vec<String> = pinned_holders(cards, gpus, &all.iter().filter(|o| self.profile_of(o).coexistence.mode == profile::Mode::Exclusive).map(|o| s(o, "id")).collect());
         let mut pin = if pinned.is_empty() { String::new() } else { format!("; pinned: {} (unpin to free the room)", pinned.join(", ")) };
+        if !excl.is_empty() {
+            pin += &format!("; exclusive: {} (runs alone on its card)", excl.join(", "));
+        }
+        if self.entry(id).is_ok_and(|m| self.profile_of(&m).coexistence.mode == profile::Mode::Exclusive) {
+            pin += &format!("; {id} is exclusive: it needs its card to itself");
+        }
         if !held.is_empty() {
             pin += &format!("; held by rsvp_s: {} (until its hold ends: {})", held.join(", "),
                             held.iter().map(|h| format!("{h} {:.0} s", self.held_s(h))).collect::<Vec<_>>().join(", "));
@@ -1066,10 +1095,20 @@ impl Home {
     /// studio has nothing to make, a chat model answering nothing and not kept (chat_idle). `light`: picture and sound servers
     /// only (for a second copy, which is no reason to stop a video or chat model). The kind asking is never asked to
     /// free its own kind's chat or video.
-    fn room_plan(&self, cards: &Value, g: usize, want: u64, asking: &str, light: bool) -> Option<Vec<Holder>> {
+    /// `room_plan` for a model `m` asking: the residents that may not share a card with it (an exclusive model's, or
+    /// its own exclusivity, or `shared_with`) are stopped as well when idle, and make the card no choice when they are
+    /// not (busy, pinned, held)
+    fn room_plan_for(&self, cards: &Value, g: usize, want: u64, asking: &str, light: bool, m: Option<&Value>) -> Option<Vec<Holder>> {
         let c = cards.get(g)?;
         let free = card_free(cards, g);
-        if free >= want {
+        let (exclusive, blocks) = match m {
+            Some(m) => self.sharing(m),
+            None => (false, Box::new(|_: &str| false) as Box<dyn Fn(&str) -> bool + '_>),
+        };
+        // the nextcuda models on the card (a foreign process is not one)
+        let residents: Vec<String> = c["procs"].as_array().into_iter().flatten().filter(|p| p["kind"].is_string())
+            .map(|p| p["model_id"].as_str().or(p["model"].as_str()).unwrap_or("?").to_string()).collect();
+        if free >= want && !residents.iter().any(|r| exclusive || blocks(r)) {
             return Some(Vec::new());
         }
         let inflight = |p: u16| self.inflight.lock().unwrap().get(&p).copied().unwrap_or(0);
@@ -1100,8 +1139,38 @@ impl Home {
                 _ => {}
             }
         }
-        plan_room(free, want, evictable(idle, &self.kept_ids(&self.models())))
+        plan_with_blockers(free, want, evictable(idle, &self.kept_ids(&self.models())), &residents, exclusive, &*blocks)
     }
+
+    /// A model's profile: its entry's, else its model card's (cards read at most once a minute), else the defaults
+    pub(crate) fn profile_of(&self, m: &Value) -> Profile {
+        if m.get("concurrency").is_some() || m.get("coexistence").is_some() {
+            return Profile::of_entry(m);
+        }
+        let cards = self.card_cache();
+        cards.iter().find(|c| [s(m, "catalog"), s(m, "id")].iter().any(|i| !i.is_empty() && c["id"] == i.as_str()))
+            .map_or_else(Profile::default, Profile::of_entry)
+    }
+
+    fn card_cache(&self) -> Vec<Value> {
+        let mut c = self.cards_cache.lock().unwrap();
+        if c.0.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+            *c = (Some(Instant::now()), self.o.cfg.cards());
+        }
+        c.1.clone()
+    }
+
+    /// Whether model `m` is exclusive, and a test for another model's id: may it NOT share a card with `m`
+    pub(crate) fn sharing(&self, m: &Value) -> (bool, Box<dyn Fn(&str) -> bool + '_>) {
+        let (id, kind) = (s(m, "id"), registry::kind_of(m).to_string());
+        let me = self.profile_of(m);
+        let others: BTreeMap<String, (String, Profile)> = self.models().iter().map(|o| (s(o, "id"), (registry::kind_of(o).to_string(), self.profile_of(o)))).collect();
+        let exclusive = me.coexistence.mode == profile::Mode::Exclusive;
+        (exclusive, Box::new(move |other: &str| {
+            other != id && others.get(other).is_some_and(|(ok, op)| !me.may_share(&id, &kind, op, other, ok))
+        }))
+    }
+
 
     /// A server's refusal to load for want of memory (its "needs about X GiB ...; Y GiB are free", in `e`) on card
     /// `gpu`, planned for `want` MiB: what it asks, as the front door counts free memory, kept for `id`. Whether that
@@ -1247,7 +1316,7 @@ impl Home {
             }
             let mut freed = false;
             for g in &short {
-                if let Some(plan) = self.room_plan(&cards, *g, want(*g), "llm", false) {
+                if let Some(plan) = self.room_plan_for(&cards, *g, want(*g), "llm", false, Some(m)) {
                     if self.free(&plan, "llm", id).is_ok() {
                         self.wait_room(*g, want(*g));
                         freed = true;
@@ -1266,6 +1335,15 @@ impl Home {
 
     /// `id` started in slot `x` on card `gpu`, answering
     fn start_at(&self, kind: &str, id: &str, x: &Slot, gpu: usize) -> Result<(), (u16, String)> {
+        // never more copies of a model on one card than its profile allows (max_copies_per_card)
+        if let Ok(m) = self.entry(id) {
+            let max = self.profile_of(&m).concurrency.max_copies_per_card as usize;
+            let cards = self.cards.lock().unwrap().clone();
+            let there = self.servers(kind).iter().filter(|o| o.slot != x.slot && o.model.as_deref() == Some(id) && card_of_port(&cards, o.port) == Some(gpu)).count();
+            if there >= max {
+                return Err((503, format!("{id} already has {there} cop{} on GPU {gpu}: its card's max_copies_per_card is {max}", if there == 1 { "y" } else { "ies" })));
+            }
+        }
         // a model whose engine splits its stages over its cards (its card's split: true - MiniMax Music 3's language
         // model on one, its flow stage on the other) gets them all, `gpu` first
         let on = match self.entry(id) {
@@ -1522,6 +1600,36 @@ fn pinned_holders(cards: &Value, gpus: &[usize], pinned: &BTreeSet<String>) -> V
 /// Card `g`'s free memory as the sampler has it (its total less what is used), MiB
 fn card_free(cards: &Value, g: usize) -> u64 {
     cards.get(g).map_or(0, |c| c["vram_total_mb"].as_u64().unwrap_or(0).saturating_sub(c["vram_used_mb"].as_u64().unwrap_or(0)))
+}
+
+/// Whether card `g` may take another copy of a model that has copies on the cards `on` (one entry a copy), up to `per_card` there
+fn extra_copy_allowed(on: &[usize], g: usize, per_card: usize) -> bool {
+    on.iter().filter(|c| **c == g).count() < per_card
+}
+
+/// `plan_room` with the residents that may not stay: each of `residents` that `blocks` (all of them when `exclusive`)
+/// goes with the idle holders, and when one is not among the idle holders (busy, pinned, held) there is no plan
+fn plan_with_blockers(free: u64, want: u64, idle: Vec<Holder>, residents: &[String], exclusive: bool, blocks: &dyn Fn(&str) -> bool) -> Option<Vec<Holder>> {
+    let must = |r: &str| exclusive || blocks(r);
+    let blockers: Vec<&String> = residents.iter().filter(|r| must(r)).collect();
+    if blockers.is_empty() {
+        return plan_room(free, want, idle);
+    }
+    let (mut forced, idle): (Vec<Holder>, Vec<Holder>) = idle.into_iter().partition(|h| must(&h.model));
+    // every blocker is a holder that can go
+    let mut gone: Vec<&str> = forced.iter().map(|h| h.model.as_str()).collect();
+    for b in &blockers {
+        match gone.iter().position(|g| g == &b.as_str()) {
+            Some(i) => {
+                gone.remove(i);
+            }
+            None => return None,
+        }
+    }
+    let freed: u64 = forced.iter().map(|h| h.mb).sum();
+    let mut plan = plan_room(free + freed, want, idle)?;
+    forced.append(&mut plan);
+    Some(forced)
 }
 
 /// What of a card's idle holders must go so `want` MiB is free (it has `free`): none (Some(empty)), the lightest to
@@ -1833,6 +1941,41 @@ mod tests {
         assert_eq!(video_engines(&ids(&["ltx2", "minimax-h3"])), ("minimax-h3".to_string(), ids(&["ltx2"])));
         assert_eq!(video_engines(&ids(&["ltx2"])), ("ltx2".to_string(), vec![]));
         assert_eq!(video_engines(&[]), (String::new(), vec![]));
+    }
+
+    fn h(model: &str, mb: u64) -> Holder {
+        Holder { what: Free::Server("audio".into(), 0), mb, model: model.into(), order: 0 }
+    }
+
+    #[test]
+    fn an_exclusive_model_clears_its_card_of_idle_residents_and_waits_for_the_rest() {
+        let res = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let none = |_: &str| false;
+        // lots of room, but exclusive: the idle resident goes anyway
+        let plan = plan_with_blockers(9000, 2000, vec![h("a", 3000)], &res(&["a"]), true, &none).unwrap();
+        assert_eq!(plan.iter().map(|x| x.model.as_str()).collect::<Vec<_>>(), vec!["a"]);
+        // a resident that cannot go (busy, pinned, held: not among the idle holders): no plan, the card is no choice
+        assert!(plan_with_blockers(9000, 2000, vec![h("a", 3000)], &res(&["a", "busy-one"]), true, &none).is_none());
+        // not exclusive and nothing blocks: the plain plan (nothing to stop with room)
+        assert_eq!(plan_with_blockers(9000, 2000, vec![h("a", 3000)], &res(&["a"]), false, &none).unwrap().len(), 0);
+        // a resident that does not share with the newcomer (shared_with) goes even with room; one that does stays
+        let blocks = |m: &str| m == "a";
+        let plan = plan_with_blockers(9000, 2000, vec![h("a", 3000), h("b", 3000)], &res(&["a", "b"]), false, &blocks).unwrap();
+        assert_eq!(plan.iter().map(|x| x.model.as_str()).collect::<Vec<_>>(), vec!["a"]);
+        // the freed memory counts toward the room wanted
+        let plan = plan_with_blockers(1000, 5000, vec![h("a", 4500), h("b", 3000)], &res(&["a", "b"]), false, &blocks).unwrap();
+        assert_eq!(plan.iter().map(|x| x.model.as_str()).collect::<Vec<_>>(), vec!["a"]);
+    }
+
+    #[test]
+    fn extra_copies_stop_at_the_profiles_count_a_card() {
+        // one a card (the default): a card with a copy takes none, another card does
+        assert!(!extra_copy_allowed(&[0], 0, 1));
+        assert!(extra_copy_allowed(&[0], 1, 1));
+        // two worth running: a second on the same card, not a third
+        assert!(extra_copy_allowed(&[0], 0, 2));
+        assert!(!extra_copy_allowed(&[0, 0], 0, 2));
+        assert!(extra_copy_allowed(&[0, 0], 1, 2));
     }
 
     #[test]

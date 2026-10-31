@@ -81,6 +81,91 @@ message, retryable, status, ...}}`; `no_room` and `wait_too_long` both carry `er
 (`wait_too_long` adds `eta`, `max_willing_to_wait_s`, and `waited_s` when it was withdrawn after waiting; `no_room`'s
 message names a pin or hold that blocks). The `/v1` routes (OpenAI's shape) answer the HTTP status itself.
 
+### Concurrency profile: how many copies, and who may share a card
+
+Each model's card (`model-cards/README.md`: `concurrency`, `coexistence`) says how many copies run on one card and are
+worth running, and whether other models may run beside it. The backplane enforces it for pictures, sound and 3D
+(the servers it starts) and for the residents it finds on a card:
+- never more copies of a model on a card than `max_copies_per_card` (`start_at` refuses the extra one); a further copy
+  starts, when requests are waiting, only up to `recommended_copies` a card (the default: one a card);
+- an **exclusive** model gets its card to itself: idle residents are stopped for it even where the memory would fit, and a
+  resident that cannot go (busy, pinned, held) makes it wait and then answer `no_room`, naming it; while an exclusive
+  model is loaded nothing else is started on its card - the answer to a request that would is `no_room` with
+  `exclusive: <id> (runs alone on its card)`;
+- `shared_with` limits who may be a resident beside a model (`kind:<kind>`, `model:<id>`, either side's list counts);
+- pins and holds are honoured throughout: a pinned or held resident is never stopped for these either;
+- the video daemon and chat: the rules apply to what shares their cards (a resident exclusive video or chat model blocks
+  others the same way); the daemon's own worker count a card is one.
+
+Where clients see it: every model row (`system.models`, `system.state`) has `concurrency` (with `status`:
+`measured` or `unmeasured`), `coexistence`, `copies_now`, `recommended_copies` and `max_copies_per_card`; `system.busy`
+has `engines`, one entry a model: `{id, kind, copies_now, recommended_copies, max_copies_per_card, mode, status}`, for
+a dispatcher. The home page shows "unmeasured" or "n/rec copies".
+
+**Measuring:** `nextcuda models bench <id> [--copies 1,2,3] [--beside <id>...] [--requests N] [--gpu N] [--write]`
+(under `flock ~/.nextcuda-gpu.lock`) starts n copies on one card, sends the kind's standard small request set to all at
+once, and prints each run (units a minute, each request's seconds, the card's peak VRAM, failures) and the proposed
+block; `--beside` runs it next to each named model, alone and together. It never edits a card; `--write` puts the block in
+the card's file. Pictures (generation), speech and songs, and chat have a standard request; the video daemon, 3D and the
+models that take an input file (OCR, upscalers, recognisers) are measured by hand until they do.
+
+Table to fill in (one row a model; "unmeasured" until a bench is run and its block is in the card):
+
+| model | kind | status | max copies | recommended | mode | shared with | measured on |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `nemotron-3.5-super-iq1m` | llm | unmeasured | 1 | 1 | shared | | |
+| `qwen3.8-27b-gsq-iq3s-long` | llm | unmeasured | 1 | 1 | shared | | |
+| `qwen3.8-27b-gsq-iq3s` | llm | unmeasured | 1 | 1 | shared | | |
+| `ming-image-0.1-design` | image | unmeasured | 1 | 1 | shared | | |
+| `moss-image-sft-dmd2-q8` | image | unmeasured | 1 | 1 | shared | | |
+| `moss-image-sft-q8` | image | unmeasured | 1 | 1 | shared | | |
+| `moss-image-sft-turbo4-q8` | image | unmeasured | 1 | 1 | shared | | |
+| `moss-image-sft-turbo8-q8` | image | unmeasured | 1 | 1 | shared | | |
+| `olmocr-2-7b-q8` | image | unmeasured | 1 | 1 | shared | | |
+| `paddleocr-vl-1.6` | image | unmeasured | 1 | 1 | shared | | |
+| `qwen-image-2.1-q6k` | image | unmeasured | 1 | 1 | shared | | |
+| `qwen-image-2.1-q8` | image | unmeasured | 1 | 1 | shared | | |
+| `qwen-image-2.1-rrq4` | image | unmeasured | 1 | 1 | shared | | |
+| `qwen-image-2512-q4km` | image | unmeasured | 1 | 1 | shared | | |
+| `real-esrgan` | image | unmeasured | 1 | 1 | shared | | |
+| `starvector-1b-im2svg` | image | unmeasured | 1 | 1 | shared | | |
+| `unlimited-ocr-q4` | image | unmeasured | 1 | 1 | shared | | |
+| `unlimited-ocr-q8` | image | unmeasured | 1 | 1 | shared | | |
+| `waifu2x` | image | unmeasured | 1 | 1 | shared | | |
+| `acestep-1.5-base` | audio | unmeasured | 1 | 1 | shared | | |
+| `acestep-1.5` | audio | unmeasured | 1 | 1 | shared | | |
+| `breeze-tts-2-q4` | audio | unmeasured | 1 | 1 | shared | | |
+| `breeze-tts-2` | audio | unmeasured | 1 | 1 | shared | | |
+| `minimax-music3-int8` | audio | unmeasured | 1 | 1 | shared | | |
+| `minimax-music3` | audio | unmeasured | 1 | 1 | shared | | |
+| `qwen3-tts-base` | audio | unmeasured | 1 | 1 | shared | | |
+| `qwen3-tts-custom` | audio | unmeasured | 1 | 1 | shared | | |
+| `qwen3-tts-design` | audio | unmeasured | 1 | 1 | shared | | |
+| `vibevoice-1.5b-int8` | audio | unmeasured | 1 | 1 | shared | | |
+| `vibevoice-1.5b` | audio | unmeasured | 1 | 1 | shared | | |
+| `voxcpm2-int8` | audio | unmeasured | 1 | 1 | shared | | |
+| `voxcpm2` | audio | unmeasured | 1 | 1 | shared | | |
+| `whisper-large-v3-turbo` | audio | unmeasured | 1 | 1 | shared | | |
+| `yue2-3b-q8` | audio | unmeasured | 1 | 1 | shared | | |
+| `ltx-2.5-fast` | video | unmeasured | 1 | 1 | shared | | |
+| `ltx-2.5` | video | unmeasured | 1 | 1 | shared | | |
+| `minimax-h3-q4km` | video | unmeasured | 1 | 1 | shared | | |
+| `minimax-h3-q6k` | video | unmeasured | 1 | 1 | shared | | |
+| `minimax-h3-q8` | video | unmeasured | 1 | 1 | shared | | |
+| `minimax-h3-ref2va` | video | unmeasured | 1 | 1 | shared | | |
+| `minimax-h3` | video | unmeasured | 1 | 1 | shared | | |
+| `animateanymesh` | model3d | unmeasured | 1 | 1 | shared | | |
+| `hunyuan3d-2.1-paint` | model3d | unmeasured | 1 | 1 | shared | | |
+| `hunyuan3d-2.1` | model3d | unmeasured | 1 | 1 | shared | | |
+| `hunyuan3d-2mini-turbo` | model3d | unmeasured | 1 | 1 | shared | | |
+| `pixal3d` | model3d | unmeasured | 1 | 1 | shared | | |
+| `rignet` | model3d | unmeasured | 1 | 1 | shared | | |
+| `skintokens` | model3d | unmeasured | 1 | 1 | shared | | |
+| `trellis2-512` | model3d | unmeasured | 1 | 1 | shared | | |
+| `trellis2` | model3d | unmeasured | 1 | 1 | shared | | |
+| `unimate` | model3d | unmeasured | 1 | 1 | shared | | |
+| `unirig` | model3d | unmeasured | 1 | 1 | shared | | |
+
 ## The front door and the model servers
 
 - **The front door on :8000:** `/rpc/<kind>.<method>` with a bearer token (`serve.json`, or `NS_API_TOKEN`); every

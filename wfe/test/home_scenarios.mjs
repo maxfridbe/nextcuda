@@ -15,7 +15,9 @@ const link = { gen: 4, width: 16 };
 const card = { index: 0, name: "NVIDIA GeForce RTX 3060", pci: "0000:01:00.0", ts: 0, vram_used_mb: 2048, vram_total_mb: 12288, busy_pct: 0, pcie: { cur: link, card_max: link, slot_max: link },
                host_load1: 0, host_cpus: 8, energy_j: 0, procs: [], vouched: [], vouched_mb: 0, vouched_headroom_mb: 0, overbooked: false };
 const model = (id, kind, o = {}) => ({ id, kind, title: id, enabled: true, gpus: [0], state: "unloaded", spans: false, capabilities: [], methods: [], vouch_mb: { 0: 6000 },
-                                       measured: false, headroom_mb: {}, headroom_given: false, page: 8000, ...o });
+                                       measured: false, headroom_mb: {}, headroom_given: false, page: 8000, pinned: false, held_s: 0, copies_now: 0, recommended_copies: 1, max_copies_per_card: 1,
+                                       concurrency: { max_copies_per_card: 1, recommended_copies: 1, scaling: null, measured: null, status: "unmeasured" },
+                                       coexistence: { mode: "shared", shared_with: [], exclusive_reason: "", peak_extra_gib: null }, ...o });
 ui.error = null;
 ui.tab = "status";
 ui.state = {
@@ -25,6 +27,16 @@ ui.state = {
 };
 sc.show("status", App())
   .has(/RTX 3060/).lacks(/NVIDIA GeForce/).has(/Images/).has(/Audio/).has(/Chat/).has(/\b3D\b/).has(/trellis2-q8/).has(/1 of 1 enabled/);
+
+// the concurrency profile: unmeasured until a bench says otherwise, then copies and exclusivity
+{
+  ui.state.models = [model("qwen-image-2.1-q8", "image"),
+                     model("voxcpm2", "audio", { copies_now: 1, recommended_copies: 2, max_copies_per_card: 3, state: "loaded",
+                       concurrency: { max_copies_per_card: 3, recommended_copies: 2, scaling: { 1: 1, 2: 1.6 }, measured: { date: "2026-10-31", card: "RTX 5070", method: "bench" }, status: "measured" } }),
+                     model("trellis2-q8", "model3d", { coexistence: { mode: "exclusive", shared_with: [], exclusive_reason: "fills the card", peak_extra_gib: null },
+                       concurrency: { max_copies_per_card: 1, recommended_copies: 1, scaling: null, measured: { date: "d", card: "c", method: "m" }, status: "measured" } })];
+  sc.show("status-profile", App()).has(/unmeasured/).has(/1\/2 copies/).has(/exclusive/);
+}
 
 // no start / stop buttons: an enabled model is on demand, and the only manual controls are pin / unpin
 {

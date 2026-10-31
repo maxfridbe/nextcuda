@@ -11,6 +11,7 @@ use std::process::Command;
 use std::sync::{Arc, OnceLock};
 
 pub mod options;
+pub mod profile;
 
 pub use nextcuda_sys::Api;
 pub use options::{At, EngineOption};

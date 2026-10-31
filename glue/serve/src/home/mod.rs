@@ -236,6 +236,8 @@ pub struct Home {
     history: history::History,
     /// this Home as an Arc, for work started from a call that has only `&self` (a clip watched to its end)
     me: std::sync::OnceLock<std::sync::Weak<Home>>,
+    /// the model cards, read at most once a minute (their concurrency profiles)
+    cards_cache: Mutex<(Option<std::time::Instant>, Vec<Value>)>,
 }
 
 pub(crate) fn now() -> f64 {
@@ -347,6 +349,7 @@ impl Home {
             holds: Mutex::new(BTreeMap::new()),
             history: history::History::open(o_dir.with_file_name("history")),
             me: std::sync::OnceLock::new(),
+            cards_cache: Mutex::new((None, Vec::new())),
         });
         let _ = h.me.set(Arc::downgrade(&h));
         Ok(h)

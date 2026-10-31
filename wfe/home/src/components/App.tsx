@@ -164,7 +164,8 @@ function ModelRow(m: Model) {
       <span class={{ dot: true, off: !loaded, busy: m.state === "busy" || m.state === "loading" }} />
       <div class="mname">
         <div class="name">{m.title ?? m.id}{NonCommercial(m)}</div>
-        <div class="sub">{m.id} · <span attrs={{ title: m.measured ? "as seen while it ran" : "an estimate from its files, until it has run" }}>{vouch}{m.measured ? "" : " (est.)"}</span></div>
+        <div class="sub">{m.id} · <span attrs={{ title: m.concurrency.status === "measured" ? `measured: up to ${m.max_copies_per_card} copies a card, ${m.recommended_copies} worth running; ${m.coexistence.mode === "exclusive" ? "exclusive: " + m.coexistence.exclusive_reason : "shares a card"}` : "unmeasured: one copy, shared with anything that fits (nextcuda models bench measures it)" }}>
+          {m.concurrency.status === "measured" ? `${m.copies_now}/${m.recommended_copies} copies${m.coexistence.mode === "exclusive" ? " · exclusive" : ""}` : "unmeasured"}</span> · <span attrs={{ title: m.measured ? "as seen while it ran" : "an estimate from its files, until it has run" }}>{vouch}{m.measured ? "" : " (est.)"}</span></div>
       </div>
       <div class="mstate"><span class={{ tag: true, [m.state]: true }}>{STATE_TEXT[m.state] ?? m.state}</span>
         {m.pinned ? <span class="hint" attrs={{ title: "pinned: kept loaded, never unloaded for idleness or stopped for another model's room" }}> · pinned</span>

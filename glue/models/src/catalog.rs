@@ -72,6 +72,8 @@ impl Catalog {
                 if v["kind"].as_str() != Some(kind) {
                     return Err(format!("{}: its kind is not its folder ({kind})", p.display()));
                 }
+                // the concurrency profile (crates/core profile.rs): bad values are refused here, with the card's name
+                nextcuda_core::profile::Profile::from_card(&v).map_err(|e| format!("{}: {e}", p.display()))?;
                 cards.push((p, v));
             }
         }
@@ -468,7 +470,7 @@ fn entry(m: &Value, paths: &BTreeMap<String, PathBuf>, local: &BTreeMap<String, 
         "files": files, "gpus": m.get("gpus").cloned().unwrap_or(json!("0")), "env": env, "enabled": true,
         "catalog": m["id"],
     });
-    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "does", "silo", "vram_gib", "headroom_gib", "streams", "split"].iter().chain(LICENSE_KEYS) {
+    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "does", "silo", "vram_gib", "headroom_gib", "streams", "split", "concurrency", "coexistence"].iter().chain(LICENSE_KEYS) {
         if let Some(v) = m.get(k) {
             e[k] = v.clone();
         }
@@ -536,6 +538,20 @@ mod tests {
 
     fn repo_cards() -> Catalog {
         Catalog::from_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../model-cards")).unwrap()
+    }
+
+    #[test]
+    fn a_card_with_bad_concurrency_values_is_refused_at_load() {
+        let d = std::env::temp_dir().join(format!("nextcuda-cards-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("image")).unwrap();
+        std::fs::write(d.join("image/bad.yml"), "id: bad\nkind: image\narch: a\ntitle: t\nconcurrency:\n  max_copies_per_card: 2\n  recommended_copies: 3\n").unwrap();
+        let e = Catalog::from_dir(&d).err().expect("refused");
+        assert!(e.contains("bad.yml") && e.contains("recommended_copies 3"), "{e}");
+        std::fs::write(d.join("image/bad.yml"), "id: bad\nkind: image\narch: a\ntitle: t\ncoexistence:\n  mode: exclusive\n").unwrap();
+        let e = Catalog::from_dir(&d).err().expect("refused");
+        assert!(e.contains("exclusive_reason"), "{e}");
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

@@ -128,6 +128,29 @@ pub enum ModelState {
     Ready,
 }
 
+/// A model card's concurrency profile as the page shows it
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct ConcurrencyView {
+    pub max_copies_per_card: i64,
+    pub recommended_copies: i64,
+    /// copies -> total throughput relative to one copy (null: unmeasured)
+    pub scaling: Value,
+    /// {date, card, method, notes} or null
+    pub measured: Value,
+    /// "measured" or "unmeasured"
+    pub status: String,
+}
+
+/// Whether other models may run on a model's card
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct CoexistenceView {
+    /// "shared" or "exclusive"
+    pub mode: String,
+    pub shared_with: Vec<String>,
+    pub exclusive_reason: String,
+    pub peak_extra_gib: Option<f64>,
+}
+
 /// A registered model: kind, enabled, its cards, its state, the memory vouched for
 #[derive(Serialize, Deserialize, Rpc)]
 pub struct ModelView {
@@ -140,6 +163,13 @@ pub struct ModelView {
     pub pinned: bool,
     /// seconds a request's rsvp_s still holds it loaded (0: not held)
     pub held_s: f64,
+    /// copies of it loaded now, and its profile's recommended and maximum per card
+    pub copies_now: i64,
+    pub recommended_copies: i64,
+    pub max_copies_per_card: i64,
+    /// its model card's concurrency profile (status "unmeasured": the defaults) and coexistence
+    pub concurrency: ConcurrencyView,
+    pub coexistence: CoexistenceView,
     pub gpus: Vec<i64>,
     pub state: ModelState,
     /// a chat model that spans every card

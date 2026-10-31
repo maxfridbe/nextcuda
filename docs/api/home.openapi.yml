@@ -372,6 +372,48 @@ components:
       - vouched_headroom_mb
       - overbooked
       description: 'A card: its readings, its processes, the memory vouched for'
+    CoexistenceView:
+      type: object
+      properties:
+        mode:
+          type: string
+          description: '"shared" or "exclusive"'
+        shared_with:
+          type: array
+          items:
+            type: string
+        exclusive_reason:
+          type: string
+        peak_extra_gib:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - mode
+      - shared_with
+      - exclusive_reason
+      description: Whether other models may run on a model's card
+    ConcurrencyView:
+      type: object
+      properties:
+        max_copies_per_card:
+          type: integer
+        recommended_copies:
+          type: integer
+        scaling:
+          description: 'copies -> total throughput relative to one copy (null: unmeasured)'
+        measured:
+          description: '{date, card, method, notes} or null'
+        status:
+          type: string
+          description: '"measured" or "unmeasured"'
+      required:
+      - max_copies_per_card
+      - recommended_copies
+      - scaling
+      - measured
+      - status
+      description: A model card's concurrency profile as the page shows it
     Config:
       type: object
       properties:
@@ -629,6 +671,18 @@ components:
         held_s:
           type: number
           description: 'seconds a request''s rsvp_s still holds it loaded (0: not held)'
+        copies_now:
+          type: integer
+          description: copies of it loaded now, and its profile's recommended and maximum per card
+        recommended_copies:
+          type: integer
+        max_copies_per_card:
+          type: integer
+        concurrency:
+          $ref: '#/components/schemas/ConcurrencyView'
+          description: 'its model card''s concurrency profile (status "unmeasured": the defaults) and coexistence'
+        coexistence:
+          $ref: '#/components/schemas/CoexistenceView'
         gpus:
           type: array
           items:
@@ -682,6 +736,11 @@ components:
       - enabled
       - pinned
       - held_s
+      - copies_now
+      - recommended_copies
+      - max_copies_per_card
+      - concurrency
+      - coexistence
       - gpus
       - state
       - spans

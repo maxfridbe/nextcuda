@@ -49,6 +49,29 @@ Other keys: `local` (role: what it is - a part made on the machine rather than d
 or another registry entry), `base` (a lora: the model it rides on), `defaults` (image / video / audio: the
 request's defaults - steps, cfg, size, seconds ...), `speech` (audio: `voices`, `design`, `clone`).
 
+### Concurrency and coexistence
+
+Every card may carry what was measured about running it next to itself and next to others (`nextcuda models bench`
+proposes the block; nothing edits a card without `--write`). A card with neither block is **unmeasured**: one copy a
+card, shared with anything that fits - nothing changes for it until it is measured, and the pages and the API show
+"unmeasured". Bad values are refused when the cards load, with the card's file name.
+
+```yaml
+concurrency:
+  max_copies_per_card: 2          # never more copies of the model on one card than this (>= 1, default 1)
+  recommended_copies: 1           # the n worth running (1..max, default 1): a further copy starts only when requests wait
+  scaling: {"1": 1.0, "2": 1.18}  # measured total throughput of n copies relative to one (omit: unmeasured)
+  measured: {date: 2026-10-31, card: RTX 5070, method: nextcuda models bench, notes: ""}   # who measured what, where
+coexistence:
+  mode: shared                    # shared (default) | exclusive: it gets its card to itself
+  shared_with: ["kind:audio", "model:whisper-large-v3-turbo"]   # what may be a resident beside it (empty: anything that fits)
+  exclusive_reason: ""            # required for exclusive: what fails or collapses when it shares
+  peak_extra_gib: 1.5             # optional: working memory beyond vram_gib at its peak
+```
+
+`recommended_copies` is the n where adding a copy still pays at least 25% more total throughput; `exclusive` is what a
+co-run that fails, or leaves either model under 50% of its own throughput, shows.
+
 ### Licences
 
 Every card has `license` and `commercial` (and `license_note` where the licence puts conditions on commercial use):

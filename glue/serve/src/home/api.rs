@@ -530,6 +530,11 @@ impl Home {
         for x in slots.iter_mut().filter(|x| x["kind"] == "llm") {
             x["busy"] = json!(active > 0);
         }
+        // each enabled model's copies now against its profile, for a dispatcher: {id, kind, copies_now, recommended_copies,
+        // max_copies_per_card, mode, status}
+        let engines: Vec<Value> = states.iter().filter(|m| m["enabled"] == true).map(|m| json!({
+            "id": m["id"], "kind": m["kind"], "copies_now": m["copies_now"], "recommended_copies": m["recommended_copies"],
+            "max_copies_per_card": m["max_copies_per_card"], "mode": m["coexistence"]["mode"], "status": m["concurrency"]["status"]})).collect();
         let per_card: Vec<Value> = cards.as_array().into_iter().flatten().map(|c| {
             let g = c["index"].clone();
             let here: Vec<&Value> = slots.iter().filter(|x| x["gpu"] == g || x["gpus"].as_array().is_some_and(|a| a.contains(&g))).collect();
@@ -541,7 +546,7 @@ impl Home {
         let maintenance = self.maintenance().map(|n| super::maint::public(&n));
         json!({"busy": !reasons.is_empty(), "reasons": reasons, "loading": loading, "working": working, "llm": {"active": active},
                "maintenance": maintenance,
-               "jobs": jobs, "video": video, "cards": per_card, "slots": slots, "parallel": self.parallel(all)})
+               "jobs": jobs, "video": video, "cards": per_card, "slots": slots, "parallel": self.parallel(all), "engines": engines})
     }
 
     /// How many requests of each image and audio model run at once: a copy a card it is enabled on, as many as the
@@ -709,6 +714,15 @@ impl Home {
                 body["stream"] = json!(false);
                 let keep = body.as_object_mut().and_then(|o| o.remove("keep_up_s"));
                 let r = relay(&t, "POST", "/v1/chat/completions", Some(&body), 1800);
+                // rsvp_s: the chat model stays loaded that long from now, the end of the answer (the switcher reads the
+                // registry's hold_until; room planning, the hold)
+                if let (Some(g), Some(id)) = (super::rsvp::granted(super::rsvp::asked(), self.max_rsvp()), self.chat_loaded(&self.models())) {
+                    self.hold_after(&id, g);
+                    if g > 0.0 {
+                        let until = self.held_s(&id) + now();
+                        let _ = registry::update(&self.o.cfg, &id, |e| e["hold_until"] = json!(until));
+                    }
+                }
                 // rsvp_s: the chat model stays loaded that long from now, the end of the answer (the switcher reads the
                 // registry's hold_until; room planning, the hold)
                 if let (Some(g), Some(id)) = (super::rsvp::granted(super::rsvp::asked(), self.max_rsvp()), self.chat_loaded(&self.models())) {

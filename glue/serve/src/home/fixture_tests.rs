@@ -706,3 +706,86 @@ fn the_wait_answers_keep_their_outcome_in_the_body() {
     assert_eq!(wt["eta"]["wait_s"], 60.0);
     assert_eq!(wt["max_willing_to_wait_s"], 10.0);
 }
+
+fn with(mut m: Value, k: &str, v: Value) -> Value {
+    m[k] = v;
+    m
+}
+
+fn small(id: &str) -> Value {
+    model(id, "audio", 2.0)
+}
+
+fn exclusive() -> Value {
+    json!({"mode": "exclusive", "exclusive_reason": "its working memory fills the card"})
+}
+
+#[test]
+fn an_exclusive_model_gets_its_card_to_itself() {
+    let w = world("excl", vec![small("a"), with(small("x"), "coexistence", exclusive())]);
+    drop(w.home.ensure("a").unwrap());
+    std::thread::sleep(Duration::from_millis(200));
+    // a is idle: stopped for x although x would fit beside it by memory
+    let x = w.entry("x");
+    let lease = w.home.place(&x, "x", "audio", None).unwrap().ok().expect("x gets the card");
+    drop(lease);
+    assert_eq!(w.count("audio stop"), 1);
+    assert_eq!(w.count("audio start x"), 1);
+}
+
+#[test]
+fn nothing_else_is_started_on_an_exclusive_models_card_and_the_answer_names_it() {
+    let w = world("excl2", vec![small("a"), with(small("x"), "coexistence", exclusive())]);
+    w.home.pin("x").unwrap();
+    w.wait_log("audio start x");
+    std::thread::sleep(Duration::from_millis(200));
+    let why = refused(&w, "a").expect("a cannot share x's card");
+    assert!(why.contains("exclusive: x"), "{why}");
+    assert!(why.contains("pinned: x"), "{why}");
+    assert_eq!(w.count("audio stop"), 0);
+    // unpinned and idle, x is just an idle holder: it goes for a
+    w.home.unpin("x").unwrap();
+    assert!(refused(&w, "a").is_err());
+    assert_eq!(w.count("audio stop"), 1);
+}
+
+#[test]
+fn shared_with_limits_who_may_be_a_resident_and_a_pin_makes_it_a_refusal() {
+    // a runs beside images only; b is audio
+    let a = with(small("a"), "coexistence", json!({"shared_with": ["kind:image"]}));
+    let w = world("shared-with", vec![a, small("b")]);
+    w.home.pin("a").unwrap();
+    w.wait_log("audio start a");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(refused(&w, "b").is_ok(), "b is not on a's list and a is pinned: no room");
+    assert_eq!(w.count("audio stop"), 0);
+    // unpinned, a is an idle resident b may not stay beside: it is stopped for b
+    w.home.unpin("a").unwrap();
+    assert!(refused(&w, "b").is_err());
+    assert_eq!(w.count("audio stop"), 1);
+}
+
+#[test]
+fn the_profile_is_in_the_models_state_and_unmeasured_by_default() {
+    let measured = with(small("m"), "concurrency", json!({"max_copies_per_card": 2, "recommended_copies": 2, "scaling": {"1": 1.0, "2": 1.6},
+                                                         "measured": {"date": "2026-10-31", "card": "RTX 5070", "method": "bench"}}));
+    let w = world("profile", vec![small("u"), measured]);
+    let all = w.home.models();
+    let rows = w.home.model_states(&all, &w.home.named_cards(&all));
+    let row = |id: &str| rows.iter().find(|r| r["id"] == id).unwrap().clone();
+    let u = row("u");
+    assert_eq!((u["concurrency"]["status"].as_str(), u["recommended_copies"].as_u64(), u["max_copies_per_card"].as_u64(), u["copies_now"].as_u64()), (Some("unmeasured"), Some(1), Some(1), Some(0)));
+    assert_eq!(u["coexistence"]["mode"], "shared");
+    let m = row("m");
+    assert_eq!((m["concurrency"]["status"].as_str(), m["recommended_copies"].as_u64(), m["max_copies_per_card"].as_u64()), (Some("measured"), Some(2), Some(2)));
+    assert_eq!(m["concurrency"]["scaling"]["2"], 1.6);
+    // the dispatcher's list: system.busy's engines
+    let busy = w.home.busy(&all);
+    let e = busy["engines"].as_array().unwrap();
+    assert!(e.iter().any(|x| x["id"] == "m" && x["recommended_copies"] == 2 && x["status"] == "measured"));
+    assert!(e.iter().any(|x| x["id"] == "u" && x["status"] == "unmeasured" && x["copies_now"] == 0));
+    drop(w.home.ensure("u").unwrap());
+    std::thread::sleep(Duration::from_millis(200));
+    let rows = w.home.model_states(&all, &w.home.named_cards(&all));
+    assert_eq!(rows.iter().find(|r| r["id"] == "u").unwrap()["copies_now"], 1);
+}
