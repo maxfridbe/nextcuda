@@ -307,12 +307,14 @@ impl Default for Schedule {
     }
 }
 
+/// A timestep `t` in 0..=1 on the flow's shifted schedule.
+pub fn shifted(t: f32, shift: f32) -> f32 {
+    shift * t / (1.0 + (shift - 1.0) * t)
+}
+
 /// The noise levels of a run of `steps` steps, 1 down to 0 ("simple" schedule over the shifted 1000-level table).
 pub fn sigmas(steps: usize, shift: f32) -> Vec<f32> {
-    let table: Vec<f32> = (1..=1000).map(|i| {
-        let t = i as f32 / 1000.0;
-        shift * t / (1.0 + (shift - 1.0) * t)
-    }).collect();
+    let table: Vec<f32> = (1..=1000).map(|i| shifted(i as f32 / 1000.0, shift)).collect();
     let stride = table.len() as f64 / steps as f64;
     let mut s: Vec<f32> = (0..steps).map(|x| table[table.len() - 1 - (x as f64 * stride) as usize]).collect();
     s.push(0.0);
@@ -676,8 +678,8 @@ impl<'a> Denoiser<'a> {
             }
             None => None,
         };
-        if !self.tail.is_empty() && (self.lora.is_some() || control.is_some()) {
-            return Err(Error("LoRAs and the ControlNet run on a denoiser on one card only (this one is split over the cards)".into()));
+        if !self.tail.is_empty() && control.is_some() {
+            return Err(Error("the ControlNet runs on a denoiser on one card only (this one is split over the cards)".into()));
         }
         // the stream to card `to` from card `from` (through host memory: a step's rows, twice a step when split)
         let move_to = |from: usize, to: usize, x0: &Tensor, tail: &[(Tensor, Scratch)]| -> Result<()> {
@@ -992,6 +994,16 @@ mod tests {
         let want = [1.0, 0.988_235_3, 0.972_973, 0.952_381, 0.923_076_9, 0.878_048_8, 0.8, 0.631_578_9, 0.0];
         let got = sigmas(8, 12.0);
         assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-6, "{got:?}");
+        }
+    }
+
+    #[test]
+    fn pika_flex_knots_go_through_the_video_shift() {
+        // Pika H3 Flex: knots 1000/750/500/250/100/40/0 at video shift 12
+        let got: Vec<f32> = [1000.0, 750.0, 500.0, 250.0, 100.0, 40.0, 0.0].iter().map(|k| shifted(k / 1000.0, 12.0)).collect();
+        let want = [1.0, 0.972_973, 0.923_076_9, 0.8, 0.571_428_6, 0.333_333_3, 0.0];
         for (g, w) in got.iter().zip(want) {
             assert!((g - w).abs() < 1e-6, "{got:?}");
         }

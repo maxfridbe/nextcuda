@@ -1982,6 +1982,9 @@ pub struct VideoGenerateReq {
     /// ComfyUI's name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
+    /// a distilled model's own noise levels, as timesteps of 1000 falling to 0 (Pika H3 Flex: "1000,750,500,250,100,40,0" with sampler lcm); the run takes one step between two
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knots: Option<String>,
     /// length; H3: snapped up to the model's frame grid (17k + 5 frames at 24 fps: 4 s -> 107 frames), trained on 5.2-15.1 s; ltx2: seconds x 24 frames, as asked (5 s = 120). The answer's frames and seconds say what is made
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(min = 1, max = 15.1, default = 10)]

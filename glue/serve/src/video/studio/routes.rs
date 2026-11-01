@@ -224,6 +224,9 @@ pub struct ClipRequest {
     pub sampler: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
+    /// a distilled model's own noise levels, as timesteps of 1000 falling to 0 (Pika H3 Flex: "1000,750,500,250,100,40,0" with sampler lcm); `steps` is then the number between them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knots: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

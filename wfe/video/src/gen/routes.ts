@@ -171,6 +171,8 @@ export interface ClipRequest {
   /** ComfyUI's sampler and schedule names (none: Euler on the shifted schedule) */
   sampler?: string | null;
   schedule?: string | null;
+  /** a distilled model's own noise levels, as timesteps of 1000 falling to 0 (Pika H3 Flex: "1000,750,500,250,100,40,0" with sampler lcm); `steps` is then the number between them */
+  knots?: string | null;
   project?: string | null;
   batch?: string | null;
   /** busy without it: 409 busy */

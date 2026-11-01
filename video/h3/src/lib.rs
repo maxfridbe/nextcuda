@@ -114,6 +114,7 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "regen", env: "", value: "FROM-TO", help: "the seconds of the source to regenerate", at: At::Request },
     EngineOption { name: "regen_box", env: "", value: "X0,Y0,X1,Y1", help: "the region of the source to regenerate (pixels: left, top, right, bottom)", at: At::Request },
     EngineOption { name: "cond_noise_aug", env: "", value: "X", help: "DO NOT USE: noise added to the keyframes, which are never denoised - it decodes as coloured confetti (seen at 0.03)", at: At::Request },
+    EngineOption { name: "knots", env: "", value: "T,T,..", help: "a distilled model's own noise levels, as timesteps of 1000 from 1000 down to 0 (Pika H3 Flex: 1000,750,500,250,100,40,0 with the lcm sampler); the run takes a step between two", at: At::Request },
     EngineOption { name: "shift_video", env: "", value: "X", help: "the video schedule's shift (default 12)", at: At::Request },
     EngineOption { name: "shift_audio", env: "", value: "X", help: "the audio schedule's shift (default 3)", at: At::Request },
     EngineOption { name: "pixel_upscaler", env: "", value: "FILE", help: "an ESRGAN network to enlarge the frames (instead of the latents)", at: At::Request },

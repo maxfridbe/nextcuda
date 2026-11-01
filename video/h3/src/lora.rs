@@ -34,11 +34,18 @@ fn bf16(dev: &Arc<Device>, shape: &[usize], v: &[f32]) -> Result<Tensor> {
 impl LoraSet {
     /// `blocks` / `refiner`: how many of each the model has.
     pub fn load(dev: &Arc<Device>, ck: &Checkpoint, strength: f32, blocks: usize, refiner: usize) -> Result<LoraSet> {
+        LoraSet::load_placed(std::slice::from_ref(dev), &|_| 0, ck, strength, blocks, refiner)
+    }
+
+    /// The same, for a denoiser split over cards: block `i`'s layers go on card `devs[card_of(i)]` (the text refiner's on
+    /// the first card, where the text is).
+    pub fn load_placed(devs: &[Arc<Device>], card_of: &dyn Fn(usize) -> usize, ck: &Checkpoint, strength: f32, blocks: usize, refiner: usize) -> Result<LoraSet> {
         let mut max_rank = 0;
         let mut layers = 0;
-        let mut side = |prefix: &str, n: usize| -> Result<Vec<BlockLora>> {
+        let mut side = |prefix: &str, n: usize, placed: bool| -> Result<Vec<BlockLora>> {
             let mut out = Vec::with_capacity(n);
             for i in 0..n {
+                let dev = &devs[if placed { card_of(i).min(devs.len() - 1) } else { 0 }];
                 let mut bl: BlockLora = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
                 for (j, l) in LINEARS.iter().enumerate() {
                     let p = format!("diffusion_model.{prefix}.{i}.{l}");
@@ -66,8 +73,8 @@ impl LoraSet {
             }
             Ok(out)
         };
-        let blocks = side("blocks", blocks)?;
-        let refiner = side("token_refiner.blocks", refiner)?;
+        let blocks = side("blocks", blocks, true)?;
+        let refiner = side("token_refiner.blocks", refiner, false)?;
         if layers == 0 {
             return Err(Error(format!("{}: no LoRA layers this model has", ck.path.display())));
         }
