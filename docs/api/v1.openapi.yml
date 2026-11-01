@@ -662,6 +662,11 @@ components:
           - type: 'null'
           default: true
           description: each word's start and end (and the model's probability for it)
+        gap_s:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'also answer `spoken`: the stretches with words in them, a pause between words of this many seconds or more ending one (a sung song''s instrumental parts fall between them); none: not worked out'
       additionalProperties: true
       description: 'What audio.transcribe makes from: the body its kind''s server takes.'
     ChatBody:

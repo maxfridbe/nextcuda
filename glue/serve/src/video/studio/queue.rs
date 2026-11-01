@@ -199,9 +199,14 @@ fn ignored_keys() -> Vec<String> {
     IGNORED.iter().map(|k| k.to_string()).chain(["chain.pin_renorm".to_string()]).collect()
 }
 
+/// The six-step mode of MiniMax H3 (Pika H3 Flex): the adapter on the box (model-cards/lora/pika-h3-flex-fl2va.yml) and the
+/// noise levels it was post-trained on
+const PIKA_FLEX_LORA: &str = "/models/minimax-h3/loras/pika_h3_flex_fl2va_comfy_bf16.safetensors";
+const PIKA_FLEX_KNOTS: &str = "1000,750,500,250,100,40,0";
+
 pub fn inputs_of(quant: &str) -> Value {
     let common = ["prompt", "seconds", "frames", "steps", "seed", "width", "height", "te", "first_frame", "last_frame", "exposure_ref", "guide_clip",
-                  "first_audio", "first_audio_s", "soundtrack", "soundtrack_start", "ref_audios", "loras", "upscale", "upscaler", "shift_video", "shift_audio", "sampler", "schedule", "knots", "chain", "source", "regen", "regen_box"];
+                  "first_audio", "first_audio_s", "soundtrack", "soundtrack_start", "ref_audios", "loras", "upscale", "upscaler", "shift_video", "shift_audio", "sampler", "schedule", "knots", "speed", "chain", "source", "regen", "regen_box"];
     if quant == "REF2VA" {
         json!({"takes": common.iter().chain(["ref_images", "ref_videos", "ref_image_size", "ref_video_sound", "te_pictures"].iter()).collect::<Vec<_>>(),
                "not": ["control_video", "control_mask", "control_source", "control_strength", "control_start", "control_end"],
@@ -417,7 +422,7 @@ pub const LTX_NOT: [&str; 22] = ["guide_clip", "first_audio", "first_audio_s", "
 pub fn ltx_inputs(variants: &[&str]) -> Value {
     json!({"takes": ["prompt", "negative_prompt", "frames", "seconds", "steps", "seed", "width", "height", "variant", "first_frame", "label", "reentrant_id",
                      "project", "batch", "clip", "camera", "priority", "queue"],
-           "not": LTX_NOT.iter().chain(["loras", "sampler", "schedule", "knots", "upscale", "upscaler"].iter()).collect::<Vec<_>>(),
+           "not": LTX_NOT.iter().chain(["loras", "sampler", "schedule", "knots", "speed", "upscale", "upscaler"].iter()).collect::<Vec<_>>(),
            "chosen": "engine: ltx2", "ignored": ["cfg", "te", "chain.pin_renorm"],
            "options": {
                "variant": {"values": variants, "default": variants.first(), "help": "dev: the take (30 guided steps, four passes a step); distilled: a preview (8 steps, unguided: one pass a step, about 80 s a clip; softer, its sound as much a draw)"},
@@ -633,6 +638,20 @@ impl Studio {
         }
         let ris = p.get("ref_image_size").and_then(|v| v.as_str()).filter(|v| *v == "match" || *v == "max");
         it.insert("ref_image_size".into(), ris.map_or(Value::Null, |v| json!(v)));
+        // speed: the model's own six-step mode (Pika H3 Flex): its adapter, the lcm sampler on its knots and six steps, whatever
+        // sampler, knots, steps or other LoRAs were also named (those stay beside it)
+        match p.get("speed").and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()) {
+            None | Some("standard") => {}
+            Some("pika-flex") => {
+                it.insert("sampler".into(), json!("lcm"));
+                it.insert("knots".into(), json!(PIKA_FLEX_KNOTS));
+                it.insert("steps".into(), json!(6));
+                let mut ls = vec![json!(format!("{PIKA_FLEX_LORA}:1.0"))];
+                ls.extend(it.get("loras").and_then(|v| v.as_array()).cloned().unwrap_or_default());
+                it.insert("loras".into(), Value::Array(ls));
+            }
+            Some(v) => return Err(RpcError::param(&format!("speed {v}? (standard, pika-flex)"))),
+        }
         Ok(Value::Object(it))
     }
 
@@ -647,7 +666,7 @@ impl Studio {
         let upscale = engine == LTX_UPSCALE;
         let mut it = Map::new();
         let mut not: Vec<&str> = LTX_NOT.to_vec();
-        not.extend(["loras", "sampler", "schedule", "knots", "upscaler"]);
+        not.extend(["loras", "sampler", "schedule", "knots", "speed", "upscaler"]);
         if let Some(k) = not.iter().find(|k| given(k)) {
             return Err(RpcError::param(&format!("{k}: not a key {engine} takes (video.engines.list: its inputs)")));
         }

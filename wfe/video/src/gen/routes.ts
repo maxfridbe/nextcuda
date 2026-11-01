@@ -173,6 +173,8 @@ export interface ClipRequest {
   schedule?: string | null;
   /** a distilled model's own noise levels, as timesteps of 1000 falling to 0 (Pika H3 Flex: "1000,750,500,250,100,40,0" with sampler lcm); `steps` is then the number between them */
   knots?: string | null;
+  /** H3: `pika-flex` is the model's six-step mode in one word (the Pika H3 Flex adapter, the lcm sampler on its knots, six steps; the adapter must be pulled: nextcuda models pull pika-h3-flex-fl2va); standard: as the other options say */
+  speed?: string | null;
   project?: string | null;
   batch?: string | null;
   /** busy without it: 409 busy */

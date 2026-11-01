@@ -250,6 +250,9 @@ export interface GpuPlan {
   cells?: Record<string, PlanCell> | null;
 }
 
+/** H3's pace: standard (the options as named) | pika-flex (the model's six-step mode in one word) */
+export type H3Speed = "standard" | "pika-flex";
+
 /** What holding or releasing did */
 export interface HoldResult {
   /** what was held ("queue", "project x", "batch y") */
@@ -785,6 +788,8 @@ export interface VideoGenerateReq {
   schedule?: string | null;
   /** a distilled model's own noise levels, as timesteps of 1000 falling to 0 (Pika H3 Flex: "1000,750,500,250,100,40,0" with sampler lcm); the run takes one step between two */
   knots?: string | null;
+  /** H3: `pika-flex` is the model's six-step mode in one word (the Pika H3 Flex adapter, the lcm sampler on its knots, six steps; the adapter must be pulled: nextcuda models pull pika-h3-flex-fl2va); standard: as the other options say */
+  speed?: H3Speed | null;
   /**
    * length; H3: snapped up to the model's frame grid (17k + 5 frames at 24 fps: 4 s -> 107 frames), trained on 5.2-15.1 s; ltx2: seconds x 24 frames, as asked (5 s = 120). The answer's frames and seconds say what is made
    * @minimum 1

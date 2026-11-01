@@ -125,6 +125,8 @@ export interface AudioTranscribeBody {
    * @default true
    */
   words?: boolean | null;
+  /** also answer `spoken`: the stretches with words in them, a pause between words of this many seconds or more ending one (a sung song's instrumental parts fall between them); none: not worked out */
+  gap_s?: number | null;
   /** other keys */
   [key: string]: unknown;
 }
