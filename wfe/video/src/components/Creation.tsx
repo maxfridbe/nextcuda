@@ -452,7 +452,7 @@ export function Creation() {
       </div>
       <div class="row">
         {num("seconds", "seconds", 1, 15, 0.01)}
-        <label attrs={{ title: "standard: the steps and sampler below. Pika Flex: the model's own six-step mode (its adapter, the lcm sampler, six steps), about a third of the time; a little softer" }}>
+        <label attrs={{ title: "standard: the steps and sampler below. Pika Flex: the model's own six-step mode (its adapter, the lcm sampler, six steps)" }}>
           pace
           <span class="engbtns">
             <button type="button" class={{ sel: form.speed === "standard" }}
