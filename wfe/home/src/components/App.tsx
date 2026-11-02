@@ -153,7 +153,7 @@ function ModelRow(m: Model) {
   const btn = (what: string, label: string, cls: string, title: string, extra: Record<string, unknown> = {}) => (
     <button class={cls} attrs={{ disabled: !!p || (what !== "pin" && m.state === "loading"), title }}
       on={{ click: () => void act(what, m.id, extra) }}>
-      {spin(what) ? <span class="spin" /> : null}{label}
+      {spin(what) ? <span class="bspin" /> : null}{label}
     </button>
   );
   const vouch = Object.entries(m.vouch_mb).map(([g, mb], i) =>
@@ -180,7 +180,7 @@ function ModelRow(m: Model) {
             <input attrs={{ type: "radio", name: `en-${m.id}`, disabled: !!p || m.state === "loading" }} props={{ checked: m.enabled }}
               on={{ change: () => { if (!m.enabled) void act("enable", m.id, { gpus: ui.pick[m.id] ?? m.gpus }); } }} /> enabled
           </label>
-          {p && (p.what === "enable" || p.what === "disable") ? <span class="spin" /> : null}
+          {p && (p.what === "enable" || p.what === "disable") ? <span class="bspin" /> : null}
         </span>
         {GpuPicker(m)}
         {m.enabled
@@ -265,11 +265,11 @@ function AvailableRow(a: Available) {
       <div class="acts">
         {going
           ? <button class="ghost" attrs={{ disabled: !!p, title: "stop it: what was fetched is kept, a download again resumes it" }}
-              on={{ click: () => void act("pull_cancel", a.id) }}>{p ? <span class="spin" /> : null}cancel</button>
+              on={{ click: () => void act("pull_cancel", a.id) }}>{p ? <span class="bspin" /> : null}cancel</button>
           : <button attrs={{ disabled: !!p || !a.fits || a.runs_here === false,
                              title: a.runs_here === false ? `these cards cannot run it (${a.why_not}); system.models.pull still fetches it`
                                : a.fits ? `download ${size(a.bytes)} into ${a.folder}, check it, and register it (enabled)` : "no models folder has the room (NS_MODEL_DIRS adds folders)" }}
-              on={{ click: () => void act("pull", a.id) }}>{p ? <span class="spin" /> : <span class="i" props={{ innerHTML: "&#xf019;" }} />} {failed ? "retry" : "download"}</button>}
+              on={{ click: () => void act("pull", a.id) }}>{p ? <span class="bspin" /> : <span class="i" props={{ innerHTML: "&#xf019;" }} />} {failed ? "retry" : "download"}</button>}
       </div>
     </div>
   );
