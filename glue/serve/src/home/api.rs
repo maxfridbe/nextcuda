@@ -501,6 +501,8 @@ impl Home {
             reasons.push(format!("{live} image/audio/3D job(s)"));
         }
         let mut slots = self.work_slots(all, &cards);
+        let by_port = self.running_by_port();
+        let vid_job = self.running_video();
         let video = if self.kinds_on(all).contains(&"video") {
             let st = call_for(&self.target("video"), "POST", "/rpc/status", Some(&json!({})), 10).ok().map(|v| v["result"].clone()).unwrap_or(Value::Null);
             let items = st["queue_items"].as_array().cloned().unwrap_or_default();
@@ -517,7 +519,7 @@ impl Home {
             let gpu = Some(st["gpu"].clone()).filter(|g| running && !g.is_null())
                 .or_else(|| slots.iter().find(|x| x["kind"] == "video" && x["busy"] == true).map(|x| x["gpu"].clone())).unwrap_or(Value::Null);
             let on = |k: &str| if running { st[k].clone() } else { Value::Null };
-            json!({"running": running, "label": if running { st["job"]["label"].clone() } else { Value::Null }, "name": if running { st["job"]["name"].clone() } else { Value::Null },
+            json!({"running": running, "label": if running { st["job"]["label"].clone() } else { Value::Null }, "title": if running { st["job"]["title"].clone() } else { Value::Null }, "name": if running { st["job"]["name"].clone() } else { Value::Null },
                    "stage": on("stage"), "pct": on("pct"), "eta_s": on("eta"), "elapsed_s": on("elapsed"), "gpu": gpu,
                    "energy_wh": if running { st["job"]["energy_wh"].clone() } else { Value::Null },
                    "queued": items.len(), "runnable": runnable, "held": held,
@@ -541,7 +543,13 @@ impl Home {
             let models: Vec<Value> = c["procs"].as_array().into_iter().flatten().filter_map(|p| p["model_id"].as_str().map(|m| json!(m))).collect();
             json!({"gpu": g, "name": c["name"], "vram_total_mb": c["vram_total_mb"], "vram_used_mb": c["vram_used_mb"], "busy_pct": c["busy_pct"],
                    "power_w": c["power_w"], "models": models, "busy": here.iter().any(|x| x["busy"] == true),
-                   "work": here.iter().filter(|x| x["busy"] == true).map(|x| json!({"kind": x["kind"], "model": x["model"]})).collect::<Vec<_>>()})
+                   "work": here.iter().filter(|x| x["busy"] == true).map(|x| {
+                       let mut w = json!({"kind": x["kind"], "model": x["model"]});
+                       let job = x["port"].as_u64().and_then(|p| by_port.get(&p.to_string())).cloned()
+                           .or_else(|| vid_job.as_ref().filter(|v| x["kind"] == "video" && v.0 == x["gpu"]).map(|v| (v.1.clone(), v.2.clone())));
+                       super::life::tag_job(&mut w, job.as_ref());
+                       w
+                   }).collect::<Vec<_>>()})
         }).collect();
         let maintenance = self.maintenance().map(|n| super::maint::public(&n));
         json!({"busy": !reasons.is_empty(), "reasons": reasons, "loading": loading, "working": working, "llm": {"active": active},
@@ -1187,11 +1195,17 @@ impl Home {
         let mut cards = self.named_cards(all);
         let models = self.model_states(all, &cards);
         self.vouch(&mut cards, &models);
+        let by_port = self.running_by_port();
+        let vid = self.running_video();
         let list: Vec<Value> = cards.as_array().into_iter().flatten().map(|c| {
             let total = c["vram_total_mb"].as_u64().unwrap_or(0);
             let used = c["vram_used_mb"].as_u64().unwrap_or(0);
-            let procs: Vec<Value> = c["procs"].as_array().into_iter().flatten().map(|p| json!({"pid": p["pid"], "program": p["program"], "kind": p["kind"],
-                "model": p["model_id"].as_str().or(p["model"].as_str()), "vram_mb": p["vram_mb"]})).collect();
+            let procs: Vec<Value> = c["procs"].as_array().into_iter().flatten().map(|p| {
+                let mut v = json!({"pid": p["pid"], "program": p["program"], "kind": p["kind"],
+                "model": p["model_id"].as_str().or(p["model"].as_str()), "vram_mb": p["vram_mb"]});
+                super::life::tag_job(&mut v, super::life::job_of_proc(p, &by_port, vid.as_ref()).as_ref());
+                v
+            }).collect();
             let models: Vec<Value> = c["procs"].as_array().into_iter().flatten().filter_map(|p| p["model_id"].as_str().map(|m| json!(m))).collect();
             json!({"gpu": c["index"], "name": c["name"], "bus": c["pci"], "vram_total_mb": total, "vram_used_mb": used, "vram_free_mb": total.saturating_sub(used),
                    "busy_pct": c["busy_pct"], "power_w": c["power_w"], "power_cap_w": c["power_cap_w"], "temp_c": c["temp_pkg"], "temp_vram_c": c["temp_vram"],

@@ -12,7 +12,7 @@ import { refresh, render, state } from "../state.js";
 import { clearProject, holdProject } from "../project.js";
 import { navigate } from "../router.js";
 import type { QueueItem } from "../types.js";
-import { clipNumber, fmtMS, fmtT } from "../util.js";
+import { clipNumber, fmtMS, fmtT, labelNote, shownName } from "../util.js";
 import { Panel } from "./Panel.js";
 import { cancelRunning, isCancelling } from "./Progress.js";
 import { Spinner } from "./Spinner.js";
@@ -83,7 +83,8 @@ function runningRow() {
     <tr class="running">
       <td class="num"><span class="i" props={{ innerHTML: "&#xf110;" }} /></td>
       <td class="lab">
-        {j.label || <span class="hint">(no label)</span>}
+        {shownName(j.title, j.label) || <span class="hint">(no label)</span>}
+        {labelNote(j.title, j.label) ? <span class="hint" attrs={{ title: "label" }}>{` ${labelNote(j.title, j.label)}`}</span> : null}
         <div class="minibar"><div class="fill" style={{ width: `${pct}%` }} /></div>
         <span class="hint">
           {`${s.stage ?? "running"} · ${pct}%${s.eta ? ` · ${fmtT(s.eta)} left` : ""}`}
@@ -150,7 +151,8 @@ export function Queue() {
         on={go ? { click: () => navigate({ tab: "jobs", project, clip: n }) } : {}}
       >
         <td class="num">{x.index + 1}</td>
-        <td class="lab">{x.held ? "⏸ " : ""}{x.label || <span class="hint">(no label)</span>}</td>
+        <td class="lab">{x.held ? "⏸ " : ""}{shownName(x.title, x.label) || <span class="hint">(no label)</span>}
+          {labelNote(x.title, x.label) ? <span class="hint" attrs={{ title: "label" }}>{` ${labelNote(x.title, x.label)}`}</span> : null}</td>
         <td class="num">{x.seconds}</td>
         <td class="num">{x.steps}</td>
         <td class="hint">{x.size}</td>

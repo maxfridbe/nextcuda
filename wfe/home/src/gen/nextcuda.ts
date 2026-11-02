@@ -38,6 +38,11 @@ export interface AudioGenerateReq {
    */
   label?: string | null;
   /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
    * @maximum 9
@@ -228,6 +233,11 @@ export interface AudioSpeakReq {
    */
   label?: string | null;
   /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
    * @maximum 9
@@ -329,6 +339,11 @@ export interface AudioTranscribeReq {
    * @maxLength 120
    */
   label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -522,6 +537,11 @@ export interface ImageEditReq {
    */
   label?: string | null;
   /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
    * @maximum 9
@@ -603,6 +623,11 @@ export interface ImageGenerateReq {
    * @maxLength 120
    */
   label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -833,6 +858,11 @@ export interface ImageUpscaleReq {
    */
   label?: string | null;
   /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
    * @maximum 9
@@ -910,6 +940,11 @@ export interface ImageVectorizeReq {
    * @maxLength 120
    */
   label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -1081,6 +1116,11 @@ export interface Model3dGenerateReq {
    * @maxLength 120
    */
   label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -1260,6 +1300,11 @@ export interface Model3dRigReq {
    * @maxLength 120
    */
   label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9
@@ -1736,6 +1781,11 @@ export interface VideoGenerateReq {
    * @maxLength 80
    */
   label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
   /** anchor or file: the clip ends on this picture (prev: the newest clip anywhere) */
   last_frame?: string | null;
   /**
@@ -2002,6 +2052,11 @@ export interface VideoUpscaleReq {
    * @maxLength 120
    */
   label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
   /**
    * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
    * @minimum -9

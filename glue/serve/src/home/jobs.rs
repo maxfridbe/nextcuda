@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::life::s;
+use super::life::{clean_title, s};
 use super::{now, Home};
 use crate::http::{call_for, Target};
 
@@ -264,14 +264,15 @@ impl Home {
                 let id = format!("{kind}-{}-{n}", now() as u64);
                 let label = Some(s(b, "label")).filter(|l| !l.trim().is_empty()).map(|l| l.chars().take(120).collect()).unwrap_or_else(|| id.clone());
                 let priority = b["priority"].as_i64().unwrap_or(0).clamp(-9, 9);
+                let title = clean_title(b);
                 let text = |k: &str| Some(s(b, k).trim().chars().take(60).collect::<String>()).filter(|x| !x.is_empty());
                 let mut body = b.clone();
                 if let Some(o) = body.as_object_mut() {
-                    for k in ["wait", "label", "reentrant_id", "reentrantid", "priority", "held", "queue", "project", "batch"] {
+                    for k in ["wait", "label", "title", "reentrant_id", "reentrantid", "priority", "held", "queue", "project", "batch"] {
                         o.remove(k);
                     }
                 }
-                let mut j = json!({"id": id, "kind": kind, "method": name, "label": label, "reentrant_id": rid, "state": "queued",
+                let mut j = json!({"id": id, "kind": kind, "method": name, "label": label, "title": title, "reentrant_id": rid, "state": "queued",
                                    "created": now(), "started": null, "ended": null, "priority": priority, "held": b["held"] == true,
                                    "project": text("project"), "batch": text("batch"), "body": body});
                 {
@@ -399,7 +400,7 @@ impl Home {
     /// while it runs, its place while it waits
     fn job_view(&self, j: &Value, running: Option<&[(String, Value)]>) -> Value {
         let mut v = json!({});
-        for k in ["id", "kind", "method", "label", "reentrant_id", "created", "started", "ended", "restarted", "priority", "project", "batch"] {
+        for k in ["id", "kind", "method", "label", "title", "reentrant_id", "created", "started", "ended", "restarted", "priority", "project", "batch"] {
             if !j[k].is_null() {
                 v[k] = j[k].clone();
             }
@@ -660,11 +661,32 @@ impl Home {
                   "jobs": open.iter().map(|j| j["id"].clone()).collect::<Vec<_>>()}))
     }
 
+
+    /// The jobs running on the servers now, by the server's port: (title, label) - what a card's process is making
+    pub(crate) fn running_by_port(&self) -> std::collections::HashMap<String, (Value, Value)> {
+        let mut out = std::collections::HashMap::new();
+        for kind in KINDS {
+            for p in self.slots(kind) {
+                let Ok(v) = call_for(&Target::Tcp(format!("127.0.0.1:{p}")), "GET", "/api/progress", None, 2) else { continue };
+                if let Some(j) = v["request_id"].as_str().and_then(|id| self.jobs.get(id)) {
+                    out.insert(p.to_string(), (j["title"].clone(), j["label"].clone()));
+                }
+            }
+        }
+        out
+    }
+
+    /// The clip the video studio is making: (gpu, title, label), when one runs
+    pub(crate) fn running_video(&self) -> Option<(Value, Value, Value)> {
+        let st = call_for(&self.target("video"), "POST", "/rpc/status", Some(&json!({})), 4).ok()?["result"].clone();
+        (st["idle"] != true && !st["job"].is_null()).then(|| (st["gpu"].clone(), st["job"]["title"].clone(), st["job"]["label"].clone()))
+    }
+
     /// The jobs not ended (system.busy)
     pub(crate) fn jobs_open(&self) -> Vec<Value> {
         let paused = self.jobs.paused.lock().unwrap().clone();
         self.jobs.list.lock().unwrap().iter().filter(|j| !ended(j))
-            .map(|j| json!({"id": j["id"], "kind": j["kind"], "label": j["label"], "state": j["state"],
+            .map(|j| json!({"id": j["id"], "kind": j["kind"], "label": j["label"], "title": j["title"], "state": j["state"],
                             "held": j["state"] == "queued" && held(j, &paused[j["kind"].as_str().unwrap_or("")])})).collect()
     }
 }
@@ -698,6 +720,15 @@ mod tests {
         assert!(held(&json!({"project": "film"}), &p));
         assert!(held(&json!({"held": true}), &p));
         assert!(held(&json!({}), &json!({"all": true})));
+    }
+
+    #[test]
+    fn a_title_is_trimmed_cut_and_blank_means_none() {
+        assert_eq!(clean_title(&json!({"title": "  Song - take 2  "})), json!("Song - take 2"));
+        assert_eq!(clean_title(&json!({"title": "x".repeat(300)})).as_str().unwrap().len(), 120);
+        assert!(clean_title(&json!({"title": "   "})).is_null());
+        assert!(clean_title(&json!({"title": 5})).is_null());
+        assert!(clean_title(&json!({})).is_null());
     }
 
     #[test]

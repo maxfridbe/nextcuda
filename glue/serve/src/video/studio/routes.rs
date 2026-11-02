@@ -127,6 +127,9 @@ pub struct ClipRequest {
     /// "Name NN/MM: ..." - the NN drives edit order
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<Value>,
+    /// what people call this job: free text, 120 characters, never matched on
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// 256-1344, multiples of 32, width * height <= 1032192
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<Num>,
@@ -253,6 +256,9 @@ pub struct Clip {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// what people call this job: free text, 120 characters, never matched on
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// the clip: h3_YYYYMMDD_HHMMSS (once it starts)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -339,6 +345,9 @@ pub struct LlmStatus {
 #[derive(Serialize, Deserialize, Rpc)]
 pub struct QueueItem {
     pub label: String,
+    /// what people call this job: free text, 120 characters, never matched on
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub seconds: f64,
     pub steps: Option<i64>,
     pub engine: Option<String>,
@@ -743,6 +752,9 @@ pub struct ListRow {
     pub te: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// what people call this job: free text, 120 characters, never matched on
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -822,6 +834,9 @@ pub struct TimelineClip {
     pub seconds: Option<f64>,
     pub camera: Option<String>,
     pub label: String,
+    /// what people call this job: free text, 120 characters, never matched on
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// spoken words only, for alt text
     pub dialogue: String,
     /// /thumb/<name>.webp

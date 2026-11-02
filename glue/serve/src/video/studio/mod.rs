@@ -292,6 +292,7 @@ impl Studio {
             }
             let held = st.q.held(&item);
             let (label, project, batch) = (s(&item, "label"), project_of(&item), s(&item, "batch"));
+            let title = item["title"].clone();
             let at = st.q.slot(item["priority"].as_i64().unwrap_or(0));
             st.q.items.insert(at, item);
             st.q.save(&self.dir);
@@ -299,7 +300,7 @@ impl Studio {
                 st.q.paused = false;
                 st.q.save_paused(&self.dir);
             }
-            return Ok(with(json!({"queued": true, "position": at + 1, "label": label, "project": project, "batch": batch, "held": held, "reentered": false})));
+            return Ok(with(json!({"queued": true, "position": at + 1, "label": label, "title": title, "project": project, "batch": batch, "held": held, "reentered": false})));
         }
         self.launch(&mut st, item).map_err(|e| RpcError::new("internal", &e, 503))?;
         Ok(with(json!({"queued": false, "job": st.job.as_ref().map(|j| j.rec.clone()), "reentered": false})))
@@ -316,7 +317,7 @@ impl Studio {
         }
         if let Some((i, it)) = st.q.items.iter().enumerate().find(|(_, i)| i["reentrant_id"] == r) {
             let held = st.q.held(it);
-            return Some(json!({"queued": true, "state": if held { "held" } else { "queued" }, "position": i + 1, "label": s(it, "label"),
+            return Some(json!({"queued": true, "state": if held { "held" } else { "queued" }, "position": i + 1, "label": s(it, "label"), "title": it["title"],
                                "project": project_of(it), "batch": s(it, "batch"), "held": held, "frames": len(it)["frames"], "seconds": it["seconds"]}));
         }
         let (stem, side) = self.sidecars().into_iter().find(|(_, side)| side["job"]["reentrant_id"] == r)?;

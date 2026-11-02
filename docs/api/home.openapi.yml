@@ -836,6 +836,16 @@ components:
             items:
               type: string
           - type: 'null'
+        job_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the title of the job this process is making, when it makes one and the job has a title
+        job_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the label of the job this process is making
       required:
       - pid
       - vram_mb

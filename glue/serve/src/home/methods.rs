@@ -624,6 +624,10 @@ pub struct JobOpts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(max_length = 120)]
     pub label: Option<String>,
+    /// what people call this job: free text, 120 characters, never matched on
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_length = 120)]
+    pub title: Option<String>,
     /// a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = -9, max = 9, default = 0)]
@@ -1929,6 +1933,10 @@ pub struct VideoGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(max_length = 80)]
     pub label: Option<String>,
+    /// what people call this job: free text, 120 characters, never matched on
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_length = 120)]
+    pub title: Option<String>,
     /// anchor or file: the clip ends on this picture (prev: the newest clip anywhere)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_frame: Option<String>,

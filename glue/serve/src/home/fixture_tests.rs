@@ -789,3 +789,62 @@ fn the_profile_is_in_the_models_state_and_unmeasured_by_default() {
     let rows = w.home.model_states(&all, &w.home.named_cards(&all));
     assert_eq!(rows.iter().find(|r| r["id"] == "u").unwrap()["copies_now"], 1);
 }
+
+#[test]
+fn a_title_is_shown_with_the_job_and_never_matched_on() {
+    let w = world("title", vec![big("a")]);
+    let ask = |extra: Value| {
+        let mut b = json!({"model": "a", "input": "hello", "wait": false, "held": true});
+        for (k, v) in extra.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        w.home.submit("audio.speak", &b).unwrap()
+    };
+    // a title comes back on the answer, the status, the list and system.busy's open jobs; it is not part of the body
+    let a = ask(json!({"label": "L1", "reentrant_id": "r1", "title": "  Blackbird - take 2 of 3  "}));
+    assert_eq!(a["title"], "Blackbird - take 2 of 3");
+    assert_eq!(a["label"], "L1");
+    let id = a["id"].as_str().unwrap().to_string();
+    assert!(w.home.jobs.get(&id).unwrap()["body"].get("title").is_none());
+    assert_eq!(w.home.job_status("audio", &json!({"label": "L1"})).unwrap()["title"], "Blackbird - take 2 of 3");
+    let listed = w.home.job_list("audio", &json!({})).unwrap();
+    let queued = listed["queued"].as_array().unwrap();
+    assert!(queued.iter().any(|j| j["label"] == "L1" && j["title"] == "Blackbird - take 2 of 3"), "{listed}");
+    assert!(w.home.jobs_open().iter().any(|j| j["label"] == "L1" && j["title"] == "Blackbird - take 2 of 3"));
+    // without one the job is as before: no title anywhere
+    let b = ask(json!({"label": "L2"}));
+    assert!(b.get("title").is_none(), "{b}");
+    assert!(w.home.job_status("audio", &json!({"label": "L2"})).unwrap().get("title").is_none());
+    // a blank one is none; a long one is cut to 120 characters
+    assert!(ask(json!({"label": "L3", "title": "   "})).get("title").is_none());
+    let long = ask(json!({"label": "L4", "title": "é".repeat(200)}));
+    assert_eq!(long["title"].as_str().unwrap().chars().count(), 120);
+    // a title names nothing: the label and the reentrant_id find the job, the title finds none; a new title on a
+    // reentered request neither makes a second job nor changes the first
+    assert!(w.home.job_status("audio", &json!({"label": "Blackbird - take 2 of 3"})).is_err());
+    let again = ask(json!({"label": "L1", "reentrant_id": "r1", "title": "something else"}));
+    assert_eq!((again["id"].as_str(), again["reentered"].clone(), again["title"].clone()), (Some(id.as_str()), json!(true), json!("Blackbird - take 2 of 3")));
+    let other = ask(json!({"label": "L5", "title": "Blackbird - take 2 of 3"}));
+    assert_ne!(other["id"], a["id"]);
+    assert_eq!(w.home.job_status("audio", &json!({"label": "L1"})).unwrap()["id"], a["id"]);
+}
+
+#[test]
+fn a_cards_process_names_the_job_it_is_making() {
+    let mut by_port = std::collections::HashMap::new();
+    by_port.insert("8101".to_string(), (json!("Blackbird - pass 1"), json!("hash:shots:0:001")));
+    let img = json!({"pid": 1, "kind": "image", "port": "8101", "gpus": ["0"]});
+    let vid = json!({"pid": 2, "kind": "video", "port": null, "gpus": ["1"]});
+    let video = (json!(1), json!("Clip title"), json!("Clip 01/02"));
+    let mut p = json!({"pid": 1});
+    super::life::tag_job(&mut p, super::life::job_of_proc(&img, &by_port, Some(&video)).as_ref());
+    assert_eq!((p["job_title"].clone(), p["job_label"].clone()), (json!("Blackbird - pass 1"), json!("hash:shots:0:001")));
+    let mut p = json!({"pid": 2});
+    super::life::tag_job(&mut p, super::life::job_of_proc(&vid, &by_port, Some(&video)).as_ref());
+    assert_eq!((p["job_title"].clone(), p["job_label"].clone()), (json!("Clip title"), json!("Clip 01/02")));
+    // not that card, or no job known: nothing is added
+    let other = json!({"pid": 3, "kind": "video", "gpus": ["0"]});
+    let mut p = json!({"pid": 3});
+    super::life::tag_job(&mut p, super::life::job_of_proc(&other, &by_port, Some(&video)).as_ref());
+    assert!(p.get("job_title").is_none() && p.get("job_label").is_none());
+}

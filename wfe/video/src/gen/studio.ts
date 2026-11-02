@@ -47,6 +47,8 @@ export interface Cleared {
 export interface Clip {
   prompt?: string | null;
   label?: string | null;
+  /** what people call this job: free text, 120 characters, never matched on */
+  title?: string | null;
   /** the clip: h3_YYYYMMDD_HHMMSS (once it starts) */
   name?: string | null;
   /** the engine's job id */
@@ -443,6 +445,8 @@ export interface Projects {
 /** A queued clip, as the queue panel shows it */
 export interface QueueItem {
   label: string;
+  /** what people call this job: free text, 120 characters, never matched on */
+  title?: string | null;
   seconds: number;
   steps?: number | null;
   engine?: string | null;
@@ -614,6 +618,8 @@ export interface TimelineClip {
   seconds?: number | null;
   camera?: string | null;
   label: string;
+  /** what people call this job: free text, 120 characters, never matched on */
+  title?: string | null;
   /** spoken words only, for alt text */
   dialogue: string;
   /** /thumb/<name>.webp */
@@ -719,6 +725,11 @@ export interface VideoGenerateReq {
    * @maxLength 80
    */
   label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
   /** anchor or file: the clip ends on this picture (prev: the newest clip anywhere) */
   last_frame?: string | null;
   /**

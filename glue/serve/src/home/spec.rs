@@ -3,7 +3,7 @@
 
 /// A queue item: a video.generate body as the studio checked it (defaults filled in, files reduced to their names)
 const ITEM: &str = r#"{"type": "object", "description": "the request as checked: every video.generate key, defaults filled in (absent ones null)",
-  "properties": {"prompt": {"type": "string"}, "label": {"type": "string"}, "project": {"type": "string"}, "batch": {"type": "string"},
+  "properties": {"prompt": {"type": "string"}, "label": {"type": "string"}, "title": {"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}, "project": {"type": "string"}, "batch": {"type": "string"},
     "clip": {"type": "integer", "nullable": true, "description": "the clip's place in its project's timeline (1 and up); absent: read from the label's NN/MM, else the reentrant_id's #N"},
     "seconds": {"type": "number"}, "steps": {"type": "integer"}, "seed": {"type": "integer"}, "width": {"type": "integer"}, "height": {"type": "integer"},
     "engine": {"type": "string"}, "priority": {"type": "integer"}, "te": {"type": "string"}, "chain_mode": {"type": "string"},
@@ -14,12 +14,12 @@ const ITEM: &str = r#"{"type": "object", "description": "the request as checked:
 const JOB: &str = r#"{"type": "object", "description": "the queue item (every video.generate key) plus what starting it settled; anchors (first_frame ...) now name the files they resolved to",
   "properties": {"name": {"type": "string", "description": "the clip: h3_YYYYMMDD_HHMMSS; its file <name>.mp4 (GET /v1/video/files/<name>.mp4) once done"},
     "id": {"type": "string", "description": "the engine's job id"}, "started": {"type": "number", "description": "unix seconds"},
-    "label": {"type": "string"}, "project": {"type": "string"}, "seconds": {"type": "number"}, "frames": {"type": "integer"}, "engine": {"type": "string"},
+    "label": {"type": "string"}, "title": {"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}, "project": {"type": "string"}, "seconds": {"type": "number"}, "frames": {"type": "integer"}, "engine": {"type": "string"},
     "reentrant_id": {"type": "string", "nullable": true},
     "energy_wh": {"type": "number", "nullable": true, "description": "while it runs: so far (updated with each status)"}},
   "additionalProperties": true}"#;
 
-const QUEUE_ITEM: &str = r#"{"type": "object", "properties": {"label": {"type": "string"}, "seconds": {"type": "number"}, "steps": {"type": "integer"},
+const QUEUE_ITEM: &str = r#"{"type": "object", "properties": {"label": {"type": "string"}, "title": {"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}, "seconds": {"type": "number"}, "steps": {"type": "integer"},
   "engine": {"type": "string"}, "size": {"type": "string", "description": "WxH"}, "chain": {"type": "boolean", "description": "starts on a first_frame"},
   "project": {"type": "string"}, "batch": {"type": "string"}, "held": {"type": "boolean", "description": "paused (queue, project or batch): not run until resumed"}}}"#;
 
@@ -94,7 +94,7 @@ fn sound() -> String {
 /// An image, audio or 3D job (jobs.rs): <kind>.status's answer, and generate's with wait: false
 const JOB_VIEW: &str = r#"{"type": "object", "required": ["id", "label", "state"], "properties": {
   "id": {"type": "string"}, "kind": {"type": "string", "enum": ["image", "audio", "model3d"]}, "method": {"type": "string"},
-  "label": {"type": "string", "description": "the request's label, else the id"}, "reentrant_id": {"type": "string", "nullable": true},
+  "label": {"type": "string", "description": "the request's label, else the id"}, "title": {"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}, "reentrant_id": {"type": "string", "nullable": true},
   "state": {"type": "string", "enum": ["queued", "running", "done", "failed", "cancelled"], "description": "queued: not being made yet (stage says why); running: being made (progress)"},
   "stage": {"type": "string", "enum": ["queued", "held", "starting", "waiting", "loading", "running", "done", "failed", "cancelled"], "description": "where it is: queued (in the kind's queue behind others), held (paused: queue.resume), starting (being handed to its server), waiting (for room on a card, a server to finish another model's or another job's work), loading (its model), running, then how it ended"},
   "waiting_for": {"type": "string", "nullable": true, "description": "not running yet: what it waits for, in words - the jobs ahead, the model loading on GPU n, the room on a card (free and needed, and who holds the rest), the job its server finishes first"},
@@ -209,9 +209,9 @@ pub fn result(method: &str) -> Option<String> {
   "working": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "kind": {"type": "string"}}}, "description": "picture and sound models answering a request"},
   "llm": {"type": "object", "properties": {"active": {"type": "integer", "description": "chat requests being answered"}}},
   "engines": {"type": "array", "description": "each enabled model's copies now against its concurrency profile, for a dispatcher", "items": {"type": "object", "properties": {"id": {"type": "string"}, "kind": {"type": "string"}, "copies_now": {"type": "integer"}, "recommended_copies": {"type": "integer"}, "max_copies_per_card": {"type": "integer"}, "mode": {"type": "string", "enum": ["shared", "exclusive"]}, "status": {"type": "string", "enum": ["measured", "unmeasured"]}}}},
-  "jobs": {"type": "array", "description": "image and audio jobs not ended (held ones too; they are no reason for busy)", "items": {"type": "object", "properties": {"id": {"type": "string"}, "kind": {"type": "string"}, "label": {"type": "string"}, "state": {"type": "string"}, "held": {"type": "boolean"}}}},
+  "jobs": {"type": "array", "description": "image and audio jobs not ended (held ones too; they are no reason for busy)", "items": {"type": "object", "properties": {"id": {"type": "string"}, "kind": {"type": "string"}, "label": {"type": "string"}, "title": {"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}, "state": {"type": "string"}, "held": {"type": "boolean"}}}},
   "video": {"type": "object", "nullable": true, "description": "null: no video model enabled", "properties": {
-    "running": {"type": "boolean"}, "label": {"type": "string", "nullable": true}, "name": {"type": "string", "nullable": true},
+    "running": {"type": "boolean"}, "label": {"type": "string", "nullable": true}, "title": {"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}, "name": {"type": "string", "nullable": true},
     "stage": {"type": "string", "nullable": true}, "pct": {"type": "integer", "nullable": true}, "eta_s": {"type": "integer", "nullable": true}, "elapsed_s": {"type": "integer", "nullable": true},
     "gpu": {"type": "integer", "nullable": true, "description": "the card the clip is made on (null when nothing runs, or while the clip waits for a card the engine has not given it yet)"}, "energy_wh": {"type": "number", "nullable": true, "description": "the clip's energy so far"},
     "queued": {"type": "integer"}, "runnable": {"type": "integer", "description": "queued and not held"}, "held": {"type": "integer"},
@@ -225,7 +225,7 @@ pub fn result(method: &str) -> Option<String> {
   "cards": {"type": "array", "description": "each GPU and the work on it", "items": {"type": "object", "properties": {
     "gpu": {"type": "integer"}, "name": {"type": "string"}, "vram_total_mb": {"type": "integer"}, "vram_used_mb": {"type": "integer"}, "busy_pct": {"type": "number"}, "power_w": {"type": "number"},
     "models": {"type": "array", "items": {"type": "string"}, "description": "registered models whose processes hold memory there"}, "busy": {"type": "boolean"},
-    "work": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string"}, "model": {"type": "string", "nullable": true}}}}}}},
+    "work": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string"}, "model": {"type": "string", "nullable": true}, "job_title": {"type": "string", "nullable": true, "description": "the title of the job it is making, when known"}, "job_label": {"type": "string", "nullable": true, "description": "the label of the job it is making, when known"}}}}}}},
   "parallel": {"type": "object", "description": "how many image / audio jobs run at the same time. Jobs of one model run side by side up to models[id]: a copy of the model a card it is enabled on, at most servers. The first copy takes the first job; a second job finds it busy and starts a second copy on the other card when that card has the room (else it waits for the first). So a long book can submit two audio.speak at once (wait: false) and keep both busy. Jobs of two different models run side by side when each has a server", "properties": {
     "image": {"type": "object", "properties": {"servers": {"type": "integer", "description": "the kind's servers (2)"}, "models": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "enabled model id: its jobs that run at once"}}}, "audio": {"type": "object", "properties": {"servers": {"type": "integer", "description": "the kind's servers (2)"}, "models": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "enabled model id: its jobs that run at once"}}}}}}}"#.into(),
         "system.version" => r#"{"type": "object", "properties": {"version": {"type": "string", "description": "the release (yy.mmdd.###)"}, "api": {"type": "integer", "description": "raised when an answer changes incompatibly"},
@@ -327,7 +327,7 @@ pub fn result(method: &str) -> Option<String> {
   "vram_total_mb": {"type": "integer"}, "vram_used_mb": {"type": "integer"}, "vram_free_mb": {"type": "integer"},
   "busy_pct": {"type": "number"}, "power_w": {"type": "number", "nullable": true}, "power_cap_w": {"type": "number", "nullable": true}, "temp_c": {"type": "number", "nullable": true}, "temp_vram_c": {"type": "number", "nullable": true},
   "models": {"type": "array", "items": {"type": "string"}, "description": "registered models whose processes hold memory there"},
-  "processes": {"type": "array", "items": {"type": "object", "properties": {"pid": {"type": "integer"}, "program": {"type": "string"}, "kind": {"type": "string", "nullable": true}, "model": {"type": "string", "nullable": true}, "vram_mb": {"type": "integer"}}}},
+  "processes": {"type": "array", "items": {"type": "object", "properties": {"pid": {"type": "integer"}, "program": {"type": "string"}, "kind": {"type": "string", "nullable": true}, "model": {"type": "string", "nullable": true}, "vram_mb": {"type": "integer"}, "job_title": {"type": "string", "nullable": true, "description": "the title of the job this process is making, when known"}, "job_label": {"type": "string", "nullable": true, "description": "the label of the job this process is making, when known"}}}},
   "enabled_models": {"type": "array", "items": {"type": "string"}, "description": "the enabled models counted on it"}, "vouched_mb": {"type": "integer", "description": "what they are counted for"},
   "overbooked": {"type": "boolean", "description": "they are counted for more than it holds (the first to load holds it)"}}}}}}"#.into(),
         "image.cancel" | "audio.cancel" | "model3d.cancel" => r#"{"type": "object", "properties": {"cancelled": {"description": "label: how many jobs; none: whether anything was stopped"}, "stopped": {"type": "integer", "description": "requests stopped while running"},
@@ -370,7 +370,7 @@ pub fn result(method: &str) -> Option<String> {
     "state": {"type": "string", "enum": ["queued", "held", "running", "done"], "description": "reentered: where that clip is"}"#;
             format!(r#"{{"oneOf": [
   {{"type": "object", "description": "queued", "properties": {{"queued": {{"type": "boolean", "enum": [true]}}, "position": {{"type": "integer", "description": "1: made next"}},
-    "label": {{"type": "string"}}, "project": {{"type": "string"}}, "batch": {{"type": "string"}}, "held": {{"type": "boolean"}}, {common}}}}},
+    "label": {{"type": "string"}}, "title": {{"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}}, "project": {{"type": "string"}}, "batch": {{"type": "string"}}, "held": {{"type": "boolean"}}, {common}}}}},
   {{"type": "object", "description": "started (or reentered: running, or done with name and file)", "properties": {{"queued": {{"type": "boolean", "enum": [false]}}, "job": {JOB},
     "name": {{"type": "string", "description": "reentered, done: the clip"}}, "file": {{"type": "string", "description": "reentered, done: its URL"}}, {common}}}}}]}}"#)
         }
@@ -390,12 +390,12 @@ pub fn result(method: &str) -> Option<String> {
         "video.timeline" => r#"{"type": "object", "properties": {"clips": {"type": "array", "description": "by n; for each n the newest finished clip, else the running / queued one", "items": {"type": "object", "properties": {
   "n": {"type": "integer", "description": "the request's clip; else the NN of the label, else the reentrant_id's #N (0: none)"}, "name": {"type": "string", "nullable": true, "description": "the clip (done or running)"},
   "state": {"type": "string", "enum": ["done", "running", "held", "queued"]}, "seconds": {"type": "number"}, "camera": {"type": "string", "nullable": true},
-  "label": {"type": "string"}, "dialogue": {"type": "string", "description": "the spoken lines"},
+  "label": {"type": "string"}, "title": {"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}, "dialogue": {"type": "string", "description": "the spoken lines"},
   "file": {"type": "string", "nullable": true, "description": "done: the clip's URL"}, "thumb": {"type": "string", "nullable": true, "description": "done: a 240-pixel still's URL (webp)"}}}}}}"#.into(),
         "video.jobs.list" => r#"{"type": "object", "properties": {"jobs": {"type": "array", "description": "every mp4 in the clips directory, newest first", "items": {"type": "object", "properties": {
   "file": {"type": "string", "description": "<name>.mp4 (GET /v1/video/files/<file>)"}, "mtime": {"type": "integer"},
   "size": {"type": "integer", "description": "bytes"}, "canvas": {"type": "string", "nullable": true, "description": "WxH; null for an mp4 without a record"},
-  "label": {"type": "string"}, "project": {"type": "string"}, "seconds": {"type": "number"}, "steps": {"type": "integer"}, "engine": {"type": "string"},
+  "label": {"type": "string"}, "title": {"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}, "project": {"type": "string"}, "seconds": {"type": "number"}, "steps": {"type": "integer"}, "engine": {"type": "string"},
   "total": {"type": "number", "description": "seconds it took"}, "energy_wh": {"type": "number", "nullable": true}, "camera": {"type": "string", "nullable": true},
   "speech_pct": {"type": "number", "nullable": true}, "te": {"type": "string"}}}}}}"#.into(),
         "video.jobs.get" => format!(r#"{{"type": "object", "description": "a finished clip's record (<name>.json beside the mp4)", "properties": {{

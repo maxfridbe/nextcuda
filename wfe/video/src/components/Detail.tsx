@@ -4,7 +4,7 @@ import { jsx } from "../jsx.js";
 import { render, state } from "../state.js";
 import { navigate } from "../router.js";
 import type { Job } from "../types.js";
-import { fmtT } from "../util.js";
+import { fmtT, shownName } from "../util.js";
 
 const row = (icon: string, k: string, v: unknown) => (
   <tr>
@@ -14,6 +14,7 @@ const row = (icon: string, k: string, v: unknown) => (
 );
 
 const settings = (j: Job) => [
+  ...(j.title ? [row("&#xf02b;", "title", j.title)] : []),
   row("&#xf02b;", "label", j.label),
   row("&#xf017;", "seconds", j.seconds),
   row("&#xf1de;", "steps", j.steps),
@@ -34,7 +35,7 @@ export function Detail() {
   if (!d) return <div />;
   const j: Job = d.kind === "job" ? (d.data.job ?? ({} as Job)) : d.data;
   const times = d.kind === "job" ? (d.data.times ?? {}) : {};
-  const title = d.kind === "job" ? d.name : (j.label ?? "queued clip");
+  const title = d.kind === "job" ? d.name : (shownName(j.title, j.label) || "queued clip");
   return (
     <div class="detail">
       <div class="row dhead">

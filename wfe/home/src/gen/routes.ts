@@ -272,6 +272,10 @@ export interface Proc {
   title?: string | null;
   port?: string | null;
   gpus?: string[] | null;
+  /** the title of the job this process is making, when it makes one and the job has a title */
+  job_title?: string | null;
+  /** the label of the job this process is making */
+  job_label?: string | null;
 }
 
 /** A model download's state */

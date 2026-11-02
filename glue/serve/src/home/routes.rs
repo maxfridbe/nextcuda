@@ -63,6 +63,12 @@ pub struct Proc {
     pub port: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpus: Option<Vec<String>>,
+    /// the title of the job this process is making, when it makes one and the job has a title
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_title: Option<String>,
+    /// the label of the job this process is making
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_label: Option<String>,
 }
 
 /// An enabled model's memory vouched for on a card (chat and video models: one of the group, `of` them)

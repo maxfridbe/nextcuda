@@ -25,7 +25,7 @@ mod api;
 mod config;
 mod disks;
 mod jobs;
-mod life;
+pub(crate) mod life;
 mod maint;
 pub(crate) mod methods;
 mod precheck;
@@ -570,6 +570,13 @@ impl Home {
         };
         let mut cards = cards;
         self.vouch(&mut cards, &models);
+        {
+            let (by_port, vid) = (self.running_by_port(), self.running_video());
+            for p in cards.as_array_mut().into_iter().flatten().flat_map(|c| c["procs"].as_array_mut().into_iter().flatten()) {
+                let job = crate::home::life::job_of_proc(p, &by_port, vid.as_ref());
+                crate::home::life::tag_job(p, job.as_ref());
+            }
+        }
         let maintenance = self.maintenance().map(|n| {
             let mut v = maint::public(&n);
             v["bypass"] = json!(*self.maint_bypass.lock().unwrap());

@@ -53,6 +53,8 @@ export interface Cleared {
 export interface Clip {
   prompt?: string | null;
   label?: string | null;
+  /** what people call this job: free text, 120 characters, never matched on */
+  title?: string | null;
   /** the clip: h3_YYYYMMDD_HHMMSS (once it starts) */
   name?: string | null;
   /** the engine's job id */
@@ -113,6 +115,8 @@ export interface ClipRequest {
   te?: unknown | null;
   /** "Name NN/MM: ..." - the NN drives edit order */
   label?: unknown | null;
+  /** what people call this job: free text, 120 characters, never matched on */
+  title?: string | null;
   /** 256-1344, multiples of 32, width * height <= 1032192 */
   width?: number | null;
   height?: number | null;
@@ -369,6 +373,8 @@ export interface ListRow {
   steps?: number | null;
   te?: string | null;
   label?: string | null;
+  /** what people call this job: free text, 120 characters, never matched on */
+  title?: string | null;
   seconds?: number | null;
   energy_wh?: number | null;
   engine?: string | null;
@@ -485,6 +491,8 @@ export interface ProjectStats {
 /** A queued clip, as the queue panel shows it */
 export interface QueueItem {
   label: string;
+  /** what people call this job: free text, 120 characters, never matched on */
+  title?: string | null;
   seconds: number;
   steps?: number | null;
   engine?: string | null;
@@ -620,6 +628,8 @@ export interface TimelineClip {
   seconds?: number | null;
   camera?: string | null;
   label: string;
+  /** what people call this job: free text, 120 characters, never matched on */
+  title?: string | null;
   /** spoken words only, for alt text */
   dialogue: string;
   /** /thumb/<name>.webp */

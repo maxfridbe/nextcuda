@@ -63,6 +63,30 @@ open({ speed: "standard" });
   state.detail = null;
 }
 
+// a job's title stands in place of its label wherever the queue, the running clip and the finished clips are listed, the
+// label small beside it; with no title the label shows as before
+{
+  const { Queue } = await mod("video", "components/Queue.js");
+  const { ClipProgress } = await mod("video", "components/Progress.js");
+  const { Completed } = await mod("video", "components/Completed.js");
+  const { state } = await mod("video", "state.js");
+  const item = (label, title) => ({ label, title, seconds: 5, steps: 8, engine: "ltx2", size: "640x384", chain: false, project: "Harbour", batch: "", held: false });
+  state.status = { idle: false, stage: "denoising", pct: 40, queue_items: [item("Harbour 02/09: lamp", "Harbour at night - shot 2 of 9"), item("Harbour 03/09: quay", null)],
+                   job: { label: "Harbour 01/09: gate", title: "Harbour at night - shot 1 of 9", project: "Harbour", seconds: 5, steps: 8, width: 640, height: 384, engine: "ltx2" }, projects: [] };
+  sc.show("title-queue", Queue()).has(/Harbour at night - shot 2 of 9/).has(/Harbour 02\/09: lamp/).has(/Harbour 03\/09: quay/).has(/Harbour at night - shot 1 of 9/);
+  sc.show("title-progress", ClipProgress()).has(/Harbour at night - shot 1 of 9/).has(/Harbour 01\/09: gate/);
+  state.slowLoaded = true;
+  state.filter = "";
+  state.list = [{ file: "h3_1.mp4", mtime: 1, size: 1, label: "Harbour 01/09: gate", title: "Harbour at night - shot 1 of 9", project: "Harbour" },
+                { file: "h3_2.mp4", mtime: 2, size: 1, label: "Harbour 02/09: lamp", project: "Harbour" }];
+  sc.show("title-completed", Completed()).has(/Harbour at night - shot 1 of 9/).has(/Harbour 01\/09: gate/).has(/Harbour 02\/09: lamp/);
+  state.status = { idle: false, stage: "denoising", pct: 40, queue_items: [item("Harbour 03/09: quay", null)], job: { label: "Harbour 01/09: gate", project: "Harbour", seconds: 5, steps: 8, width: 640, height: 384 }, projects: [] };
+  sc.show("no-title-queue", Queue()).has(/Harbour 03\/09: quay/).lacks(/shot/);
+  sc.show("no-title-progress", ClipProgress()).has(/Harbour 01\/09: gate/).lacks(/shot/);
+  state.status = null;
+  state.list = [];
+}
+
 // the licence: the denoiser picker tags a denoiser whose card forbids commercial use (the licence in its tooltip); the ones
 // that allow it, with conditions or not, are not tagged
 {

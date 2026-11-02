@@ -65,5 +65,16 @@ sc.show("status", App())
   const nc = w.lines.filter((l) => /non-commercial\s*$/.test(l) && /^(breeze-tts-2|voxcpm2)/.test(l));
   sc.check("status-licences-available", nc.length === 1 && /^breeze-tts-2/.test(nc[0]), `only the Breeze card is tagged (${JSON.stringify(nc)})`);
 }
+// a card's process that makes a job names it: the job's title, the label small beside it; without a job nothing is added
+{
+  ui.state.models = [model("qwen-image-2.1-q8", "image", { state: "busy" })];
+  const proc = (o) => ({ pid: 11, vram_mb: 6000, program: "nextcuda", kind: "image", command: "serve", model: "qwen-image-2.1-q8", model_id: "qwen-image-2.1-q8", port: "8101", ...o });
+  ui.state.cards = [{ ...card, procs: [proc({ job_title: "Blackbird - pass 12 of 24", job_label: "dad173a2:shots:0:019" })] }];
+  sc.show("status-job-title", App()).has(/Blackbird - pass 12 of 24/).has(/dad173a2:shots:0:019/);
+  ui.state.cards = [{ ...card, procs: [proc({})] }];
+  sc.show("status-no-job", App()).lacks(/Blackbird/).lacks(/shots:0/);
+  ui.state.cards = [card];
+}
+
 sc.done();
 process.exit(process.exitCode ?? 0);

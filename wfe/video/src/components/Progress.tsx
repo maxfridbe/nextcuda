@@ -8,7 +8,7 @@ import { jsx } from "../jsx.js";
 import { api, rpc } from "../api.js";
 import { navigate } from "../router.js";
 import { refresh, render, state } from "../state.js";
-import { clipNumber, fmtT } from "../util.js";
+import { clipNumber, fmtT, labelNote, shownName } from "../util.js";
 
 /** The clip a cancel was asked for: its buttons read "cancelling…" until the engine stops it at its next step
  *  (seconds, mid-step), so the click shows at once */
@@ -38,10 +38,10 @@ function lastFailure() {
   if (!s || !s.idle || s.stage !== "failed" || (!f && !s.error)) return null;
   // asked for: said plainly, not as a failure
   if (f?.code === "cancelled") {
-    return <div class="hint">{`Last clip cancelled${s.job?.label ? ` · ${s.job.label}` : ""}.`}</div>;
+    return <div class="hint">{`Last clip cancelled${shownName(s.job?.title, s.job?.label) ? ` · ${shownName(s.job?.title, s.job?.label)}` : ""}.`}</div>;
   }
   const message = f?.message ?? (s.error ?? "").split("\n")[0] ?? "";
-  const label = s.job?.label ? `${s.job.label} · ` : "";
+  const label = shownName(s.job?.title, s.job?.label) ? `${shownName(s.job?.title, s.job?.label)} · ` : "";
   const size = s.job?.width && s.job.height ? `${s.job.width}x${s.job.height}, ${s.job.seconds ?? "?"} s` : "";
   return (
     <div class="lastfail">
@@ -81,6 +81,8 @@ export function ClipProgress() {
   const pct = s.pct ?? 0;
   const icon = s.error ? "&#xf071;" : s.done ? "&#xf00c;" : "&#xf110;";
   const label = s.job?.label ?? "";
+  const shown = shownName(s.job?.title, s.job?.label);
+  const note = labelNote(s.job?.title, s.job?.label);
   const project = s.job?.project ?? null;
   const n = clipNumber(label);
   const jump = project && n
@@ -91,14 +93,15 @@ export function ClipProgress() {
       <div class="bar"><div class="fill" style={{ width: `${pct}%` }} /></div>
       <div class="stage">
         <span class="i" props={{ innerHTML: icon }} />{" "}
-        {label
+        {shown
           ? <a
               class={{ cliplink: true, plain: !jump }}
               attrs={{ title: jump ? "show this clip in the timeline" : "" }}
               on={jump ? { click: jump } : {}}
-            >{label}</a>
+            >{shown}</a>
           : null}
-        {label ? " · " : ""}{s.stage ?? ""}{" "}
+        {note ? <span class="hint" attrs={{ title: "label" }}>{` ${note}`}</span> : null}
+        {shown ? " · " : ""}{s.stage ?? ""}{" "}
         <span class="hint">
           {`${pct}%${s.eta ? ` · ${fmtT(s.eta)} left` : ""}${s.elapsed ? ` · ${fmtT(s.elapsed)} elapsed` : ""}`}
         </span>

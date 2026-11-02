@@ -572,6 +572,11 @@ components:
           anyOf:
           - type: string
           - type: 'null'
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what people call this job: free text, 120 characters, never matched on'
         name:
           anyOf:
           - type: string
@@ -737,6 +742,11 @@ components:
           - {}
           - type: 'null'
           description: '"Name NN/MM: ..." - the NN drives edit order'
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what people call this job: free text, 120 characters, never matched on'
         width:
           anyOf:
           - type: number
@@ -1374,6 +1384,11 @@ components:
           anyOf:
           - type: string
           - type: 'null'
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what people call this job: free text, 120 characters, never matched on'
         seconds:
           anyOf:
           - type: number
@@ -1663,6 +1678,11 @@ components:
       properties:
         label:
           type: string
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what people call this job: free text, 120 characters, never matched on'
         seconds:
           type: number
         steps:
@@ -2014,6 +2034,11 @@ components:
           - type: 'null'
         label:
           type: string
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'what people call this job: free text, 120 characters, never matched on'
         dialogue:
           type: string
           description: spoken words only, for alt text

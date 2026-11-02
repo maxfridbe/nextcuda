@@ -206,7 +206,7 @@ const PIKA_FLEX_LORA_FILE: &str = "pika_h3_flex_fl2va_comfy_bf16.safetensors";
 const PIKA_FLEX_KNOTS: &str = "1000,750,500,250,100,40,0";
 
 pub fn inputs_of(quant: &str) -> Value {
-    let common = ["prompt", "seconds", "frames", "steps", "seed", "width", "height", "te", "first_frame", "last_frame", "exposure_ref", "guide_clip",
+    let common = ["prompt", "title", "seconds", "frames", "steps", "seed", "width", "height", "te", "first_frame", "last_frame", "exposure_ref", "guide_clip",
                   "first_audio", "first_audio_s", "soundtrack", "soundtrack_start", "ref_audios", "loras", "upscale", "upscaler", "shift_video", "shift_audio", "sampler", "schedule", "knots", "speed", "chain", "source", "regen", "regen_box"];
     if quant == "REF2VA" {
         json!({"takes": common.iter().chain(["ref_images", "ref_videos", "ref_image_size", "ref_video_sound", "te_pictures"].iter()).collect::<Vec<_>>(),
@@ -421,7 +421,7 @@ pub const LTX_NOT: [&str; 22] = ["guide_clip", "first_audio", "first_audio_s", "
 
 /// What video.engines.list says LTX's shot engine takes: the keys, the choices, the ranges
 pub fn ltx_inputs(variants: &[&str]) -> Value {
-    json!({"takes": ["prompt", "negative_prompt", "frames", "seconds", "steps", "seed", "width", "height", "variant", "first_frame", "label", "reentrant_id",
+    json!({"takes": ["prompt", "negative_prompt", "frames", "seconds", "steps", "seed", "width", "height", "variant", "first_frame", "label", "title", "reentrant_id",
                      "project", "batch", "clip", "camera", "priority", "queue"],
            "not": LTX_NOT.iter().chain(["loras", "sampler", "schedule", "knots", "speed", "upscale", "upscaler"].iter()).collect::<Vec<_>>(),
            "chosen": "engine: ltx2", "ignored": ["cfg", "te", "chain.pin_renorm"],
@@ -460,7 +460,7 @@ pub fn ltx_rows(models: &[(String, String, f64)], licence: &Option<Value>) -> Ve
 
 /// What video.engines.list says LTX's upscaler takes
 pub fn ltx_upscale_inputs() -> Value {
-    json!({"takes": ["source_clip", "label", "reentrant_id", "project", "batch", "clip", "camera", "priority", "queue"],
+    json!({"takes": ["source_clip", "label", "title", "reentrant_id", "project", "batch", "clip", "camera", "priority", "queue"],
            "not": ["prompt", "frames", "seconds", "steps", "seed", "width", "height", "first_frame"],
            "chosen": "engine: ltx2_upscale", "ignored": [],
            "options": {"scale": {"values": [2], "default": 2, "help": "the latent upsampler doubles each side; the clip is windowed 121 frames at a time, a tail under nine frames is dropped"},
@@ -543,6 +543,7 @@ impl Studio {
         it.insert("seed".into(), num(p, "seed", 0.0, -2147483648.0, 2147483648.0, true)?);
         it.insert("te".into(), json!(te));
         it.insert("label".into(), json!(clean_label(&p.get("label").map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).unwrap_or_default())));
+        it.insert("title".into(), crate::home::life::clean_title(p));
         let engine = engine_name(p.get("engine").and_then(|v| v.as_str()));
         if engine != "INT8" && !engine_known(&engine) {
             let _ = self.engines(); // the daemon's list (a model added since the studio started)
@@ -782,6 +783,7 @@ impl Studio {
         };
         it.insert("te".into(), json!("teacher"));
         it.insert("label".into(), json!(clean_label(&p.get("label").map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).unwrap_or_default())));
+        it.insert("title".into(), crate::home::life::clean_title(p));
         it.insert("engine".into(), json!(engine));
         it.insert("priority".into(), num(p, "priority", 0.0, -9.0, 9.0, true)?);
         it.insert("width".into(), width);
@@ -869,7 +871,7 @@ impl Queue {
         let mut m = Map::new();
         m.insert("queue".into(), json!(self.items.iter().map(|i| { let l = s(i, "label"); if l.is_empty() { s(i, "prompt").chars().take(40).collect() } else { l } }).collect::<Vec<_>>()));
         m.insert("queue_items".into(), json!(self.items.iter().map(|i| json!({
-            "label": s(i, "label"), "seconds": i["seconds"], "steps": i["steps"], "engine": i["engine"], "chain": !i["first_frame"].is_null(),
+            "label": s(i, "label"), "title": i["title"], "seconds": i["seconds"], "steps": i["steps"], "engine": i["engine"], "chain": !i["first_frame"].is_null(),
             "size": format!("{}x{}", i["width"].as_i64().unwrap_or(640), i["height"].as_i64().unwrap_or(480)),
             "project": project_of(i), "batch": s(i, "batch"), "held": self.held(i)})).collect::<Vec<_>>()));
         m.insert("paused".into(), json!(self.paused));
@@ -1021,6 +1023,38 @@ mod tests {
         assert!(err(json!({"engine": "ltx2", "prompt": "x", "first_frame": "h3_1.mp4"})).contains("picture"));
         assert!(err(json!({"engine": "ltx2", "prompt": "  "})).contains("prompt is required"));
         assert_eq!(s.build_item(&json!({"engine": "ltx2", "prompt": "x", "first_frame": "nope.png"})).unwrap_err().code, "not_found");
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[test]
+    fn a_title_rides_on_the_queue_item_and_names_nothing() {
+        let s = studio("title");
+        std::fs::write(s.out.join("h3_20260101_000001.mp4"), b"mp4").unwrap();
+        std::fs::write(s.out.join("h3_20260101_000001.json"), br#"{"job": {"width": 640, "height": 384, "frames": 121}, "frames": 121}"#).unwrap();
+        let long = "t".repeat(200);
+        let a = s.build_item(&json!({"engine": "ltx2", "prompt": "A fox.", "label": "L 01/02: fox", "reentrant_id": "r#1", "title": format!("  Fox - shot 1 {long}")})).unwrap();
+        assert_eq!(a["title"].as_str().unwrap().chars().count(), 120);
+        assert!(a["title"].as_str().unwrap().starts_with("Fox - shot 1 "));
+        let up = s.build_item(&json!({"engine": "ltx2_upscale", "prompt": "", "source_clip": "h3_20260101_000001", "label": "U 01/01", "title": "Fox - upscale"})).unwrap();
+        assert_eq!(up["title"], "Fox - upscale");
+        // without one: null, and the label, project and clip number are as they were
+        let plain = s.build_item(&json!({"engine": "ltx2", "prompt": "A fox.", "label": "L 01/02: fox", "reentrant_id": "r#1"})).unwrap();
+        assert!(plain["title"].is_null());
+        for k in ["label", "project", "clip", "reentrant_id", "batch"] {
+            assert_eq!(a[k], plain[k], "{k}");
+        }
+        assert_eq!((project_of(&a), clip_number(&a)), (project_of(&plain), clip_number(&plain)));
+        // the queue view carries it next to the label; a title is no key: queue lookups go by label
+        let q = Queue { items: vec![a.clone(), plain.clone()], ..Queue::default() };
+        let p = q.payload();
+        let items = p["queue_items"].as_array().unwrap();
+        assert_eq!((items[0]["label"].as_str(), items[0]["title"].as_str()), (Some("L 01/02: fox"), Some(a["title"].as_str().unwrap())));
+        assert!(items[1]["title"].is_null());
+        assert_eq!(p["queue"], json!(["L 01/02: fox", "L 01/02: fox"]));
+        // video.engines.list says it is taken, for the shot engine and the upscaler too
+        for inputs in [ltx_inputs(&["dev"]), ltx_upscale_inputs(), inputs_of("INT8")] {
+            assert!(inputs["takes"].as_array().unwrap().contains(&json!("title")), "{inputs}");
+        }
         let _ = std::fs::remove_dir_all(&s.dir);
     }
 

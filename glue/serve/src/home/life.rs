@@ -265,6 +265,13 @@ pub(crate) fn s(m: &Value, k: &str) -> String {
     m.get(k).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
+/// A job's `title`: free text for people (trimmed, 120 characters), never matched on; null when absent or blank
+pub(crate) fn clean_title(m: &Value) -> Value {
+    let t: String = m.get("title").and_then(Value::as_str).unwrap_or("").trim().chars().take(120).collect();
+    let t = t.trim();
+    if t.is_empty() { Value::Null } else { json!(t) }
+}
+
 impl Home {
     pub(crate) fn ncards(&self) -> usize {
         self.cards.lock().unwrap().as_array().map_or(0, Vec::len).max(1)
@@ -1459,6 +1466,26 @@ impl Host for Sched<'_> {
     fn learn_ask(&self, id: &str, err: &str, gpu: usize, want: u64) -> bool {
         self.0.learn_ask(id, err, gpu, want)
     }
+}
+
+
+/// A card's process (or a piece of work) that belongs to a job says whose: `job_title` and `job_label` (the names hardac1's
+/// box uses). Nothing is added when the job is not known.
+pub(crate) fn tag_job(p: &mut Value, job: Option<&(Value, Value)>) {
+    if let (Some((title, label)), Some(o)) = (job, p.as_object_mut()) {
+        o.insert("job_title".into(), title.clone());
+        o.insert("job_label".into(), label.clone());
+    }
+}
+
+/// The job a card's process is making: an image/audio/3D server by its `--port`, a video process by its card
+pub(crate) fn job_of_proc(p: &Value, by_port: &std::collections::HashMap<String, (Value, Value)>, video: Option<&(Value, Value, Value)>) -> Option<(Value, Value)> {
+    if let Some(j) = p["port"].as_str().and_then(|port| by_port.get(port)) {
+        return Some(j.clone());
+    }
+    let (gpu, title, label) = video?;
+    let on = p["gpus"].as_array()?.iter().any(|g| g.as_str().map(str::to_string) == Some(gpu.to_string().trim_matches('"').to_string()));
+    (p["kind"] == "video" && on).then(|| (title.clone(), label.clone()))
 }
 
 
