@@ -200,8 +200,9 @@ fn ignored_keys() -> Vec<String> {
 }
 
 /// The six-step mode of MiniMax H3 (Pika H3 Flex): the adapter on the box (model-cards/lora/pika-h3-flex-fl2va.yml) and the
-/// noise levels it was post-trained on
-const PIKA_FLEX_LORA: &str = "/models/minimax-h3/loras/pika_h3_flex_fl2va_comfy_bf16.safetensors";
+/// noise levels it was post-trained on. The file is looked for beside the denoisers (`<minimax-h3>/loras/`), where the
+/// box keeps its models: a path in a container's view (/models/...) is not one the box's own worker can open
+const PIKA_FLEX_LORA_FILE: &str = "pika_h3_flex_fl2va_comfy_bf16.safetensors";
 const PIKA_FLEX_KNOTS: &str = "1000,750,500,250,100,40,0";
 
 pub fn inputs_of(quant: &str) -> Value {
@@ -646,13 +647,25 @@ impl Studio {
                 it.insert("sampler".into(), json!("lcm"));
                 it.insert("knots".into(), json!(PIKA_FLEX_KNOTS));
                 it.insert("steps".into(), json!(6));
-                let mut ls = vec![json!(format!("{PIKA_FLEX_LORA}:1.0"))];
+                let mut ls = vec![json!(format!("{}:1.0", self.pika_flex_lora()?))];
                 ls.extend(it.get("loras").and_then(|v| v.as_array()).cloned().unwrap_or_default());
                 it.insert("loras".into(), Value::Array(ls));
             }
             Some(v) => return Err(RpcError::param(&format!("speed {v}? (standard, pika-flex)"))),
         }
         Ok(Value::Object(it))
+    }
+
+    /// Where the Pika H3 Flex adapter is on this box: in the `loras` folder next to the denoisers' `diffusion_models`.
+    /// Refused here, by name, when it is not there (a clip would otherwise fail after its text encoding).
+    fn pika_flex_lora(&self) -> Result<String, RpcError> {
+        let engines = self.engines();
+        let root = engines.iter().filter_map(|e| e["path"].as_str()).find_map(|p| std::path::Path::new(p).parent()?.parent().map(|r| r.to_path_buf()));
+        let file = root.map(|r| r.join("loras").join(PIKA_FLEX_LORA_FILE));
+        match file {
+            Some(f) if f.is_file() => Ok(f.display().to_string()),
+            _ => Err(RpcError::param("speed pika-flex: the Pika H3 Flex adapter is not on this box (nextcuda models pull pika-h3-flex-fl2va)")),
+        }
     }
 
     /// A request for LTX-2.5's engines -> a queue item, checked: `ltx2` makes a clip from a prompt (and a first frame),
