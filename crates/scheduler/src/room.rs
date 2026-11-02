@@ -174,16 +174,22 @@ pub fn plan_with_blockers(free: u64, want: u64, idle: Vec<Holder>, residents: &[
     Some(forced)
 }
 
-/// The card to load on, of (card, its free MiB, its plan) in the model's order: one with the room now - the one with the
-/// most free, so an estimate on the low side does not land the model beside another on a full card - before the first
-/// whose room needs idle work stopped
+/// How much more free memory a later card needs to take the model from an earlier one in its list, MiB. Two cards that
+/// both have the room differ by a few tens of MiB for nothing that matters (the driver's context, a desktop): that is not
+/// a reason to pass over the card the model lists first (2026-11-02: YuE2, listed 0,1, went to the slower 3060 for 60 MiB).
+pub const TIE_MB: u64 = 1024;
+
+/// The card to load on, of (card, its free MiB, its plan) in the model's order: one with the room now - the one with
+/// clearly the most free (more than TIE_MB over the first that has it), so an estimate on the low side does not land the
+/// model beside another on a full card, and a near tie goes to the model's first listed card - before the first whose
+/// room needs idle work stopped
 pub fn pick_card(plans: impl Iterator<Item = (usize, u64, Option<Vec<Holder>>)>) -> Option<(usize, Vec<Holder>)> {
     let mut later = None;
     let mut now: Option<(usize, u64, Vec<Holder>)> = None;
     for (g, free, plan) in plans {
         match plan {
             Some(p) if p.is_empty() => {
-                if now.as_ref().is_none_or(|n| free > n.1) {
+                if now.as_ref().is_none_or(|n| free > n.1 + TIE_MB) {
                     now = Some((g, free, p));
                 }
             }
@@ -303,6 +309,18 @@ mod tests {
 
     fn plans(cards: &[Card], gpus: &[usize], want: u64) -> Option<(usize, Vec<Holder>)> {
         pick_card(gpus.iter().map(|&g| (g, card_free(cards, g), plan_room(card_free(cards, g), want, if g == 0 { vec![h("breeze-tts-2", 6040, 0)] } else { vec![] }))))
+    }
+
+    #[test]
+    fn a_near_tie_goes_to_the_card_the_model_lists_first() {
+        // both cards nearly empty (the 3060 has 122 MiB more free): the model's own order decides, not the noise
+        let c = vec![Card { index: 0, name: "5070".into(), total_mb: 12227, used_mb: 218, procs: vec![] },
+                     Card { index: 1, name: "3060".into(), total_mb: 12288, used_mb: 157, procs: vec![] }];
+        assert_eq!(plans(&c, &[0, 1], 4000).map(|p| p.0), Some(0), "listed 0,1: the first");
+        assert_eq!(plans(&c, &[1, 0], 4000).map(|p| p.0), Some(1), "listed 1,0: the first");
+        // a clear difference still decides (a card with another model on it is not the one to share)
+        let busy = vec![Card { index: 0, name: "5070".into(), total_mb: 12227, used_mb: 7000, procs: vec![] }, c[1].clone()];
+        assert_eq!(plans(&busy, &[0, 1], 4000).map(|p| p.0), Some(1));
     }
 
     #[test]
