@@ -84,5 +84,5 @@ request whose prompt and score leave less room is refused with what fits (about 
 Upstream documents nothing past six minutes: the voice and the structure over ten minutes are untested - listen.
 
 **When a song ran out.** The answer's `truncated` says it: `semantic: true` - the codes reached `seconds` (or the room),
-so the song may stop before its lyrics are all sung; `score: true` - the plan ran out of tokens (`score-tokens`, up to
-4096) before it closed. The audio is playable either way. Raise `seconds`, shorten the lyrics, or make the song in parts.
+so the song may stop before its lyrics are all sung; `score: true` - the plan ran out of tokens (`score-tokens`: 4096 by default,
+about 6 minutes of song; up to 12288) before it closed, and the song ends with its plan. The audio is playable either way. Raise `seconds`, shorten the lyrics, or make the song in parts.

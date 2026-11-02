@@ -58,6 +58,10 @@ pub const DEFAULT_SECONDS: f32 = 360.0;
 /// with what does fit (`latents`). Upstream's own default (360 s) is a setting, not the model's limit; the flow and the
 /// decode work in chunks, so nothing else is sized to it. Quality past six minutes is not documented or tested upstream.
 pub const MAX_SECONDS: f32 = 900.0;
+/// the most a request may ask of the score: upstream's own plan budget is 4096 tokens (the default, `sample::ABC`), about
+/// 6.4 minutes of song at ~10.6 tokens a second; a longer song's plan is cut and closed there and the song ends with it
+/// (2026-11-02: a 7-minute song lost its Bridge). The context decides what fits (`latents`: prompt + score + codes).
+pub const SCORE_MAX: usize = 12_288;
 pub const ODE_STEPS: u32 = 32;
 
 pub const OPTIONS: &[EngineOption] = &[
@@ -65,7 +69,7 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "abc", env: "", value: "TEXT", help: "a score (ABC) to sing over instead of one drawn (cot melody or full): a cover's melody, or the score of an earlier song (its `score`) to sing it again with new words - same seed and style", at: At::Request },
     EngineOption { name: "int8", env: "NS_YUE2_INT8", value: "0|1", help: "the flow's (NAR path's) matrices as int8 ConvRot rows on the int8 tensor cores (on; 0: as stored, Q8_0)", at: At::Load },
     EngineOption { name: "sing-lead", env: "", value: "1|0", help: "a cover of an instrumental recording: its lead line (SheetSage2's Ins voice) moved to the voice YuE2 sings (on; 0: the score as transcribed - an instrumental cover)", at: At::Request },
-    EngineOption { name: "score-tokens", env: "", value: "4096", help: "the most tokens the score may take (32 to 4096; a longer score is cut and closed)", at: At::Request },
+    EngineOption { name: "score-tokens", env: "", value: "4096", help: "the most tokens the score may take (32 to 12288; 4096 by default, about 6 minutes of song: a longer score is cut and closed and the song ends with it; the prompt, score and codes must fit the model's context)", at: At::Request },
     EngineOption { name: "score-only", env: "", value: "true|false", help: "with a recording (source): only its score - SheetSage2's transcription, the melody for cot melody, melody and chords for cot full - comes back (the answer's score), no song is made", at: At::Request },
 ];
 
@@ -233,7 +237,7 @@ impl Yue2 {
             return Err(Error(format!("{seconds} s: from 1 to {MAX_SECONDS} s (the song may end sooner: the model decides; the context decides what fits)")));
         }
         let max_score = match self.opt(req, "score-tokens", "") {
-            Some(v) => v.trim().parse::<usize>().map_err(|_| Error(format!("score-tokens {v}: a whole number")))?.clamp(32, sample::ABC.max_tokens),
+            Some(v) => v.trim().parse::<usize>().map_err(|_| Error(format!("score-tokens {v}: a whole number")))?.clamp(32, SCORE_MAX),
             None => sample::ABC.max_tokens,
         };
         let cfg = req.cfg.unwrap_or(cot.default_cfg());
