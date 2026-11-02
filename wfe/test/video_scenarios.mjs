@@ -31,6 +31,27 @@ sc.show("with-control", Creation()).has(/Control/).lacks(/pictures, clips, sound
 await press(Creation(), /Generate/);
 sc.check("with-control", rpc().control_video === "ctl.mp4" && rpc().control_strength === 1, "control sent with its strength");
 
+// the pace: standard asks for the steps and the sampler; Pika Flex is six steps in one word, so the steps, sampler and
+// schedule are not asked and not sent, and the other choices (upscale, references, control, soundtrack) stay
+open({ speed: "standard", steps: 8, sampler: "euler" });
+sc.show("pace-standard", Creation()).has(/pace/).has(/Standard/).has(/Pika Flex · 6 steps/).has(/steps/).has(/ComfyUI.s samplers/).has(/The sigma schedule/);
+await press(Creation(), /Generate/);
+sc.check("pace-standard", !("speed" in rpc()) && rpc().steps === 8 && rpc().sampler === "euler", `standard sends the steps and the sampler (${JSON.stringify(rpc())})`);
+open({ speed: "pika-flex", sampler: "euler" });
+sc.show("pace-pika", Creation()).has(/6 \(set by Pika Flex\)/).has(/upscaler/).has(/References/).lacks(/ComfyUI.s samplers/).lacks(/The sigma schedule/).has(/6 steps/);
+await press(Creation(), /Generate/);
+sc.check("pace-pika", rpc().speed === "pika-flex" && !("sampler" in rpc()) && !("schedule" in rpc()), `Pika Flex sends the word alone (${JSON.stringify(rpc())})`);
+open({ speed: "pika-flex", refImages: ["ref_1_a.png"] });
+await press(Creation(), /Generate/);
+sc.check("pace-pika-refs", rpc().speed === "pika-flex" && rpc().ref_images?.length === 1, "Pika Flex with references");
+open({ speed: "pika-flex", controlVideo: "ctl.mp4" });
+await press(Creation(), /Generate/);
+sc.check("pace-pika-control", rpc().speed === "pika-flex" && rpc().control_video === "ctl.mp4", "Pika Flex with a control video");
+open({ speed: "pika-flex", soundtrack: "song.mp3", soundtrackStart: 3 });
+await press(Creation(), /Generate/);
+sc.check("pace-pika-sound", rpc().speed === "pika-flex" && rpc().soundtrack === "song.mp3", "Pika Flex with a soundtrack");
+open({ speed: "standard" });
+
 // the licence: the denoiser picker tags a denoiser whose card forbids commercial use (the licence in its tooltip); the ones
 // that allow it, with conditions or not, are not tagged
 {
