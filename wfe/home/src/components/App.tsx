@@ -1,7 +1,7 @@
 /** The page: the host strip and the tabs - Status (the GPUs with what holds them and what is vouched for them, the
  *  models by kind with enable / start / stop, the front ends, the actions' output) and API. */
 import { jsx } from "../jsx.js";
-import { act, autoPull, copy, maintenance, render, setTab, toggleKind, ui } from "../main.js";
+import { act, autoPull, copy, maintenance, render, setTab, toggleKind, toggleRsvp, ui } from "../main.js";
 import type { Available, Card, Model, Proc, Service } from "../types.js";
 import { Api } from "./Api.js";
 import { ConfigView } from "./Config.js";
@@ -121,9 +121,6 @@ function AllocLine(total: number) {
       <li key={r.key} class={{ dim: !live, alt: !r.counted }} attrs={{ title: r.tip }}>
         <span class={{ sw: true, hatch: !live }} style={{ background: live ? color(r.kind) : "transparent", "--c": color(r.kind) } as Record<string, string>} />
         <span class="what">{r.name}{r.port ? <span class="hint"> :{r.port}</span> : null}
-          {r.job
-            ? <span class="jobname" attrs={{ title: r.jobLabel }}> · {r.job}{r.jobLabel ? <span class="hint"> {r.jobLabel}</span> : null}</span>
-            : null}
           {r.of && r.of > 1
             ? <span class="hint"> {r.counted
                 ? `(one of ${r.of} ${GROUP_WORD[r.kind] ?? "models"}: one runs at a time)`
@@ -134,6 +131,9 @@ function AllocLine(total: number) {
         </span>
         {AllocBar(r, total)}
         <span class="mb">{live ? `${gib(r.held)} GiB` : Alloc(r.vouched, r.headroom, r.kind, r.headroomGiven)}</span>
+        {r.job
+          ? <div class="jobline" attrs={{ title: r.jobLabel }}><span class="i" props={{ innerHTML: "&#xf0da;" }} /> <b>{r.job}</b>{r.jobLabel ? <span class="hint"> {r.jobLabel}</span> : null}</div>
+          : null}
       </li>
     );
   };
@@ -173,8 +173,11 @@ function CardView(c: Card) {
         {c.pcie?.cur ? <span>PCIe <b>{c.pcie.cur.gen ? `${c.pcie.cur.gen}.0` : "?"} x{c.pcie.cur.width}</b></span> : null}
       </div>
       <ul class="procs">
-        {allocRows(c).map(AllocLine(total))}
-        {!c.procs.length && !c.vouched.length ? <li class="dim"><span class="what hint">free, nothing enabled here</span></li> : null}
+        {allocRows(c).filter((r) => !ui.hideRsvp || r.held > 0).map(AllocLine(total))}
+        {ui.hideRsvp && !c.procs.length
+          ? <li class="dim"><span class="what hint">{c.vouched.length ? `nothing loaded · ${c.vouched.length} reserved, hidden` : "free, nothing enabled here"}</span></li>
+          : null}
+        {!ui.hideRsvp && !c.procs.length && !c.vouched.length ? <li class="dim"><span class="what hint">free, nothing enabled here</span></li> : null}
       </ul>
     </div>
   );
@@ -421,7 +424,12 @@ function Status() {
     <div>
       <section class="panel">
         <div class="phead"><span class="i" props={{ innerHTML: "&#xf2db;" }} /><span class="ptitle">GPUs</span>
-          <span class="hint">in use, by process · below it, hatched: what the enabled models are vouched for - each model's weights, then its headroom (the stripes the other way)</span></div>
+          <span class="hint">in use, by process · below it, hatched: what the enabled models are vouched for - each model's weights, then its headroom (the stripes the other way)</span>
+          <button class={{ btn: true, small: true, eye: true, on: ui.hideRsvp }} attrs={{ "aria-pressed": String(ui.hideRsvp),
+              title: ui.hideRsvp ? "show the reservations again: every enabled model on each card" : "hide the reservations: list only what is loaded, each with the job it is working" }}
+            on={{ click: () => toggleRsvp() }}>
+            <span class="i" props={{ innerHTML: ui.hideRsvp ? "&#xf070;" : "&#xf06e;" }} /> {ui.hideRsvp ? "reservations hidden" : "reservations"}
+          </button></div>
         <div class="pbody"><div class="cards">{(st?.cards ?? []).map(CardView)}</div></div>
       </section>
       <Models />

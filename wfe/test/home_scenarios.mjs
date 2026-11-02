@@ -58,8 +58,25 @@ sc.show("status", App())
   const order = ["qwen-image-2.1-q8", "qwen3-8b", "breeze-tts-2", "voxcpm2", "acestep-1.5"].map((n) => at(new RegExp(n + "\\b")));
   sc.check("card-allocations", order.every((i, k) => i >= 0 && (k === 0 || i > order[k - 1])),
     `the job's model first, then chat, then audio larger first (${order.join(",")})`);
-  t.has(/qwen-image-2\.1-q8[^\n]*Cover art for Blackbird/).has(/img-77/);
+  // the job has a line of its own under the model that makes it, not squeezed beside the name
+  const at0 = rows.findIndex((l) => /qwen-image-2\.1-q8/.test(l));
+  sc.check("card-allocations", /Cover art for Blackbird/.test(rows[at0 + 1] ?? "") && /img-77/.test(rows[at0 + 1] ?? ""), `the job's full line follows its model (${rows[at0 + 1]})`);
+  sc.check("card-allocations", !/Cover art/.test(rows[at0] ?? ""), "the model's own line does not carry the job");
   sc.check("card-allocations", find(App(), (n) => n.data?.class?.abar).length === 5, "a bar for each line");
+  // the eye: hide the reservations and only what is loaded stays, each with its job
+  const list = (t) => { const a = t.lines.findIndex((l) => /^in use /.test(l)) + 1, b = t.lines.findIndex((l) => /^Models /.test(l)); return t.lines.slice(a, b).join("\n"); };
+  ui.hideRsvp = true;
+  const h = sc.show("card-reservations-hidden", App());
+  const hl = list(h);
+  sc.check("card-reservations-hidden", /qwen-image-2\.1-q8/.test(hl) && /voxcpm2/.test(hl) && /Cover art for Blackbird/.test(hl), "what is loaded stays, with its job");
+  sc.check("card-reservations-hidden", !/qwen3-8b|breeze-tts-2|acestep-1\.5/.test(hl), `the reservations are gone from the card's list (${hl.split("\n").length} lines)`);
+  h.has(/reservations hidden/);
+  ui.state.cards = [{ ...card, procs: [], vouched: [v("qwen3-8b", "llm", 6000), v("acestep-1.5", "audio", 1756)], vouched_mb: 7756 }];
+  const idle = sc.show("card-reservations-hidden-idle", App());
+  sc.check("card-reservations-hidden-idle", !/qwen3-8b/.test(list(idle)) && /nothing loaded · 2 reserved, hidden/.test(list(idle)), "an idle card says what is hidden");
+  ui.hideRsvp = false;
+  const shown = sc.show("card-reservations-shown", App());
+  sc.check("card-reservations-shown", /qwen3-8b/.test(list(shown)) && /acestep-1\.5/.test(list(shown)) && !/reservations hidden/.test(shown.text), "shown again: every reserved model is back");
   ui.state.cards = keep;
 }
 
