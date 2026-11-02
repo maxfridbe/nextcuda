@@ -70,6 +70,7 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "int8", env: "NS_YUE2_INT8", value: "0|1", help: "the flow's (NAR path's) matrices as int8 ConvRot rows on the int8 tensor cores (on; 0: as stored, Q8_0)", at: At::Load },
     EngineOption { name: "sing-lead", env: "", value: "1|0", help: "a cover of an instrumental recording: its lead line (SheetSage2's Ins voice) moved to the voice YuE2 sings (on; 0: the score as transcribed - an instrumental cover)", at: At::Request },
     EngineOption { name: "score-tokens", env: "", value: "4096", help: "the most tokens the score may take (32 to 12288; 4096 by default, about 6 minutes of song: a longer score is cut and closed and the song ends with it; the prompt, score and codes must fit the model's context)", at: At::Request },
+    EngineOption { name: "plan-only", env: "", value: "true|false", help: "a new song (cot melody or full, no recording): only the score the model plans from the style and lyrics comes back (the answer's score, no song): its sections and how long each runs, to see the structure before the song is made. It takes the score's draw alone, about a minute", at: At::Request },
     EngineOption { name: "score-only", env: "", value: "true|false", help: "with a recording (source): only its score - SheetSage2's transcription, the melody for cot melody, melody and chords for cot full - comes back (the answer's score), no song is made", at: At::Request },
 ];
 
@@ -121,6 +122,8 @@ pub struct Song {
     pub max_codes: usize,
     pub max_score: usize,
     pub steps: usize,
+    /// stop after the score is drawn: no codes, no audio (the `plan-only` option)
+    pub plan_only: bool,
 }
 
 /// What the stages made (the check and the score read it)
@@ -240,12 +243,16 @@ impl Yue2 {
             Some(v) => v.trim().parse::<usize>().map_err(|_| Error(format!("score-tokens {v}: a whole number")))?.clamp(32, SCORE_MAX),
             None => sample::ABC.max_tokens,
         };
+        let plan_only = self.opt(req, "plan-only", "").is_some_and(|v| matches!(v.trim(), "true" | "1" | "on"));
+        if plan_only && (cot == Cot::Off || abc.is_some() || req.source.is_some()) {
+            return Err(Error("plan-only: a new song's plan (cot full or melody, no recording and no score given); a recording's score is score-only".into()));
+        }
         let cfg = req.cfg.unwrap_or(cot.default_cfg());
         if !(0.0..=20.0).contains(&cfg) {
             return Err(Error(format!("cfg {cfg}: 0 to 20")));
         }
         Ok(Song { cot, style, lyrics, abc, seed: req.seed, cfg, max_codes: ((seconds * FPS).ceil() as usize).clamp(1, CONTEXT), max_score,
-                  steps: req.steps.unwrap_or(ODE_STEPS).clamp(1, 200) as usize })
+                  steps: req.steps.unwrap_or(ODE_STEPS).clamp(1, 200) as usize, plan_only })
     }
 
     /// The score's draw from the first phase's prompt in `c` (its last row's logits given): its tokens
@@ -393,6 +400,10 @@ impl Yue2 {
                 let first = self.lm.logits_of(&mut s, &x, 0, ABC_END as usize + 1)?;
                 progress(Step { phase: "prompt", at: 1, of: 1, seconds: el() })?;
                 made.abc = self.draw_score(&mut s, &mut pos, first, song, t0, progress)?;
+                if song.plan_only {
+                    s.clear();
+                    return Ok(());
+                }
                 made.sem_prefix = prompt::semantic(&made.prefix, song.cot, &made.abc);
                 // the score closed in the cache: its last token (unless the draw stopped at the budget before feeding it),
                 // ABC_END and MUSIC_START
@@ -507,6 +518,12 @@ impl AudioEngine for Yue2 {
             return Err(Error("score-only: a recording's score - give the recording (source)".into()));
         }
         self.latents(&song, &mut made, t0, progress)?;
+        if song.plan_only {
+            // the plan alone: its score (and whether the budget ended it), no audio
+            *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Some(String::from_utf8_lossy(&self.tok.decode_bytes(&made.abc)).into_owned());
+            *self.trunc.lock().unwrap_or_else(|p| p.into_inner()) = Some((song.abc.is_none() && made.abc.len() >= song.max_score, false));
+            return Ok(Audio { rate: RATE, channels: 2, samples: Vec::new() });
+        }
         // a budget ended the score (one drawn, not given) or the codes: the song may stop mid-lyrics
         *self.trunc.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((song.cot != Cot::Off && song.abc.is_none() && made.abc.len() >= song.max_score, made.codes.len() >= song.max_codes));

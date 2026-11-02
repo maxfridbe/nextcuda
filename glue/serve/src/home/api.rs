@@ -44,6 +44,8 @@ const FEATURES: &[&str] = &[
     "jobs.stage", "uploads", "voices.owner", "voices.ready", "room.free_idle", "room.wait", "llm.no_room", "llm.keep_up_s",
     "system.maintenance", "errors.maintenance", "jobs.model3d", "model3d.generate", "model3d.rig", "model3d.upload.mesh",
     "system.drives", "system.move",
+    // 2026-11-02: H3's `speed` (pika-flex); a job's `title`; YuE2: a plan-only run, `truncated` on the answer's run, seconds to 900
+    "video.speed", "jobs.title", "audio.yue2.plan_only", "audio.truncated",
 ];
 
 /// Qwen-Image's sizes: its training buckets (multiples of 16) and the guide's defaults
