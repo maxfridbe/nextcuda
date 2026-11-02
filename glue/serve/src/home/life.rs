@@ -601,6 +601,11 @@ impl Home {
     /// Each card's vouched memory: the enabled models on it (chat models count once - the largest, or the loaded one:
     /// one runs at a time), and whether that passes the card
     pub(crate) fn vouch(&self, cards: &mut Value, models: &[Value]) {
+        Self::vouch_cards(cards, models)
+    }
+
+    /// `vouch`, without the box: what the cards and the models say, nothing else
+    fn vouch_cards(cards: &mut Value, models: &[Value]) {
         for c in cards.as_array_mut().into_iter().flatten() {
             let gi = c["index"].as_u64().unwrap_or(0).to_string();
             let total = c["vram_total_mb"].as_u64().unwrap_or(0);
@@ -611,19 +616,26 @@ impl Home {
             // the largest)
             let mut list: Vec<Value> = on.iter().filter(|m| !matches!(m["kind"].as_str(), Some("llm" | "video")))
                 .map(|m| json!({"model": m["id"], "kind": m["kind"], "mb": mb(m), "headroom_mb": hr(m), "headroom_given": m["headroom_given"],
-                                "measured": m["measured"], "state": m["state"]})).collect();
+                                "measured": m["measured"], "state": m["state"], "counted": true})).collect();
             for kind in ["llm", "video"] {
                 let group: Vec<&&Value> = on.iter().filter(|m| m["kind"] == kind).collect();
                 if let Some(c) = group.iter().find(|m| m["state"] == "loaded").or_else(|| group.iter().max_by_key(|m| mb(m))) {
                     list.push(json!({"model": c["id"], "kind": kind, "mb": mb(c), "headroom_mb": hr(c), "headroom_given": c["headroom_given"],
-                                     "measured": c["measured"], "state": c["state"], "of": group.len()}));
+                                     "measured": c["measured"], "state": c["state"], "of": group.len(), "counted": true}));
+                    // the others of the group are on the card too: listed, not counted (a card showed one video engine
+                    // and the tie between two was broken arbitrarily, so each card hid a different one)
+                    for o in group.iter().filter(|o| o["id"] != c["id"]) {
+                        list.push(json!({"model": o["id"], "kind": kind, "mb": mb(o), "headroom_mb": hr(o), "headroom_given": o["headroom_given"],
+                                         "measured": o["measured"], "state": o["state"], "of": group.len(), "counted": false}));
+                    }
                 }
             }
-            let sum: u64 = list.iter().map(|v| v["mb"].as_u64().unwrap_or(0)).sum();
+            let counted = |v: &&Value| v["counted"] == true;
+            let sum: u64 = list.iter().filter(counted).map(|v| v["mb"].as_u64().unwrap_or(0)).sum();
             c["vouched"] = json!(list);
             c["vouched_mb"] = json!(sum);
             // of it, the models' headroom (their working memory beyond the weights)
-            c["vouched_headroom_mb"] = json!(list.iter().map(|v| v["headroom_mb"].as_u64().unwrap_or(0)).sum::<u64>());
+            c["vouched_headroom_mb"] = json!(list.iter().filter(counted).map(|v| v["headroom_mb"].as_u64().unwrap_or(0)).sum::<u64>());
             c["overbooked"] = json!(sum > total);
         }
     }
@@ -1508,6 +1520,38 @@ mod tests {
         assert!(caps.contains(&"voice_direction") && caps.contains(&"clone"));
         let (caps, _) = capabilities(&json!({"id": "qwen3-tts-base", "kind": "audio", "arch": "qwen3-tts", "speech": ["clone"]}));
         assert!(!caps.contains(&"voice_direction"));
+    }
+
+    #[test]
+    fn a_card_lists_every_video_engine_and_chat_model_it_may_run_and_counts_one_of_each() {
+        // 2026-11-02: the card showed the one that counted, the tie between two equal engines was broken differently on each
+        // card, and the user looking at the second GPU could not see LTX at all
+        let m = |id: &str, kind: &str, a: u64, b: u64, state: &str| json!({"id": id, "kind": kind, "enabled": true, "state": state,
+            "vouch_mb": {"0": a, "1": b}, "headroom_mb": {"0": 0, "1": 0}, "headroom_given": false, "measured": false});
+        let models = vec![
+            m("minimax-h3-q4km", "video", 10179, 10179, "ready"),
+            m("ltx-2.5-dev", "video", 10179, 9960, "ready"),
+            m("qwen-chat", "llm", 10240, 10240, "unloaded"),
+            m("qwen-chat-long", "llm", 10240, 6882, "unloaded"),
+            m("voxcpm2-int8", "audio", 4228, 4228, "unloaded"),
+        ];
+        let mut cards = json!([{"index": 0, "vram_total_mb": 12227}, {"index": 1, "vram_total_mb": 12288}]);
+        Home::vouch_cards(&mut cards, &models);
+        for c in cards.as_array().unwrap() {
+            let list = c["vouched"].as_array().unwrap();
+            let ids = |counted: bool| list.iter().filter(|v| v["counted"] == counted).map(|v| v["model"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+            for id in ["minimax-h3-q4km", "ltx-2.5-dev", "qwen-chat", "qwen-chat-long", "voxcpm2-int8"] {
+                assert!(list.iter().any(|v| v["model"] == id), "card {} lists {id}", c["index"]);
+            }
+            assert_eq!(ids(true).len(), 3, "the voice model, one video engine and one chat model are counted: {:?}", ids(true));
+            assert_eq!(ids(false).len(), 2, "the other engine and the other chat model are listed, not counted");
+            let counted: u64 = list.iter().filter(|v| v["counted"] == true).map(|v| v["mb"].as_u64().unwrap()).sum();
+            assert_eq!(c["vouched_mb"].as_u64().unwrap(), counted, "the total is what is counted");
+        }
+        // the second card: H3 is the larger there, so it counts and LTX is the alternative, still on the list
+        let second = cards[1]["vouched"].as_array().unwrap();
+        let ltx = second.iter().find(|v| v["model"] == "ltx-2.5-dev").unwrap();
+        assert_eq!((ltx["counted"].clone(), ltx["of"].clone()), (json!(false), json!(2)));
     }
 
     #[test]

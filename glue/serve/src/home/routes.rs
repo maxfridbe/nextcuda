@@ -84,6 +84,9 @@ pub struct Vouched {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub of: Option<i64>,
+    /// false: one of a group that runs one at a time (chat models, video engines), listed beside the one that is counted
+    /// (the loaded one, else the largest) and left out of the card's vouched total; true: counted in it
+    pub counted: bool,
 }
 
 /// A card: its readings, its processes, the memory vouched for

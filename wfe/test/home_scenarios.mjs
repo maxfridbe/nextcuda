@@ -28,6 +28,17 @@ ui.state = {
 sc.show("status", App())
   .has(/RTX 3060/).lacks(/NVIDIA GeForce/).has(/Images/).has(/Audio/).has(/Chat/).has(/\b3D\b/).has(/trellis2-q8/).has(/1 of 1 enabled/);
 
+// a card lists every video engine and chat model it may run: the one that counts, and the alternatives dim and uncounted
+{
+  const v = (name, kind, mb, counted) => ({ model: name, kind, mb, headroom_mb: 0, headroom_given: false, measured: false, state: "ready", of: 2, counted });
+  const keep = ui.state.cards;
+  ui.state.cards = [{ ...card, vouched: [v("minimax-h3-q4km", "video", 10179, true), v("ltx-2.5-dev", "video", 9960, false)], vouched_mb: 10179 }];
+  sc.show("card-video-alternative", App())
+    .has(/minimax-h3-q4km/).has(/ltx-2\.5-dev/).has(/one of 2 video engines: one runs at a time/)
+    .has(/an alternative: one of 2 video engines runs at a time, so it is not counted/);
+  ui.state.cards = keep;
+}
+
 // the concurrency profile: unmeasured until a bench says otherwise, then copies and exclusivity
 {
   ui.state.models = [model("qwen-image-2.1-q8", "image"),

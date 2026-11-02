@@ -391,6 +391,8 @@ export interface Vouched {
   measured: boolean;
   state: string;
   of?: number | null;
+  /** false: one of a group that runs one at a time (chat models, video engines), listed beside the one that is counted (the loaded one, else the largest) and left out of the card's vouched total; true: counted in it */
+  counted: boolean;
 }
 
 /** A route's failure: the words its body's `error` said, and the body. */

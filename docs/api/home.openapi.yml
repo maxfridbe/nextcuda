@@ -1130,6 +1130,9 @@ components:
           anyOf:
           - type: integer
           - type: 'null'
+        counted:
+          type: boolean
+          description: 'false: one of a group that runs one at a time (chat models, video engines), listed beside the one that is counted (the loaded one, else the largest) and left out of the card''s vouched total; true: counted in it'
       required:
       - model
       - kind
@@ -1138,4 +1141,5 @@ components:
       - headroom_given
       - measured
       - state
+      - counted
       description: 'An enabled model''s memory vouched for on a card (chat and video models: one of the group, `of` them)'

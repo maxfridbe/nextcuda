@@ -58,7 +58,7 @@ function CardView(c: Card) {
       </div>
       <div class="meter vouch" attrs={{ title: `${gib(c.vouched_mb)} GiB vouched for by the enabled models` }}>
         {/* each model's weights, then its headroom: the same color, the stripes the other way */}
-        {c.vouched.map((v) => {
+        {c.vouched.filter((v) => v.counted).map((v) => {
           const h = Math.min(v.headroom_mb ?? 0, v.mb);
           const live = ["loaded", "busy"].includes(v.state);
           const seg = (mb: number, rev: boolean) => mb > 0
@@ -93,10 +93,13 @@ function CardView(c: Card) {
           </li>
           );
         })}
-        {c.vouched.filter((v) => !["loaded", "busy"].includes(v.state)).map((v) => (
+        {c.vouched.filter((v) => !["loaded", "busy"].includes(v.state) || !v.counted).map((v) => (
           <li class="dim">
             <span class="sw hatch" style={{ "--c": color(v.kind) } as Record<string, string>} />
-            <span class="what">{v.model}{v.of && v.of > 1 ? <span class="hint"> (one of {v.of} {v.kind === "llm" ? "chat models" : "video engines"}: one runs at a time)</span> : null}
+            <span class="what">{v.model}{v.of && v.of > 1
+              ? <span class="hint"> {v.counted
+                  ? `(one of ${v.of} ${v.kind === "llm" ? "chat models" : "video engines"}: one runs at a time)`
+                  : `(an alternative: one of ${v.of} ${v.kind === "llm" ? "chat models" : "video engines"} runs at a time, so it is not counted)`}</span> : null}
               <span class="hint"> {v.state}{v.measured ? "" : " · estimate"}</span></span>
             <span class="mb">{Alloc(v.mb, v.headroom_mb ?? 0, v.kind, v.headroom_given)}</span>
           </li>
