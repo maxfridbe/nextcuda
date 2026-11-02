@@ -11,6 +11,7 @@ const { App } = await mod("home", "components/App.js");
 const { ui } = await mod("home", "main.js");
 globalThis.setTimeout = realTimeout;
 
+const find = (v, pred, out = []) => { if (v && typeof v === "object") { if (pred(v)) out.push(v); for (const c of v.children || []) find(c, pred, out); } return out; };
 const link = { gen: 4, width: 16 };
 const card = { index: 0, name: "NVIDIA GeForce RTX 3060", pci: "0000:01:00.0", ts: 0, vram_used_mb: 2048, vram_total_mb: 12288, busy_pct: 0, pcie: { cur: link, card_max: link, slot_max: link },
                host_load1: 0, host_cpus: 8, energy_j: 0, procs: [], vouched: [], vouched_mb: 0, vouched_headroom_mb: 0, overbooked: false };
@@ -37,6 +38,39 @@ sc.show("status", App())
     .has(/minimax-h3-q4km/).has(/ltx-2\.5-dev/).has(/one of 2 video engines: one runs at a time/)
     .has(/an alternative: one of 2 video engines runs at a time, so it is not counted/);
   ui.state.cards = keep;
+}
+
+// a card's allocations are one list, a line a model: the lines with a job on top (next to their model), then by category,
+// the larger first; each line has the bar of its chunk of the card
+{
+  const proc = (pid, kind, id, mb, o = {}) => ({ pid, vram_mb: mb, program: "nextcuda", kind, command: "serve", model: id, model_id: id, port: null, ...o });
+  const v = (model, kind, mb, state = "unloaded", o = {}) => ({ model, kind, mb, headroom_mb: 0, headroom_given: false, measured: true, state, counted: true, ...o });
+  const keep = ui.state.cards;
+  ui.state.cards = [{ ...card, vram_total_mb: 12288, vram_used_mb: 9000,
+    procs: [proc(1, "audio", "voxcpm2", 5000), proc(2, "image", "qwen-image-2.1-q8", 4000, { job_title: "Cover art for Blackbird", job_label: "img-77" })],
+    vouched: [v("voxcpm2", "audio", 5058, "loaded"), v("qwen-image-2.1-q8", "image", 10179, "busy"), v("qwen3-8b", "llm", 6000), v("acestep-1.5", "audio", 1756), v("breeze-tts-2", "audio", 6466)],
+    vouched_mb: 29459, overbooked: true }];
+  const t = sc.show("card-allocations", App());
+  // the allocation lines: between the card's numbers and the Models panel
+  const from = t.lines.findIndex((l) => /^in use /.test(l)) + 1, to = t.lines.findIndex((l) => /^Models /.test(l));
+  const rows = t.lines.slice(from, to);
+  const at = (re) => rows.findIndex((l) => re.test(l));
+  const order = ["qwen-image-2.1-q8", "qwen3-8b", "breeze-tts-2", "voxcpm2", "acestep-1.5"].map((n) => at(new RegExp(n + "\\b")));
+  sc.check("card-allocations", order.every((i, k) => i >= 0 && (k === 0 || i > order[k - 1])),
+    `the job's model first, then chat, then audio larger first (${order.join(",")})`);
+  t.has(/qwen-image-2\.1-q8[^\n]*Cover art for Blackbird/).has(/img-77/);
+  sc.check("card-allocations", find(App(), (n) => n.data?.class?.abar).length === 5, "a bar for each line");
+  ui.state.cards = keep;
+}
+
+// the model sections fold shut, one by one
+{
+  ui.state.models = [model("qwen-image-2.1-q8", "image"), model("voxcpm2", "audio")];
+  ui.collapsed = {};
+  sc.show("models-open", App()).has(/qwen-image-2\.1-q8/).has(/voxcpm2/);
+  ui.collapsed = { image: true };
+  sc.show("models-image-folded", App()).has(/Images/).lacks(/qwen-image-2\.1-q8/).has(/voxcpm2/).has(/0 of 1 enabled|1 of 1 enabled/);
+  ui.collapsed = {};
 }
 
 // the concurrency profile: unmeasured until a bench says otherwise, then copies and exclusivity
