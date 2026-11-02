@@ -196,6 +196,12 @@ mod tests {
     #[test]
     fn the_chunks_cover_the_frames() {
         assert_eq!(chunks(9000, 3000, 24576), vec![(0, 9000)]);
+        // a twelve-minute song (the raised limit: 18 000 codes behind a 5 000-token prompt): three chunks that tile it, each within the context
+        let long = chunks(18_000, 5_000, 24_576);
+        assert_eq!(long.first(), Some(&(0, 9_786)));
+        assert_eq!(long.last().map(|c| c.1), Some(18_000));
+        assert!(long.windows(2).all(|w| w[0].1 == w[1].0), "no frame is left out or made twice");
+        assert!(long.iter().all(|(a, b)| 5_000 + (b - a) * 2 + 3 <= 24_576), "a chunk's prompt, codes and rows fit the context");
         let c = chunks(9000, 10000, 24576);
         assert_eq!(c.first(), Some(&(0, 7286)));
         assert_eq!(c.last(), Some(&(7286, 9000)));

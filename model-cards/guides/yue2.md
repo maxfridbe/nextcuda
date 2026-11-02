@@ -72,7 +72,17 @@ nextcuda audio gen "-" --model yue2-3b-q8 --source song.mp3 --opt-score-only tru
 ```
 
 ## Length, guidance, steps
-`seconds` is the most it makes (up to 360; the model ends the song when the lyrics are sung - a verse and two choruses
-run about a minute and a half). `cfg` guides the codes against the instruction alone (1: none; try 1.2 for a closer
-reading of the style). `steps` are the flow's (32, upstream's). Each song is one seed: the same request and seed make the
-same song on this engine.
+`seconds` is the most it makes (the default 360; up to 900, see below; the model ends the song when the lyrics are sung - a
+verse and two choruses run about a minute and a half, and a line of a rock song about 8 seconds). `cfg` guides the codes
+against the instruction alone (1: none; try 1.2 for a closer reading of the style). `steps` are the flow's (32,
+upstream's). Each song is one seed: the same request and seed make the same song on this engine.
+
+**The limit is the model's context, not 360 s.** The model's 24 576 tokens are shared by the prompt (style and lyrics),
+the score and the codes (25 a second): upstream's 360 s is a setting (9000 codes). Here `seconds` may go to 900, and a
+request whose prompt and score leave less room is refused with what fits (about 12 minutes with a full score, more with
+`cot: off` or a short `score-tokens`). The flow and the decode work in chunks, so a long song costs time, not a larger card.
+Upstream documents nothing past six minutes: the voice and the structure over ten minutes are untested - listen.
+
+**When a song ran out.** The answer's `truncated` says it: `semantic: true` - the codes reached `seconds` (or the room),
+so the song may stop before its lyrics are all sung; `score: true` - the plan ran out of tokens (`score-tokens`, up to
+4096) before it closed. The audio is playable either way. Raise `seconds`, shorten the lyrics, or make the song in parts.

@@ -445,6 +445,11 @@ pub trait AudioEngine: Send + Sync {
     fn score(&self) -> Option<String> {
         None
     }
+    /// whether the last song ended because a budget did, for an engine that has them (YuE2): (the score ran out of
+    /// tokens, the codes ran out of room) - the audio is playable but may stop before the lyrics are all sung
+    fn truncated(&self) -> Option<(bool, bool)> {
+        None
+    }
     /// lines for `status`: its GPUs, memory, what is loaded where
     fn report(&self) -> Vec<String> {
         Vec::new()

@@ -50,8 +50,14 @@ pub const ARCH: &str = "yue2";
 pub const ROLES: &[&str] = &["lm", "vae", "sheetsage"];
 /// codes a second
 pub const FPS: f32 = 25.0;
-/// the longest song: the semantic phase's 9000 codes
-pub const MAX_SECONDS: f32 = 360.0;
+/// the length asked for when a request names none: upstream's semantic phase default, 9000 codes (the model ends the
+/// song when the lyrics are sung, so this is only the most)
+pub const DEFAULT_SECONDS: f32 = 360.0;
+/// the longest a request may ask. The model's context (24 576 tokens) is shared by the prompt, the score and the codes
+/// (25 a second), so what fits is 983 s less the prompt and its score - a request whose prompt leaves less is refused
+/// with what does fit (`latents`). Upstream's own default (360 s) is a setting, not the model's limit; the flow and the
+/// decode work in chunks, so nothing else is sized to it. Quality past six minutes is not documented or tested upstream.
+pub const MAX_SECONDS: f32 = 900.0;
 pub const ODE_STEPS: u32 = 32;
 
 pub const OPTIONS: &[EngineOption] = &[
@@ -133,6 +139,8 @@ pub struct Yue2 {
     work: Mutex<Scratch>,
     vwork: Mutex<Scratch>,
     last: Mutex<Option<String>>,
+    /// the last song's limits reached: (the score ran out of tokens, the codes ran out of room) - it ended because a budget did
+    trunc: Mutex<Option<(bool, bool)>>,
     load_s: f64,
 }
 
@@ -183,7 +191,7 @@ impl Yue2 {
         log(format!("{ARCH}: the language model {:.2} GiB on {} (the flow's matrices {}, its attention {}), the VAE {:.2} GiB on {} - loaded in {load_s:.1} s",
                     lm.bytes as f64 / GIB, gpu.name, if lm.int8 { "int8" } else { "Q8_0" },
                     lm.silo.map_or("nsd's".to_string(), |s| format!("the silo's for sm_{}", s.sm)), vae.bytes as f64 / GIB, vgpu.name));
-        Ok(Yue2 { lm, vae, sheet, tok, settings: o.clone(), work: Mutex::new(Scratch::default()), vwork: Mutex::new(Scratch::default()), last: Mutex::new(None),
+        Ok(Yue2 { lm, vae, sheet, tok, settings: o.clone(), work: Mutex::new(Scratch::default()), vwork: Mutex::new(Scratch::default()), last: Mutex::new(None), trunc: Mutex::new(None),
                   load_s })
     }
 
@@ -220,9 +228,9 @@ impl Yue2 {
             return Err(Error("the style (instructions) is empty: genre, mood, voice, instruments".into()));
         }
         let lyrics = req.lyrics.clone().unwrap_or_default();
-        let seconds = req.seconds.unwrap_or(MAX_SECONDS);
+        let seconds = req.seconds.unwrap_or(DEFAULT_SECONDS);
         if !(1.0..=MAX_SECONDS).contains(&seconds) {
-            return Err(Error(format!("{seconds} s: from 1 to {MAX_SECONDS} s (the song may end sooner: the model decides)")));
+            return Err(Error(format!("{seconds} s: from 1 to {MAX_SECONDS} s (the song may end sooner: the model decides; the context decides what fits)")));
         }
         let max_score = match self.opt(req, "score-tokens", "") {
             Some(v) => v.trim().parse::<usize>().map_err(|_| Error(format!("score-tokens {v}: a whole number")))?.clamp(32, sample::ABC.max_tokens),
@@ -232,7 +240,7 @@ impl Yue2 {
         if !(0.0..=20.0).contains(&cfg) {
             return Err(Error(format!("cfg {cfg}: 0 to 20")));
         }
-        Ok(Song { cot, style, lyrics, abc, seed: req.seed, cfg, max_codes: ((seconds * FPS).ceil() as usize).clamp(1, sample::SEMANTIC.max_tokens), max_score,
+        Ok(Song { cot, style, lyrics, abc, seed: req.seed, cfg, max_codes: ((seconds * FPS).ceil() as usize).clamp(1, CONTEXT), max_score,
                   steps: req.steps.unwrap_or(ODE_STEPS).clamp(1, 200) as usize })
     }
 
@@ -357,8 +365,8 @@ impl Yue2 {
         };
         let sem_upper = made.prefix.len() + score_room;
         if sem_upper + song.max_codes > CONTEXT {
-            return Err(Error(format!("the prompt ({} tokens with its score) and {} codes are past the model's context ({CONTEXT}): shorter lyrics or a shorter song",
-                                     sem_upper, song.max_codes)));
+            return Err(Error(format!("the prompt ({} tokens with its score) and {} codes ({:.0} s) are past the model's context ({CONTEXT}): at most {:.0} s fit with this prompt - shorter lyrics, a shorter score (score-tokens) or a shorter song",
+                                     sem_upper, song.max_codes, song.max_codes as f32 / FPS, CONTEXT.saturating_sub(sem_upper) as f32 / FPS)));
         }
         // the song's cache: the prompt, the score, the codes, MUSIC_END, then the flow's rows (one chunk), within the context
         let cap = (sem_upper + 2 * song.max_codes + 4).min(CONTEXT);
@@ -458,7 +466,7 @@ impl AudioEngine for Yue2 {
         ARCH
     }
     fn defaults(&self) -> Defaults {
-        Defaults { seconds: MAX_SECONDS, max_seconds: MAX_SECONDS, steps: ODE_STEPS, cfg: 1.0, rate: RATE }
+        Defaults { seconds: DEFAULT_SECONDS, max_seconds: MAX_SECONDS, steps: ODE_STEPS, cfg: 1.0, rate: RATE }
     }
     fn lyrics(&self) -> bool {
         true
@@ -477,6 +485,7 @@ impl AudioEngine for Yue2 {
         let mut song = self.song(req)?;
         let mut made = Made::default();
         *self.last.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        *self.trunc.lock().unwrap_or_else(|p| p.into_inner()) = None;
         if let (Some(src), Some(sheet)) = (&req.source, &self.sheet) {
             // a cover: the recording's score (its melody for cot melody, melody and chords for full), sung in the new style
             let tr = sheet.transcribe(&sheet::wave::prepare(&src.samples, src.channels as usize, src.rate), progress)?;
@@ -494,6 +503,9 @@ impl AudioEngine for Yue2 {
             return Err(Error("score-only: a recording's score - give the recording (source)".into()));
         }
         self.latents(&song, &mut made, t0, progress)?;
+        // a budget ended the score (one drawn, not given) or the codes: the song may stop mid-lyrics
+        *self.trunc.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((song.cot != Cot::Off && song.abc.is_none() && made.abc.len() >= song.max_score, made.codes.len() >= song.max_codes));
         if song.cot != Cot::Off {
             *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Some(String::from_utf8_lossy(&self.tok.decode_bytes(&made.abc)).into_owned());
         }
@@ -504,6 +516,9 @@ impl AudioEngine for Yue2 {
     }
     fn score(&self) -> Option<String> {
         self.last.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+    fn truncated(&self) -> Option<(bool, bool)> {
+        *self.trunc.lock().unwrap_or_else(|p| p.into_inner())
     }
     fn report(&self) -> Vec<String> {
         let on = if Arc::ptr_eq(&self.lm.gpu, &self.vae.gpu) { self.lm.gpu.name.clone() } else { format!("{} + {}", self.lm.gpu.name, self.vae.gpu.name) };
