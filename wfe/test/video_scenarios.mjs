@@ -52,6 +52,17 @@ await press(Creation(), /Generate/);
 sc.check("pace-pika-sound", rpc().speed === "pika-flex" && rpc().soundtrack === "song.mp3", "Pika Flex with a soundtrack");
 open({ speed: "standard" });
 
+// a clip's detail names its pace: a Pika Flex job (the server stores its expansion: lcm sampler on the knots) says so
+{
+  const { Detail } = await mod("video", "components/Detail.js");
+  const { state } = await mod("video", "state.js");
+  state.detail = { kind: "queued", data: { label: "a", steps: 6, sampler: "lcm", knots: "1000,750,500,250,100,40,0" } };
+  sc.show("detail-pika", Detail()).has(/pace/).has(/Pika Flex/);
+  state.detail = { kind: "queued", data: { label: "b", steps: 8 } };
+  sc.show("detail-standard", Detail()).has(/pace/).has(/standard/).lacks(/Pika Flex/);
+  state.detail = null;
+}
+
 // the licence: the denoiser picker tags a denoiser whose card forbids commercial use (the licence in its tooltip); the ones
 // that allow it, with conditions or not, are not tagged
 {
