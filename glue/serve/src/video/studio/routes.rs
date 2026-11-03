@@ -192,7 +192,8 @@ pub struct ClipRequest {
     /// the keyframe pictures shown to the text encoder too (default on)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub te_pictures: Option<Value>,
-    /// motion guide: "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe
+    /// motion guides, comma-separated (feature video.multi_guide): each "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe,
+    /// or a picture (frames 1) held at a frame: "prev:22:0,anchor.png:1:120"; `at` defaults to 0, negative counts from the end
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide_clip: Option<Value>,
     /// flow shifts (12, 3)

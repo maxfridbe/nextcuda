@@ -154,7 +154,7 @@ export interface ClipRequest {
   ref_video_sound?: unknown | null;
   /** the keyframe pictures shown to the text encoder too (default on) */
   te_pictures?: unknown | null;
-  /** motion guide: "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe */
+  /** motion guides, comma-separated (feature video.multi_guide): each "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe, or a picture (frames 1) held at a frame: "prev:22:0,anchor.png:1:120"; `at` defaults to 0, negative counts from the end */
   guide_clip?: unknown | null;
   /** flow shifts (12, 3) */
   shift_video?: unknown | null;

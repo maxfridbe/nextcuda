@@ -710,7 +710,7 @@ export interface VideoGenerateReq {
    * @maximum 362
    */
   frames?: number | null;
-  /** a motion guide: "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe */
+  /** motion guides, comma-separated (feature video.multi_guide): each "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe, or a picture (frames 1, the default for a picture) held at a frame of the clip as a pose keyframe: "prev:22:0,anchor.png:1:120"; `at` defaults to 0 and counts from the end when negative */
   guide_clip?: string | null;
   /**
    * as width

@@ -858,7 +858,7 @@ components:
           anyOf:
           - {}
           - type: 'null'
-          description: 'motion guide: "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe'
+          description: 'motion guides, comma-separated (feature video.multi_guide): each "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe, or a picture (frames 1) held at a frame: "prev:22:0,anchor.png:1:120"; `at` defaults to 0, negative counts from the end'
         shift_video:
           anyOf:
           - {}

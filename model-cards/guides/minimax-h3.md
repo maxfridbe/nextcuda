@@ -60,6 +60,12 @@ own ffmpeg). What carries across a cut:
 - `first_frame` - a picture (a PNG; a clip: its **last frame**, a still). The pose and the look, not the motion.
 - `guide_clip: "<clip>.mp4:22:0"` - the clip's last 22 frames (5, 22, 39: 17k + 5) as one moving keyframe at
   frame 0: position *and* motion. Give no `first_frame` with it.
+  Several guides go in one string, comma-separated (feature `video.multi_guide`): `guide_clip: "<last>.mp4:22:0,anchor.png:1:120"`
+  carries the last clip on at frame 0 *and* holds a picture at frame 120. A picture (or fewer than 5 frames) is a
+  one-frame keyframe: the pose, no motion. `at` is the frame (default 0; negative counts from the end). A guide that
+  does not fit in the clip's frames fails the clip. A picture in the middle of a clip is reached and left again, where
+  one as `last_frame` is snapped to in the last frames of the clip (a singer film re-anchored on portraits jumped at
+  every anchor that way).
 - `first_audio: "<clip>.mp4"`, `first_audio_s` - its sound tail (room tone, score, a voice mid-line) at frame 0.
 - Whatever is carried, the next clip **begins with it again**: the join must overlap exactly that span (half
   trimmed each side, the sound cross-faded over all of it), or it plays twice. `nextcuda video join` reads it from

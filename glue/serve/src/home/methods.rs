@@ -1922,7 +1922,8 @@ pub struct VideoGenerateReq {
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 9, max = 362)]
     pub frames: Option<i64>,
-    /// a motion guide: "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe
+    /// motion guides, comma-separated (feature video.multi_guide): each "<anchor or file>[:frames[:at]]" - the last frames of a clip as one moving keyframe,
+    /// or a picture (frames 1, the default for a picture) held at a frame of the clip as a pose keyframe: "prev:22:0,anchor.png:1:120"; `at` defaults to 0 and counts from the end when negative
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide_clip: Option<String>,
     /// as width

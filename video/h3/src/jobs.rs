@@ -1724,13 +1724,7 @@ pub fn run(e: &Engine, spec: &Value, ctl: &mut Ctl) -> Result<Value> {
                     last_frame: s("last_frame").map(Path::new),
                     frame_ref: s("first_frame_ref").map(Path::new),
                     guides: match s("guide_clip") {
-                        Some(g) => {
-                            let mut it = g.split(':');
-                            let p = it.next().unwrap_or(g);
-                            let n = it.next().and_then(|v| v.parse().ok()).unwrap_or(22);
-                            let i = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-                            vec![(Path::new(p), n, i)]
-                        }
+                        Some(g) => guide_list(g),
                         None => Vec::new(),
                     },
                     first_audio: s("first_audio").map(|p| (Path::new(p), n("first_audio_s").unwrap_or(1.0))),
@@ -1820,5 +1814,42 @@ mod tests {
         // a clip's sound latents: 40 a second over the clip's frames (the soundtrack is fitted to these)
         let (frames, _, at) = temporal_shape(10.125);
         assert_eq!((frames, at), (243, 405));
+    }
+}
+
+
+/// `guide_clip`: one or several guides, comma-separated, each `<file>[:frames[:at]]`. frames is 22 for a clip and 1 for
+/// a picture (a one-frame keyframe: the pose, no motion) unless given; `at` is the frame it is anchored at (default 0;
+/// negative: from the end).
+pub fn guide_list(g: &str) -> Vec<(&Path, usize, i64)> {
+    let picture = |p: &str| {
+        let p = p.to_lowercase();
+        [".png", ".jpg", ".jpeg", ".webp"].iter().any(|e| p.ends_with(e))
+    };
+    g.split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(|one| {
+            let mut it = one.split(':');
+            let p = it.next().unwrap_or(one);
+            let n = it.next().and_then(|v| v.parse().ok()).unwrap_or(if picture(p) { 1 } else { 22 });
+            let i = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            (Path::new(p), n, i)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod guide_tests {
+    use super::guide_list;
+    use std::path::Path;
+
+    #[test]
+    fn several_guides_each_with_its_own_frames_and_frame() {
+        assert_eq!(guide_list("/o/a.mp4:22:0,/o/anchor.png:1:120"), vec![(Path::new("/o/a.mp4"), 22, 0), (Path::new("/o/anchor.png"), 1, 120)]);
+        assert_eq!(guide_list("/o/a.mp4"), vec![(Path::new("/o/a.mp4"), 22, 0)], "one guide, as before");
+        assert_eq!(guide_list("/o/p.PNG:1:-8"), vec![(Path::new("/o/p.PNG"), 1, -8)], "a picture is one frame; at counts from the end when negative");
+        assert_eq!(guide_list("/o/p.webp,/o/q.mp4:5"), vec![(Path::new("/o/p.webp"), 1, 0), (Path::new("/o/q.mp4"), 5, 0)]);
+        assert!(guide_list("").is_empty());
     }
 }
