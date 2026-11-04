@@ -215,6 +215,8 @@ pub struct Home {
     pub(crate) inflight: Mutex<BTreeMap<u16, usize>>,
     /// what each image, audio and 3D server last said of itself (model, loading, busy), by its port
     answers: Mutex<BTreeMap<u16, (String, bool, bool)>>,
+    /// the card each image/audio/3D server was last started on, by port: its card before nvidia-smi lists its process
+    pub(crate) started_on: Mutex<BTreeMap<u16, usize>>,
     /// image and audio requests as jobs (jobs.json beside serve.json)
     jobs: jobs::Jobs,
     /// a job's stage while its server is chosen, and what it waits for: job id -> (stage, waiting_for)
@@ -343,7 +345,7 @@ impl Home {
             o, token, state_file, jobs,
             cards: Mutex::new(json!([])), runs: Mutex::new(Vec::new()), next: Mutex::new(1), loading: Mutex::new(BTreeMap::new()),
             kind_lock: ["llm", "image", "audio", "model3d", "video"].into_iter().map(|k| (k, Mutex::new(()))).collect(),
-            seen: Mutex::new(seen), asked: Mutex::new(BTreeMap::new()), inflight: Mutex::new(BTreeMap::new()), answers: Mutex::new(BTreeMap::new()), stages: Mutex::new(BTreeMap::new()), chat_keep: Mutex::new(BTreeMap::new()),
+            seen: Mutex::new(seen), asked: Mutex::new(BTreeMap::new()), inflight: Mutex::new(BTreeMap::new()), answers: Mutex::new(BTreeMap::new()), started_on: Mutex::new(BTreeMap::new()), stages: Mutex::new(BTreeMap::new()), chat_keep: Mutex::new(BTreeMap::new()),
             maint_file, maint_bypass, disks: disks::Disks::new(&st), pulls: pulls::Pulls::default(),
             holds: Mutex::new(BTreeMap::new()),
             history: backplane_scheduler::history::History::open(Box::new(backplane_scheduler::history::FileStorage::new(o_dir.with_file_name("history")))),

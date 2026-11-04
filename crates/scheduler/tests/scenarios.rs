@@ -180,6 +180,19 @@ fn s10_by_default_there_is_one_copy_a_card_and_the_next_goes_to_the_other_card()
 }
 
 #[test]
+fn s10b_a_second_copy_goes_to_the_other_card_while_the_first_shows_on_none_yet() {
+    // 2026-11-04: the first Qwen-Image 2.1 server had no process on a card yet (weights in host memory) when the second
+    // request came; the second copy went to the same card and pictures failed for memory
+    let h = FakeHost::new(&[CARD, CARD], &[("image", 2)]);
+    let q = h.add("q", "image", 2000, &[0, 1], plain());
+    h.start_unseen(true);
+    ask(&h, &q, 2000, 90).unwrap();
+    h.busy("q", 600.0, 1);
+    ask(&h, &q, 2000, 90).unwrap();
+    assert_eq!(h.log().last().unwrap(), "start image q slot 1 gpu 1", "{:?}", h.log());
+}
+
+#[test]
 fn s11_an_exclusive_model_gets_its_card_to_itself_even_where_the_memory_would_fit() {
     let h = box1(2);
     let a = h.add("a", "audio", 2000, &[0], plain());

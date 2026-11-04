@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::host::Host;
-use crate::room::{card_free, card_of_port, extra_copy_allowed, no_room, pick_card, room_plan, Free, Holder, ModelInfo, Server, JOB_ROOM_WAIT_S, MARGIN_MB};
+use crate::room::{card_free, card_of, card_of_port, extra_copy_allowed, no_room, pick_card, room_plan, Free, Holder, ModelInfo, Server, JOB_ROOM_WAIT_S, MARGIN_MB};
 use crate::Fail;
 
 /// What to place
@@ -130,7 +130,7 @@ pub fn place(host: &dyn Host, req: &PlaceReq) -> Result<Outcome, Fail> {
         // its servers all have work: another copy on a card of its without one that has the room now (or once idle
         // picture and sound servers there stop), in a slot no server holds or one an idle model holds - else the copy
         // with the fewest requests (its server queues it)
-        let on: Vec<usize> = mine.iter().filter_map(|x| card_of_port(cards, x.port)).collect();
+        let on: Vec<usize> = mine.iter().filter_map(|x| card_of(cards, x)).collect();
         // copies per card: extra ones up to the profile's recommended count (the default 1: one a card), never past its max
         let per_card = m.profile.concurrency.recommended_copies.min(m.profile.concurrency.max_copies_per_card) as usize;
         let spare = sv.iter().find(|x| x.model.is_none()).or_else(|| sv.iter().find(idle_other));
@@ -165,12 +165,12 @@ pub fn place(host: &dyn Host, req: &PlaceReq) -> Result<Outcome, Fail> {
     // else one an idle model holds, else one a busy model of the kind holds, after its requests
     let plan = pick_card(gpus.iter().map(|&g| (g, card_free(cards, g), room_plan(&snap, host, g, want(g), kind, false, Some(m)))));
     let empty = sv.iter().find(|x| x.model.is_none());
-    let idle = sv.iter().filter(idle_other).min_by_key(|x| card_of_port(cards, x.port).is_none_or(|g| Some(g) != plan.as_ref().map(|p| p.0)));
-    let on_mine = |x: &&Server| x.model.is_some() && !kept(x) && card_of_port(cards, x.port).is_some_and(|g| gpus.contains(&g));
+    let idle = sv.iter().filter(idle_other).min_by_key(|x| card_of(cards, x).is_none_or(|g| Some(g) != plan.as_ref().map(|p| p.0)));
+    let on_mine = |x: &&Server| x.model.is_some() && !kept(x) && card_of(cards, x).is_some_and(|g| gpus.contains(&g));
     let Some((gpu, plan)) = plan else {
         // no room even then: a busy server of another model of the kind on a card of its goes after its requests (it
         // holds the room), then the next try loads it
-        let held = |x: &Server| card_of_port(cards, x.port).map(|g| {
+        let held = |x: &Server| card_of(cards, x).map(|g| {
             let mb = cards.iter().find(|c| c.index == g).into_iter().flat_map(|c| c.procs.iter()).filter(|p| p.port == Some(x.port)).map(|p| p.mb).sum::<u64>();
             (g, mb)
         });

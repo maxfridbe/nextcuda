@@ -24,6 +24,8 @@ struct FakeServer {
     /// busy until this time on the fake clock
     busy_until: f64,
     inflight: usize,
+    /// started while `unseen` was on: no process and no memory on its card yet (weights still in host memory)
+    unseen: bool,
 }
 
 struct State {
@@ -41,6 +43,8 @@ struct State {
     chat_idle: bool,
     locked: BTreeSet<String>,
     load_s: f64,
+    /// servers started from now on do not show on their card (see FakeServer::unseen)
+    unseen: bool,
     /// what the host did, in order: "start audio a slot 0 gpu 0", "stop audio slot 0 (...)"
     log: Vec<String>,
     notes: Vec<(String, String)>,
@@ -58,13 +62,13 @@ impl FakeHost {
         let mut port = 9000;
         for (kind, n) in servers {
             for slot in 0..*n {
-                v.push(FakeServer { kind: kind.to_string(), slot, port, gpu: 0, model: None, busy_until: 0.0, inflight: 0 });
+                v.push(FakeServer { kind: kind.to_string(), slot, port, gpu: 0, model: None, busy_until: 0.0, inflight: 0, unseen: false });
                 port += 1;
             }
         }
         FakeHost { st: Mutex::new(State {
             now: 1000.0, cards: cards_mb.to_vec(), servers: v, models: BTreeMap::new(), vram_mb: BTreeMap::new(), pinned: BTreeSet::new(), holds: BTreeMap::new(),
-            cancelled: BTreeSet::new(), video_idle: true, chat: None, chat_idle: true, locked: BTreeSet::new(), load_s: 10.0, log: Vec::new(), notes: Vec::new(),
+            cancelled: BTreeSet::new(), video_idle: true, chat: None, chat_idle: true, locked: BTreeSet::new(), load_s: 10.0, unseen: false, log: Vec::new(), notes: Vec::new(),
         }) }
     }
 
@@ -112,6 +116,11 @@ impl FakeHost {
         self.st.lock().unwrap().cancelled.insert(job.into());
     }
 
+    /// Servers started from now on show no process and no memory on their card, as a real one in its first seconds
+    pub fn start_unseen(&self, on: bool) {
+        self.st.lock().unwrap().unseen = on;
+    }
+
     pub fn set_load_s(&self, s: f64) {
         self.st.lock().unwrap().load_s = s;
     }
@@ -155,12 +164,12 @@ impl FakeHost {
 
     fn used(st: &State, g: usize) -> u64 {
         BASE_USED_MB
-            + st.servers.iter().filter(|s| s.gpu == g).filter_map(|s| s.model.as_ref()).map(|m| st.vram_mb.get(m).copied().unwrap_or(0)).sum::<u64>()
+            + st.servers.iter().filter(|s| s.gpu == g && !s.unseen).filter_map(|s| s.model.as_ref()).map(|m| st.vram_mb.get(m).copied().unwrap_or(0)).sum::<u64>()
             + st.chat.as_ref().filter(|c| c.2 == g).map_or(0, |c| c.1)
     }
 
     fn server_of(st: &State, s: &FakeServer) -> Server {
-        Server { slot: s.slot, port: s.port, model: s.model.clone(), loading: false, busy: s.busy_until > st.now || s.inflight > 0, inflight: s.inflight }
+        Server { slot: s.slot, port: s.port, model: s.model.clone(), loading: false, busy: s.busy_until > st.now || s.inflight > 0, inflight: s.inflight, gpu: s.model.is_some().then_some(s.gpu) }
     }
 }
 
@@ -190,7 +199,7 @@ impl Host for FakeHost {
         let mut snap = Snapshot::default();
         for (g, total) in st.cards.iter().enumerate() {
             let mut procs = Vec::new();
-            for s in st.servers.iter().filter(|s| s.gpu == g) {
+            for s in st.servers.iter().filter(|s| s.gpu == g && !s.unseen) {
                 if let Some(m) = &s.model {
                     procs.push(Proc { kind: Some(s.kind.clone()), model: m.clone(), port: Some(s.port), mb: st.vram_mb.get(m).copied().unwrap_or(0) });
                 }
@@ -225,10 +234,12 @@ impl Host for FakeHost {
             return Err((502, format!("{id} needs about {:.1} GiB on card {gpu}; {:.1} GiB are free", need as f64 / 1024.0, free as f64 / 1024.0)));
         }
         let load = st.load_s;
+        let unseen = st.unseen;
         let line = format!("start {kind} {id} slot {slot} gpu {gpu}");
         let s = st.servers.iter_mut().find(|s| s.kind == kind && s.slot == slot).ok_or((500, "no such slot".to_string()))?;
         s.model = Some(id.into());
         s.gpu = gpu;
+        s.unseen = unseen;
         s.busy_until = 0.0;
         s.inflight = 0;
         st.now += load;

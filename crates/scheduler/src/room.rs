@@ -50,6 +50,9 @@ pub struct Server {
     pub busy: bool,
     /// requests sent on from here and not answered
     pub inflight: usize,
+    /// the card the host started it on, known before the card's process list shows it (a server loading with its
+    /// weights in host memory has no process there for its first seconds)
+    pub gpu: Option<usize>,
 }
 
 impl Server {
@@ -125,6 +128,12 @@ pub fn card_free(cards: &[Card], g: usize) -> u64 {
 /// The card the server listening on `port` is on
 pub fn card_of_port(cards: &[Card], port: u16) -> Option<usize> {
     cards.iter().find(|c| c.procs.iter().any(|p| p.port == Some(port))).map(|c| c.index)
+}
+
+/// The card a server is on: its process's, else the one the host started it on (2026-11-04: two copies of Qwen-Image 2.1
+/// started 2 s apart both went to GPU 0 - the first had no process on a card yet - and 3 of 4 pictures failed for memory)
+pub fn card_of(cards: &[Card], x: &Server) -> Option<usize> {
+    card_of_port(cards, x.port).or(x.gpu)
 }
 
 /// The holders a room plan may stop: not a kept model's

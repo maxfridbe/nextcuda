@@ -120,6 +120,8 @@ pub(crate) struct Slot {
     model: Option<String>,
     loading: bool,
     busy: bool,
+    /// the card this box started it on (None: not started from here, or nothing answers there)
+    gpu: Option<usize>,
 }
 
 /// A request's server, chosen by `ensure`: counted as having work until dropped (after the answer)
@@ -446,8 +448,9 @@ impl Home {
             // the box went "offline" for the start of every picture (2026-10-22) - what it said last, busy
             let last = (sent > 0).then(|| self.answers.lock().unwrap().get(&port).cloned()).flatten();
             let st = last.map(|(m, l, _)| (m, l, true)).or_else(|| self.server_at(port));
+            let gpu = st.is_some().then(|| self.started_on.lock().unwrap().get(&port).copied()).flatten();
             Slot { slot, port, model: st.as_ref().map(|x| x.0.clone()), loading: st.as_ref().is_some_and(|x| x.1),
-                   busy: st.as_ref().is_some_and(|x| x.2) || sent > 0 }
+                   busy: st.as_ref().is_some_and(|x| x.2) || sent > 0, gpu }
         }).collect()
     }
 
@@ -460,7 +463,7 @@ impl Home {
                 continue;
             }
             for x in self.servers(kind) {
-                v.push(json!({"kind": kind, "slot": x.slot, "port": x.port, "gpu": card_of_port(cards, x.port),
+                v.push(json!({"kind": kind, "slot": x.slot, "port": x.port, "gpu": card_of_port(cards, x.port).or(x.gpu),
                               "model": x.model, "loading": x.loading, "busy": x.busy && !x.loading, "up": x.model.is_some()}));
             }
         }
@@ -938,7 +941,7 @@ impl Home {
         let mut servers = BTreeMap::new();
         for kind in ["image", "audio", "model3d"] {
             servers.insert(kind.to_string(), self.servers(kind).into_iter().map(|x| Server {
-                slot: x.slot, port: x.port, model: x.model, loading: x.loading, busy: x.busy, inflight: inflight.get(&x.port).copied().unwrap_or(0),
+                slot: x.slot, port: x.port, model: x.model, loading: x.loading, busy: x.busy, inflight: inflight.get(&x.port).copied().unwrap_or(0), gpu: x.gpu,
             }).collect());
         }
         let now_s = now();
@@ -1091,7 +1094,7 @@ impl Home {
         if let Ok(m) = self.entry(id) {
             let max = self.profile_of(&m).concurrency.max_copies_per_card as usize;
             let cards = self.cards.lock().unwrap().clone();
-            let there = self.servers(kind).iter().filter(|o| o.slot != slot && o.model.as_deref() == Some(id) && card_of_port(&cards, o.port) == Some(gpu)).count();
+            let there = self.servers(kind).iter().filter(|o| o.slot != slot && o.model.as_deref() == Some(id) && card_of_port(&cards, o.port).or(o.gpu) == Some(gpu)).count();
             if there >= max {
                 return Err((503, format!("{id} already has {there} cop{} on GPU {gpu}: its card's max_copies_per_card is {max}", if there == 1 { "y" } else { "ies" })));
             }
@@ -1111,6 +1114,7 @@ impl Home {
         // (a pinned model's server does not end itself when idle)
         args.extend(idle_exit_args(self.o.idle_minutes, self.entry(id).is_ok_and(|m| registry::pinned(&m))));
         self.loading.lock().unwrap().insert(id.to_string(), now());
+        self.started_on.lock().unwrap().insert(port, gpu);
         let r = self.exec(format!("{kind} start {id} on GPU {gpu}{}", if slot > 0 { format!(" (server {})", slot + 1) } else { String::new() }), &args);
         self.loading.lock().unwrap().remove(id);
         r.map_err(|e| (502, e))?;
@@ -1445,7 +1449,8 @@ impl Host for Sched<'_> {
         let slot = self.0.slots(kind).iter().position(|p| *p == port)?;
         let (model, loading, busy) = self.0.server_at(port)?;
         let inflight = self.0.inflight.lock().unwrap().get(&port).copied().unwrap_or(0);
-        Some(Server { slot, port, model: Some(model).filter(|m| !m.is_empty()), loading, busy: busy || inflight > 0, inflight })
+        let gpu = self.0.started_on.lock().unwrap().get(&port).copied();
+        Some(Server { slot, port, model: Some(model).filter(|m| !m.is_empty()), loading, busy: busy || inflight > 0, inflight, gpu })
     }
     fn start(&self, kind: &str, id: &str, slot: usize, port: u16, gpu: usize) -> Result<(), (u16, String)> {
         self.0.start_at(kind, id, slot, port, gpu)
