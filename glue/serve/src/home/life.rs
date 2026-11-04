@@ -1252,6 +1252,25 @@ impl Home {
         Err((504, format!("the video engine did not come up in {} s (nextcuda video start; the runs on this page have its log)", limit.as_secs())))
     }
 
+    /// Room for a video clip before it goes to the studio (the scheduler's `room_for_video`): the idle picture, sound and
+    /// 3D servers on its card stop, and a clip that cannot fit its cards even without them is refused here, 409, with
+    /// nothing started (2026-11-04: a 768x576 H3 film clip was accepted beside two idle Qwen-Image servers and failed
+    /// 45 s in for want of 927 MiB). The model is the one the request names (`engine`, else `model`), else the first
+    /// enabled video model. What the clip needs is the model's `vouched_mb` - what the model takes, not what THIS clip
+    /// (its frames and canvas) adds: the studio has no estimate of that yet, so the size refusal only fires for a model
+    /// that cannot fit its card at all; a peak seen while a clip ran is a clip's, not this one's, and is not used to refuse.
+    pub(crate) fn video_room(&self, b: &Value) -> Result<(), (u16, String)> {
+        let all = self.models();
+        let named = ["engine", "model"].iter().filter_map(|k| b[*k].as_str()).find(|id| all.iter().any(|m| m["id"] == *id && registry::kind_of(m) == "video"));
+        let Some(m) = all.iter().find(|m| registry::kind_of(m) == "video" && m["enabled"] != false && named.is_none_or(|id| m["id"] == id)) else { return Ok(()) };
+        let info = self.model_info(m);
+        let Some(&first) = info.gpus.first() else { return Ok(()) };
+        let card_mb = self.cards.lock().unwrap().get(first).and_then(|c| c["vram_total_mb"].as_u64()).unwrap_or(32768);
+        let (need, seen) = self.vouched_mb(m, card_mb);
+        let need = if seen { BTreeMap::new() } else { need };
+        splace::room_for_video(&Sched(self), &splace::VideoReq { model: &info, gpu: b["gpu"].as_u64().map(|g| g as usize), need_mb: &need }).map(|_| ())
+    }
+
     /// A queued video clip watched to its end (it leaves the studio's queue when it finishes, fails or is cancelled): the
     /// hold of its rsvp_s starts then. `every`: seconds between looks. Runs on its own thread.
     pub(crate) fn watch_clip(&self, label: String, model: String, granted: f64, every: f64) {

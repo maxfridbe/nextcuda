@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::host::Host;
-use crate::room::{card_free, card_of, card_of_port, extra_copy_allowed, no_room, pick_card, room_plan, Free, Holder, ModelInfo, Server, JOB_ROOM_WAIT_S, MARGIN_MB};
+use crate::room::{card_free, idle_servers, card_of, card_of_port, extra_copy_allowed, no_room, pick_card, room_plan, Free, Holder, ModelInfo, Server, JOB_ROOM_WAIT_S, MARGIN_MB, TIE_MB};
 use crate::Fail;
 
 /// What to place
@@ -271,4 +271,68 @@ mod tests {
         assert_eq!(asked_mb("qwen3.8 needs about 30.1 GiB on X (28.0 GiB of weights); 22.5 GiB are free").map(|x| x.0), Some(30822));
         assert_eq!(asked_mb("nextcuda-audio-1 ended while loading"), None);
     }
+}
+
+/// A video clip about to be sent to the video daemon
+pub struct VideoReq<'a> {
+    /// the video model (its cards are the ones the clip may run on)
+    pub model: &'a ModelInfo,
+    /// the card the request names, when it names one
+    pub gpu: Option<usize>,
+    /// the memory the clip is estimated to take on each card, MiB (a card without an entry: only the margin). The host
+    /// gives what it knows of the clip; what it does not know it leaves out, and nothing is then refused for size
+    pub need_mb: &'a BTreeMap<usize, u64>,
+}
+
+/// Room for a video clip, before it is sent on (2026-11-04: a MiniMax H3 film clip, 768x576, started on GPU 0 of a 12 GB
+/// box with two idle Qwen-Image servers still resident there, and failed 45 s in with "nsd_alloc: 927 MiB would pass the
+/// device memory cap (10420 of 11195 MiB in use)"; the clip had been accepted because the card had room for the model
+/// on paper, and the video engine takes what is free as it goes, so every MiB a picture server holds is one the clip
+/// can need).
+///
+/// A clip gets its card to itself as far as the lightest-to-bring-back work goes: on the card where the idle picture,
+/// sound and 3D servers (not pinned or held, not busy) free the most, they are stopped now. The card is the named one,
+/// else the model's card with the most free once its idle servers are gone (a near tie goes to the first listed). The
+/// video daemon picks its own slot, so this is the best card to clear, not a promise it runs there.
+///
+/// And when the clip's estimate does not fit on ANY of its cards even with every server there gone (the ones that could
+/// go once they are idle, busy ones included - `free + all those servers`, not the foreign processes and not a pinned
+/// model), the answer is 409 at once with nothing stopped: the same clip will not fit on this box later either. Busy
+/// servers that would make it fit are no reason to refuse: the clip goes on and the daemon starts it when the card is
+/// free. Returns the card cleared (None: no idle server to stop).
+pub fn room_for_video(host: &dyn Host, req: &VideoReq) -> Result<Option<usize>, Fail> {
+    let m = req.model;
+    let snap = host.snapshot();
+    let gpus: Vec<usize> = match req.gpu {
+        Some(g) if m.gpus.contains(&g) => vec![g],
+        _ => m.gpus.clone(),
+    };
+    let want = |g: usize| req.need_mb.get(&g).copied().unwrap_or(0) + MARGIN_MB;
+    let ever = |g: usize| {
+        let servers: u64 = snap.cards.iter().find(|c| c.index == g).into_iter().flat_map(|c| c.procs.iter())
+            .filter(|p| matches!(p.kind.as_deref(), Some("image" | "audio" | "model3d")) && !snap.kept.contains(&p.model)).map(|p| p.mb).sum();
+        card_free(&snap.cards, g) + servers
+    };
+    if !gpus.is_empty() && gpus.iter().all(|g| ever(*g) < want(*g)) {
+        let cards: Vec<String> = gpus.iter().map(|g| format!("GPU {g} {:.1} GiB", ever(*g) as f64 / 1024.0)).collect();
+        return Err((409, format!("this clip will not fit: it needs ~{:.1} GiB free on a card and, with every picture and sound server stopped, {} {} - \
+                                  fewer frames, a smaller canvas or a smaller engine (q6k, q4km) would",
+                                  want(gpus[0]) as f64 / 1024.0, if gpus.len() > 1 { "the cards have" } else { "the card has" }, cards.join(", "))));
+    }
+    let after = |g: usize| card_free(&snap.cards, g) + idle_servers(&snap, g).iter().map(|h| h.mb).sum::<u64>();
+    let mut best: Option<usize> = None;
+    for &g in &gpus {
+        if best.is_none_or(|b| after(g) > after(b) + TIE_MB) {
+            best = Some(g);
+        }
+    }
+    let Some(g) = best else { return Ok(None) };
+    let plan = idle_servers(&snap, g);
+    if plan.is_empty() {
+        return Ok(None);
+    }
+    let (before, freed) = (card_free(&snap.cards, g), plan.iter().map(|h| h.mb).sum::<u64>());
+    free_plan(host, &plan, "video", &m.id)?;
+    wait_room(host, g, before + freed * 9 / 10);
+    Ok(Some(g))
 }

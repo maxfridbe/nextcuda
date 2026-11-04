@@ -9,7 +9,7 @@ use backplane_scheduler::eta::{self, JobView};
 use backplane_scheduler::fake::FakeHost;
 use backplane_scheduler::history::{History, MemStorage};
 use backplane_scheduler::host::Host;
-use backplane_scheduler::place::{ensure, place, PlaceReq};
+use backplane_scheduler::place::{ensure, place, room_for_video, PlaceReq, VideoReq};
 use backplane_scheduler::profile::Profile;
 use backplane_scheduler::room::ModelInfo;
 use backplane_scheduler::rsvp::{self, wait_untag};
@@ -364,4 +364,58 @@ fn s22_the_eta_falls_back_from_the_shape_to_the_model_to_none_and_failures_feed_
     hist.record_work("audio.speak", &p, "m", 0.0, 4.0, "ok");
     let e = hist.eta("audio.speak", "m", &p, true, Some(0.0));
     assert_eq!((e["basis"].as_str(), e["run_s"].as_f64()), (Some("shape"), Some(4.0)));
+}
+
+/// A box with one card, two idle picture servers on it (338 MiB each) and a video model
+fn video_box() -> (FakeHost, ModelInfo) {
+    let h = FakeHost::new(&[CARD], &[("image", 2)]);
+    let q1 = h.add("q1", "image", 338, &[0], plain());
+    let q2 = h.add("q2", "image", 338, &[0], plain());
+    ask(&h, &q1, 338, 90).unwrap();
+    ask(&h, &q2, 338, 90).unwrap();
+    let v = h.add("v", "video", 0, &[0], plain());
+    (h, v)
+}
+
+fn clip(h: &FakeHost, v: &ModelInfo, mb: u64) -> Result<Option<usize>, (u16, String)> {
+    let n = needs(v, mb);
+    room_for_video(h, &VideoReq { model: v, gpu: None, need_mb: &n })
+}
+
+#[test]
+fn s23_idle_picture_servers_are_stopped_before_a_clip_starts_on_their_card() {
+    // 2026-11-04: a clip was accepted on a card with room on paper (11.3 GiB free, 8.5 GiB wanted), two idle Qwen-Image
+    // servers stayed on it, and the clip failed 45 s in for 927 MiB it could have had
+    let (h, v) = video_box();
+    assert_eq!(clip(&h, &v, 7000), Ok(Some(0)));
+    assert_eq!(h.count("stop image"), 2, "{:?}", h.log());
+    assert_eq!(h.loaded("image"), vec![None, None]);
+}
+
+#[test]
+fn s24_a_busy_or_pinned_server_is_left_and_a_clip_that_could_fit_later_is_not_refused() {
+    let (h, v) = video_box();
+    h.busy("q1", 600.0, 1);
+    h.pin("q2", true);
+    assert_eq!(clip(&h, &v, 7000), Ok(None));
+    assert_eq!(h.count("stop"), 0);
+    // 11312 free: 10000 + 1536 fits only with the busy server gone, which it will be: waited for, not refused
+    assert_eq!(clip(&h, &v, 10000), Ok(None));
+    assert_eq!(h.count("stop"), 0);
+}
+
+#[test]
+fn s25_a_clip_that_cannot_fit_even_with_every_server_gone_is_refused_at_once() {
+    let (h, v) = video_box();
+    let (code, msg) = clip(&h, &v, 11000).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(msg.contains("will not fit"), "{msg}");
+    assert_eq!(h.count("stop"), 0, "nothing is stopped for a clip that cannot run");
+    // a pinned server counts against it: 12288 - 300 - 338 (pinned) = 11650 free once the other goes; 11200 + 1536 does not fit
+    let (h, v) = video_box();
+    h.pin("q1", true);
+    assert_eq!(clip(&h, &v, 11000).unwrap_err().0, 409);
+    // no estimate: nothing is refused for size, idle servers still go
+    let n = BTreeMap::new();
+    assert_eq!(room_for_video(&h, &VideoReq { model: &v, gpu: None, need_mb: &n }), Ok(Some(0)));
 }

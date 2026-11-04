@@ -267,6 +267,17 @@ pub fn room_plan(snap: &Snapshot, idle_of: &dyn Idleness, g: usize, want: u64, a
     plan_with_blockers(free, want, evictable(idle, &snap.kept), &residents, exclusive, &*blocks)
 }
 
+/// The picture, sound and 3D servers on card `g` with nothing to do, as holders a plan may stop (kept ones left out)
+pub fn idle_servers(snap: &Snapshot, g: usize) -> Vec<Holder> {
+    let Some(c) = snap.cards.iter().find(|c| c.index == g) else { return Vec::new() };
+    let idle = c.procs.iter().filter_map(|p| {
+        let k = p.kind.as_deref().filter(|k| matches!(*k, "image" | "audio" | "model3d"))?;
+        let x = snap.servers_of(k).iter().find(|x| Some(x.port) == p.port)?;
+        x.idle().then(|| Holder { what: Free::Server(k.to_string(), x.slot), mb: p.mb, model: p.model.clone(), order: 0 })
+    }).collect();
+    evictable(idle, &snap.kept)
+}
+
 /// The nextcuda models holding memory on the named cards that are in `of`
 pub fn holders_in(cards: &[Card], gpus: &[usize], of: &BTreeSet<String>) -> Vec<String> {
     let mut v: Vec<String> = gpus.iter().filter_map(|g| cards.iter().find(|c| c.index == *g)).flat_map(|c| c.procs.iter())

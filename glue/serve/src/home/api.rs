@@ -428,6 +428,12 @@ impl Home {
         if let Err((st, m)) = self.video_ensure() {
             return Some(envelope(st, m));
         }
+        // a clip: its card cleared of idle picture and sound servers, or refused now when it cannot fit (life.rs video_room)
+        if method == "generate" {
+            if let Err((st, m)) = self.video_room(b) {
+                return Some(envelope(st, m));
+            }
+        }
         let (st, mut v) = match http::call_status(&self.target("video"), "POST", &format!("/rpc/{method}"), Some(b), 120) {
             Ok(r) => r,
             Err(e) => return Some(envelope(502, format!("the video studio does not answer: {e}"))),
