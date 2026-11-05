@@ -167,6 +167,8 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
         }
         "image" if arch.contains("ocr") => (vec!["ocr", "read_pages", "pdf"], vec!["image.ocr"]),
         "image" if arch == "realesrgan" || arch == "waifu2x" => (vec!["upscale", "upscale_video", "tiles"], vec!["image.upscale", "video.upscale"]),
+        // video super-resolution: the clip as a whole (temporal), pictures as still clips
+        "image" if arch == "flashvsr" || arch == "seedvr2" => (vec!["upscale", "upscale_video", "video_sr", "temporal"], vec!["image.upscale", "video.upscale"]),
         "image" if arch == "starvector" => (vec!["vectorize", "svg"], vec!["image.vectorize"]),
         // text to image alone: no edits, references or starting picture (MOSS merges LoRAs at load; a turbo entry's
         // is a few-step distillation)

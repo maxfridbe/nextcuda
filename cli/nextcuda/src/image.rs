@@ -26,7 +26,7 @@ nextcuda image engines | selftest [--gpu N]";
 /// The image engines this program has (image/<arch>)
 pub fn engines() -> Vec<nextcuda_image::ImageKind> {
     vec![nextcuda_image_qwenimage21::kind(), nextcuda_image_qwenimage21::kind_2512(), nextcuda_image_unlimitedocr::kind(), nextcuda_image_paddleocrvl::kind(),
-         nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind(), nextcuda_image_upscale::kind(),
+         nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind(), nextcuda_image_upscale::kind(), nextcuda_image_flashvsr::kind(),
          nextcuda_image_starvector::kind(), nextcuda_image_mossimage::kind()]
 }
 
@@ -525,6 +525,14 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         let st = opt(args, "--stages").unwrap_or("tokens,te,sched,dit,steps,vae");
         let worst = nextcuda_image_mossimage::check::run(&e, dir, &st.split(',').collect::<Vec<_>>(), &mut log).map_err(|e| e.0)?;
         println!("lowest cosine {worst:.6}");
+        return Ok(());
+    }
+    if m["arch"].as_str() == Some(nextcuda_image_flashvsr::ARCH) {
+        let gs = gpus(args)?;
+        let mut log = |s: String| eprintln!("{s}");
+        let e = nextcuda_image_flashvsr::FlashVsr::load(&files, &gs, opt(args, "--split"), &mut log).map_err(|e| e.0)?;
+        let worst = nextcuda_image_flashvsr::check::run(&e, dir, &mut log).map_err(|e| e.0)?;
+        println!("worst relative error {worst:.2e}");
         return Ok(());
     }
     let _ = cfg;

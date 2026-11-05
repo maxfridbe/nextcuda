@@ -266,12 +266,15 @@ impl Home {
         if b["model"].as_str().is_some_and(|x| !x.is_empty()) {
             let id = self.pick("image", b, all)?;
             if all.iter().any(|m| m["id"] == id.as_str() && !upscales(m)) {
-                return Err((400, format!("{id} draws pictures; upscaling needs an upscaler (real-esrgan, waifu2x)")));
+                return Err((400, format!("{id} draws pictures; upscaling needs an upscaler (real-esrgan, waifu2x, flashvsr)")));
             }
             return Ok(id);
         }
         let want = match b["variant"].as_str() {
             Some(v) if v.starts_with("models-") => Some("waifu2x"),
+            // the video super-resolution models' variants name their model
+            Some(v) if v.starts_with("flashvsr") => Some("flashvsr"),
+            Some(v) if v.starts_with("seedvr2") => Some("seedvr2"),
             Some(v) if !v.is_empty() => Some("realesrgan"),
             _ => None,
         };
@@ -1523,7 +1526,7 @@ mod tests {
 
 /// A registry entry that upscales (an upscaler's architecture) rather than draws or reads
 pub(super) fn upscales(m: &Value) -> bool {
-    matches!(s(m, "arch").as_str(), "realesrgan" | "waifu2x")
+    matches!(s(m, "arch").as_str(), "realesrgan" | "waifu2x" | "flashvsr" | "seedvr2")
 }
 
 /// A registry entry that writes pictures as SVG (StarVector) rather than draws them

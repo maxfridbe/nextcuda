@@ -686,6 +686,7 @@ dependencies = [
  "nextcuda-core",
  "nextcuda-gguf",
  "nextcuda-image",
+ "nextcuda-image-flashvsr",
  "nextcuda-image-mingimage",
  "nextcuda-image-mossimage",
  "nextcuda-image-olmocr2",
@@ -867,6 +868,16 @@ version = "0.0.0"
 dependencies = [
  "nextcuda-core",
  "nextcuda-diffusion",
+]
+
+[[package]]
+name = "nextcuda-image-flashvsr"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-image",
 ]
 
 [[package]]

@@ -29,6 +29,7 @@ nextsycl's, kept until phase 2 replaces it.)
 | `NC_SD_OFFLOAD` | 1 | 0: the weights on the card; 1: in host memory, staged to the card per graph (`--opt-offload`) | image qwenimage21 |
 | `NC_SD_MAX_VRAM` | what the card has free | GiB of card memory the weights and buffers may take (`--opt-max-vram`) | image qwenimage21 |
 | `NC_SD_ARGS` | none | the bridge's own, `k=v;...`: threads=N, flash_attn=0\|1, vae_tiling=0\|1 (`--opt-sd-args`) | image qwenimage21 |
+| `NC_FLASHVSR_SPLIT` | 18,12 on two cards, 30 on one | the FlashVSR DiT's 30 blocks over the model's cards, in order (`--opt-split`); the first card also holds the LQ projection, the last the decoder | image flashvsr |
 | `NC_PYTHON` | python3 | the interpreter that runs the image worker | image qwenimage21 |
 | `NC_IMAGE_WORKER` | python/worker.py beside the program, else the source tree's | the worker script that drives the platform's engine | image qwenimage21 |
 

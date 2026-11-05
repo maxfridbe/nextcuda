@@ -124,6 +124,22 @@ pub struct UpscaleRequest {
     pub tile: Option<u32>,
 }
 
+/// A whole clip for a video upscaler (video super-resolution: the model sees the frames together, in order). The frames
+/// come from the caller one at a time (RGB bytes [height, width, 3]); the made ones go back the same way, in order and
+/// as many. `None` fields take the engine's defaults
+#[derive(Clone, Debug, Default)]
+pub struct ClipUpscaleRequest {
+    pub width: u32,
+    pub height: u32,
+    /// the clip's frame count when known (for progress only: the clip ends when the frames do)
+    pub frames: Option<u32>,
+    pub variant: Option<String>,
+    pub scale: Option<u32>,
+    pub seed: Option<u64>,
+    /// the engine's own options, by name
+    pub extra: Given,
+}
+
 /// What an upscale was made with
 #[derive(Clone, Debug, Default)]
 pub struct UpscaleInfo {
@@ -339,6 +355,18 @@ pub trait ImageEngine: Send + Sync {
     /// a picture made bigger, reporting each tile done (`Step::at` of `of`)
     fn upscale(&self, _req: &UpscaleRequest, _progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<(Picture, UpscaleInfo)> {
         Err(Error(format!("{} does not upscale (an upscaler: real-esrgan, waifu2x)", self.arch())))
+    }
+    /// whether it upscales whole clips (`upscale_clip`: a video super-resolution model); video.upscale then gives it
+    /// the clip rather than each frame to `upscale`
+    fn upscales_clips(&self) -> bool {
+        false
+    }
+    /// a clip made bigger: frames from `next` (None: the clip's end) until it ends, each made frame to `emit` in order,
+    /// progress as frames done (`Step::at` of `of`, 0 when the count is not known); an error from `emit` or `progress`
+    /// stops it (a cancel)
+    fn upscale_clip(&self, _req: &ClipUpscaleRequest, _next: &mut dyn FnMut() -> Result<Option<Vec<u8>>>, _emit: &mut dyn FnMut(Picture) -> Result<()>,
+                    _progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<UpscaleInfo> {
+        Err(Error(format!("{} does not upscale clips (a video super-resolution model: flashvsr)", self.arch())))
     }
     /// whether it writes a picture as SVG (`vectorize`: StarVector)
     fn vectorizes(&self) -> bool {

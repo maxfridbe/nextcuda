@@ -1,0 +1,12 @@
+[package]
+name = "nextcuda-image-flashvsr"
+description = "FlashVSR v1.1 (OpenImagingLab): one-step diffusion video super-resolution, a clip as one stream; Rust and CUDA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextcuda-core.workspace = true
+nextcuda-image.workspace = true
+nextcuda-diffusion.workspace = true
+nextcuda-gguf.workspace = true
