@@ -15,6 +15,33 @@ export interface Cancelled {
   id?: string | null;
 }
 
+/** A picture's background removed */
+export interface CutOut {
+  created: number;
+  data: CutOutItem[];
+  nextsycl: CutOutRun;
+}
+
+/** A picture with its background removed: the RGBA picture (and the mask) as links or bytes */
+export interface CutOutItem {
+  /** the picture's own size */
+  width: number;
+  height: number;
+  /** the model that made it */
+  model: string;
+  /** the RGBA PNG (its own colours, the mask as straight alpha): a link (response_format url) or base64 */
+  url?: string | null;
+  b64_json?: string | null;
+  /** with mask: true, the 8-bit grey PNG of the mask alone */
+  mask_url?: string | null;
+  mask_b64_json?: string | null;
+}
+
+/** How a background removal went */
+export interface CutOutRun {
+  seconds: number;
+}
+
 /** The engine's own defaults (a request's absent fields) */
 export interface Defaults {
   width: number;
@@ -92,7 +119,7 @@ export interface HistoryEntry {
 }
 
 /** What a history entry was: a picture made (none), or another kind of work */
-export type HistoryKind = "ocr" | "vectorize" | "upscale" | "upscale-video";
+export type HistoryKind = "ocr" | "vectorize" | "upscale" | "upscale-video" | "cutout";
 
 /** What image.edit makes from: the body its kind's server takes. */
 export interface ImageEditBody {
@@ -180,6 +207,23 @@ export interface ImageOcrReq {
   temperature?: number | null;
   /** one page: read its 640-pixel tiles too (default true) */
   tiles?: boolean | null;
+  /** other keys */
+  [key: string]: unknown;
+}
+
+/** What image.remove_background makes from: the body its kind's server takes. */
+export interface ImageRemoveBackgroundBody {
+  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload) */
+  image: string;
+  /**
+   * true: the mask on its own too (an 8-bit grey PNG: mask_b64_json or mask_url)
+   * @default false
+   */
+  mask?: boolean | null;
+  /** the model's id (birefnet, isnet-general-use); none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** b64_json (default): the PNGs as base64; url: the server keeps them and links them */
+  response_format?: ResponseFormat | null;
   /** other keys */
   [key: string]: unknown;
 }
@@ -665,6 +709,12 @@ export function routes(base = "", fetcher: typeof fetch = (u, i) => fetch(u, i))
      * @tags openai
      */
     upscale: (req: ImageUpscaleBody): Promise<Upscaled> => r.json("POST", r.url("/v1/images/upscale", req, false), JSON.stringify(req), "application/json", false),
+    /**
+     * A picture's background removed (BiRefNet, IS-Net): the RGBA PNG and with mask the mask, linked or as base64
+     * @route POST /v1/images/remove-background
+     * @tags openai
+     */
+    removeBackground: (req: ImageRemoveBackgroundBody): Promise<CutOut> => r.json("POST", r.url("/v1/images/remove-background", req, false), JSON.stringify(req), "application/json", false),
     /**
      * A clip upscaled frame by frame (ffmpeg decodes and encodes, the audio copied): the MP4 linked, or as base64
      * @route POST /v1/videos/upscale

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{edit_body, err, init_picture, ImageServer};
-use crate::home::methods::{ImageEditBody, ImageGenerateBody, ImageOcrReq, ImageUpscaleBody, ImageVectorizeBody, VideoUpscaleBody};
+use crate::home::methods::{ImageEditBody, ImageGenerateBody, ImageOcrReq, ImageRemoveBackgroundBody, ImageUpscaleBody, ImageVectorizeBody, VideoUpscaleBody};
 use crate::page::{CancelReq, Cancelled, Cx, Fail, FileName, Gpu, Health, ModelList};
 
 /// The engine's own defaults (a request's absent fields)
@@ -216,6 +216,8 @@ pub enum HistoryKind {
     Upscale,
     #[serde(rename = "upscale-video")]
     UpscaleVideo,
+    #[serde(rename = "cutout")]
+    Cutout,
 }
 
 /// Something the server made, newest first: a picture (with its settings), or a reading, an SVG, an upscale
@@ -349,6 +351,40 @@ pub struct UpscaledItem {
     pub fps: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+/// A picture with its background removed: the RGBA picture (and the mask) as links or bytes
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct CutOutItem {
+    /// the picture's own size
+    pub width: i64,
+    pub height: i64,
+    /// the model that made it
+    pub model: String,
+    /// the RGBA PNG (its own colours, the mask as straight alpha): a link (response_format url) or base64
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub b64_json: Option<String>,
+    /// with mask: true, the 8-bit grey PNG of the mask alone
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_b64_json: Option<String>,
+}
+
+/// How a background removal went
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct CutOutRun {
+    pub seconds: f64,
+}
+
+/// A picture's background removed
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct CutOut {
+    pub created: i64,
+    pub data: Vec<CutOutItem>,
+    pub nextsycl: CutOutRun,
 }
 
 /// How an upscale went
@@ -488,6 +524,12 @@ fn upscale(s: &ImageServer, cx: &mut Cx, req: ImageUpscaleBody) -> Result<Checke
     s.upscale(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?, &cx.base()).map(Checked::new)
 }
 
+/// A picture's background removed (BiRefNet, IS-Net): the RGBA PNG and with mask the mask, linked or as base64
+#[route(post = "/v1/images/remove-background", tags = "openai")]
+fn remove_background(s: &ImageServer, cx: &mut Cx, req: ImageRemoveBackgroundBody) -> Result<Checked<CutOut>, Fail> {
+    s.remove_background(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?, &cx.base()).map(Checked::new)
+}
+
 /// A clip upscaled frame by frame (ffmpeg decodes and encodes, the audio copied): the MP4 linked, or as base64
 #[route(post = "/v1/videos/upscale", tags = "openai")]
 fn upscale_video(s: &ImageServer, cx: &mut Cx, req: VideoUpscaleBody) -> Result<Checked<Upscaled>, Fail> {
@@ -500,7 +542,7 @@ fn ocr(s: &ImageServer, _cx: &mut Cx, req: ImageOcrReq) -> Result<Checked<Readin
     s.ocr(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?).map(Checked::new)
 }
 
-routes![sync ImageServer, Cx, Fail; gpu, health, models, info, progress, history, cancel, file, generations, edits, vectorize, upscale, upscale_video, ocr];
+routes![sync ImageServer, Cx, Fail; gpu, health, models, info, progress, history, cancel, file, generations, edits, vectorize, upscale, remove_background, upscale_video, ocr];
 
 /// The table, made once
 pub fn table() -> &'static [rpcgen::SyncRoute<ImageServer, Cx, Fail>] {

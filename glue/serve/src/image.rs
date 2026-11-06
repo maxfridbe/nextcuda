@@ -606,6 +606,61 @@ impl ImageServer {
                   "nextsycl": {"seconds": out.prompt_seconds + out.seconds, "prompt_seconds": out.prompt_seconds, "tokens": out.tokens, "tok_s": tok_s, "wh": wh}}))
     }
 
+    /// POST /v1/images/remove-background: {image (base64 / data URL), model, mask, response_format}: the RGBA picture
+    /// (straight alpha) and with mask the mask, kept and linked (url) or as base64 (b64_json, the default)
+    fn remove_background(&self, b: &Value, base: &str) -> Result<Value, (u16, String)> {
+        let bad = |m: String| (400u16, m);
+        let raw = b["image"].as_str().filter(|v| !v.is_empty()).ok_or_else(|| bad("image: the picture (base64 or a data: URL) is required".into()))?;
+        let pic = init_picture(raw).map_err(bad)?;
+        if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty() && *m != self.model) {
+            return Err((404, format!("model {m} is not served here (this server: {})", self.model)));
+        }
+        let url = b["response_format"].as_str() == Some("url");
+        if url && self.out_dir.is_none() {
+            return Err(bad("response_format url: this server keeps no files (start it with an output directory)".into()));
+        }
+        let want_mask = b["mask"].as_bool().unwrap_or(false);
+        self.waiting.fetch_add(1, Ordering::Relaxed);
+        let g = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        self.waiting.fetch_sub(1, Ordering::Relaxed);
+        let (engine, _) = match g.as_ref() {
+            None => return Err((503, "the engine is not loaded".into())),
+            Some((e, _)) if !e.removes_background() => return Err(bad(format!("{} does not remove backgrounds (birefnet, isnet-general-use do)", self.model))),
+            Some(x) => x,
+        };
+        let t0 = Instant::now();
+        *self.progress.lock().unwrap() = json!({"busy": true, "prompt": format!("remove the background of {}x{}", pic.width, pic.height), "at": 0, "of": 1, "phase": "mask"});
+        let out = engine.remove_background(&pic);
+        *self.progress.lock().unwrap() = json!({"busy": false});
+        let (rgba, mask) = out.map_err(|e| (500u16, e.0))?;
+        let seconds = t0.elapsed().as_secs_f64();
+        let png = rgba.png_bytes(&[("model", self.model.clone()), ("seconds", format!("{seconds:.3}"))]).map_err(|e| (500u16, e))?;
+        let mpng = if want_mask { Some(mask.png_bytes(&[("model", self.model.clone())]).map_err(|e| (500u16, e))?) } else { None };
+        let mut item = json!({"width": pic.width, "height": pic.height, "model": self.model});
+        if let (true, Some(dir)) = (url, &self.out_dir) {
+            let model = self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_");
+            let mut f = owned_file(dir, |u| format!("{u}-{model}-cutout.png"), &png)?;
+            let name = f.name();
+            item["url"] = json!(format!("{base}/v1/images/files/{name}"));
+            if let Some(m) = &mpng {
+                let mut mf = owned_file(dir, |_| format!("{}-mask.png", name.trim_end_matches(".png")), m)?;
+                mf.keep = true;
+                item["mask_url"] = json!(format!("{base}/v1/images/files/{}", mf.name()));
+            }
+            f.keep = true;
+            let mut h = self.history.lock().unwrap();
+            h.push_front(json!({"kind": "cutout", "url": format!("/v1/images/files/{name}"), "prompt": "background removed", "width": pic.width,
+                                "height": pic.height, "seconds": seconds, "created": now()}));
+            h.truncate(200);
+        } else {
+            item["b64_json"] = json!(http::base64(&png));
+            if let Some(m) = &mpng {
+                item["mask_b64_json"] = json!(http::base64(m));
+            }
+        }
+        Ok(json!({"created": now(), "data": [item], "nextsycl": {"seconds": seconds}}))
+    }
+
     /// An upscale request's settings (image.upscale and video.upscale share them)
     fn upscale_req(b: &Value, picture: nextcuda_image::Picture) -> Result<nextcuda_image::UpscaleRequest, (u16, String)> {
         let bad = |m: String| (400u16, m);

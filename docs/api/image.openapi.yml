@@ -237,6 +237,27 @@ paths:
                 $ref: '#/components/schemas/Upscaled'
         default:
           description: 'an error: the body''s `error` says what'
+  /v1/images/remove-background:
+    post:
+      operationId: removeBackground
+      summary: 'A picture''s background removed (BiRefNet, IS-Net): the RGBA PNG and with mask the mask, linked or as base64'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageRemoveBackgroundBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CutOut'
+        default:
+          description: 'an error: the body''s `error` says what'
   /v1/videos/upscale:
     post:
       operationId: upscaleVideo
@@ -303,6 +324,64 @@ components:
       required:
       - cancelled
       description: What a cancel did
+    CutOut:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CutOutItem'
+        nextsycl:
+          $ref: '#/components/schemas/CutOutRun'
+      required:
+      - created
+      - data
+      - nextsycl
+      description: A picture's background removed
+    CutOutItem:
+      type: object
+      properties:
+        width:
+          type: integer
+          description: the picture's own size
+        height:
+          type: integer
+        model:
+          type: string
+          description: the model that made it
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the RGBA PNG (its own colours, the mask as straight alpha): a link (response_format url) or base64'
+        b64_json:
+          anyOf:
+          - type: string
+          - type: 'null'
+        mask_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'with mask: true, the 8-bit grey PNG of the mask alone'
+        mask_b64_json:
+          anyOf:
+          - type: string
+          - type: 'null'
+      required:
+      - width
+      - height
+      - model
+      description: 'A picture with its background removed: the RGBA picture (and the mask) as links or bytes'
+    CutOutRun:
+      type: object
+      properties:
+        seconds:
+          type: number
+      required:
+      - seconds
+      description: How a background removal went
     Defaults:
       type: object
       properties:
@@ -486,6 +565,7 @@ components:
       - vectorize
       - upscale
       - upscale-video
+      - cutout
       description: 'What a history entry was: a picture made (none), or another kind of work'
     ImageEditBody:
       type: object
@@ -671,6 +751,32 @@ components:
       - images
       additionalProperties: true
       description: What image.ocr takes.
+    ImageRemoveBackgroundBody:
+      type: object
+      properties:
+        image:
+          type: string
+          description: 'the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload)'
+        mask:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: false
+          description: 'true: the mask on its own too (an 8-bit grey PNG: mask_b64_json or mask_url)'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id (birefnet, isnet-general-use); none: the loaded one, else the first enabled'
+        response_format:
+          anyOf:
+          - $ref: '#/components/schemas/ResponseFormat'
+          - type: 'null'
+          description: 'b64_json (default): the PNGs as base64; url: the server keeps them and links them'
+      required:
+      - image
+      additionalProperties: true
+      description: 'What image.remove_background makes from: the body its kind''s server takes.'
     ImageUpscaleBody:
       type: object
       properties:

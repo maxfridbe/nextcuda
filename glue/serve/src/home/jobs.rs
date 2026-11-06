@@ -27,7 +27,7 @@ use super::{now, Home};
 use crate::http::{call_for, Target};
 
 /// The methods that run as jobs
-pub const METHODS: [&str; 10] = ["image.generate", "image.edit", "image.upscale", "image.vectorize", "video.upscale", "audio.generate", "audio.speak",
+pub const METHODS: [&str; 11] = ["image.generate", "image.edit", "image.upscale", "image.vectorize", "image.remove_background", "video.upscale", "audio.generate", "audio.speak",
     "audio.transcribe", "model3d.generate", "model3d.rig"];
 
 /// The queue a method's jobs wait in: its prefix, but video.upscale runs on the image servers (an upscaler there) and

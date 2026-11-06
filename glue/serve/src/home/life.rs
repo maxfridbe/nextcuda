@@ -170,6 +170,7 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
         // video super-resolution: the clip as a whole (temporal), pictures as still clips
         "image" if arch == "flashvsr" || arch == "seedvr2" => (vec!["upscale", "upscale_video", "video_sr", "temporal"], vec!["image.upscale", "video.upscale"]),
         "image" if arch == "starvector" => (vec!["vectorize", "svg"], vec!["image.vectorize"]),
+        "image" if arch == "birefnet" || arch == "isnet" => (vec!["remove_background", "mask", "rgba"], vec!["image.remove_background"]),
         // text to image alone: no edits, references or starting picture (MOSS merges LoRAs at load; a turbo entry's
         // is a few-step distillation)
         "image" if arch == "ming-image" => (vec!["generate"], vec!["image.generate"]),

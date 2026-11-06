@@ -39,7 +39,7 @@ const FEATURES: &[&str] = &[
     "video.negative_prompt.ignored", "image.canvases", "image.cancel", "spec.open",
     "image.edit.strength", "audio.speak.continue_from", "video.preview", "system.busy.parallel",
     "errors.retryable", "errors.no_room", "jobs.precheck", "image.info.steps", "image.generate.init_image", "image.edit.reference",
-    "video.failure", "video.gpu", "video.engines.ignored", "audio.speak.precheck.voice", "jobs.cancel.reentrant_id", "rpc.errors.body", "audio.transcribe", "image.upscale", "video.upscale", "image.vectorize",
+    "video.failure", "video.gpu", "video.engines.ignored", "audio.speak.precheck.voice", "jobs.cancel.reentrant_id", "rpc.errors.body", "audio.transcribe", "image.upscale", "video.upscale", "image.vectorize", "image.remove_background", "jobs.result_gone",
     "rpc.http200", "result.run", "models.capabilities", "system.cards", "jobs.list", "jobs.status.one", "jobs.queue", "jobs.priority", "jobs.held",
     "jobs.stage", "uploads", "voices.owner", "voices.ready", "room.free_idle", "room.wait", "llm.no_room", "llm.keep_up_s",
     "system.maintenance", "errors.maintenance", "jobs.model3d", "model3d.generate", "model3d.rig", "model3d.upload.mesh",
@@ -807,7 +807,7 @@ impl Home {
                     self.pick("image", b, &all)?
                 } else {
                     // no model named: the loaded or first enabled one that draws (not a reader, not an upscaler)
-                    let draws = |m: &Value| !s(m, "arch").contains("ocr") && !upscales(m) && !vectorizes(m);
+                    let draws = |m: &Value| !s(m, "arch").contains("ocr") && !upscales(m) && !vectorizes(m) && !removes_background(m);
                     let on: Vec<&Value> = all.iter().filter(|m| registry::kind_of(m) == "image" && m["enabled"] != false && draws(m)).collect();
                     self.loaded_of("image").into_iter().find(|l| on.iter().any(|m| m["id"] == l.as_str())).or_else(|| on.first().map(|m| s(m, "id")))
                         .ok_or_else(|| (409, "no image model that draws is enabled (system.enable qwen-image-2.1-q8)".to_string()))?
@@ -847,6 +847,25 @@ impl Home {
                 let mut body = b.clone();
                 body["model"] = json!(id);
                 relay(&t, "POST", "/v1/images/vectorize", Some(&body), 3600)
+            }
+            ("image", "remove_background") => {
+                let id = if b["model"].as_str().is_some_and(|x| !x.is_empty()) {
+                    let id = self.pick("image", b, &all)?;
+                    if all.iter().any(|m| m["id"] == id.as_str() && !removes_background(m)) {
+                        return Err((400, format!("{id} does not remove backgrounds (birefnet, isnet-general-use do)")));
+                    }
+                    id
+                } else {
+                    let on: Vec<&Value> = all.iter().filter(|m| registry::kind_of(m) == "image" && m["enabled"] != false && removes_background(m)).collect();
+                    self.loaded_of("image").into_iter().find(|l| on.iter().any(|m| m["id"] == l.as_str())).or_else(|| on.first().map(|m| s(m, "id")))
+                        .ok_or_else(|| (409, "no background remover is enabled (system.enable birefnet)".to_string()))?
+                };
+                let job = b["request_id"].as_str();
+                let t = self.ensure_for(&id, job)?;
+                self.sent(job);
+                let mut body = b.clone();
+                body["model"] = json!(id);
+                relay(&t, "POST", "/v1/images/remove-background", Some(&body), 3600)
             }
             ("image", "upscale") | ("video", "upscale") => {
                 let id = self.upscaler_for(b, &all)?;
@@ -1151,7 +1170,7 @@ impl Home {
             "audio.generate" => ("audio", &[("audio", false)]),
             "audio.voices.add" => ("audio", &[("sample", false)]),
             "model3d.generate" => ("model3d", &[("image", false), ("images", true)]),
-            "image.upscale" | "image.vectorize" => ("image", &[("image", false)]),
+            "image.upscale" | "image.vectorize" | "image.remove_background" => ("image", &[("image", false)]),
             "model3d.rig" | "model3d.tool" => ("model3d", &[("mesh", false)]),
             _ => ("", &[]),
         }
@@ -1530,6 +1549,11 @@ pub(super) fn upscales(m: &Value) -> bool {
 }
 
 /// A registry entry that writes pictures as SVG (StarVector) rather than draws them
+/// A background remover (image.remove_background)
+pub(super) fn removes_background(m: &Value) -> bool {
+    matches!(s(m, "arch").as_str(), "birefnet" | "isnet")
+}
+
 pub(super) fn vectorizes(m: &Value) -> bool {
     s(m, "arch") == "starvector"
 }

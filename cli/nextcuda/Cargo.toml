@@ -23,6 +23,7 @@ nextcuda-image-mingimage.workspace = true
 nextcuda-image-mossimage.workspace = true
 nextcuda-image-upscale.workspace = true
 nextcuda-image-flashvsr.workspace = true
+nextcuda-image-rembg.workspace = true
 nextcuda-image-starvector.workspace = true
 nextcuda-video.workspace = true
 nextcuda-video-h3.workspace = true

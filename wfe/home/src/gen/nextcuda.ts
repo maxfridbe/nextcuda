@@ -820,6 +820,80 @@ export interface ImageQueueResumeReq {
   [key: string]: unknown;
 }
 
+/** What image.remove_background takes. */
+export interface ImageRemoveBackgroundReq {
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
+  batch?: string | null;
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
+  held?: boolean | null;
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
+  label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
+  priority?: number | null;
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
+  project?: string | null;
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
+  queue?: boolean | null;
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
+  reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload) */
+  image: string;
+  /**
+   * true: the mask on its own too (an 8-bit grey PNG: mask_b64_json or mask_url)
+   * @default false
+   */
+  mask?: boolean | null;
+  /** the model's id (birefnet, isnet-general-use); none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** b64_json (default): the PNGs as base64; url: the server keeps them and links them */
+  response_format?: ResponseFormat | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
+  /** other keys */
+  [key: string]: unknown;
+}
+
 /** What image.status takes. */
 export interface ImageStatusReq {
   /** the job's label (looked up first) */
@@ -2337,6 +2411,12 @@ export interface Methods {
    */
   "image.vectorize": { req: ImageVectorizeReq; resp: any };
   /**
+   * A picture's background removed (BiRefNet, IS-Net general-use): the RGBA picture at its own size - its colours, the mask as straight alpha - and with mask: true the 8-bit mask alone; b64_json (default) or url. A job like image.upscale (wait, reentrant_id, status, cancel)
+   * @tags image
+   * @example {"image":"upload:up_1792400000_chair.png","mask":true,"model":"birefnet"}
+   */
+  "image.remove_background": { req: ImageRemoveBackgroundReq; resp: any };
+  /**
    * A clip made bigger frame by frame by an upscaler (as image.upscale: the variant, scale, noise, tile), its sound copied as it was; an MP4 back. A job in the image queue (image.status, image.cancel)
    * @tags video
    * @example {"file":"h3_20261019_121939","model":"real-esrgan","scale":2,"variant":"realesr-animevideov3"}
@@ -2962,6 +3042,12 @@ export function client(post: Post, raw?: PostRaw) {
      * @example {"image":"upload:up_1792400000_logo.png","max_length":5000,"model":"starvector-1b-im2svg"}
      */
     "image.vectorize": (req: ImageVectorizeReq): Promise<any> => post("image.vectorize", req),
+    /**
+     * A picture's background removed (BiRefNet, IS-Net general-use): the RGBA picture at its own size - its colours, the mask as straight alpha - and with mask: true the 8-bit mask alone; b64_json (default) or url. A job like image.upscale (wait, reentrant_id, status, cancel)
+     * @tags image
+     * @example {"image":"upload:up_1792400000_chair.png","mask":true,"model":"birefnet"}
+     */
+    "image.remove_background": (req: ImageRemoveBackgroundReq): Promise<any> => post("image.remove_background", req),
     /**
      * A clip made bigger frame by frame by an upscaler (as image.upscale: the variant, scale, noise, tile), its sound copied as it was; an MP4 back. A job in the image queue (image.status, image.cancel)
      * @tags video

@@ -356,6 +356,15 @@ pub trait ImageEngine: Send + Sync {
     fn upscale(&self, _req: &UpscaleRequest, _progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<(Picture, UpscaleInfo)> {
         Err(Error(format!("{} does not upscale (an upscaler: real-esrgan, waifu2x)", self.arch())))
     }
+    /// whether it removes pictures' backgrounds (`remove_background`: BiRefNet, IS-Net)
+    fn removes_background(&self) -> bool {
+        false
+    }
+    /// the picture's object kept, its background removed: (the picture as RGBA - its own RGB, straight alpha: the mask -
+    /// and the mask alone, 8 bits a pixel), both the picture's size
+    fn remove_background(&self, _pic: &Picture) -> Result<(Picture, Picture)> {
+        Err(Error(format!("{} does not remove backgrounds (birefnet, isnet-general-use do)", self.arch())))
+    }
     /// whether it upscales whole clips (`upscale_clip`: a video super-resolution model); video.upscale then gives it
     /// the clip rather than each frame to `upscale`
     fn upscales_clips(&self) -> bool {
