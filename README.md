@@ -69,7 +69,7 @@ curl -s -X POST http://127.0.0.1:8000/rpc/image.status -H "Authorization: Bearer
 |---|---|---|---|
 | chat | Qwen3.8-27B (DeltaNet + attention, MTP drafts, vision), Nemotron 3.5 Super | Qwen3.8 over both, pipelined; Nemotron on the 5070 | [llm.md](docs/llm.md) |
 | image, OCR | Qwen-Image 2.1 and 2512, Ming-Image, Unlimited-OCR, PaddleOCR-VL, olmOCR-2 | one card each; Ming-Image the DiT on the 5070, its text encoder on the 3060 | [image.md](docs/image.md) |
-| upscale | Real-ESRGAN, waifu2x (their ncnn graphs) | one card | [image.md](docs/image.md) |
+| upscale | Real-ESRGAN, waifu2x (their ncnn graphs); FlashVSR v1.1 (video super-resolution, a clip as one stream) | one card; FlashVSR over both, pipelined: 0.43 s a frame for 864 x 480 -> 1728 x 960 | [image.md](docs/image.md), [VSR_PORT.md](docs/VSR_PORT.md) |
 | vectors | StarVector-1B | one card (3.35 GiB at the peak) | [image.md](docs/image.md) |
 | speech | Breeze TTS 2, Qwen3-TTS, VoxCPM2, VibeVoice (several speakers) | one card each; VoxCPM2 int8 fits beside the chat model | [audio.md](docs/audio.md) |
 | listening | Whisper large-v3-turbo | one card | [audio.md](docs/audio.md) |

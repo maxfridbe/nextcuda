@@ -19,6 +19,7 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 | vectors | `starvector-1b-im2svg` | StarVector-1B im2svg: a picture written as SVG code - logos, icons, simple illustrations (`image.vectorize`) | 4.8 GiB | served |
 | upscale | `real-esrgan` | Real-ESRGAN: x4plus, x4plus-anime, animevideov3 2x / 3x / 4x (image.upscale, video.upscale) | 45 MB | served |
 | upscale | `waifu2x` | waifu2x: cunet, upconv_7 anime / photo, denoise -1 to 3, 1x to 32x | 34 MB | served |
+| upscale | `flashvsr` | FlashVSR v1.1: one-step diffusion video super-resolution, 2x-4x, a clip as one stream (video.upscale; image.upscale as a still clip) | 6.0 GB | served |
 | OCR | `unlimited-ocr-q8` | Unlimited-OCR Q8_0: pages to Markdown | 3.7 GiB | served |
 | OCR | `unlimited-ocr-q4` | Unlimited-OCR Q4_K_M | 2.6 GiB | served |
 | OCR | `paddleocr-vl-1.6` | PaddleOCR-VL 1.6: pages, tables, formulas, charts, seals | 1.7 GiB | served |
@@ -71,4 +72,5 @@ Each model's guide (how to ask it, what it takes, what it answers) is in `model-
 | 3D | TRELLIS.2, Hunyuan3D-2mini and 2.1 (its paint alone too), UniRig, SkinTokens, RigNet, AnimateAnyMesh, UniMate | one card each |
 | listening | `whisper` (large-v3-turbo) | one card |
 | upscale | `realesrgan`, `waifu2x` (their ncnn graphs) | one card |
+| upscale | `flashvsr` (Rust + CUDA) | both cards, pipelined (one card up to about 1280 x 768 out) |
 | vectors | `starvector` (StarVector-1B im2svg) | one card |

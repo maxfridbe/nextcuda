@@ -105,6 +105,26 @@ alpha bicubic, waifu2x's 2x model run again for 4x and up.
   video.upscale), waifu2x cunet 0.49 s; x4plus 512 -> 2048 in 3.4-3.8 s. **Memory**: 0.3 GB (animevideov3) to 0.9 GB
   (x4plus, cunet) at the default tiles.
 
+## Video super-resolution: FlashVSR v1.1
+
+`video.upscale` with `"model": "flashvsr", "variant": "flashvsr-v1.1"` (`image/flashvsr`, `kernels/image/flashvsr`): OpenImagingLab's
+one-step diffusion VSR (Apache-2.0) - Wan 2.1 T2V-1.3B distilled to one step and made a stream: 8 frames a step, each
+step's attention reaching the 24 frames before it (a KV cache of three latent pairs, locality-constrained block-sparse
+attention), a causal LQ projection in and a tiny conditional decoder out, then FlashVSR's colour fix. The clip goes
+through whole: no seams, no length limit, detail steady from frame to frame; faces and skin stay natural where
+Real-ESRGAN's models turn them waxy. A picture (`image.upscale`) is a still clip of 25 frames.
+
+- **Checked** (2026-11-05) against the official pipeline in float32 on the CPU (`reference/flashvsr/ref.py`, the
+  block-sparse kernel replaced by its exact masked equivalent), 33 frames at 1024 x 768: the LQ projection 3.8e-4, the
+  DiT's blocks 2e-3 (cos 0.999998), the latents 1.8e-3, the decoder's frames 9e-4, the bytes 64 dB.
+- **Speed** (864 x 480 -> 1728 x 960, the platform's films): 0.43 s a frame on the 5070 + 3060 pipelined (a film of 5,665
+  frames in about 41 min); realesrgan-x4plus takes 6.2 s a frame for the same x2 (made at x4, brought down).
+- **Memory**: the frame is mirrored out to multiples of 128 (1792 x 1024 inside). Its KV cache is 7.9 GiB there, more than
+  one card beside the weights: the 30 blocks are split, 12 on the 5070 with the LQ projection and the decoder (9.4 GiB),
+  18 on the 3060 (7.0 GiB). Settings: `NC_FLASHVSR_SPLIT`, `NC_FLASHVSR_DECODER`, `NC_FLASHVSR_PIPELINE`.
+
+<p align="center"><img src="screenshots/vsr-face-120.jpg" alt="bicubic, realesrgan-x4plus and FlashVSR at x2 on a platform film's frame" width="900"></p>
+
 ## Vectors: StarVector-1B
 
 `image.vectorize` (a job in the image queue; `nextcuda image vectorize FILE`): a picture written as SVG code by
