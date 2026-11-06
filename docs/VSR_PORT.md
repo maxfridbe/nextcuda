@@ -206,3 +206,22 @@ The steadiness ratio is the mean change between consecutive frames, brought down
 source's own (1.0: as steady as the source). The four look the same up close (`docs/screenshots/vsr-settings-120.jpg`).
 **Recommended and now the defaults: sparse_ratio 1.5, local_range 11.** 1.5 is 8% faster and no less steady here.
 local_range 9 costs the same and is slightly less steady.
+
+### The first platform jobs (2026-11-05): a file-name race, fixed
+
+Two films sent 0.7 s apart (2ccbc06b, b101a294) went to the same flashvsr server together. The image server named a
+request's files by the second alone, so they shared the inline clip's temporary file and the result:
+- 2ccbc06b's clip overwrote b101a294's input; b101a294's end then removed it, so 2ccbc06b read nothing ("the clip has
+  no frames");
+- 2ccbc06b's failure then removed the shared result, so b101a294's link answered 404 (b101a294 had also decoded only 73
+  frames, of the wrong clip).
+
+Now:
+- **Names:** every per-request file is named by the second, the process, a count and random bytes.
+- **Creation:** files are made with O_EXCL, so a name that exists is never truncated.
+- **Deletion:** only a request's own paths are removed.
+
+Checked by two tests on the box:
+- `tooling/test_upscale_names.sh`: two server processes of one model, one output folder, two clips in the same second.
+  The old program fails it.
+- `tooling/test_vsr_frontdoor.sh`: two clips inline through the front door together, as the platform sends them.
