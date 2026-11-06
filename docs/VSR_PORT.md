@@ -147,6 +147,10 @@ sampled every 0.5 s (`util_*.log` beside the outputs in brainiac-nvidia:~/nextcu
 **64.1 dB** against the official pipeline after every change (`nextcuda image check`, sparse_ratio 2.0 as the
 reference ran; worst relative error 2.3e-3).
 
+**Result:** x2 0.432 -> **0.225 s a frame** (1.9x; a 5,665-frame film in about 21 min, against about 9.7 h with
+realesrgan-x4plus), both cards about 85% busy. x4 (which did not run before: it does not fit whole) **1.16 s a frame**
+in tiles (the film in about 1 h 50 min).
+
 ### Where the time went (x2, before tuning; `NC_FLASHVSR_PROFILE=1`, each stage waited for)
 
 | stage | card | s a frame | |
