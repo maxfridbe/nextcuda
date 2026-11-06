@@ -9,6 +9,7 @@
 #include "fv.h"
 
 #include <cuda_fp16.h>
+#include <mma.h>
 #include <cfloat>
 #include <cmath>
 
@@ -421,6 +422,116 @@ __global__ void tcd_input_k(const __half* cond, const float* lat, int64_t f, int
     out[id] = f2h(tanhf(v / 3.0f) * 3.0f);
 }
 
+__global__ void tcd_input_ld_k(const __half* cond, const float* lat, int64_t f, int64_t t, int64_t h8, int64_t w8, int64_t ld, __half* out) {
+    const int64_t n = h8 * w8 * ld;
+    const int64_t id = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (id >= n) return;
+    const int64_t ch = id % ld, p = id / ld;
+    const int64_t x = p % w8, y = p / w8;
+    float v = 0.0f;
+    if (ch < 768) {
+        const int64_t xx = ch % 8, yy = (ch / 8) % 8, tt = (ch / 64) % 4, c = ch / 256;
+        const int64_t H = h8 * 8, W = w8 * 8;
+        v = h2f(cond[((tt * H + y * 8 + yy) * W + x * 8 + xx) * 3 + c]);
+    } else if (ch < 784) {
+        v = lat[(((ch - 768) * f + t) * h8 + y) * w8 + x];
+    } else {
+        out[id] = f2h(0.0f);
+        return;
+    }
+    out[id] = f2h(tanhf(v / 3.0f) * 3.0f);
+}
+
+// ---- the decoder's 3 x 3 convolution as an implicit GEMM: wmma 16x16x16, a block 128 pixels x 128 outputs, k 32 a step ----
+
+constexpr int CV_M = 128, CV_N = 128, CV_K = 32, CV_LD = 40;
+
+__global__ void __launch_bounds__(256) conv3_k(const __half* __restrict__ a, int lda, int Ca, const __half* __restrict__ mem, int Cb, int H, int W, int up,
+                                               const __half* __restrict__ w, int Co, const float* __restrict__ bias, int act, const __half* res,
+                                               __half* out) {
+    using namespace nvcuda;
+    __shared__ __align__(32) __half As[2 * CV_M * CV_LD];
+    __shared__ __align__(32) __half Bs[2 * CV_N * CV_LD];
+    __shared__ __align__(32) float Cs[8 * 256];
+    const int Ct = Ca + Cb, K = 9 * Ct, P = H * W;
+    const int m0 = blockIdx.x * CV_M, n0 = blockIdx.y * CV_N;
+    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    const int wm = warp & 3, wn = warp >> 2;
+    const int Ws = up ? W / 2 : W;
+    const int ch = (tid & 3) * 8;
+    // the two rows this thread loads (of A and of B), and their pixels' coordinates
+    int py[2], px[2];
+    bool pin[2];
+    for (int i = 0; i < 2; ++i) {
+        const int p = m0 + (tid >> 2) + 64 * i;
+        pin[i] = p < P;
+        py[i] = p / W;
+        px[i] = p % W;
+    }
+    uint4 ra[2], rb[2];
+    auto load = [&](int k0) {
+        const int tap = k0 / Ct, c0 = k0 % Ct, dy = tap / 3 - 1, dx = tap % 3 - 1;
+        for (int i = 0; i < 2; ++i) {
+            uint4 v = make_uint4(0, 0, 0, 0);
+            const int y = py[i] + dy, x = px[i] + dx;
+            if (pin[i] && y >= 0 && y < H && x >= 0 && x < W) {
+                const long pix = (long) (up ? y >> 1 : y) * Ws + (up ? x >> 1 : x);
+                if (c0 < Ca) v = *reinterpret_cast<const uint4*>(a + pix * lda + c0 + ch);
+                else if (mem) v = *reinterpret_cast<const uint4*>(mem + pix * lda + (c0 - Ca) + ch);
+            }
+            ra[i] = v;
+            const int co = n0 + (tid >> 2) + 64 * i;
+            rb[i] = co < Co ? *reinterpret_cast<const uint4*>(w + (long) co * K + k0 + ch) : make_uint4(0, 0, 0, 0);
+        }
+    };
+    auto store = [&](int buf) {
+        for (int i = 0; i < 2; ++i) {
+            const int row = (tid >> 2) + 64 * i;
+            *reinterpret_cast<uint4*>(As + (buf * CV_M + row) * CV_LD + ch) = ra[i];
+            *reinterpret_cast<uint4*>(Bs + (buf * CV_N + row) * CV_LD + ch) = rb[i];
+        }
+    };
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[2][4];
+    for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 4; ++j) wmma::fill_fragment(acc[i][j], 0.0f);
+    const int nk = K / CV_K;
+    load(0);
+    store(0);
+    __syncthreads();
+    for (int kt = 0; kt < nk; ++kt) {
+        const int buf = kt & 1;
+        if (kt + 1 < nk) load((kt + 1) * CV_K);
+#pragma unroll
+        for (int kk = 0; kk < CV_K; kk += 16) {
+            wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> fa[2];
+            wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> fb[4];
+            for (int i = 0; i < 2; ++i) wmma::load_matrix_sync(fa[i], As + (buf * CV_M + wm * 32 + i * 16) * CV_LD + kk, CV_LD);
+            for (int j = 0; j < 4; ++j) wmma::load_matrix_sync(fb[j], Bs + (buf * CV_N + wn * 64 + j * 16) * CV_LD + kk, CV_LD);
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 4; ++j) wmma::mma_sync(acc[i][j], fa[i], fb[j], acc[i][j]);
+        }
+        if (kt + 1 < nk) store(buf ^ 1);
+        __syncthreads();
+    }
+    float* cw = Cs + warp * 256;
+    for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            wmma::store_matrix_sync(cw, acc[i][j], 16, wmma::mem_row_major);
+            __syncwarp();
+            for (int e = lane; e < 256; e += 32) {
+                const int p = m0 + wm * 32 + i * 16 + e / 16, co = n0 + wn * 64 + j * 16 + e % 16;
+                if (p < P && co < Co) {
+                    float v = cw[e] + (bias ? bias[co] : 0.0f);
+                    if (act == 2) v += h2f(res[(long) p * Co + co]);
+                    if (act >= 1) v = fmaxf(v, 0.0f);
+                    out[(long) p * Co + co] = f2h(v);
+                }
+            }
+            __syncwarp();
+        }
+    }
+}
+
 __global__ void u8_to_half_k(const uint8_t* x, int64_t n, __half* out) {
     const int64_t id = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (id < n) out[id] = f2h((float) x[id] / 255.0f * 2.0f - 1.0f);
@@ -627,6 +738,23 @@ int ns_image_fv_add_relu(ns_gpu* g, void* x, const void* y, int64_t n) { FV_LAUN
 
 int ns_image_fv_tcd_input(ns_gpu* g, const void* cond, const float* lat, int64_t f, int64_t t, int64_t h8, int64_t w8, void* out) {
     FV_LAUNCH(tcd_input_k, h8 * w8 * 784, (const __half*) cond, lat, f, t, h8, w8, (__half*) out);
+}
+
+int ns_image_fv_tcd_input_ld(ns_gpu* g, const void* cond, const float* lat, int64_t f, int64_t t, int64_t h8, int64_t w8, int64_t ld, void* out) {
+    if (ld < 784) return ns_fail("ns_image_fv_tcd_input_ld: rows of at least 784");
+    FV_LAUNCH(tcd_input_ld_k, h8 * w8 * ld, (const __half*) cond, lat, f, t, h8, w8, ld, (__half*) out);
+}
+
+int ns_image_fv_conv3(ns_gpu* g, const void* a, int64_t lda, int64_t Ca, const void* mem, int64_t Cb, int64_t H, int64_t W, int up, const void* w,
+                      int64_t Co, const float* bias, int act, const void* res, void* out) {
+    if (Ca % 32 || Cb % 32 || Co % CV_N || lda % 8) return ns_fail("ns_image_fv_conv3: channels in whole tiles (32 in, 128 out)");
+    if (up && (H % 2 || W % 2)) return ns_fail("ns_image_fv_conv3: an upsampled size must be even");
+    NS_CU(cudaSetDevice(g->dev));
+    dim3 grid((unsigned) ((H * W + CV_M - 1) / CV_M), (unsigned) (Co / CV_N));
+    conv3_k<<<grid, 256, 0, g->q>>>((const __half*) a, (int) lda, (int) Ca, (const __half*) mem, (int) Cb, (int) H, (int) W, up, (const __half*) w, (int) Co,
+                                    bias, act, (const __half*) res, (__half*) out);
+    NS_LAUNCH_CHECK();
+    return 0;
 }
 
 int ns_image_fv_u8_to_half(ns_gpu* g, const uint8_t* x, int64_t n, void* out) { FV_LAUNCH(u8_to_half_k, n, x, n, (__half*) out); }

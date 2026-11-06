@@ -27,20 +27,38 @@ const COL_BYTES: usize = 192 << 20;
 
 /// A 3 x 3 conv's weights [co, ci, 3, 3] reordered to [co, 3, 3, ci]; a 1x1's as they are
 fn conv_lin(gpu: &Arc<Gpu>, st: &SafeTensors, name: &str, bias: bool) -> Result<Lin> {
+    conv_lin_pad(gpu, st, name, bias, 0)
+}
+
+/// The same with the inputs padded with zero weights to `pad` channels (0: none): the first conv's 784 to 800
+fn conv_lin_pad(gpu: &Arc<Gpu>, st: &SafeTensors, name: &str, bias: bool, pad: usize) -> Result<Lin> {
     let t = st.need(&format!("{name}.weight")).map_err(|e| Error(e.0))?;
     let (co, ci, kh) = (t.shape[0] as usize, t.shape[1] as usize, t.shape[2] as usize);
     let w = st.f32(&format!("{name}.weight")).map_err(|e| Error(e.0))?;
+    let cp = pad.max(ci);
     let taps = kh * kh;
-    let mut r = vec![0f32; w.len()];
+    let mut r = vec![0f32; co * taps * cp];
     for o in 0..co {
         for c in 0..ci {
             for k in 0..taps {
-                r[(o * taps + k) * ci + c] = w[(o * ci + c) * taps + k];
+                r[(o * taps + k) * cp + c] = w[(o * ci + c) * taps + k];
             }
         }
     }
     let b = if bias { Some(st.f32(&format!("{name}.bias")).map_err(|e| Error(e.0))?) } else { None };
-    Lin::from(gpu, &r, b.as_deref(), co, taps * ci)
+    Lin::from(gpu, &r, b.as_deref(), co, taps * cp)
+}
+
+/// The first conv's input channels: 784 (768 of condition, 16 of latent) padded to a multiple of 32
+const IN_CH: usize = 800;
+
+/// What follows a convolution, fused into it on the implicit path
+#[derive(Clone, Copy)]
+enum Act<'a> {
+    None,
+    Relu,
+    /// ReLU(conv + this): a MemBlock's end (the buffer may be the output)
+    AddRelu(&'a DevBuf),
 }
 
 struct Mem {
@@ -66,6 +84,8 @@ pub struct Tcd {
     /// the last conv (128 -> 3): float32 [3, 3, 3, 128] and its bias, run directly (an unfolding for 3 outputs is waste)
     c26: (DevBuf, DevBuf),
     pub bytes: usize,
+    /// the implicit-GEMM convolutions (NC_FLASHVSR_CONV=im2col: unfolded + cuBLAS, the first path)
+    implicit: bool,
     state: Option<State>,
 }
 
@@ -95,7 +115,7 @@ impl Tcd {
         let mem = |i: usize| -> Result<Mem> { Ok(Mem { c1: c(&format!("{i}.conv.0"), true)?, c2: c(&format!("{i}.conv.2"), true)?, c3: c(&format!("{i}.conv.4"), true)? }) };
         let t = Tcd {
             gpu: gpu.clone(),
-            c1: c("1", true)?,
+            c1: conv_lin_pad(gpu, st, "decoder.1", true, IN_CH)?,
             c3: c("3", false)?,
             mb0: [mem(5)?, mem(6)?, mem(7)?],
             tg9: c("9.conv", false)?,
@@ -120,6 +140,7 @@ impl Tcd {
                 (DevBuf::from_f32(gpu, &r)?, DevBuf::from_f32(gpu, &st.f32("decoder.26.bias").map_err(|e| Error(e.0))?)?)
             },
             bytes: 0,
+            implicit: std::env::var("NC_FLASHVSR_CONV").map_or(true, |v| v != "im2col"),
             state: None,
         };
         let mut bytes = [&t.c1, &t.c3, &t.tg9, &t.c10, &t.tg15, &t.c16, &t.tg21, &t.c22, &t.c24].iter().map(|l| l.bytes()).sum::<usize>() + 3 * 9 * 128 * 4;
@@ -134,7 +155,7 @@ impl Tcd {
         // pasts: 3 x (512 at 1/8, 256 at 1/4, 128 at 1/2); buffers at full size: 3 x 128 channels; the rest smaller
         let past = 3 * (p8 * 512 + 4 * p8 * 256 + 16 * p8 * 128) * 2;
         let full = 64 * p8 * 128 * 2;
-        past + 3 * full + 16 * p8 * 256 * 2 * 2 + p8 * 784 * 2 + COL_BYTES + 64 * p8 * 3 * 2
+        past + 3 * full + 16 * p8 * 256 * 2 * 2 + p8 * IN_CH * 2 + COL_BYTES + 64 * p8 * 3 * 2
     }
 
     /// A new stream for latents of [h8, w8] (the pasts emptied, the first 3 frames to drop)
@@ -156,7 +177,7 @@ impl Tcd {
                 past,
                 have: vec![false; 9],
                 trim: 3,
-                inp: DevBuf::new(gpu, p8 * 784 * 2)?,
+                inp: DevBuf::new(gpu, p8 * IN_CH * 2)?,
                 a: DevBuf::new(gpu, full)?,
                 b: DevBuf::new(gpu, full)?,
                 t1: DevBuf::new(gpu, full)?,
@@ -165,7 +186,8 @@ impl Tcd {
                 tg2: DevBuf::new(gpu, 16 * p8 * 256 * 2)?,
                 f0: DevBuf::new(gpu, 16 * p8 * 128 * 2)?,
                 f1: DevBuf::new(gpu, 16 * p8 * 128 * 2)?,
-                col: DevBuf::new(gpu, COL_BYTES)?,
+                // the unfolded columns only for the im2col path
+                col: DevBuf::new(gpu, if self.implicit { 1 } else { COL_BYTES })?,
                 out: DevBuf::new(gpu, 64 * p8 * 3 * 2)?,
             });
         }
@@ -179,12 +201,23 @@ impl Tcd {
     /// channels after them (a MemBlock's past; cb 0: none) -> out [h w, co]
     #[allow(clippy::too_many_arguments)]
     fn conv(&self, nsd: &Nsd, lin: &Lin, a: *const std::ffi::c_void, lda: usize, ca: usize, mem: Option<*const std::ffi::c_void>, cb: usize,
-            h: usize, w: usize, up: bool, col: &DevBuf, out: &DevBuf) -> Result<()> {
+            h: usize, w: usize, up: bool, col: &DevBuf, out: &DevBuf, act: Act) -> Result<()> {
         let k = ffi::api()?;
         let px = h * w;
         let kk = 9 * (ca + cb);
         if kk != lin.k {
             return Err(Error(format!("flashvsr decoder: a conv of {} inputs fed {kk}", lin.k)));
+        }
+        if self.implicit && ca % 32 == 0 && cb % 32 == 0 && lin.n % 128 == 0 && lda % 8 == 0 {
+            let (code, res) = match act {
+                Act::None => (0, std::ptr::null()),
+                Act::Relu => (1, std::ptr::null()),
+                Act::AddRelu(r) => (2, r.ptr() as *const _),
+            };
+            let b = lin.b.as_ref().map_or(std::ptr::null(), |b| b.fp() as *const f32);
+            // SAFETY: a (and mem) hold (h/u) x (w/u) x lda halves, the weights co x 9 (ca + cb), out and res h x w x co.
+            return check(unsafe { (k.conv3)(g(&self.gpu), a, lda as i64, ca as i64, mem.unwrap_or(std::ptr::null()), cb as i64, h as i64, w as i64,
+                                            up as i32, lin.w.ptr(), lin.n as i64, b, code, res, out.ptr()) }, "decoder conv");
         }
         let tile = (COL_BYTES / (kk * 2)).max(1);
         let mut p0 = 0;
@@ -198,7 +231,12 @@ impl Tcd {
             lin.apply(nsd, col.ptr(), n, o as *mut _, Dt::F16)?;
             p0 += n;
         }
-        Ok(())
+        match act {
+            Act::None => Ok(()),
+            Act::Relu => self.relu(out, px * lin.n),
+            // SAFETY: out and r hold px x co halves.
+            Act::AddRelu(r) => check(unsafe { (k.add_relu)(g(&self.gpu), out.ptr(), r.ptr(), (px * lin.n) as i64) }, "add relu"),
+        }
     }
 
     fn relu(&self, x: &DevBuf, n: usize) -> Result<()> {
@@ -214,13 +252,16 @@ impl Tcd {
         let px = h * w;
         let past = if s.have[i] { Some(s.past[i].ptr() as *const _) } else { None };
         // a missing past is zeros: the unfolding reads none
-        self.conv(nsd, &m.c1, x.ptr(), c, c, past, c, h, w, false, &s.col, t1)?;
-        self.relu(t1, px * c)?;
-        self.conv(nsd, &m.c2, t1.ptr(), c, c, None, 0, h, w, false, &s.col, t2)?;
-        self.relu(t2, px * c)?;
-        self.conv(nsd, &m.c3, t2.ptr(), c, c, None, 0, h, w, false, &s.col, t1)?;
+        self.conv(nsd, &m.c1, x.ptr(), c, c, past, c, h, w, false, &s.col, t1, Act::Relu)?;
+        self.conv(nsd, &m.c2, t1.ptr(), c, c, None, 0, h, w, false, &s.col, t2, Act::Relu)?;
+        // the input is the next frame's past: kept before the block's output takes its place
         s.past[i].copy_within(0, x, 0, px * c * 2)?;
         s.have[i] = true;
+        if self.implicit {
+            return self.conv(nsd, &m.c3, t2.ptr(), c, c, None, 0, h, w, false, &s.col, x, Act::AddRelu(x));
+        }
+        // unfolded: the conv's output apart, then x = ReLU(x + it)
+        self.conv(nsd, &m.c3, t2.ptr(), c, c, None, 0, h, w, false, &s.col, t1, Act::None)?;
         // SAFETY: x and t1 hold px x c halves.
         check(unsafe { (k.add_relu)(g(&self.gpu), x.ptr(), t1.ptr(), (px * c) as i64) }, "memblock")
     }
@@ -242,13 +283,11 @@ impl Tcd {
                 emit: &mut dyn FnMut(&DevBuf) -> Result<()>, k: &ffi::Api, gp: *mut std::ffi::c_void) -> Result<()> {
         let (h8, w8) = (s.h8, s.w8);
         // SAFETY: cond holds 4 frames of 8 h8 x 8 w8 x 3 halves, lat 16 x f x h8 x w8 floats, inp h8 x w8 x 784 halves.
-        check(unsafe { (k.tcd_input)(gp, cond, lat.fp(), f as i64, t as i64, h8 as i64, w8 as i64, s.inp.ptr()) }, "decoder input")?;
+        check(unsafe { (k.tcd_input_ld)(gp, cond, lat.fp(), f as i64, t as i64, h8 as i64, w8 as i64, IN_CH as i64, s.inp.ptr()) }, "decoder input")?;
         let p8 = h8 * w8;
         let (a, b, t1) = (s.a.view(0, p8 * 512 * 2)?, s.b.view(0, p8 * 512 * 2)?, s.t1.view(0, p8 * 512 * 2)?);
-        self.conv(nsd, &self.c1, s.inp.ptr(), 784, 784, None, 0, h8, w8, false, &s.col, &a)?;
-        self.relu(&a, p8 * 512)?;
-        self.conv(nsd, &self.c3, a.ptr(), 512, 512, None, 0, h8, w8, false, &s.col, &b)?;
-        self.relu(&b, p8 * 512)?;
+        self.conv(nsd, &self.c1, s.inp.ptr(), IN_CH, IN_CH, None, 0, h8, w8, false, &s.col, &a, Act::Relu)?;
+        self.conv(nsd, &self.c3, a.ptr(), 512, 512, None, 0, h8, w8, false, &s.col, &b, Act::Relu)?;
         for (i, m) in self.mb0.iter().enumerate() {
             self.memblock(nsd, m, i, s, &b, 512, h8, w8, &t1, &a)?;
         }
@@ -257,7 +296,7 @@ impl Tcd {
         let p4 = h4 * w4;
         let (a4, b4) = (s.a.view(0, p4 * 256 * 2)?, s.b.view(0, p4 * 256 * 2)?);
         let t14 = s.t1.view(0, p4 * 256 * 2)?;
-        self.conv(nsd, &self.c10, s.tg.ptr(), 512, 512, None, 0, h4, w4, true, &s.col, &b4)?;
+        self.conv(nsd, &self.c10, s.tg.ptr(), 512, 512, None, 0, h4, w4, true, &s.col, &b4, Act::None)?;
         for (i, m) in self.mb1.iter().enumerate() {
             self.memblock(nsd, m, 3 + i, s, &b4, 256, h4, w4, &t14, &a4)?;
         }
@@ -270,7 +309,7 @@ impl Tcd {
             let f0 = s.f0.view(0, p2 * 128 * 2)?;
             let f1 = s.f1.view(0, p2 * 128 * 2)?;
             let t22 = s.t2.view(0, p2 * 128 * 2)?;
-            self.conv(nsd, &self.c16, src as *const _, 512, 256, None, 0, h2, w2, true, &s.col, &f0)?;
+            self.conv(nsd, &self.c16, src as *const _, 512, 256, None, 0, h2, w2, true, &s.col, &f0, Act::None)?;
             for (i, m) in self.mb2.iter().enumerate() {
                 self.memblock(nsd, m, 6 + i, s, &f0, 128, h2, w2, &f1, &t22)?;
             }
@@ -283,10 +322,8 @@ impl Tcd {
                 let src = unsafe { (tg3.ptr() as *mut u8).add(sub2 * 128 * 2) };
                 let x = s.b.view(0, p1 * 128 * 2)?;
                 let y = s.t1.view(0, p1 * 128 * 2)?;
-                self.conv(nsd, &self.c22, src as *const _, 256, 128, None, 0, h1, w1, true, &s.col, &x)?;
-                self.relu(&x, p1 * 128)?;
-                self.conv(nsd, &self.c24, x.ptr(), 128, 128, None, 0, h1, w1, false, &s.col, &y)?;
-                self.relu(&y, p1 * 128)?;
+                self.conv(nsd, &self.c22, src as *const _, 256, 128, None, 0, h1, w1, true, &s.col, &x, Act::Relu)?;
+                self.conv(nsd, &self.c24, x.ptr(), 128, 128, None, 0, h1, w1, false, &s.col, &y, Act::Relu)?;
                 // SAFETY: y holds h1 x w1 x 128 halves, out h1 x w1 x 3.
                 check(unsafe { (k.conv3_small)(gp, y.ptr(), h1 as i64, w1 as i64, 128, self.c26.0.fp(), 3, self.c26.1.fp(), s.out.ptr()) }, "decoder out")?;
                 if s.trim > 0 {

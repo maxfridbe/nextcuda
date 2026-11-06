@@ -213,6 +213,18 @@ fn write_noise(buf: &DevBuf, gpu: &Arc<Gpu>, given: Option<&[Vec<f32>]>, f: usiz
 }
 
 impl Prof {
+    /// `secs` that a mark's span included, booked under `name` instead (taken from `from`'s next mark)
+    fn carve(&mut self, name: &'static str, secs: f64) {
+        if !self.on {
+            return;
+        }
+        match self.acc.iter_mut().find(|(n, _)| *n == name) {
+            Some(e) => e.1 += secs,
+            None => self.acc.push((name, secs)),
+        }
+        self.t += std::time::Duration::from_secs_f64(secs);
+    }
+
     fn mark(&mut self, name: &'static str, gpus: &[Arc<Gpu>]) {
         if !self.on {
             return;
@@ -374,11 +386,14 @@ impl FlashVsr {
         let mut base = 0usize;
         let mut ended: Option<usize> = None;
         let mut last: Vec<u8> = Vec::new();
+        let prep_secs = std::cell::Cell::new(0f64);
         let mut read = |want: usize, frames: &mut VecDeque<Vec<u8>>, base: usize, ended: &mut Option<usize>, last: &mut Vec<u8>| -> Result<()> {
             while ended.is_none() && base + frames.len() < want {
                 match next()? {
                     Some(f) => {
+                        let tp = Instant::now();
                         let p = if prepared { f } else { resize::prepare(&f, &geo) };
+                        prep_secs.set(prep_secs.get() + tp.elapsed().as_secs_f64());
                         if p.len() != fsize {
                             return Err(Error(format!("flashvsr: a frame of {} bytes, {} expected", p.len(), fsize)));
                         }
@@ -487,8 +502,10 @@ impl FlashVsr {
             loop {
                 let hi = if chunk == 0 { 25 } else { 8 * chunk + 25 };
                 prof.mark("other", &self.gpus);
+                prep_secs.set(0.0);
                 read(hi, &mut frames, base, &mut ended, &mut last)?;
-                prof.mark("read + prepare frames (host)", &self.gpus);
+                prof.carve("frames: bicubic + mirror (host)", prep_secs.get());
+                prof.mark("frames: ffmpeg decode wait", &self.gpus);
                 let done = match ended {
                     Some(0) => return Err(Error("flashvsr: the clip has no frames".into())),
                     Some(n) => chunk + 2 >= (n + 3).div_ceil(8).max(3),
@@ -586,6 +603,8 @@ impl FlashVsr {
                     let limit = ended;
                     let real = |i: usize| limit.is_none_or(|n| i < n);
                     let mut emitted = Vec::new();
+                    let mut colour_secs = 0f64;
+                    let pon = prof.on;
                     for t in 0..f {
                         let cp = unsafe { (cond.ptr() as *mut u8).add(4 * t * fsize * 2) };
                         tcd.frame(dec_nsd, &lat_d, f, t, cp as *const _, &mut |dec| {
@@ -595,6 +614,10 @@ impl FlashVsr {
                                 return Ok(());
                             }
                             hooks.decoded(i, dec)?;
+                            if pon {
+                                dec_gpu.sync()?;
+                            }
+                            let tcol = Instant::now();
                             let ci = i - pre + front;
                             let lqf = unsafe { (cond.ptr() as *mut u8).add(ci * fsize * 2) };
                             let msp = if set.color_fix {
@@ -613,17 +636,19 @@ impl FlashVsr {
                                                   out_u8.ptr() as *mut u8) }, "bytes")?;
                             let mut pic = Picture::new(geo.sw as u32, geo.sh as u32, 3);
                             out_u8.read(0, &mut pic.data)?;
+                            colour_secs += tcol.elapsed().as_secs_f64();
                             emitted.push(pic);
                             Ok(())
                         })?;
                     }
-                    prof.mark("decoder + colour + bytes", &self.gpus);
+                    prof.carve("colour fix + bytes + readback", colour_secs);
+                    prof.mark("decoder", &self.gpus);
                     for p in emitted {
                         emit(p)?;
                         made += 1;
                     }
                     progress(Step { picture: 0, at: made as u32, of: ended.map(|n| n as u32).or(total_hint).unwrap_or(0), seconds: t0.elapsed().as_secs_f64() })?;
-                    prof.mark("emit", &self.gpus);
+                    prof.mark("emit (encoder pipe)", &self.gpus);
                 }
                 if done {
                     break;
@@ -644,6 +669,7 @@ impl FlashVsr {
         })?;
         if prof.on {
             let total: f64 = prof.acc.iter().map(|(_, s)| s).sum();
+            eprintln!("flashvsr profile: {made} frames, {total:.1} s, {:.3} s a frame (the cards taking turns, each mark waited for)", total / made.max(1) as f64);
             for (n, s) in &prof.acc {
                 eprintln!("flashvsr profile: {n:<30} {s:8.1} s  {:5.1}%  {:.3} s a frame", 100.0 * s / total.max(1e-9), s / made.max(1) as f64);
             }

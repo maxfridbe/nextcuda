@@ -67,6 +67,8 @@ int ns_image_fv_add_relu(ns_gpu* g, void* x, const void* y, int64_t n);
  * [4, 8 h8, 8 w8, 3] half unshuffled to 768 channels, then the latent's 16 channels lat[c, t, y, x] of float32
  * [16, f, h8, w8]) */
 int ns_image_fv_tcd_input(ns_gpu* g, const void* cond, const float* lat, int64_t f, int64_t t, int64_t h8, int64_t w8, void* out);
+/* the same with each pixel's row `ld` (>= 784) channels long, zeros after the 784 (the implicit GEMM's multiple of 32) */
+int ns_image_fv_tcd_input_ld(ns_gpu* g, const void* cond, const float* lat, int64_t f, int64_t t, int64_t h8, int64_t w8, int64_t ld, void* out);
 /* bytes [n] -> half x / 255 * 2 - 1 */
 int ns_image_fv_u8_to_half(ns_gpu* g, const uint8_t* x, int64_t n, void* out);
 /* float32 <-> half, n values */
@@ -85,6 +87,13 @@ int ns_image_fv_adain(ns_gpu* g, const double* sums, double n, float* ms);
 /* A 3 x 3 convolution with few outputs (co <= 4), zero padding 1, one thread a pixel: x half [H, W, ci] -> out half
  * [H, W, co]; w float32 [co, 3, 3, ci], bias float32 [co] or NULL */
 int ns_image_fv_conv3_small(ns_gpu* g, const void* x, int64_t H, int64_t W, int64_t ci, const float* w, int64_t co, const float* bias, void* out);
+/* A 3 x 3 convolution as an implicit GEMM on the tensor cores (zero padding 1, one frame at H x W): the input's
+ * channels c < Ca from a [H/u, W/u, lda] (u = 2 when `up`: read through a nearest 2x upsample), then c < Cb from mem
+ * (same layout; NULL: zeros) - no unfolded copy. w half [Co, 3, 3, Ca + Cb], bias float32 [Co] or NULL; out half
+ * [H, W, Co] = act(conv + bias): act 0 none, 1 ReLU, 2 ReLU(conv + bias + res) with res half [H, W, Co] (it may be out).
+ * Ca, Cb multiples of 32; Co of 128; lda of 8. */
+int ns_image_fv_conv3(ns_gpu* g, const void* a, int64_t lda, int64_t Ca, const void* mem, int64_t Cb, int64_t H, int64_t W, int up, const void* w,
+                      int64_t Co, const float* bias, int act, const void* res, void* out);
 /* out float32 [n]: standard normal numbers from (seed, the index + offset) - a counter-based generator, so a chunk's
  * noise is the same whatever came before */
 int ns_image_fv_randn(ns_gpu* g, float* out, int64_t n, uint64_t seed, uint64_t offset);

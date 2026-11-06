@@ -51,36 +51,55 @@ fn clip8(v: i64) -> u8 {
     }
 }
 
-/// rgb [h, w, 3] -> [oh, ow, 3], Pillow's bicubic
+/// rgb [h, w, 3] -> [oh, ow, 3], Pillow's bicubic (rows in bands over the cores: the same arithmetic, in parallel)
 pub fn bicubic_resize(rgb: &[u8], w: usize, h: usize, ow: usize, oh: usize) -> Vec<u8> {
     let (_, cx) = coeffs(w, ow);
     let (_, cy) = coeffs(h, oh);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
     // horizontal, over the rows the vertical pass reads (all of them when upscaling)
     let mut tmp = vec![0u8; h * ow * 3];
-    for y in 0..h {
-        let row = &rgb[y * w * 3..(y + 1) * w * 3];
-        for (x, (x0, k)) in cx.iter().enumerate() {
-            for c in 0..3 {
-                let mut s: i64 = 1 << (PRECISION_BITS - 1);
-                for (i, kv) in k.iter().enumerate() {
-                    s += row[(x0 + i) * 3 + c] as i64 * *kv as i64;
+    let band = h.div_ceil(threads);
+    std::thread::scope(|sc| {
+        for (bi, chunk) in tmp.chunks_mut(band * ow * 3).enumerate() {
+            let cx = &cx;
+            sc.spawn(move || {
+                for (r, out) in chunk.chunks_mut(ow * 3).enumerate() {
+                    let y = bi * band + r;
+                    let row = &rgb[y * w * 3..(y + 1) * w * 3];
+                    for (x, (x0, k)) in cx.iter().enumerate() {
+                        for c in 0..3 {
+                            let mut s: i64 = 1 << (PRECISION_BITS - 1);
+                            for (i, kv) in k.iter().enumerate() {
+                                s += row[(x0 + i) * 3 + c] as i64 * *kv as i64;
+                            }
+                            out[x * 3 + c] = clip8(s);
+                        }
+                    }
                 }
-                tmp[(y * ow + x) * 3 + c] = clip8(s);
-            }
+            });
         }
-    }
+    });
     let mut out = vec![0u8; oh * ow * 3];
-    for (y, (y0, k)) in cy.iter().enumerate() {
-        for x in 0..ow {
-            for c in 0..3 {
-                let mut s: i64 = 1 << (PRECISION_BITS - 1);
-                for (i, kv) in k.iter().enumerate() {
-                    s += tmp[((y0 + i) * ow + x) * 3 + c] as i64 * *kv as i64;
+    let band = oh.div_ceil(threads);
+    std::thread::scope(|sc| {
+        for (bi, chunk) in out.chunks_mut(band * ow * 3).enumerate() {
+            let (cy, tmp) = (&cy, &tmp);
+            sc.spawn(move || {
+                for (r, orow) in chunk.chunks_mut(ow * 3).enumerate() {
+                    let (y0, k) = &cy[bi * band + r];
+                    for x in 0..ow {
+                        for c in 0..3 {
+                            let mut s: i64 = 1 << (PRECISION_BITS - 1);
+                            for (i, kv) in k.iter().enumerate() {
+                                s += tmp[((y0 + i) * ow + x) * 3 + c] as i64 * *kv as i64;
+                            }
+                            orow[x * 3 + c] = clip8(s);
+                        }
+                    }
                 }
-                out[(y * ow + x) * 3 + c] = clip8(s);
-            }
+            });
         }
-    }
+    });
     out
 }
 
