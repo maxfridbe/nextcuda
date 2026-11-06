@@ -893,7 +893,9 @@ fn a_done_job_whose_file_is_gone_is_not_reentered() {
 fn a_run_short_of_card_memory_stops_the_idle_worker_and_is_sent_again_else_answers_no_room() {
     use std::sync::atomic::AtomicUsize;
     // an idle audio worker holds the card; the upscaler's run finds it short by more than is free
-    let w = world("run-room", vec![big("a")]);
+    let mut a = big("a");
+    a["headroom_gib"] = json!(6.5);
+    let w = world("run-room", vec![a]);
     drop(w.home.ensure("a").unwrap());
     std::thread::sleep(Duration::from_millis(200));
     let tagged = || Err::<Value, _>((503u16, nextcuda_image::no_room_error(0, 6000, "flashvsr: 1920 x 1080 needs 9.0 GiB more").0));
@@ -911,4 +913,28 @@ fn a_run_short_of_card_memory_stops_the_idle_worker_and_is_sent_again_else_answe
     // any other failure passes through untouched
     let other = w.home.relay_with_room("a", &|| Err((400, "scale 9".into()))).unwrap_err();
     assert_eq!(other, (400, "scale 9".to_string()));
+}
+
+#[test]
+fn a_server_short_of_room_for_its_own_cached_buffers_is_restarted_but_not_for_its_weights() {
+    use std::sync::atomic::AtomicUsize;
+    // the audio worker holds 7 GiB of a 12 GiB card, 3 GiB of it beyond its weights, and has no work of its own
+    let mut a = big("a");
+    a["headroom_gib"] = json!(3.0);
+    let w = world("self-room", vec![a]);
+    drop(w.home.ensure("a").unwrap());
+    std::thread::sleep(Duration::from_millis(200));
+    // short by less than the non-weight 3 GiB: it is stopped (restarted by the next attempt) and the request sent again
+    let tag = |mb| Err::<Value, _>((503u16, nextcuda_image::no_room_error(0, mb, "flashvsr: 1280 x 704 needs 4.5 GiB more").0));
+    let calls = AtomicUsize::new(0);
+    let r = w.home.relay_with_room("a", &|| if calls.fetch_add(1, Ordering::Relaxed) == 0 { tag(2500) } else { Ok(json!({"ok": true})) });
+    assert_eq!(r.unwrap()["ok"], true);
+    assert_eq!(w.count("audio stop"), 1, "{}", w.log());
+    // short by more than that (its weights would have to go and come back): not stopped for nothing, 503 no_room
+    drop(w.home.ensure("a").unwrap());
+    std::thread::sleep(Duration::from_millis(200));
+    let (st, m) = w.home.relay_with_room("a", &|| tag(3500)).unwrap_err();
+    assert_eq!(st, 503);
+    assert!(m.starts_with("flashvsr: 1280 x 704"), "{m}");
+    assert_eq!(w.count("audio stop"), 1, "{}", w.log());
 }

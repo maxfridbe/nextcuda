@@ -158,6 +158,11 @@ impl Tcd {
         past + 3 * full + 16 * p8 * 256 * 2 * 2 + p8 * IN_CH * 2 + COL_BYTES + 64 * p8 * 3 * 2
     }
 
+    /// Frees the stream's buffers (the weights stay); `reset` makes them again
+    pub fn release(&mut self) {
+        self.state = None;
+    }
+
     /// A new stream for latents of [h8, w8] (the pasts emptied, the first 3 frames to drop)
     pub fn reset(&mut self, h8: usize, w8: usize) -> Result<()> {
         if !self.state.as_ref().is_some_and(|s| s.h8 == h8 && s.w8 == w8) {

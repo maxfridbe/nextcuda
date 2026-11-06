@@ -316,6 +316,16 @@ impl Stage {
         per * self.layers.len() + work
     }
 
+    /// Frees the KV cache and the working buffers (the weights stay); `prepare` makes them again
+    pub fn release(&mut self) {
+        self.work = None;
+        for l in &mut self.layers {
+            l.kc = None;
+            l.vc = None;
+            l.km = None;
+        }
+    }
+
     /// Whether the cache and the buffers are made for grids of nb blocks
     pub fn is_prepared(&self, nb: usize) -> bool {
         self.work.as_ref().is_some_and(|w| w.nb == nb)

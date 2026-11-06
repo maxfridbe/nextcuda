@@ -1112,7 +1112,19 @@ impl Home {
             let snap = self.snapshot();
             let want = room::card_free(&snap.cards, gpu) + short_mb + 256;
             let info = self.model_info(&entry);
-            match room::room_plan(&snap, &Sched(self), gpu, want, "image", false, Some(&info)) {
+            // `send` holds no lease between attempts, so the server this request went to shows idle when it has no work of its
+            // own - and it holds what earlier runs cached beyond its weights (flashvsr frees its own buffers first; one
+            // that could not is restarted here). Stopping it gives back its memory but the weights, which it loads again.
+            let cards = self.card_cache();
+            let mut plan_snap = snap.clone();
+            for c in &mut plan_snap.cards {
+                let g = c.index;
+                for p in c.procs.iter_mut().filter(|p| p.kind.is_some() && p.port.is_some() && p.model == id) {
+                    let vouch = BTreeMap::from([(g, p.mb)]);
+                    p.mb = Self::headroom_mb(&entry, &cards, &vouch).0.get(&g).copied().unwrap_or(0);
+                }
+            }
+            match room::room_plan(&plan_snap, &Sched(self), gpu, want, "image", false, Some(&info)) {
                 Some(plan) if !plan.is_empty() && splace::free_plan(&Sched(self), &plan, "image", id).is_ok() && splace::wait_room(&Sched(self), gpu, want) => {
                     eprintln!("{id}: short {short_mb} MiB on GPU {gpu}; stopped {} for it, sending the request again",
                               plan.iter().map(|h| h.model.clone()).collect::<Vec<_>>().join(", "));

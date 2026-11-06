@@ -280,6 +280,15 @@ pub struct FlashVsr {
     pub weight_bytes: Vec<usize>,
 }
 
+/// The first card (index) whose free bytes are below what the run needs there, with its free bytes; unknown free memory
+/// and already prepared stages are never short
+fn short_of(need: &[usize], free: &[Option<u64>], prepared: &[bool]) -> Option<(usize, u64)> {
+    need.iter().enumerate().find_map(|(i, n)| match (free.get(i).copied().flatten(), prepared.get(i).copied().unwrap_or(false)) {
+        (Some(f), false) if (*n as u64) > f => Some((i, f)),
+        _ => None,
+    })
+}
+
 fn pth_table(path: &Path) -> Result<SafeTensors> {
     nextcuda_gguf::pthst::open(path).map_err(|e| Error(e.0))
 }
@@ -332,6 +341,24 @@ impl FlashVsr {
                     weight_bytes.iter().zip(&gpus).map(|(b, g)| format!("{:.2} GiB on {}", *b as f64 / (1u64 << 30) as f64, g.name)).collect::<Vec<_>>().join(", ")));
         let _ = last;
         Ok(FlashVsr { gpus, ends, inner: Mutex::new(Inner { stages, lq, tcd, dec, dec_nsd }), load_secs: t0.elapsed().as_secs_f64(), weight_bytes })
+    }
+
+    /// The first stage whose card has less free than `need` for a grid of nb blocks (index, free bytes); a stage
+    /// already prepared for the grid holds its buffers and is not short
+    fn first_short(inner: &Inner, need: &[usize], nb: usize) -> Option<(usize, u64)> {
+        let free: Vec<Option<u64>> = inner.stages.iter().map(|s| s.gpu.memory().ok().and_then(|m| m.1)).collect();
+        let prepared: Vec<bool> = inner.stages.iter().map(|s| s.is_prepared(nb)).collect();
+        short_of(need, &free, &prepared)
+    }
+
+    /// Frees the per-size buffers on every card (KV caches, workspaces, the projection's and decoder's stream state); the
+    /// weights stay. The next run makes the ones it needs.
+    fn release_buffers(inner: &mut Inner) {
+        for s in &mut inner.stages {
+            s.release();
+        }
+        inner.lq.release();
+        inner.tcd.release();
     }
 
     /// The settings of a request (its variant, scale and options)
@@ -387,15 +414,19 @@ impl FlashVsr {
             v[inner.dec] += Tcd::need_bytes(h8, w8);
             v
         };
-        for (s, n) in inner.stages.iter_mut().zip(&need) {
-            if let Ok((_, Some(free))) = s.gpu.memory() {
-                if !s.is_prepared(nb) && (*n as u64) > free {
-                    let short_mb = ((*n as u64 - free) >> 20) + 1;
-                    return Err(nextcuda_image::no_room_error(s.gpu.index, short_mb, &format!(
-                        "flashvsr: {} x {} needs {:.1} GiB more on {} and it has {:.1} free (a smaller size, or NC_FLASHVSR_SPLIT over more cards)",
-                        geo.sw, geo.sh, *n as f64 / (1u64 << 30) as f64, s.gpu.name, free as f64 / (1u64 << 30) as f64)));
-                }
-            }
+        // short: first drop this engine's own cached buffers (every size's cache, workspaces and stream state; the weights stay),
+        // then measure again - only a run that still does not fit is refused
+        if Self::first_short(inner, &need, nb).is_some() {
+            Self::release_buffers(inner);
+        }
+        if let Some((i, free)) = Self::first_short(inner, &need, nb) {
+            let (s, n) = (&inner.stages[i], need[i] as u64);
+            let short_mb = ((n - free) >> 20) + 1;
+            return Err(nextcuda_image::no_room_error(s.gpu.index, short_mb, &format!(
+                "flashvsr: {} x {} needs {:.1} GiB more on {} and it has {:.1} free (a smaller size, or NC_FLASHVSR_SPLIT over more cards)",
+                geo.sw, geo.sh, n as f64 / (1u64 << 30) as f64, s.gpu.name, free as f64 / (1u64 << 30) as f64)));
+        }
+        for s in inner.stages.iter_mut() {
             s.prepare(nb)?;
         }
         inner.lq.reset(hp, wp)?;
@@ -926,5 +957,18 @@ impl ImageEngine for FlashVsr {
         };
         let n = if tiled { self.run_tiled(geo, &set, req.frames, next, emit, progress)? } else { self.run(geo, &set, false, req.frames, next, emit, progress, &mut NoHooks)? };
         Ok(UpscaleInfo { variant: VARIANTS[0].id.into(), scale: set.scale as u32, noise: None, tile: 0, tiles: n, seconds: t0.elapsed().as_secs_f64() })
+    }
+}
+
+#[cfg(test)]
+mod room_tests {
+    use super::short_of;
+
+    #[test]
+    fn a_card_is_short_only_when_its_free_memory_is_known_and_below_the_need_and_the_stage_is_not_prepared() {
+        assert_eq!(short_of(&[10, 10], &[Some(20), Some(5)], &[false, false]), Some((1, 5)));
+        assert_eq!(short_of(&[10, 10], &[Some(20), Some(10)], &[false, false]), None);
+        assert_eq!(short_of(&[10], &[Some(1)], &[true]), None);
+        assert_eq!(short_of(&[10], &[None], &[false]), None);
     }
 }

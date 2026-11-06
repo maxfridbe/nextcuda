@@ -870,15 +870,19 @@ impl Home {
             ("image", "upscale") | ("video", "upscale") => {
                 let id = self.upscaler_for(b, &all)?;
                 let job = b["request_id"].as_str();
-                let t = self.ensure_for(&id, job)?;
-                self.sent(job);
                 let mut body = b.clone();
                 body["model"] = json!(id);
                 if m.kind == "image" {
                     if body.get("response_format").is_none() {
                         body["response_format"] = json!("url");
                     }
-                    return self.relay_with_room(&id, &|| relay(&t, "POST", "/v1/images/upscale", Some(&body), 3600));
+                    // each attempt takes its own lease: while the request waits on one, its server counts as having work,
+                    // and the room plan could not stop it (a server short of room because of its own cached buffers)
+                    return self.relay_with_room(&id, &|| {
+                        let t = self.ensure_for(&id, job)?;
+                        self.sent(job);
+                        relay(&t, "POST", "/v1/images/upscale", Some(&body), 3600)
+                    });
                 }
                 // a clip made here: its path (the same machine), not its bytes
                 if let Some(f) = b["file"].as_str().filter(|f| !f.is_empty()) {
@@ -892,7 +896,11 @@ impl Home {
                     }
                     body["path"] = json!(path.to_string_lossy());
                 }
-                self.relay_with_room(&id, &|| relay(&t, "POST", "/v1/videos/upscale", Some(&body), 86400))
+                self.relay_with_room(&id, &|| {
+                    let t = self.ensure_for(&id, job)?;
+                    self.sent(job);
+                    relay(&t, "POST", "/v1/videos/upscale", Some(&body), 86400)
+                })
             }
             ("audio", "transcribe") => {
                 let id = self.recogniser(b, &all)?;

@@ -86,6 +86,11 @@ impl LqProj {
         px * (6 * C0 + 4 * C1 + 2 * C1 + C2) * 2 + COL_BYTES + 4 * 16 * hp * 16 * wp * 3 * 2
     }
 
+    /// Frees the stream's buffers (the weights stay); `reset` makes them again
+    pub fn release(&mut self) {
+        self.state = None;
+    }
+
     /// A new stream for frames of [16 hp, 16 wp] (the memory emptied)
     pub fn reset(&mut self, hp: usize, wp: usize) -> Result<()> {
         if !self.state.as_ref().is_some_and(|s| s.hp == hp && s.wp == wp) {
