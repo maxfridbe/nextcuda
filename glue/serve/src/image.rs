@@ -590,7 +590,7 @@ impl ImageServer {
             Ok(())
         });
         *p.lock().unwrap() = json!({"busy": false});
-        let out = out.map_err(|e| (if e.0 == "cancelled" { 499u16 } else { 400 }, e.0))?;
+        let out = out.map_err(|e| (if e.0 == "cancelled" { 499u16 } else { engine_fail_status(&e.0) }, e.0))?;
         let wh = match (j0, self.tele.joules()) {
             (Some(a), Some(b)) if b >= a => Some((b - a) / 3600.0),
             _ => None,
@@ -720,7 +720,7 @@ impl ImageServer {
             Ok(())
         });
         *p.lock().unwrap() = json!({"busy": false});
-        let (pic, info) = out.map_err(|e| (if e.0 == "cancelled" { 499u16 } else { 400 }, e.0))?;
+        let (pic, info) = out.map_err(|e| (if e.0 == "cancelled" { 499u16 } else { engine_fail_status(&e.0) }, e.0))?;
         let wh = match (j0, self.tele.joules()) {
             (Some(a), Some(b)) if b >= a => Some((b - a) / 3600.0),
             _ => None,
@@ -878,7 +878,7 @@ impl ImageServer {
                     // the reader stops at its next frame, the writer when its queue is drained
                     drop(frx);
                     drop(wtx);
-                    r.map_err(|e| (if e.0 == "cancelled" || stopped.is_some() { 499u16 } else { 400 }, e.0))
+                    r.map_err(|e| (if e.0 == "cancelled" || stopped.is_some() { 499u16 } else { engine_fail_status(&e.0) }, e.0))
                 })?;
                 info_last = Some(info);
                 return Ok(());
@@ -890,7 +890,7 @@ impl ImageServer {
                 let mut req = req0.clone();
                 req.picture = nextcuda_image::Picture { width: w as u32, height: h as u32, channels: 3, data: buf.clone() };
                 let (pic, info) = engine.upscale(&req, &mut |_| if self.cancel.stopping() { Err(nextcuda_core::Error("cancelled".into())) } else { Ok(()) })
-                    .map_err(|e| (if e.0 == "cancelled" { 499u16 } else { 400 }, e.0))?;
+                    .map_err(|e| (if e.0 == "cancelled" { 499u16 } else { engine_fail_status(&e.0) }, e.0))?;
                 if enc.is_none() {
                     out_size = (pic.width as usize, pic.height as usize);
                     // the source's audio, as it was; H.264 4:2:0 for any player
@@ -1064,7 +1064,7 @@ impl ImageServer {
             Ok(())
         });
         *p.lock().unwrap() = json!({"busy": false});
-        let pics = pics.map_err(|e| (if e.0 == "cancelled" { 499u16 } else { 400 }, e.0))?;
+        let pics = pics.map_err(|e| (if e.0 == "cancelled" { 499u16 } else { engine_fail_status(&e.0) }, e.0))?;
         let seconds = t0.elapsed().as_secs_f64();
         // the card's energy over the request (its counter's rise), watt-hours
         let wh = match (j0, self.tele.joules()) {
@@ -1105,9 +1105,23 @@ impl ImageServer {
     }
 }
 
+/// The status of an engine's failure: 499 cancelled, 503 when it ran out of card memory for this work (`no_room_error`: the
+/// front door answers no_room, frees idle workers and retries), else 400
+fn engine_fail_status(e: &str) -> u16 {
+    if e == "cancelled" { 499 } else if nextcuda_image::untag_no_room(e).is_some() { 503 } else { 400 }
+}
+
 #[cfg(test)]
 mod file_name_tests {
     use super::*;
+
+    #[test]
+    fn a_card_memory_refusal_is_503_so_the_front_door_answers_no_room() {
+        let e = nextcuda_image::no_room_error(0, 900, "flashvsr: 1280 x 720 needs 4.0 GiB more on a card and it has 3.0 free");
+        assert_eq!(engine_fail_status(&e.0), 503);
+        assert_eq!(engine_fail_status("cancelled"), 499);
+        assert_eq!(engine_fail_status("sparse_ratio 9: 0.25 to 8"), 400);
+    }
 
     #[test]
     fn names_differ_and_an_existing_file_is_never_taken() {

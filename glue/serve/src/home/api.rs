@@ -878,7 +878,7 @@ impl Home {
                     if body.get("response_format").is_none() {
                         body["response_format"] = json!("url");
                     }
-                    return relay(&t, "POST", "/v1/images/upscale", Some(&body), 3600);
+                    return self.relay_with_room(&id, &|| relay(&t, "POST", "/v1/images/upscale", Some(&body), 3600));
                 }
                 // a clip made here: its path (the same machine), not its bytes
                 if let Some(f) = b["file"].as_str().filter(|f| !f.is_empty()) {
@@ -892,7 +892,7 @@ impl Home {
                     }
                     body["path"] = json!(path.to_string_lossy());
                 }
-                relay(&t, "POST", "/v1/videos/upscale", Some(&body), 86400)
+                self.relay_with_room(&id, &|| relay(&t, "POST", "/v1/videos/upscale", Some(&body), 86400))
             }
             ("audio", "transcribe") => {
                 let id = self.recogniser(b, &all)?;

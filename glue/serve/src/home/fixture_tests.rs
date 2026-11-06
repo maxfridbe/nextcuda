@@ -888,3 +888,27 @@ fn a_done_job_whose_file_is_gone_is_not_reentered() {
     }
     assert!(w.home.result_gone(&w.home.jobs.get(&id).unwrap()).is_none());
 }
+
+#[test]
+fn a_run_short_of_card_memory_stops_the_idle_worker_and_is_sent_again_else_answers_no_room() {
+    use std::sync::atomic::AtomicUsize;
+    // an idle audio worker holds the card; the upscaler's run finds it short by more than is free
+    let w = world("run-room", vec![big("a")]);
+    drop(w.home.ensure("a").unwrap());
+    std::thread::sleep(Duration::from_millis(200));
+    let tagged = || Err::<Value, _>((503u16, nextcuda_image::no_room_error(0, 6000, "flashvsr: 1920 x 1080 needs 9.0 GiB more").0));
+    let calls = AtomicUsize::new(0);
+    let r = w.home.relay_with_room("a", &|| if calls.fetch_add(1, Ordering::Relaxed) == 0 { tagged() } else { Ok(json!({"ok": true})) });
+    assert_eq!(r.unwrap()["ok"], true);
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    assert_eq!(w.count("audio stop"), 1, "{}", w.log());
+    // still short after that: 503, the tag off the words, and the code the platform waits on
+    let (st, m) = w.home.relay_with_room("a", &tagged).unwrap_err();
+    assert_eq!(st, 503);
+    assert!(m.starts_with("flashvsr: 1920 x 1080"), "{m}");
+    let e = super::api::rpc_error("video.upscale", st, None, &m);
+    assert_eq!((e["code"].as_str(), e["retryable"].as_bool()), (Some("no_room"), Some(true)));
+    // any other failure passes through untouched
+    let other = w.home.relay_with_room("a", &|| Err((400, "scale 9".into()))).unwrap_err();
+    assert_eq!(other, (400, "scale 9".to_string()));
+}

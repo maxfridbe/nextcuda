@@ -390,8 +390,10 @@ impl FlashVsr {
         for (s, n) in inner.stages.iter_mut().zip(&need) {
             if let Ok((_, Some(free))) = s.gpu.memory() {
                 if !s.is_prepared(nb) && (*n as u64) > free {
-                    return Err(Error(format!("flashvsr: {} x {} needs {:.1} GiB more on {} and it has {:.1} free (a smaller size, or NC_FLASHVSR_SPLIT over more cards)",
-                                             geo.sw, geo.sh, *n as f64 / (1u64 << 30) as f64, s.gpu.name, free as f64 / (1u64 << 30) as f64)));
+                    let short_mb = ((*n as u64 - free) >> 20) + 1;
+                    return Err(nextcuda_image::no_room_error(s.gpu.index, short_mb, &format!(
+                        "flashvsr: {} x {} needs {:.1} GiB more on {} and it has {:.1} free (a smaller size, or NC_FLASHVSR_SPLIT over more cards)",
+                        geo.sw, geo.sh, *n as f64 / (1u64 << 30) as f64, s.gpu.name, free as f64 / (1u64 << 30) as f64)));
                 }
             }
             s.prepare(nb)?;

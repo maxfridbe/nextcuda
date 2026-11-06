@@ -1091,6 +1091,38 @@ impl Home {
         }
     }
 
+    /// A request relayed to `id`'s running server that is refused for card memory the work needs beyond the weights
+    /// (`nextcuda_image::no_room_error`, a flashvsr clip too big for what is free): the idle servers on that card (a picture,
+    /// sound or 3D worker without work, an idle video worker, an unkept chat model - the plan every model load uses) are
+    /// stopped for the MiB it lacked, and the request is sent once more. Still short (the holders are busy, pinned or
+    /// held, or the work is bigger than the card): 503 no_room naming the holders - the code a platform client waits on
+    /// and resubmits for - with the tag taken off the words.
+    pub(crate) fn relay_with_room(&self, id: &str, send: &dyn Fn() -> Result<Value, (u16, String)>) -> Result<Value, (u16, String)> {
+        let mut freed_for = None;
+        loop {
+            let (st, m) = match send() {
+                Err(e) => e,
+                ok => return ok,
+            };
+            let Some((gpu, short_mb, words)) = nextcuda_image::untag_no_room(&m).filter(|_| st == 503) else { return Err((st, m)) };
+            if freed_for.is_some() {
+                return Err((503, words));
+            }
+            let Ok(entry) = self.entry(id) else { return Err((503, words)) };
+            let snap = self.snapshot();
+            let want = room::card_free(&snap.cards, gpu) + short_mb + 256;
+            let info = self.model_info(&entry);
+            match room::room_plan(&snap, &Sched(self), gpu, want, "image", false, Some(&info)) {
+                Some(plan) if !plan.is_empty() && splace::free_plan(&Sched(self), &plan, "image", id).is_ok() && splace::wait_room(&Sched(self), gpu, want) => {
+                    eprintln!("{id}: short {short_mb} MiB on GPU {gpu}; stopped {} for it, sending the request again",
+                              plan.iter().map(|h| h.model.clone()).collect::<Vec<_>>().join(", "));
+                    freed_for = Some(gpu);
+                }
+                _ => return Err((503, format!("{words}; {}", room::no_room(&snap, &[gpu], &info, want)))),
+            }
+        }
+    }
+
     /// `id` started in slot `x` on card `gpu`, answering
     fn start_at(&self, kind: &str, id: &str, slot: usize, port: u16, gpu: usize) -> Result<(), (u16, String)> {
         // never more copies of a model on one card than its profile allows (max_copies_per_card)

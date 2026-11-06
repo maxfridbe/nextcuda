@@ -412,3 +412,31 @@ pub fn kind_for<'k>(kinds: &'k [ImageKind], arch: &str) -> std::result::Result<&
         format!("image architecture {arch:?} has no engine here (known: {})", known.join(", "))
     })
 }
+
+/// An engine's refusal for want of card memory at run time (the weights fit; this size of work does not): the message
+/// tagged `no_room[gpu=G,short_mb=N]: ...` so the front door answers 503 no_room (a retryable answer), stops idle
+/// workers on that card for the N MiB it lacks, and tries once more - rather than a plain failure the caller gives up on.
+pub fn no_room_error(gpu: usize, short_mb: u64, msg: &str) -> Error {
+    Error(format!("no_room[gpu={gpu},short_mb={short_mb}]: {msg}"))
+}
+
+/// The card, the MiB it lacks and the words of a [`no_room_error`] message (None: any other message)
+pub fn untag_no_room(e: &str) -> Option<(usize, u64, String)> {
+    let rest = e.strip_prefix("no_room[gpu=")?;
+    let (gpu, rest) = rest.split_once(",short_mb=")?;
+    let (short, words) = rest.split_once("]: ")?;
+    Some((gpu.parse().ok()?, short.parse().ok()?, words.to_string()))
+}
+
+#[cfg(test)]
+mod no_room_tests {
+    use super::*;
+
+    #[test]
+    fn the_no_room_tag_round_trips_and_other_messages_are_not_one() {
+        let e = no_room_error(1, 2048, "flashvsr: 1920 x 1080 needs 3.0 GiB more");
+        assert_eq!(untag_no_room(&e.0), Some((1, 2048, "flashvsr: 1920 x 1080 needs 3.0 GiB more".to_string())));
+        assert_eq!(untag_no_room("cancelled"), None);
+        assert_eq!(untag_no_room("no_room[gpu=x,short_mb=1]: a"), None);
+    }
+}
