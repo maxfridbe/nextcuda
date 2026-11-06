@@ -19,6 +19,8 @@ nextcuda image check <dump dir> [--model ID|FILE.gguf] [--stages te,dit,steps,va
 nextcuda image bench [--models ID,...] [--sizes WxH,...] [--steps N] [--runs N] [--gpu N] [--out DIR] [--note TEXT]
 nextcuda image upscale PICTURE [--model real-esrgan|waifu2x | --dir NCNN_DIR] [--variant V] [--scale N] [--noise N] [--tile N] [--out FILE] [--gpu N]
 nextcuda image upscale-check PICTURE REFERENCE.png [upscale's options]   (against realesrgan- / waifu2x-ncnn-vulkan's output: PSNR, worst pixel)
+nextcuda image upscale-clip IN.mp4 OUT.mp4 [--model flashvsr] [--variant V] [--scale 2] [--start SECONDS] [--frames N] [--seed N] [--set NAME=VALUE]... [--gpu 0,1]
+                          (a video super-resolution model over a clip, in this process: the frames streamed, the sound copied)
 nextcuda image vectorize PICTURE [--model starvector-1b-im2svg | --dir CHECKPOINT_DIR] [--max-length N] [--beams N] [--greedy] [--top-p P] [--seed S] [--out FILE.svg] [--gpu N]
 nextcuda image vectorize PICTURE --check REFERENCE_DIR [--stages pixels,encoder,prefill,logits,greedy] [--dir ...]   (against reference/starvector/ref.py's dumps)
 nextcuda image engines | selftest [--gpu N]";
@@ -342,6 +344,92 @@ fn ncnn_files(dir: &Path) -> Result<ModelFiles, String> {
         return Err(format!("{}: no .param / .bin files (a realesrgan models/ directory, or waifu2x's with models-*/)", dir.display()));
     }
     Ok(files)
+}
+
+/// `image upscale-clip`: a clip through a video super-resolution model in this process (ffmpeg decodes and encodes)
+fn upscale_clip_cmd(cfg: &Config, args: &[String]) -> Result<(), String> {
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    let pos: Vec<&String> = {
+        let mut v = Vec::new();
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if a.starts_with("--") {
+                it.next();
+            } else {
+                v.push(a);
+            }
+        }
+        v
+    };
+    let (input, output) = (pos.first().ok_or(USAGE)?, pos.get(1).ok_or(USAGE)?);
+    nextcuda_core::use_kind("image");
+    let (m, files) = model(cfg, Some(opt(args, "--model").unwrap_or("flashvsr")))?;
+    let arch = m["arch"].as_str().unwrap_or("");
+    let kinds = engines();
+    let kind = nextcuda_image::kind_for(&kinds, arch)?;
+    let gs = gpus(args)?;
+    let mut lo = nextcuda_image::LoadOptions::default();
+    let mut extra = nextcuda_image::Given::new();
+    for (k, v) in args.iter().zip(args.iter().skip(1)).filter(|(k, _)| *k == "--set").map(|(_, v)| v) .filter_map(|v| v.split_once('=')) {
+        if k.starts_with("NC_") {
+            lo.settings.insert(k.to_string(), v.to_string());
+        } else {
+            extra.insert(k.to_string(), v.to_string());
+        }
+    }
+    let mut log = |s: String| eprintln!("{s}");
+    let e = (kind.load)(&files, &gs, &lo, &mut log).map_err(|e| e.0)?;
+    if !e.upscales_clips() {
+        return Err(format!("{} does not upscale clips", m["id"]));
+    }
+    let probe = Command::new("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,avg_frame_rate", "-of", "csv=p=0"])
+        .arg(input).output().map_err(|e| format!("ffprobe: {e}"))?;
+    let line = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+    let f: Vec<&str> = line.split(',').collect();
+    let (w, h): (usize, usize) = (f.first().and_then(|v| v.parse().ok()).ok_or(format!("{input}: {line}"))?, f.get(1).and_then(|v| v.parse().ok()).ok_or(format!("{input}: {line}"))?);
+    let fps = f.get(2).unwrap_or(&"24/1").to_string();
+    let mut dec = Command::new("ffmpeg");
+    dec.args(["-v", "error"]);
+    if let Some(s) = opt(args, "--start") {
+        dec.args(["-ss", s]);
+    }
+    dec.arg("-i").arg(input);
+    let limit: Option<u32> = opt(args, "--frames").and_then(|v| v.parse().ok());
+    if let Some(n) = limit {
+        dec.args(["-frames:v", &n.to_string()]);
+    }
+    let mut dec = dec.args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
+    let mut stdout = dec.stdout.take().ok_or("ffmpeg's output")?;
+    let mut buf = vec![0u8; w * h * 3];
+    let mut enc: Option<std::process::Child> = None;
+    let mut n = 0u32;
+    let t0 = std::time::Instant::now();
+    let req = nextcuda_image::ClipUpscaleRequest { width: w as u32, height: h as u32, frames: limit, variant: opt(args, "--variant").map(str::to_string),
+                                                   scale: opt(args, "--scale").and_then(|v| v.parse().ok()), seed: opt(args, "--seed").and_then(|v| v.parse().ok()), extra };
+    let info = e.upscale_clip(&req, &mut || Ok(stdout.read_exact(&mut buf).is_ok().then(|| buf.clone())), &mut |pic| {
+        if enc.is_none() {
+            enc = Some(Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{}x{}", pic.width, pic.height), "-r", &fps, "-i", "-"])
+                .args(["-c:v", "libx264", "-preset", "medium", "-crf", "16", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]).arg(output.as_str())
+                .stdin(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| nextcuda_core::Error(format!("ffmpeg: {e}")))?);
+        }
+        enc.as_mut().and_then(|e| e.stdin.as_mut()).ok_or_else(|| nextcuda_core::Error("ffmpeg's input".into()))?
+            .write_all(&pic.data).map_err(|e| nextcuda_core::Error(format!("the encoder: {e}")))?;
+        n += 1;
+        Ok(())
+    }, &mut |st| {
+        let s = t0.elapsed().as_secs_f64();
+        eprintln!("{} frames in {s:.1} s ({:.3} s a frame)", st.at, s / st.at.max(1) as f64);
+        Ok(())
+    }).map_err(|e| e.0)?;
+    let _ = dec.kill();
+    if let Some(mut c) = enc {
+        drop(c.stdin.take());
+        let _ = c.wait();
+    }
+    let s = t0.elapsed().as_secs_f64();
+    eprintln!("{} {}x: {n} frames {w}x{h} in {s:.1} s ({:.3} s a frame) -> {output}", info.variant, info.scale, s / n.max(1) as f64);
+    Ok(())
 }
 
 /// `image upscale` and `image upscale-check`: the engine in this process
@@ -708,6 +796,7 @@ pub fn cmd(cfg: &Config, args: &[String], selftest: impl Fn(&[String]) -> Result
         Some("check") => check(cfg, rest),
         Some("upscale") => upscale_cmd(cfg, rest, false),
         Some("upscale-check") => upscale_cmd(cfg, rest, true),
+        Some("upscale-clip") => upscale_clip_cmd(cfg, rest),
         Some("vectorize") => vectorize_cmd(cfg, rest),
         Some("bench") => crate::imagebench::run(cfg, rest),
         Some("ocr") => ocr(cfg, rest),

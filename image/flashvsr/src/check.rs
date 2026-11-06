@@ -172,12 +172,13 @@ impl Hooks for Check<'_> {
 pub fn run(e: &FlashVsr, dir: &Path, log: &mut dyn FnMut(String)) -> Result<f64> {
     let (fshape, lq) = read_npy(&dir.join("lq_u8.npy"))?;
     let (nshape, noise) = read_npy(&dir.join("noise.npy"))?;
-    let (dshape, dec) = read_npy(&dir.join("dec.npy"))?;
-    let (oshape, out) = read_npy(&dir.join("out.npy"))?;
+    // the decoder's frames come last in the reference's run: a check of the DiT can go before they are there
+    let (dshape, dec) = read_npy(&dir.join("dec.npy")).unwrap_or((vec![3, 0, 0, 0], Vec::new()));
+    let (oshape, out) = read_npy(&dir.join("out.npy")).unwrap_or((vec![3, 0, 0, 0], Vec::new()));
     let (nf, th, tw) = (fshape[0], fshape[1], fshape[2]);
     let geo = Geometry { w: tw, h: th, sw: tw, sh: th, tw, th, left: 0, top: 0 };
     // the reference's real frames: its output's count less nothing (it pads past the end as we do)
-    let real = oshape[1].min(nf);
+    let real = if oshape[1] > 0 { oshape[1].min(nf) } else { nf - 4 };
     log(format!("{nf} prepared frames {tw}x{th}, {real} out; noise {nshape:?}"));
     let frames: Vec<Vec<u8>> = (0..nf).map(|i| lq[i * th * tw * 3..(i + 1) * th * tw * 3].iter().map(|v| *v as u8).collect()).collect();
     let mut it = frames.into_iter().take(real);
