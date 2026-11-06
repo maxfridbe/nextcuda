@@ -35,6 +35,8 @@ nextsycl's, kept until phase 2 replaces it.)
 | `NC_FLASHVSR_PIPELINE` | 1 | 0: FlashVSR's cards take turns instead of overlapping (the second card's blocks for a chunk beside the first card's decoding of the one before) | image flashvsr |
 | `NC_FLASHVSR_CONV` | implicit | im2col: FlashVSR's decoder convolutions unfolded and multiplied by cuBLAS (the first path) instead of its implicit-GEMM kernel | image flashvsr |
 | `NC_FLASHVSR_TILE` | auto | 1: FlashVSR runs a clip in tiles over segments even when it fits the cards whole; 0: never (a size too big is refused); auto: in tiles when the cards cannot hold it whole (x4 of 864 x 480) | image flashvsr |
+| `NEXTCUDA_URL` | http://127.0.0.1:8000 | the front door tooling/test_vsr_frontdoor.sh sends its clips to | tooling |
+| `NEXTCUDA_TOKEN` | serve.json's token | the token tooling/test_vsr_frontdoor.sh sends | tooling |
 | `NC_PYTHON` | python3 | the interpreter that runs the image worker | image qwenimage21 |
 | `NC_IMAGE_WORKER` | python/worker.py beside the program, else the source tree's | the worker script that drives the platform's engine | image qwenimage21 |
 
