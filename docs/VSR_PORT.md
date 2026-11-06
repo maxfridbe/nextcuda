@@ -190,7 +190,7 @@ runs in tiles: 1792 x 1024 tiles of the upscaled frame overlapping by 128 pixels
 stream, over segments of 192 frames. Each tile's stream starts 32 frames before its segment to refill its KV cache and
 the convolutions' memory (the outputs are discarded), and runs 8 frames past it (its lookahead). The noise is the
 clip's by latent frame, so the tiles agree; overlaps are blended linearly. `NC_FLASHVSR_TILE` forces or forbids it.
-The seams don't show (`docs/screenshots/vsr-x4-seams-120.jpg`, a crop across both overlap bands). The frame-to-frame
+Measured: **1.161 s a frame** over 384 frames (two full segments), both cards 76-78% busy; the dips are each tile stream's start and, before the last change, the segment's frames going to the encoder in a burst. The seams don't show (`docs/screenshots/vsr-x4-seams-120.jpg`, a crop across both overlap bands). The frame-to-frame
 change across a segment boundary (1.98) is inside the clip's normal range (median 2.42).
 
 ### Settings (x2, 240 frames)

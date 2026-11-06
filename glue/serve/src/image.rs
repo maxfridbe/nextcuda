@@ -96,12 +96,57 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// A name no other request of this process has: the second, then a count. Two requests in the same second named their
-/// files alike by the second alone - two video.upscale jobs 0.7 s apart shared their input (one decoded the other's clip,
-/// the other none) and their output (one's failure deleted the other's result: a 404) - 2026-11-05
+/// A name no other request has, in this process or another (several servers of a model share an output folder) or after
+/// a restart: the second, the process, a count, random bytes. Two requests in the same second once named their files by
+/// the second alone - two video.upscale jobs 0.7 s apart shared their input (one decoded the other's clip, the other
+/// none) and their output (one's failure deleted the other's result: a 404) - 2026-11-05. The files are created with
+/// `owned_file` besides, which never takes a name that exists
 fn unique() -> String {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    format!("{}-{}", now(), SEQ.fetch_add(1, Ordering::Relaxed))
+    let mut r = [0u8; 4];
+    if std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut r)).is_err() {
+        r = (SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)).to_le_bytes();
+    }
+    format!("{}-{}-{}-{:08x}", now(), std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed), u32::from_le_bytes(r))
+}
+
+/// A file a request created and owns: removed when dropped unless kept (only this exact path, never by pattern)
+struct Owned {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Owned {
+    fn name(&self) -> String {
+        self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// A new file in `dir` named `name(unique())` holding `bytes`, created exclusively (O_EXCL: a name that exists is never
+/// truncated; another is taken)
+fn owned_file(dir: &std::path::Path, name: impl Fn(&str) -> String, bytes: &[u8]) -> Result<Owned, (u16, String)> {
+    use std::io::Write;
+    for _ in 0..16 {
+        let path = dir.join(name(&unique()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                let o = Owned { path, keep: false };
+                f.write_all(bytes).map_err(|e| (500u16, format!("{}: {e}", o.path.display())))?;
+                return Ok(o);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err((500, format!("{}: {e}", path.display()))),
+        }
+    }
+    Err((500, format!("{}: no free name", dir.display())))
 }
 
 fn err(m: impl Into<String>) -> Value {
@@ -631,8 +676,10 @@ impl ImageServer {
         let png = pic.png_bytes(&meta).map_err(|e| (500u16, e))?;
         let mut item = json!({"width": pic.width, "height": pic.height, "variant": info.variant, "scale": info.scale, "noise": info.noise});
         if let Some(dir) = &self.out_dir {
-            let name = format!("{}-{}-x{}.png", unique(), self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"), info.scale);
-            std::fs::write(dir.join(&name), &png).map_err(|e| (500u16, format!("{}: {e}", dir.display())))?;
+            let model = self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_");
+            let mut file = owned_file(dir, |u| format!("{u}-{model}-x{}.png", info.scale), &png)?;
+            file.keep = true;
+            let name = file.name();
             let mut h = self.history.lock().unwrap();
             h.push_front(json!({"kind": "upscale", "url": format!("/v1/images/files/{name}"), "prompt": format!("{} {}x", info.variant, info.scale),
                                 "width": pic.width, "height": pic.height, "seconds": info.seconds, "wh": wh, "created": now()}));
@@ -655,13 +702,15 @@ impl ImageServer {
         use std::process::{Command, Stdio};
         let bad = |m: String| (400u16, m);
         let dir = self.out_dir.clone().ok_or_else(|| bad("video.upscale needs a server that keeps files (start it with an output directory)".into()))?;
-        let stamp = unique();
+        // an inline clip: a temporary file of this request's own, removed whatever happens (the guard)
+        let mut _src_file: Option<Owned> = None;
         let src = match (b["video"].as_str().filter(|v| !v.is_empty()), b["path"].as_str().filter(|v| !v.is_empty())) {
             (Some(v), _) => {
                 let bytes = http::unbase64(v).map_err(|e| bad(format!("video: {e}")))?;
-                let f = std::env::temp_dir().join(format!("nc-upscale-{stamp}-{}.in", std::process::id()));
-                std::fs::write(&f, bytes).map_err(|e| (500u16, format!("{}: {e}", f.display())))?;
-                (f, true)
+                let f = owned_file(&std::env::temp_dir(), |u| format!("nc-upscale-{u}.in"), &bytes)?;
+                let p = f.path.clone();
+                _src_file = Some(f);
+                (p, false)
             }
             (None, Some(p)) if std::path::Path::new(p).is_file() => (PathBuf::from(p), false),
             (None, Some(p)) => return Err((404, format!("{p}: no such clip"))),
@@ -693,8 +742,11 @@ impl ImageServer {
         let (engine, _) = g.as_ref().expect("checked");
         let t0 = Instant::now();
         let j0 = self.tele.joules();
-        let name = format!("{stamp}-{}-upscaled.mp4", self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"));
-        let out_path = dir.join(&name);
+        // the result's name reserved now (created empty, exclusively): ffmpeg writes into this request's own file
+        let model = self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_");
+        let mut out_file = owned_file(&dir, |u| format!("{u}-{model}-upscaled.mp4"), &[])?;
+        let name = out_file.name();
+        let out_path = out_file.path.clone();
         let crf = b["crf"].as_u64().unwrap_or(16).min(40).to_string();
         let mut dec = Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&src.0).args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
             .stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| (500u16, format!("ffmpeg: {e}")))?;
@@ -821,6 +873,7 @@ impl ImageServer {
             let _ = std::fs::remove_file(&out_path);
             return Err((500, if n == 0 { "the clip had no frames ffmpeg could decode".into() } else { "the encoder failed (ffmpeg)".into() }));
         }
+        out_file.keep = true;
         let seconds = t0.elapsed().as_secs_f64();
         let wh = match (j0, self.tele.joules()) {
             (Some(a), Some(b)) if b >= a => Some((b - a) / 3600.0),
@@ -974,8 +1027,10 @@ impl ImageServer {
             let png = pic.png_bytes(&meta).map_err(|e| (500u16, e))?;
             let mut item = json!({"revised_prompt": prompt, "seed": s, "width": pic.width, "height": pic.height});
             if let Some(dir) = &self.out_dir {
-                let name = format!("{}-{}-{s}.png", unique(), self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"));
-                std::fs::write(dir.join(&name), &png).map_err(|e| (500u16, format!("{}: {e}", dir.display())))?;
+                let model = self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_");
+                let mut file = owned_file(dir, |u| format!("{u}-{model}-{s}.png"), &png)?;
+                file.keep = true;
+                let name = file.name();
                 let link = format!("{base}/v1/images/files/{name}");
                 let mut h = self.history.lock().unwrap();
                 h.push_front(json!({"url": format!("/v1/images/files/{name}"), "prompt": prompt, "seed": s, "steps": steps,
@@ -992,5 +1047,36 @@ impl ImageServer {
             data.push(item);
         }
         Ok(json!({"created": now(), "data": data, "nextsycl": {"seconds": seconds, "steps": steps, "seed": seed, "loras": lora_txt, "wh": wh}}))
+    }
+}
+
+#[cfg(test)]
+mod file_name_tests {
+    use super::*;
+
+    #[test]
+    fn names_differ_and_an_existing_file_is_never_taken() {
+        let a: Vec<String> = (0..1000).map(|_| unique()).collect();
+        let set: std::collections::BTreeSet<&String> = a.iter().collect();
+        assert_eq!(set.len(), a.len(), "unique() repeated a name");
+        let dir = std::env::temp_dir().join(format!("nc-names-{}", unique()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // a file already there under the only name offered: refused, its bytes untouched
+        std::fs::write(dir.join("taken.mp4"), b"someone else's").unwrap();
+        assert!(owned_file(&dir, |_| "taken.mp4".to_string(), b"mine").is_err());
+        assert_eq!(std::fs::read(dir.join("taken.mp4")).unwrap(), b"someone else's");
+        // an owned file is removed when dropped, a kept one stays; another's never
+        let p = {
+            let f = owned_file(&dir, |u| format!("{u}.in"), b"x").unwrap();
+            f.path.clone()
+        };
+        assert!(!p.exists());
+        let mut k = owned_file(&dir, |u| format!("{u}.out"), b"y").unwrap();
+        k.keep = true;
+        let kp = k.path.clone();
+        drop(k);
+        assert!(kp.exists());
+        assert!(dir.join("taken.mp4").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
