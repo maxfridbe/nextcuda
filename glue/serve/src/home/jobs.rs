@@ -247,11 +247,13 @@ impl Home {
         let kind = kind_of_method(name);
         let rid = reentrant(b);
         let wait = b["wait"] != false;
+        // the job its reentrant_id names - unless it failed, was cancelled, or is done but its file is gone (then it is made
+        // again under the same id: a link that answers 404 forever is not an answer)
         let again = rid.as_deref().and_then(|r| {
             self.jobs.list.lock().unwrap().iter().rev()
                 .find(|j| j["kind"] == kind && j["reentrant_id"] == r && !matches!(j["state"].as_str(), Some("failed" | "cancelled")))
                 .cloned()
-        });
+        }).filter(|j| self.result_gone(j).is_none());
         let reentered = again.is_some();
         let job = match again {
             Some(j) => j,
@@ -500,6 +502,25 @@ impl Home {
         v
     }
 
+    /// A done job's result file that is no longer in its kind's output folder (the first missing), or None: every file its
+    /// answer links (`data[].name`, else the last part of a `/files/` url) is there, or it links none (an answer by value)
+    pub(crate) fn result_gone(&self, j: &Value) -> Option<String> {
+        if j["state"] != "done" {
+            return None;
+        }
+        let kind = j["kind"].as_str().unwrap_or("");
+        if !matches!(kind, "image" | "audio" | "model3d") {
+            return None;
+        }
+        let dir = self.out_dir(kind);
+        j["result"]["data"].as_array().into_iter().flatten().find_map(|d| {
+            let name = d["name"].as_str().map(str::to_string)
+                .or_else(|| d["url"].as_str().filter(|u| u.contains("/files/")).and_then(|u| u.rsplit('/').next()).map(|n| n.split('?').next().unwrap_or(n).to_string()))?;
+            let path = if name.starts_with("up_") { dir.join("uploads").join(&name) } else { dir.join(&name) };
+            (!name.is_empty() && !name.contains('/') && !path.exists()).then_some(name)
+        })
+    }
+
     /// `<kind>.status`: one job, by label or reentrant_id (the newest of that label)
     pub(crate) fn job_status(&self, kind: &str, b: &Value) -> Result<Value, Fail> {
         if s(b, "label").is_empty() && reentrant(b).is_none() {
@@ -507,7 +528,18 @@ impl Home {
         }
         let running = self.running_ids(kind);
         let j = self.jobs.named(kind, b).into_iter().next().ok_or_else(|| (404, format!("no {kind} job by that label or reentrant_id")))?;
-        Ok(self.job_view(&j, Some(&running)))
+        let mut v = self.job_view(&j, Some(&running));
+        // done, but its file is gone: not done for whoever would fetch it - failed, retryable (a submit under the same
+        // reentrant_id makes it again)
+        if let Some(missing) = self.result_gone(&j) {
+            v["state"] = json!("failed");
+            v["stage"] = json!("failed");
+            v["result"] = Value::Null;
+            v["error"] = super::api::rpc_error(j["method"].as_str().unwrap_or(""), 410, Some("result_gone"),
+                                              &format!("the job is done but its file {missing} is gone; submit it again with the same reentrant_id to make it again"));
+            v["error"]["retryable"] = json!(true);
+        }
+        Ok(v)
     }
 
     /// `<kind>.jobs`: the running, the waiting (in run order) and the last ended (limit, 20 by default), of a project

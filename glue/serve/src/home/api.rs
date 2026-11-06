@@ -1086,7 +1086,7 @@ impl Home {
     }
 
     /// A kind's output directory (the servers' NS_IMAGE_OUT / NS_AUDIO_OUT / NS_MODEL3D_OUT)
-    fn out_dir(&self, kind: &str) -> std::path::PathBuf {
+    pub(super) fn out_dir(&self, kind: &str) -> std::path::PathBuf {
         let (key, def) = match kind {
             "image" => ("NS_IMAGE_OUT", "images"),
             "model3d" => ("NS_MODEL3D_OUT", "model3d"),

@@ -848,3 +848,43 @@ fn a_cards_process_names_the_job_it_is_making() {
     super::life::tag_job(&mut p, super::life::job_of_proc(&other, &by_port, Some(&video)).as_ref());
     assert!(p.get("job_title").is_none() && p.get("job_label").is_none());
 }
+
+#[test]
+fn a_done_job_whose_file_is_gone_is_not_reentered() {
+    // b101a294, 2026-11-05: its result file was removed (another job's failure), and every retry under its reentrant_id
+    // was answered "done" with a link that answered 404
+    let w = world("gone", vec![big("a")]);
+    let out = w.dir.join("audio-out");
+    std::fs::create_dir_all(&out).unwrap();
+    w.mem.settings.lock().unwrap().insert("NS_AUDIO_OUT".into(), out.to_string_lossy().into_owned());
+    let ask = || w.home.submit("audio.speak", &json!({"model": "a", "input": "hello", "wait": false, "held": true, "reentrant_id": "r-gone", "label": "r-gone"})).unwrap();
+    let first = ask();
+    let id = first["id"].as_str().unwrap().to_string();
+    // the job as if it had finished, its answer linking its file
+    for j in w.home.jobs.list.lock().unwrap().iter_mut().filter(|j| j["id"] == id.as_str()) {
+        j["state"] = json!("done");
+        j["result"] = json!({"data": [{"name": "r-gone.wav", "url": "http://127.0.0.1:8000/v1/audio/files/r-gone.wav"}]});
+    }
+    let status = || w.home.job_status("audio", &json!({"reentrant_id": "r-gone"})).unwrap();
+    // the file there: done, and a repeat is that job
+    std::fs::write(out.join("r-gone.wav"), b"RIFF").unwrap();
+    assert_eq!(status()["state"], "done");
+    let again = ask();
+    assert_eq!((again["id"].as_str(), again["reentered"].clone()), (Some(id.as_str()), json!(true)));
+    // the file gone: the status says failed, retryable, why; a repeat makes the job again under the same id
+    std::fs::remove_file(out.join("r-gone.wav")).unwrap();
+    let st = status();
+    assert_eq!(st["state"], "failed", "{st}");
+    assert_eq!(st["error"]["code"], "result_gone", "{st}");
+    assert_eq!(st["error"]["retryable"], true, "{st}");
+    let made = ask();
+    assert_ne!(made["id"].as_str(), Some(id.as_str()), "{made}");
+    assert_eq!(made["reentered"], false, "{made}");
+    // the status now follows the new job
+    assert_eq!(status()["id"], made["id"]);
+    // an answer by value (no file linked) is never "gone"
+    for j in w.home.jobs.list.lock().unwrap().iter_mut().filter(|j| j["id"] == id.as_str()) {
+        j["result"] = json!({"data": [{"b64_json": "AAAA"}]});
+    }
+    assert!(w.home.result_gone(&w.home.jobs.get(&id).unwrap()).is_none());
+}

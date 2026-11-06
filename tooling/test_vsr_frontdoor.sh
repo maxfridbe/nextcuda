@@ -18,11 +18,17 @@ fail=0
 rpc() { curl -s -X POST "$URL/rpc/$1" -H "Authorization: Bearer $TOKEN" --data-binary "@$2"; }
 field() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
 
+# the clips' starts inside the film: the long one from the start, the short one as late as it fits
+dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$FILM" | cut -d. -f1)
+if [ -z "$dur" ] || [ "$dur" -lt "$LONG" ] || [ "$dur" -lt "$SHORT" ]; then
+  echo "FAIL: $FILM is ${dur:-?} s long; the clips want $LONG s and $SHORT s (give shorter ones: arguments 3 and 4)"; exit 2
+fi
 for c in long short; do
   secs=$([ $c = long ] && echo "$LONG" || echo "$SHORT")
-  start=$([ $c = long ] && echo 30 || echo 200)
+  if [ $c = long ]; then start=0; else start=$(( dur - SHORT - 1 > 0 ? dur - SHORT - 1 : 0 )); fi
   ffmpeg -v error -y -ss "$start" -i "$FILM" -t "$secs" -c:v libx264 -crf 18 -c:a aac "$W/$c.mp4" || { echo "FAIL cutting $c"; exit 1; }
   n=$(ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$W/$c.mp4")
+  [ "${n:-0}" -gt 0 ] || { echo "FAIL: the $c clip (from $start s) has no frames"; exit 2; }
   echo "$n" > "$W/$c.frames"
   id="vsrtest-$c-$(date +%s)-$$"
   echo "$id" > "$W/$c.id"
