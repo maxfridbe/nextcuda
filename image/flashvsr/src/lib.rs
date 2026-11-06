@@ -282,11 +282,63 @@ pub struct FlashVsr {
 
 /// The first card (index) whose free bytes are below what the run needs there, with its free bytes; unknown free memory
 /// and already prepared stages are never short
-fn short_of(need: &[usize], free: &[Option<u64>], prepared: &[bool]) -> Option<(usize, u64)> {
-    need.iter().enumerate().find_map(|(i, n)| match (free.get(i).copied().flatten(), prepared.get(i).copied().unwrap_or(false)) {
-        (Some(f), false) if (*n as u64) > f => Some((i, f)),
-        _ => None,
+///
+/// A prepared stage holds its cache and workspaces already, but the run's own buffers (`run_bytes`) are made afresh each
+/// run: it is short only of those (`run`)
+fn short_of(need: &[usize], run: &[usize], free: &[Option<u64>], prepared: &[bool]) -> Option<(usize, u64)> {
+    need.iter().enumerate().find_map(|(i, n)| {
+        let n = if prepared.get(i).copied().unwrap_or(false) { run.get(i).copied().unwrap_or(0) } else { *n };
+        match free.get(i).copied().flatten() {
+            Some(f) if (n as u64) > f => Some((i, f)),
+            _ => None,
+        }
     })
+}
+
+/// The device buffers of one run (see `run_bytes`)
+struct RunBufs {
+    frames_u8: DevBuf,
+    frames_h: DevBuf,
+    lqtok: DevBuf,
+    rows0: usize,
+    noise0: DevBuf,
+    patches: DevBuf,
+    xs: Vec<DevBuf>,
+    css: Vec<DevBuf>,
+    noise_l: DevBuf,
+    hbuf: DevBuf,
+    pred: DevBuf,
+    lat: DevBuf,
+    lat_d: DevBuf,
+    cond_u8: DevBuf,
+    cond: DevBuf,
+    sums: DevBuf,
+    ms: DevBuf,
+    out_u8: DevBuf,
+}
+
+/// Whether an error is a card running out of memory (tagged `no_room` by `DevBuf::new`, or the driver's own words)
+fn is_device_oom(e: &str) -> bool {
+    nextcuda_image::untag_no_room(e).is_some() || e.contains("out of memory") || e.contains("device allocation of")
+}
+
+/// The buffers one run makes on each card (`ns` stages, the decoder on `dec`), freed when it ends: up to 25 frames of
+/// bytes and halves, the LQ tokens, noise, x, the conditioning rows, the latents, the decoder's conditioning and the
+/// output frame - all sized by the frame, none by the clip's length (the clip streams through)
+fn run_bytes(geo: &Geometry, ns: usize, dec: usize) -> Vec<usize> {
+    let (h8, w8, hp, wp) = (geo.th / 8, geo.tw / 8, geo.th / 16, geo.tw / 16);
+    let nb = (hp / 8) * (wp / 8);
+    let rows0 = 3 * nb * 128;
+    let fsize = geo.th * geo.tw * 3;
+    let lat = 16 * 6 * h8 * w8 * 4;
+    let mut v = vec![rows0 * DIM * 4 + rows0 * 128 * 4; ns];
+    v[0] += 4 * fsize + 4 * fsize * 2 + 6 * hp * wp * DIM * 4 + lat + rows0 * 64 * 2;
+    v[ns - 1] += lat + rows0 * DIM * 2 + rows0 * 64 * 4 + lat;
+    if dec != ns - 1 {
+        v[dec] += lat;
+    }
+    v[dec] += 24 * fsize + 24 * fsize * 2 + 12 * 8 + 12 * 4 + geo.sh * geo.sw * 3;
+    v
 }
 
 fn pth_table(path: &Path) -> Result<SafeTensors> {
@@ -345,10 +397,10 @@ impl FlashVsr {
 
     /// The first stage whose card has less free than `need` for a grid of nb blocks (index, free bytes); a stage
     /// already prepared for the grid holds its buffers and is not short
-    fn first_short(inner: &Inner, need: &[usize], nb: usize) -> Option<(usize, u64)> {
+    fn first_short(inner: &Inner, need: &[usize], run: &[usize], nb: usize) -> Option<(usize, u64)> {
         let free: Vec<Option<u64>> = inner.stages.iter().map(|s| s.gpu.memory().ok().and_then(|m| m.1)).collect();
         let prepared: Vec<bool> = inner.stages.iter().map(|s| s.is_prepared(nb)).collect();
-        short_of(need, &free, &prepared)
+        short_of(need, run, &free, &prepared)
     }
 
     /// Frees the per-size buffers on every card (KV caches, workspaces, the projection's and decoder's stream state); the
@@ -391,6 +443,9 @@ impl FlashVsr {
         let mut v: Vec<usize> = inner.stages.iter().map(|s| s.need_bytes(nb)).collect();
         v[0] += LqProj::need_bytes(hp, wp);
         v[inner.dec] += Tcd::need_bytes(geo.th / 8, geo.tw / 8);
+        for (n, r) in v.iter_mut().zip(run_bytes(geo, inner.stages.len(), inner.dec)) {
+            *n += r;
+        }
         v
     }
 
@@ -408,35 +463,77 @@ impl FlashVsr {
         let (nbh, nbw) = (hp / 8, wp / 8);
         let nb = nbh * nbw;
         // the memory first: refused here, before anything is made, when a card cannot hold this size
+        let run = run_bytes(&geo, inner.stages.len(), inner.dec);
         let need = {
             let mut v: Vec<usize> = inner.stages.iter().map(|s| s.need_bytes(nb)).collect();
             v[0] += LqProj::need_bytes(hp, wp);
             v[inner.dec] += Tcd::need_bytes(h8, w8);
+            for (n, r) in v.iter_mut().zip(&run) {
+                *n += r;
+            }
             v
         };
         // short: first drop this engine's own cached buffers (every size's cache, workspaces and stream state; the weights stay),
         // then measure again - only a run that still does not fit is refused
-        if Self::first_short(inner, &need, nb).is_some() {
+        if Self::first_short(inner, &need, &run, nb).is_some() {
             Self::release_buffers(inner);
         }
-        if let Some((i, free)) = Self::first_short(inner, &need, nb) {
+        if let Some((i, free)) = Self::first_short(inner, &need, &run, nb) {
             let (s, n) = (&inner.stages[i], need[i] as u64);
             let short_mb = ((n - free) >> 20) + 1;
             return Err(nextcuda_image::no_room_error(s.gpu.index, short_mb, &format!(
                 "flashvsr: {} x {} needs {:.1} GiB more on {} and it has {:.1} free (a smaller size, or NC_FLASHVSR_SPLIT over more cards)",
                 geo.sw, geo.sh, n as f64 / (1u64 << 30) as f64, s.gpu.name, free as f64 / (1u64 << 30) as f64)));
         }
-        for s in inner.stages.iter_mut() {
-            s.prepare(nb)?;
-        }
-        inner.lq.reset(hp, wp)?;
-        inner.tcd.reset(h8, w8)?;
         let ratio = set.sparse_ratio * 768.0 * 1280.0 / (th * tw) as f64;
         let topk = ((nb * nb) as f64 * ratio) as i64 - 1;
         let first_gpu = self.gpus[0].clone();
         let last_gpu = self.gpus.last().unwrap().clone();
         let dec_gpu = self.gpus[inner.dec].clone();
         let fsize = th * tw * 3;
+        // every device allocation of the run: the stages' caches and workspaces, the stream states and the run's buffers. A card
+        // that runs out while making them (another process took memory since the check above) drops this engine's cached
+        // buffers and tries once more; a second failure is a tagged no_room (DevBuf::new), so the front door frees idle workers
+        let alloc = |inner: &mut Inner| -> Result<RunBufs> {
+            for s in inner.stages.iter_mut() {
+                s.prepare(nb)?;
+            }
+            inner.lq.reset(hp, wp)?;
+            inner.tcd.reset(h8, w8)?;
+            let frames_u8 = DevBuf::new(&first_gpu, 4 * fsize)?;
+            let frames_h = DevBuf::new(&first_gpu, 4 * fsize * 2)?;
+            let lqtok = DevBuf::new(&first_gpu, 6 * hp * wp * DIM * 4)?;
+            let rows0 = 3 * nb * 128;
+            let noise0 = DevBuf::new(&first_gpu, 16 * 6 * h8 * w8 * 4)?;
+            let patches = DevBuf::new(&first_gpu, rows0 * 64 * 2)?;
+            let mut xs: Vec<DevBuf> = Vec::new();
+            for s in &inner.stages {
+                xs.push(DevBuf::new(&s.gpu, rows0 * DIM * 4)?);
+            }
+            let mut css: Vec<DevBuf> = Vec::new();
+            for s in &inner.stages {
+                css.push(DevBuf::new(&s.gpu, rows0 * 128 * 4)?);
+            }
+            let noise_l = DevBuf::new(&last_gpu, 16 * 6 * h8 * w8 * 4)?;
+            let hbuf = DevBuf::new(&last_gpu, rows0 * DIM * 2)?;
+            let pred = DevBuf::new(&last_gpu, rows0 * 64 * 4)?;
+            let lat = DevBuf::new(&last_gpu, 16 * 6 * h8 * w8 * 4)?;
+            let lat_d = if inner.dec == self.gpus.len() - 1 { lat.view(0, lat.len)? } else { DevBuf::new(&dec_gpu, lat.len)? };
+            let cond_u8 = DevBuf::new(&dec_gpu, 24 * fsize)?;
+            let cond = DevBuf::new(&dec_gpu, 24 * fsize * 2)?;
+            let sums = DevBuf::new(&dec_gpu, 12 * 8)?;
+            let ms = DevBuf::new(&dec_gpu, 12 * 4)?;
+            let out_u8 = DevBuf::new(&dec_gpu, geo.sh * geo.sw * 3)?;
+            Ok(RunBufs { frames_u8, frames_h, lqtok, rows0, noise0, patches, xs, css, noise_l, hbuf, pred, lat, lat_d, cond_u8, cond, sums, ms, out_u8 })
+        };
+        let bufs = match alloc(inner) {
+            Err(e) if is_device_oom(&e.0) => {
+                Self::release_buffers(inner);
+                alloc(inner)
+            }
+            r => r,
+        }?;
+        let RunBufs { frames_u8, frames_h, lqtok, rows0, noise0, patches, xs, css, noise_l, hbuf, pred, lat, lat_d, cond_u8, cond, sums, ms, out_u8 } = bufs;
         // the frames on the host: [base, base + len) of the clip, each prepared on a thread of its own as it is read (a chunk
         // ahead, so the bicubic runs beside the cards' work); the clip's count once it has ended
         let mut frames: VecDeque<Slot> = VecDeque::new();
@@ -469,32 +566,7 @@ impl FlashVsr {
             }
             Ok(p.clone())
         };
-        // buffers: up to 25 frames of bytes and halves, the LQ tokens, noise, x and the latents
-        let frames_u8 = DevBuf::new(&first_gpu, 4 * fsize)?;
-        let frames_h = DevBuf::new(&first_gpu, 4 * fsize * 2)?;
-        let lqtok = DevBuf::new(&first_gpu, 6 * hp * wp * DIM * 4)?;
-        let rows0 = 3 * nb * 128;
-        let noise0 = DevBuf::new(&first_gpu, 16 * 6 * h8 * w8 * 4)?;
-        let patches = DevBuf::new(&first_gpu, rows0 * 64 * 2)?;
-        let mut xs: Vec<DevBuf> = Vec::new();
-        for s in &inner.stages {
-            xs.push(DevBuf::new(&s.gpu, rows0 * DIM * 4)?);
-        }
-        let mut css: Vec<DevBuf> = Vec::new();
-        for s in &inner.stages {
-            css.push(DevBuf::new(&s.gpu, rows0 * 128 * 4)?);
-        }
-        let noise_l = DevBuf::new(&last_gpu, 16 * 6 * h8 * w8 * 4)?;
-        let hbuf = DevBuf::new(&last_gpu, rows0 * DIM * 2)?;
-        let pred = DevBuf::new(&last_gpu, rows0 * 64 * 4)?;
-        let lat = DevBuf::new(&last_gpu, 16 * 6 * h8 * w8 * 4)?;
-        let lat_d = if inner.dec == self.gpus.len() - 1 { lat.view(0, lat.len)? } else { DevBuf::new(&dec_gpu, lat.len)? };
         let mut lat_staging = vec![0u8; lat.len];
-        let cond_u8 = DevBuf::new(&dec_gpu, 24 * fsize)?;
-        let cond = DevBuf::new(&dec_gpu, 24 * fsize * 2)?;
-        let sums = DevBuf::new(&dec_gpu, 12 * 8)?;
-        let ms = DevBuf::new(&dec_gpu, 12 * 4)?;
-        let out_u8 = DevBuf::new(&dec_gpu, geo.sh * geo.sw * 3)?;
         let mut staging = vec![0u8; if inner.stages.len() > 1 { rows0 * DIM * 4 } else { 0 }];
         let ns = inner.stages.len();
         let dec = inner.dec;
@@ -962,13 +1034,26 @@ impl ImageEngine for FlashVsr {
 
 #[cfg(test)]
 mod room_tests {
-    use super::short_of;
+    use super::{run_bytes, short_of};
 
     #[test]
     fn a_card_is_short_only_when_its_free_memory_is_known_and_below_the_need_and_the_stage_is_not_prepared() {
-        assert_eq!(short_of(&[10, 10], &[Some(20), Some(5)], &[false, false]), Some((1, 5)));
-        assert_eq!(short_of(&[10, 10], &[Some(20), Some(10)], &[false, false]), None);
-        assert_eq!(short_of(&[10], &[Some(1)], &[true]), None);
-        assert_eq!(short_of(&[10], &[None], &[false]), None);
+        assert_eq!(short_of(&[10, 10], &[0, 0], &[Some(20), Some(5)], &[false, false]), Some((1, 5)));
+        assert_eq!(short_of(&[10, 10], &[0, 0], &[Some(20), Some(10)], &[false, false]), None);
+        assert_eq!(short_of(&[10], &[0], &[Some(1)], &[true]), None);
+        // a prepared stage is still short of the run's own buffers
+        assert_eq!(short_of(&[10], &[4], &[Some(1)], &[true]), Some((0, 1)));
+        assert_eq!(short_of(&[10], &[0], &[None], &[false]), None);
+    }
+
+    #[test]
+    fn the_runs_own_buffers_are_counted_per_card_and_grow_with_the_frame_not_the_clip() {
+        let small = crate::resize::Geometry::new(424, 240, 2.0);
+        let big = crate::resize::Geometry::new(848, 480, 2.0);
+        let (a, b) = (run_bytes(&small, 2, 0), run_bytes(&big, 2, 0));
+        assert_eq!(b.len(), 2);
+        // the decoder's card (0) holds the conditioning: 24 frames of bytes and halves
+        assert!(b[0] > 72 * big.th * big.tw * 3 && b[0] > a[0] * 3);
+        assert!(b[1] > 0);
     }
 }

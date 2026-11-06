@@ -417,7 +417,27 @@ pub fn kind_for<'k>(kinds: &'k [ImageKind], arch: &str) -> std::result::Result<&
 /// tagged `no_room[gpu=G,short_mb=N]: ...` so the front door answers 503 no_room (a retryable answer), stops idle
 /// workers on that card for the N MiB it lacks, and tries once more - rather than a plain failure the caller gives up on.
 pub fn no_room_error(gpu: usize, short_mb: u64, msg: &str) -> Error {
-    Error(format!("no_room[gpu={gpu},short_mb={short_mb}]: {msg}"))
+    Error(nextcuda_core::no_room_message(gpu, short_mb, msg))
+}
+
+/// An engine's failure as the front door should see it: a tagged no_room stays; a card out of memory deep inside an error
+/// that wraps it (a context in front of the allocation's words) is hoisted to the front tag, and a bare driver
+/// out-of-memory is tagged for card `gpu` (None: card unknown, 0) - so any engine's allocation failure is a retryable no_room
+pub fn tag_device_oom(e: &str, gpu: Option<usize>) -> String {
+    if untag_no_room(e).is_some() {
+        return e.to_string();
+    }
+    if let Some(at) = e.find("no_room[gpu=") {
+        if let Some((g, mb, _)) = untag_no_room(&e[at..]) {
+            return nextcuda_core::no_room_message(g, mb, e);
+        }
+    }
+    if nextcuda_core::is_oom_message(e) {
+        let bytes = e.split("device allocation of ").nth(1).or_else(|| e.split("allocating ").nth(1))
+            .and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+        return nextcuda_core::no_room_message(gpu.unwrap_or(0), (bytes >> 20) + 1, e);
+    }
+    e.to_string()
 }
 
 /// The card, the MiB it lacks and the words of a [`no_room_error`] message (None: any other message)
@@ -438,5 +458,17 @@ mod no_room_tests {
         assert_eq!(untag_no_room(&e.0), Some((1, 2048, "flashvsr: 1920 x 1080 needs 3.0 GiB more".to_string())));
         assert_eq!(untag_no_room("cancelled"), None);
         assert_eq!(untag_no_room("no_room[gpu=x,short_mb=1]: a"), None);
+    }
+
+    #[test]
+    fn a_device_allocation_failure_becomes_a_no_room_wherever_it_is_wrapped() {
+        let raw = "video.upscale failed: allocating 132120576 bytes on NVIDIA GeForce RTX 5070: device allocation of 132120576 bytes failed: out of memory";
+        let t = tag_device_oom(raw, Some(0));
+        assert_eq!(untag_no_room(&t).map(|(g, mb, _)| (g, mb)), Some((0, 127)));
+        let inner = no_room_error(1, 127, "allocating 132120576 bytes: device allocation of 132120576 bytes failed: out of memory").0;
+        let wrapped = format!("segment 3: {inner}");
+        assert_eq!(untag_no_room(&tag_device_oom(&wrapped, None)).map(|(g, mb, _)| (g, mb)), Some((1, 127)));
+        assert_eq!(tag_device_oom(&inner, None), inner);
+        assert_eq!(tag_device_oom("sparse_ratio 9: 0.25 to 8", Some(0)), "sparse_ratio 9: 0.25 to 8");
     }
 }

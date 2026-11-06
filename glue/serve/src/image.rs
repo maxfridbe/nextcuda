@@ -590,7 +590,7 @@ impl ImageServer {
             Ok(())
         });
         *p.lock().unwrap() = json!({"busy": false});
-        let out = out.map_err(|e| (if e.0 == "cancelled" { 499u16 } else { engine_fail_status(&e.0) }, e.0))?;
+        let out = out.map_err(|e| engine_fail(e, false))?;
         let wh = match (j0, self.tele.joules()) {
             (Some(a), Some(b)) if b >= a => Some((b - a) / 3600.0),
             _ => None,
@@ -720,7 +720,7 @@ impl ImageServer {
             Ok(())
         });
         *p.lock().unwrap() = json!({"busy": false});
-        let (pic, info) = out.map_err(|e| (if e.0 == "cancelled" { 499u16 } else { engine_fail_status(&e.0) }, e.0))?;
+        let (pic, info) = out.map_err(|e| engine_fail(e, false))?;
         let wh = match (j0, self.tele.joules()) {
             (Some(a), Some(b)) if b >= a => Some((b - a) / 3600.0),
             _ => None,
@@ -878,7 +878,7 @@ impl ImageServer {
                     // the reader stops at its next frame, the writer when its queue is drained
                     drop(frx);
                     drop(wtx);
-                    r.map_err(|e| (if e.0 == "cancelled" || stopped.is_some() { 499u16 } else { engine_fail_status(&e.0) }, e.0))
+                    r.map_err(|e| engine_fail(e, stopped.is_some()))
                 })?;
                 info_last = Some(info);
                 return Ok(());
@@ -890,7 +890,7 @@ impl ImageServer {
                 let mut req = req0.clone();
                 req.picture = nextcuda_image::Picture { width: w as u32, height: h as u32, channels: 3, data: buf.clone() };
                 let (pic, info) = engine.upscale(&req, &mut |_| if self.cancel.stopping() { Err(nextcuda_core::Error("cancelled".into())) } else { Ok(()) })
-                    .map_err(|e| (if e.0 == "cancelled" { 499u16 } else { engine_fail_status(&e.0) }, e.0))?;
+                    .map_err(|e| engine_fail(e, false))?;
                 if enc.is_none() {
                     out_size = (pic.width as usize, pic.height as usize);
                     // the source's audio, as it was; H.264 4:2:0 for any player
@@ -1064,7 +1064,7 @@ impl ImageServer {
             Ok(())
         });
         *p.lock().unwrap() = json!({"busy": false});
-        let pics = pics.map_err(|e| (if e.0 == "cancelled" { 499u16 } else { engine_fail_status(&e.0) }, e.0))?;
+        let pics = pics.map_err(|e| engine_fail(e, false))?;
         let seconds = t0.elapsed().as_secs_f64();
         // the card's energy over the request (its counter's rise), watt-hours
         let wh = match (j0, self.tele.joules()) {
@@ -1105,6 +1105,16 @@ impl ImageServer {
     }
 }
 
+/// An engine's failure as (status, message): any card out of memory (a device allocation that failed, tagged where it
+/// happened or wrapped in an error's context) is the tagged no_room, so the front door frees idle workers and retries
+fn engine_fail(e: nextcuda_image::Error, stopped: bool) -> (u16, String) {
+    if e.0 == "cancelled" || stopped {
+        return (499, e.0);
+    }
+    let m = nextcuda_image::tag_device_oom(&e.0, None);
+    (engine_fail_status(&m), m)
+}
+
 /// The status of an engine's failure: 499 cancelled, 503 when it ran out of card memory for this work (`no_room_error`: the
 /// front door answers no_room, frees idle workers and retries), else 400
 fn engine_fail_status(e: &str) -> u16 {
@@ -1121,6 +1131,16 @@ mod file_name_tests {
         assert_eq!(engine_fail_status(&e.0), 503);
         assert_eq!(engine_fail_status("cancelled"), 499);
         assert_eq!(engine_fail_status("sparse_ratio 9: 0.25 to 8"), 400);
+    }
+
+    #[test]
+    fn a_plain_device_allocation_failure_is_a_503_no_room_too() {
+        let raw = nextcuda_image::Error("allocating 132120576 bytes on NVIDIA GeForce RTX 5070: device allocation of 132120576 bytes failed: out of memory".into());
+        let (st, m) = engine_fail(raw, false);
+        assert_eq!(st, 503);
+        assert!(nextcuda_image::untag_no_room(&m).is_some());
+        assert_eq!(engine_fail(nextcuda_image::Error("cancelled".into()), false), (499, "cancelled".to_string()));
+        assert_eq!(engine_fail(nextcuda_image::Error("boom".into()), false).0, 400);
     }
 
     #[test]

@@ -71,6 +71,27 @@ pub fn silo_for(arch: &str, cc: u32) -> Result<Option<&'static nextcuda_sys::Sil
     Ok(s)
 }
 
+/// The words of a card-memory refusal: `no_room[gpu=G,short_mb=N]: ...` (the contract's `no_room_error` and `untag_no_room`
+/// make and read it; the front door answers 503 no_room, stops idle workers on that card and tries once more)
+pub fn no_room_message(gpu: usize, short_mb: u64, msg: &str) -> String {
+    format!("no_room[gpu={gpu},short_mb={short_mb}]: {msg}")
+}
+
+/// Whether a driver message says the card is out of memory
+pub fn is_oom_message(msg: &str) -> bool {
+    msg.contains("out of memory") || msg.contains("device allocation of")
+}
+
+/// An allocation of `len` bytes on `gpu` that failed with `msg`: tagged no_room (the card and the MiB it lacks, at least
+/// the allocation's size) when the card is out of memory, else the plain message
+fn alloc_error(gpu: &Gpu, len: usize, msg: String) -> Error {
+    if is_oom_message(&msg) {
+        Error(no_room_message(gpu.index, (len as u64 >> 20) + 1, &msg))
+    } else {
+        Error(msg)
+    }
+}
+
 fn check(api: &Api, rc: i32, what: &str) -> Result<()> {
     if rc == 0 {
         Ok(())
@@ -321,7 +342,8 @@ impl DevBuf {
         if let Some((a, r)) = gpu.dev {
             let mut ptr = std::ptr::null_mut();
             // SAFETY: an out-pointer to a local.
-            check(a, unsafe { (a.alloc)(r, len.max(1), &mut ptr) }, &format!("allocating {len} bytes on {}", gpu.name))?;
+            check(a, unsafe { (a.alloc)(r, len.max(1), &mut ptr) }, &format!("allocating {len} bytes on {}", gpu.name))
+                .map_err(|e| alloc_error(gpu, len, e.0))?;
             return Ok(DevBuf { gpu: gpu.clone(), ptr, len, owned: true });
         }
         // SAFETY: a non-zero layout.
@@ -584,5 +606,17 @@ impl Arena {
         if mark < *off {
             *off = mark;
         }
+    }
+}
+
+#[cfg(test)]
+mod no_room_tests {
+    use super::*;
+
+    #[test]
+    fn a_driver_out_of_memory_is_told_apart_from_other_failures() {
+        assert!(is_oom_message("allocating 132120576 bytes on NVIDIA GeForce RTX 5070: device allocation of 132120576 bytes failed: out of memory"));
+        assert!(!is_oom_message("copying to the GPU: invalid argument"));
+        assert_eq!(no_room_message(1, 126, "x"), "no_room[gpu=1,short_mb=126]: x");
     }
 }
