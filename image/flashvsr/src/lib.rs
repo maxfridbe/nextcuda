@@ -47,7 +47,7 @@ pub const ARCH: &str = "flashvsr";
 pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "split", env: "NC_FLASHVSR_SPLIT", value: "N,M", help: "the DiT's 30 blocks over the model's cards, in order (default: 17,13 on two, 30 on one)", at: At::Load },
     EngineOption { name: "decoder", env: "NC_FLASHVSR_DECODER", value: "first|last", help: "the card the decoder runs on (default first: the decoder is the heaviest stage, the first card the fastest)", at: At::Load },
-    EngineOption { name: "sparse_ratio", env: "", value: "R", help: "the attention's top-k as FlashVSR's sparse_ratio (default 2.0; 1.5 faster, 2.0 steadier)", at: At::Request },
+    EngineOption { name: "sparse_ratio", env: "", value: "R", help: "the attention's top-k as FlashVSR's sparse_ratio (default 1.5: 8% faster than 2.0, as steady and as sharp on the platform's films)", at: At::Request },
     EngineOption { name: "local_range", env: "", value: "N", help: "the attention's local window in 128-pixel blocks (default 11: steadier; 9 sharper)", at: At::Request },
     EngineOption { name: "color_fix", env: "", value: "0|1", help: "match each frame's colour to the upscaled input frame (AdaIN, default 1)", at: At::Request },
 ];
@@ -82,7 +82,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { scale: 2.0, seed: 0, sparse_ratio: 2.0, local_range: 11, color_fix: true, lat_base: 0 }
+        Settings { scale: 2.0, seed: 0, sparse_ratio: 1.5, local_range: 11, color_fix: true, lat_base: 0 }
     }
 }
 
@@ -762,6 +762,16 @@ impl FlashVsr {
         let mut ended: Option<usize> = None;
         let mut made = 0usize;
         let mut s = 0usize;
+        // a finished segment's frames, handed out one a tile frame while the next segment runs
+        let mut pending: VecDeque<Vec<u8>> = VecDeque::new();
+        let crop = |f: &Vec<u8>| -> Picture {
+            let mut pic = Picture::new(geo.sw as u32, geo.sh as u32, 3);
+            for r in 0..geo.sh {
+                let at = ((geo.top + r) * tw + geo.left) * 3;
+                pic.data[r * geo.sw * 3..(r + 1) * geo.sw * 3].copy_from_slice(&f[at..at + geo.sw * 3]);
+            }
+            pic
+        };
         loop {
             // the segment [s, e), its stream from a, its frames up to e + 8 on hand
             while ended.is_none() && base + frames.len() < s + SEG + 8 {
@@ -773,6 +783,10 @@ impl FlashVsr {
             let have = base + frames.len();
             let e = (s + SEG).min(ended.unwrap_or(usize::MAX)).min(have);
             if e <= s {
+                for f in pending.drain(..) {
+                    emit(crop(&f))?;
+                    made += 1;
+                }
                 break;
             }
             let a = s.saturating_sub(WARM);
@@ -804,32 +818,48 @@ impl FlashVsr {
                             return Ok(());
                         }
                         let dst = &mut seg[k - s];
+                        // the overlaps with the tiles before (left, above) blended linearly, the rest copied
+                        let ovx = if i > 0 { xs[i - 1] + tile_w - x0 } else { 0 };
+                        let ovy = if j > 0 { ys[j - 1] + tile_h - y0 } else { 0 };
                         for r in 0..tile_h {
-                            let ay = if j > 0 && r < ys[j - 1] + tile_h - y0 { (r as f32 + 0.5) / (ys[j - 1] + tile_h - y0) as f32 } else { 1.0 };
-                            for c in 0..tile_w {
-                                let ax = if i > 0 && c < xs[i - 1] + tile_w - x0 { (c as f32 + 0.5) / (xs[i - 1] + tile_w - x0) as f32 } else { 1.0 };
-                                let wgt = ax.min(ay).min(1.0);
-                                let o = ((y0 + r) * tw + x0 + c) * 3;
-                                let q = (r * tile_w + c) * 3;
+                            let ay = if r < ovy { (r as f32 + 0.5) / ovy as f32 } else { 1.0 };
+                            let o = ((y0 + r) * tw + x0) * 3;
+                            let q = r * tile_w * 3;
+                            let plain = if ay < 1.0 { 0 } else { ovx };
+                            for c in 0..plain.min(tile_w) {
+                                let wgt = ((c as f32 + 0.5) / ovx as f32).min(ay);
                                 for ch in 0..3 {
-                                    let v = p.data[q + ch] as f32;
-                                    dst[o + ch] = if wgt >= 1.0 { v as u8 } else { (dst[o + ch] as f32 + (v - dst[o + ch] as f32) * wgt).round() as u8 };
+                                    let (d, v) = (dst[o + c * 3 + ch] as f32, p.data[q + c * 3 + ch] as f32);
+                                    dst[o + c * 3 + ch] = (d + (v - d) * wgt).round() as u8;
                                 }
                             }
+                            if ay < 1.0 {
+                                for c in 0..tile_w {
+                                    let wgt = if c < ovx { ((c as f32 + 0.5) / ovx as f32).min(ay) } else { ay };
+                                    for ch in 0..3 {
+                                        let (d, v) = (dst[o + c * 3 + ch] as f32, p.data[q + c * 3 + ch] as f32);
+                                        dst[o + c * 3 + ch] = (d + (v - d) * wgt).round() as u8;
+                                    }
+                                }
+                            } else {
+                                dst[o + plain * 3..o + tile_w * 3].copy_from_slice(&p.data[q + plain * 3..q + tile_w * 3]);
+                            }
+                        }
+                        // the segment before, a frame at a time beside this work (its frames are not held back for a burst)
+                        if let Some(f) = pending.pop_front() {
+                            emit(crop(&f))?;
+                            made += 1;
                         }
                         Ok(())
                     }, &mut |_| Ok(()), &mut NoHooks)?;
                 }
             }
-            for f in seg {
-                let mut pic = Picture::new(geo.sw as u32, geo.sh as u32, 3);
-                for r in 0..geo.sh {
-                    let at = ((geo.top + r) * tw + geo.left) * 3;
-                    pic.data[r * geo.sw * 3..(r + 1) * geo.sw * 3].copy_from_slice(&f[at..at + geo.sw * 3]);
-                }
-                emit(pic)?;
+            // what the last segment's tiles did not hand out goes now; this segment's go during the next one
+            for f in pending.drain(..) {
+                emit(crop(&f))?;
                 made += 1;
             }
+            pending.extend(seg);
             progress(Step { picture: 0, at: made as u32, of: ended.map(|n| n as u32).or(total_hint).unwrap_or(0), seconds: t0.elapsed().as_secs_f64() })?;
             s = e;
             // the next segment's warm-up onward stays

@@ -96,6 +96,14 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// A name no other request of this process has: the second, then a count. Two requests in the same second named their
+/// files alike by the second alone - two video.upscale jobs 0.7 s apart shared their input (one decoded the other's clip,
+/// the other none) and their output (one's failure deleted the other's result: a 404) - 2026-11-05
+fn unique() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("{}-{}", now(), SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
 fn err(m: impl Into<String>) -> Value {
     json!({"error": {"message": m.into(), "type": "invalid_request_error"}})
 }
@@ -623,7 +631,7 @@ impl ImageServer {
         let png = pic.png_bytes(&meta).map_err(|e| (500u16, e))?;
         let mut item = json!({"width": pic.width, "height": pic.height, "variant": info.variant, "scale": info.scale, "noise": info.noise});
         if let Some(dir) = &self.out_dir {
-            let name = format!("{}-{}-x{}.png", now(), self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"), info.scale);
+            let name = format!("{}-{}-x{}.png", unique(), self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"), info.scale);
             std::fs::write(dir.join(&name), &png).map_err(|e| (500u16, format!("{}: {e}", dir.display())))?;
             let mut h = self.history.lock().unwrap();
             h.push_front(json!({"kind": "upscale", "url": format!("/v1/images/files/{name}"), "prompt": format!("{} {}x", info.variant, info.scale),
@@ -647,7 +655,7 @@ impl ImageServer {
         use std::process::{Command, Stdio};
         let bad = |m: String| (400u16, m);
         let dir = self.out_dir.clone().ok_or_else(|| bad("video.upscale needs a server that keeps files (start it with an output directory)".into()))?;
-        let stamp = now();
+        let stamp = unique();
         let src = match (b["video"].as_str().filter(|v| !v.is_empty()), b["path"].as_str().filter(|v| !v.is_empty())) {
             (Some(v), _) => {
                 let bytes = http::unbase64(v).map_err(|e| bad(format!("video: {e}")))?;
@@ -966,7 +974,7 @@ impl ImageServer {
             let png = pic.png_bytes(&meta).map_err(|e| (500u16, e))?;
             let mut item = json!({"revised_prompt": prompt, "seed": s, "width": pic.width, "height": pic.height});
             if let Some(dir) = &self.out_dir {
-                let name = format!("{}-{}-{s}.png", now(), self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"));
+                let name = format!("{}-{}-{s}.png", unique(), self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"));
                 std::fs::write(dir.join(&name), &png).map_err(|e| (500u16, format!("{}: {e}", dir.display())))?;
                 let link = format!("{base}/v1/images/files/{name}");
                 let mut h = self.history.lock().unwrap();

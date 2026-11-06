@@ -30,6 +30,6 @@ and answers an MP4. Both are jobs (wait, reentrant_id, `image.status`, `image.ca
 - FlashVSR sees the clip as a whole: its frames go through as one stream (8 at a time, each attending to the 24 before
   it), so detail stays steady from frame to frame and a film of any length has no seams. It keeps faces and skin
   natural where Real-ESRGAN's models turn them waxy or plastic. Its options (in `options`, or beside the others):
-  `sparse_ratio` (2.0; 1.5 is faster), `local_range` (11, steadier; 9 sharper), `color_fix` (1: each frame's colour
+  `sparse_ratio` (1.5; 2.0 is FlashVSR's own default, 8% slower and no steadier on the platform's films), `local_range` (11, steadier; 9 sharper), `color_fix` (1: each frame's colour
   matched to the input's), `seed`. Inside, the frame is mirrored out to multiples of 128 and the result cut back, so
   any size works; the memory grows with the frame (1728 x 960 out takes both cards).

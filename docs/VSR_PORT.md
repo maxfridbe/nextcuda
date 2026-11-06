@@ -138,3 +138,71 @@ frames. A run is at brainiac-nvidia:~/nextcuda/ref/sv/d5 (5 frames of the platfo
 hardac1 (nextsycl) is porting SeedVR2 now with the same names. Its engine is Rust over the same nsd ABI (nextcuda's
 nsd.h is nextsycl's H3 interface), so taking that engine over, checked against these dumps, is probably cheaper than a
 second port from scratch.
+
+## FlashVSR performance (2026-11-05)
+
+Measured on the platform's film (864 x 480, 24 fps, from 55 s in), in process (`nextcuda image upscale-clip`, the same
+engine path as `video.upscale`), under the GPU lock with nothing else on the cards. A run's utilisation is nvidia-smi
+sampled every 0.5 s (`util_*.log` beside the outputs in brainiac-nvidia:~/nextcuda-vsr/out). The numerics stayed at
+**64.1 dB** against the official pipeline after every change (`nextcuda image check`, sparse_ratio 2.0 as the
+reference ran; worst relative error 2.3e-3).
+
+### Where the time went (x2, before tuning; `NC_FLASHVSR_PROFILE=1`, each stage waited for)
+
+| stage | card | s a frame | |
+|---|---|---:|---|
+| frames: ffmpeg decode wait | host | 0.002 | |
+| frames: Pillow bicubic + mirror | host | 0.021 | on the first card's thread |
+| LQ projection | 5070 | 0.027 | |
+| DiT blocks 0-11 | 5070 | 0.088 | 0.0074 a block |
+| x to the next card | both | 0.008 | |
+| DiT blocks 12-29 + head | 3060 | 0.326 | 0.0183 a block |
+| decoder (im2col + cuBLAS) | 5070 | **0.269** | the biggest stage |
+| colour fix + bytes + readback | 5070 | 0.001 | |
+| encoder pipe | host | 0.004-0.021 | |
+
+Inside a DiT block (either card): the sparse attention 51%, the MLP 27%, q/k/v + norms + RoPE 9%, the cross-attention
+8%, o + the KV cache 4%, the draft (block scores, top k, lists) 1%. The attention kernel runs at about 18 TFLOPS on
+the 3060 and 44 on the 5070, and the MLP's cuBLAS at about 20 on the 3060: 70-77% of the cards' fp16 tensor rate with
+float32 accumulation. The blocks are compute-bound; half-precision accumulation would double that rate on these
+GeForce cards, but it moves the numerics, so it is not used.
+
+### The changes, each measured (x2, pipelined, 240 frames unless said)
+
+| change | s a frame | card 0 / card 1 busy |
+|---|---:|---|
+| deployed port (a873a37): decoder on the 5070, split 12 / 18, the cards pipelined | 0.432 | 82% / 71% |
+| decoder's 3 x 3 convs as an implicit GEMM (tensor cores, taps gathered in place, upsample and MemBlock past read directly, bias / ReLU / residual fused): decoder 0.269 -> 0.082 | 0.339 | 46% / 89% |
+| split 16 / 14 (balance the cards) | 0.282 | 74% / 80% |
+| frames prepared on threads a chunk ahead; ffmpeg read and the encoder fed on threads of their own | 0.274 | 68% / 83% |
+| the DiT's row-wise work a latent pair at a time, the decoder's scratch smaller: 17 blocks fit on the 5070, split 17 / 13 | 0.260 | 77% / 85% |
+| sparse_ratio 1.5 (the new default; below) | 0.240 | 76% / 80% |
+| the same over 480 frames (the first chunk's start amortised) | **0.225** | **85% / 85%** |
+
+The 5070 peaks at 11.5 GiB of its 12 (the card, everything counted), the 3060 at 5.8. 18 / 12 does not fit beside the
+decoder. Neither card idles: the 3060 runs chunk k's last 13 blocks while the 5070 decodes chunk k - 1 and runs chunk
+k + 1's LQ projection and first 17 blocks.
+
+### x4
+
+At x4 (864 x 480 -> 3456 x 1920) the KV cache alone is 28.6 GiB in half, more than the two cards hold. The engine then
+runs in tiles: 1792 x 1024 tiles of the upscaled frame overlapping by 128 pixels (2 x 2 for 3456 x 1920), each its own
+stream, over segments of 192 frames. Each tile's stream starts 32 frames before its segment to refill its KV cache and
+the convolutions' memory (the outputs are discarded), and runs 8 frames past it (its lookahead). The noise is the
+clip's by latent frame, so the tiles agree; overlaps are blended linearly. `NC_FLASHVSR_TILE` forces or forbids it.
+The seams don't show (`docs/screenshots/vsr-x4-seams-120.jpg`, a crop across both overlap bands). The frame-to-frame
+change across a segment boundary (1.98) is inside the clip's normal range (median 2.42).
+
+### Settings (x2, 240 frames)
+
+| sparse_ratio | local_range | s a frame | frame-to-frame change / the source's | mean abs difference to the source (0-255) |
+|---|---|---:|---:|---:|
+| 2.0 | 11 | 0.259 | 1.133 | 2.67 |
+| 2.0 | 9 | 0.260 | 1.140 | 2.69 |
+| **1.5** | **11** | **0.240** | **1.131** | 2.68 |
+| 1.5 | 9 | 0.240 | 1.139 | 2.71 |
+
+The steadiness ratio is the mean change between consecutive frames, brought down to the source's size, over the
+source's own (1.0: as steady as the source). The four look the same up close (`docs/screenshots/vsr-settings-120.jpg`).
+**Recommended and now the defaults: sparse_ratio 1.5, local_range 11.** 1.5 is 8% faster and no less steady here.
+local_range 9 costs the same and is slightly less steady.

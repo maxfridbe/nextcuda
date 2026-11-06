@@ -184,7 +184,8 @@ pub fn run(e: &FlashVsr, dir: &Path, log: &mut dyn FnMut(String)) -> Result<f64>
     let mut it = frames.into_iter().take(real);
     let mut ours: Vec<Picture> = Vec::new();
     let mut ch = Check { dir, noise, nshape, hp: th / 16, wp: tw / 16, dec, dshape, worst: 0.0, dec_err: (0.0, 0.0, 0), log };
-    let set = Settings::default();
+    // the reference ran FlashVSR's own sparse_ratio, 2.0
+    let set = Settings { sparse_ratio: 2.0, ..Settings::default() };
     e.run(geo, &set, true, None, &mut || Ok(it.next()), &mut |p| {
         ours.push(p);
         Ok(())
