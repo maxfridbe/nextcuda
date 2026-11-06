@@ -178,7 +178,8 @@ impl Tcd {
                 have: vec![false; 9],
                 trim: 3,
                 inp: DevBuf::new(gpu, p8 * IN_CH * 2)?,
-                a: DevBuf::new(gpu, full)?,
+                // a: the 1/8 size's 512 channels, the 1/4's 256, the 1/2's TGrow output (256): never a full-size buffer
+                a: DevBuf::new(gpu, (16 * p8 * 256 * 2).max(p8 * 512 * 2))?,
                 b: DevBuf::new(gpu, full)?,
                 t1: DevBuf::new(gpu, full)?,
                 t2: DevBuf::new(gpu, 16 * p8 * 128 * 2)?,

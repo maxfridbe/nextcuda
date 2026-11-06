@@ -45,7 +45,7 @@ use crate::tcd::Tcd;
 pub const ARCH: &str = "flashvsr";
 
 pub const OPTIONS: &[EngineOption] = &[
-    EngineOption { name: "split", env: "NC_FLASHVSR_SPLIT", value: "N,M", help: "the DiT's 30 blocks over the model's cards, in order (default: 12,18 on two, 30 on one)", at: At::Load },
+    EngineOption { name: "split", env: "NC_FLASHVSR_SPLIT", value: "N,M", help: "the DiT's 30 blocks over the model's cards, in order (default: 17,13 on two, 30 on one)", at: At::Load },
     EngineOption { name: "decoder", env: "NC_FLASHVSR_DECODER", value: "first|last", help: "the card the decoder runs on (default first: the decoder is the heaviest stage, the first card the fastest)", at: At::Load },
     EngineOption { name: "sparse_ratio", env: "", value: "R", help: "the attention's top-k as FlashVSR's sparse_ratio (default 2.0; 1.5 faster, 2.0 steadier)", at: At::Request },
     EngineOption { name: "local_range", env: "", value: "N", help: "the attention's local window in 128-pixel blocks (default 11: steadier; 9 sharper)", at: At::Request },
@@ -76,11 +76,13 @@ pub struct Settings {
     pub sparse_ratio: f64,
     pub local_range: usize,
     pub color_fix: bool,
+    /// the latent frame the stream's first one is, for the noise (a tile's or a segment's stream inside a clip)
+    pub lat_base: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { scale: 2.0, seed: 0, sparse_ratio: 2.0, local_range: 11, color_fix: true }
+        Settings { scale: 2.0, seed: 0, sparse_ratio: 2.0, local_range: 11, color_fix: true, lat_base: 0 }
     }
 }
 
@@ -97,6 +99,25 @@ pub trait Hooks {
     /// frame i as the decoder made it (half [th, tw, 3] in about [0, 1], before the colour fix)
     fn decoded(&mut self, _i: usize, _v: &DevBuf) -> Result<()> {
         Ok(())
+    }
+}
+
+/// A frame read: prepared, or being prepared on its own thread
+enum Slot {
+    Ready(Vec<u8>),
+    Pending(std::thread::JoinHandle<Vec<u8>>),
+}
+
+impl Slot {
+    fn ready(&mut self) -> Result<&Vec<u8>> {
+        if let Slot::Pending(_) = self {
+            let Slot::Pending(h) = std::mem::replace(self, Slot::Ready(Vec::new())) else { unreachable!() };
+            *self = Slot::Ready(h.join().map_err(|_| Error("flashvsr: a frame's preparation failed".into()))?);
+        }
+        match self {
+            Slot::Ready(v) => Ok(v),
+            Slot::Pending(_) => unreachable!(),
+        }
     }
 }
 
@@ -141,6 +162,7 @@ struct Back<'a> {
     /// with one card, the head runs there: its kernel context and the card
     one: (&'a nextcuda_diffusion::kernels::Nsd, Arc<Gpu>),
     seed: u64,
+    lat_base: usize,
     h8: usize,
     w8: usize,
 }
@@ -178,7 +200,7 @@ impl Back<'_> {
             Some(st) => (self.xs.last().unwrap(), &st.nsd, st.gpu.clone()),
             None => (self.x0, self.one.0, self.one.1.clone()),
         };
-        write_noise(self.noise, &gpu, job.noise.as_deref(), f, job.lat0, h8, w8, self.seed)?;
+        write_noise(self.noise, &gpu, job.noise.as_deref(), f, job.lat0 + self.lat_base, h8, w8, self.seed)?;
         let gl = g(&gpu);
         // SAFETY: the buffers hold rows x 1536 / 64 values and 16 x f x h8 x w8 latents
         ck(unsafe { (k.ln)(gl, x.fp(), rows as i64, DIM as i64, 1e-6, self.ends.head_sc.fp(), self.ends.head_sh.fp(), self.hbuf.ptr()) }, "head norm")?;
@@ -274,7 +296,8 @@ impl FlashVsr {
         let counts: Vec<usize> = match split {
             Some(s) if !s.trim().is_empty() => s.split(',').map(|v| v.trim().parse::<usize>().map_err(|_| Error(format!("NC_FLASHVSR_SPLIT {s}: block counts")))).collect::<Result<_>>()?,
             // the first card (the 5070) also holds the LQ projection and the decoder: fewer blocks there
-            _ if gpus.len() >= 2 => vec![12, 18],
+            // measured best on the 5070 + 3060 at 1728 x 960 (0.260 s a frame; 16,14: 0.276; 12,18: 0.339)
+            _ if gpus.len() >= 2 => vec![17, 13],
             _ => vec![dit::LAYERS],
         };
         if counts.iter().sum::<usize>() != dit::LAYERS || counts.len() > gpus.len() || counts.contains(&0) {
@@ -381,32 +404,37 @@ impl FlashVsr {
         let last_gpu = self.gpus.last().unwrap().clone();
         let dec_gpu = self.gpus[inner.dec].clone();
         let fsize = th * tw * 3;
-        // the frames on the host, prepared: [base, base + len) of the clip; the clip's count once it has ended
-        let mut frames: VecDeque<Vec<u8>> = VecDeque::new();
+        // the frames on the host: [base, base + len) of the clip, each prepared on a thread of its own as it is read (a chunk
+        // ahead, so the bicubic runs beside the cards' work); the clip's count once it has ended
+        let mut frames: VecDeque<Slot> = VecDeque::new();
         let mut base = 0usize;
         let mut ended: Option<usize> = None;
         let mut last: Vec<u8> = Vec::new();
         let prep_secs = std::cell::Cell::new(0f64);
-        let mut read = |want: usize, frames: &mut VecDeque<Vec<u8>>, base: usize, ended: &mut Option<usize>, last: &mut Vec<u8>| -> Result<()> {
+        let mut read = |want: usize, frames: &mut VecDeque<Slot>, base: usize, ended: &mut Option<usize>, _last: &mut Vec<u8>| -> Result<()> {
             while ended.is_none() && base + frames.len() < want {
                 match next()? {
-                    Some(f) => {
-                        let tp = Instant::now();
-                        let p = if prepared { f } else { resize::prepare(&f, &geo) };
-                        prep_secs.set(prep_secs.get() + tp.elapsed().as_secs_f64());
-                        if p.len() != fsize {
-                            return Err(Error(format!("flashvsr: a frame of {} bytes, {} expected", p.len(), fsize)));
-                        }
-                        last.clone_from(&p);
-                        frames.push_back(p);
-                    }
+                    Some(f) if prepared => frames.push_back(Slot::Ready(f)),
+                    Some(f) => frames.push_back(Slot::Pending(std::thread::spawn(move || resize::prepare(&f, &geo)))),
                     None => *ended = Some(base + frames.len()),
                 }
             }
             Ok(())
         };
-        let get = |i: usize, frames: &VecDeque<Vec<u8>>, base: usize, last: &Vec<u8>| -> Vec<u8> {
-            if i >= base && i - base < frames.len() { frames[i - base].clone() } else { last.clone() }
+        // frame i prepared (waited for); past the end, the clip's last
+        let get = |i: usize, frames: &mut VecDeque<Slot>, base: usize, last: &mut Vec<u8>| -> Result<Vec<u8>> {
+            let at = if i >= base && i - base < frames.len() { i - base } else if !frames.is_empty() { frames.len() - 1 } else { return Ok(last.clone()) };
+            let tp = Instant::now();
+            let is_last = at == frames.len() - 1;
+            let p = frames[at].ready()?;
+            prep_secs.set(prep_secs.get() + tp.elapsed().as_secs_f64());
+            if p.len() != fsize {
+                return Err(Error(format!("flashvsr: a frame of {} bytes, {} expected", p.len(), fsize)));
+            }
+            if is_last {
+                last.clone_from(p);
+            }
+            Ok(p.clone())
         };
         // buffers: up to 25 frames of bytes and halves, the LQ tokens, noise, x and the latents
         let frames_u8 = DevBuf::new(&first_gpu, 4 * fsize)?;
@@ -448,7 +476,7 @@ impl FlashVsr {
         let (lq, tcd, dec_nsd) = (&mut inner.lq, &mut inner.tcd, &inner.dec_nsd);
         let (x0, xs_b) = xs.split_first().unwrap();
         let (cs0, css_b) = css.split_first().unwrap();
-        let back = Back { ends: &self.ends, stages: back_stages, xs: xs_b, css: css_b, x0, noise: &noise_l, hbuf: &hbuf, pred: &pred, lat: &lat, one: (dec_nsd, first_gpu.clone()), seed: set.seed, h8, w8 };
+        let back = Back { ends: &self.ends, stages: back_stages, xs: xs_b, css: css_b, x0, noise: &noise_l, hbuf: &hbuf, pred: &pred, lat: &lat, one: (dec_nsd, first_gpu.clone()), seed: set.seed, lat_base: set.lat_base, h8, w8 };
         let mut made = 0usize;
         std::thread::scope(|sc| -> Result<()> {
             let (jtx, jrx) = std::sync::mpsc::channel::<Job>();
@@ -502,9 +530,8 @@ impl FlashVsr {
             loop {
                 let hi = if chunk == 0 { 25 } else { 8 * chunk + 25 };
                 prof.mark("other", &self.gpus);
-                prep_secs.set(0.0);
-                read(hi, &mut frames, base, &mut ended, &mut last)?;
-                prof.carve("frames: bicubic + mirror (host)", prep_secs.get());
+                // a chunk ahead: the next chunk's frames prepare while this one runs
+                read(hi + 8, &mut frames, base, &mut ended, &mut last)?;
                 prof.mark("frames: ffmpeg decode wait", &self.gpus);
                 let done = match ended {
                     Some(0) => return Err(Error("flashvsr: the clip has no frames".into())),
@@ -525,7 +552,7 @@ impl FlashVsr {
                         let n = b - a;
                         let mut bytes = Vec::with_capacity(n * fsize);
                         for i in a..b {
-                            bytes.extend_from_slice(&get(i, &frames, base, &last));
+                            bytes.extend_from_slice(&get(i, &mut frames, base, &mut last)?);
                         }
                         frames_u8.write(0, &bytes)?;
                         ck(unsafe { (k.u8_to_half)(g0, frames_u8.ptr() as *const u8, (n * fsize) as i64, frames_h.ptr()) }, "frames")?;
@@ -541,7 +568,7 @@ impl FlashVsr {
                     prof.mark("lq projection", &self.gpus);
                     // the noise (a check's from its hooks, else the engine's own on each card)
                     let given: Option<Vec<Vec<f32>>> = (0..f).map(|t| hooks.noise(lat0 + t, h8, w8)).collect();
-                    write_noise(&noise0, &first_gpu, given.as_deref(), f, lat0, h8, w8, set.seed)?;
+                    write_noise(&noise0, &first_gpu, given.as_deref(), f, lat0 + set.lat_base, h8, w8, set.seed)?;
                     // the tokens and the first card's blocks
                     ck(unsafe { (k.patchify)(g0, noise0.fp(), f as i64, h8 as i64, w8 as i64, patches.ptr()) }, "patches")?;
                     self.ends.patch.apply(&stage0.nsd, patches.ptr(), rows, x0.ptr(), Dt::F32)?;
@@ -591,10 +618,10 @@ impl FlashVsr {
                     let front = if pc == 0 { 3 } else { 0 };
                     let mut bytes = Vec::with_capacity((cur - pre + front) * fsize);
                     for _ in 0..front {
-                        bytes.extend_from_slice(&get(0, &frames, base, &last));
+                        bytes.extend_from_slice(&get(0, &mut frames, base, &mut last)?);
                     }
                     for i in pre..cur {
-                        bytes.extend_from_slice(&get(i, &frames, base, &last));
+                        bytes.extend_from_slice(&get(i, &mut frames, base, &mut last)?);
                     }
                     let nc = cur - pre + front;
                     cond_u8.write(0, &bytes)?;
@@ -669,9 +696,147 @@ impl FlashVsr {
         })?;
         if prof.on {
             let total: f64 = prof.acc.iter().map(|(_, s)| s).sum();
+            for st in inner.stages.iter() {
+                let tot: f64 = st.ops.iter().map(|(_, s)| s).sum();
+                for (n, s) in &st.ops {
+                    eprintln!("flashvsr profile: blocks {}-{} on {}: {n:<34} {s:7.1} s {:5.1}%  {:.4} s a frame a block", st.from, st.to - 1, st.gpu.name,
+                              100.0 * s / tot.max(1e-9), s / made.max(1) as f64 / (st.to - st.from) as f64);
+                }
+            }
             eprintln!("flashvsr profile: {made} frames, {total:.1} s, {:.3} s a frame (the cards taking turns, each mark waited for)", total / made.max(1) as f64);
             for (n, s) in &prof.acc {
                 eprintln!("flashvsr profile: {n:<30} {s:8.1} s  {:5.1}%  {:.3} s a frame", 100.0 * s / total.max(1e-9), s / made.max(1) as f64);
+            }
+        }
+        Ok(made as u32)
+    }
+}
+
+/// Bytes a card may hold for FlashVSR before a size is run in tiles (of its 12 GiB: room for the driver and others)
+const CARD_BUDGET: usize = 10_900 << 20;
+/// A tile's largest side (the size the two cards run whole: 1728 x 960 out, 1792 x 1024 inside) and the tiles' overlap
+const TILE_W: usize = 1792;
+const TILE_H: usize = 1024;
+const TILE_OVERLAP: usize = 128;
+/// A tiled run's segments: frames made a pass, and the frames each tile's stream runs before them to fill its memory
+const SEG: usize = 192;
+const WARM: usize = 32;
+
+/// Tiles along one side: (tile size, offsets)
+fn tiles_along(total: usize, max: usize) -> (usize, Vec<usize>) {
+    if total <= max {
+        return (total, vec![0]);
+    }
+    let n = (total - TILE_OVERLAP).div_ceil(max - TILE_OVERLAP);
+    let size = (total + (n - 1) * TILE_OVERLAP).div_ceil(n).div_ceil(128) * 128;
+    let size = size.min(max);
+    let offs = (0..n).map(|i| if n == 1 { 0 } else { i * (total - size) / (n - 1) }).collect();
+    (size, offs)
+}
+
+impl FlashVsr {
+    /// Whether a size runs whole on the cards (else in tiles)
+    pub fn fits(&self, geo: &Geometry) -> bool {
+        let need = self.need_bytes(geo);
+        need.iter().zip(&self.weight_bytes).all(|(n, w)| n + w <= CARD_BUDGET)
+    }
+
+    /// A clip too big for the cards whole: in tiles of the upscaled frame (each its own stream), over segments of SEG
+    /// frames, each tile's stream starting WARM frames before its segment (their frames thrown away: the KV cache and
+    /// the convolutions' memory filled as in one stream) and running 8 past it (the frames it looks ahead to). The
+    /// noise is the clip's by latent frame, so the tiles agree; their overlaps are blended linearly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_tiled(&self, geo: Geometry, set: &Settings, total_hint: Option<u32>, next: &mut dyn FnMut() -> Result<Option<Vec<u8>>>,
+                     emit: &mut dyn FnMut(Picture) -> Result<()>, progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<u32> {
+        let t0 = Instant::now();
+        let (tw, th) = (geo.tw, geo.th);
+        let (tile_w, xs) = tiles_along(tw, TILE_W);
+        let (tile_h, ys) = tiles_along(th, TILE_H);
+        let tgeo = Geometry { w: tile_w, h: tile_h, sw: tile_w, sh: tile_h, tw: tile_w, th: tile_h, left: 0, top: 0 };
+        if !self.fits(&tgeo) {
+            return Err(Error(format!("flashvsr: a {tile_w} x {tile_h} tile does not fit the cards")));
+        }
+        let fsize = tw * th * 3;
+        let mut frames: VecDeque<Vec<u8>> = VecDeque::new();
+        let mut base = 0usize;
+        let mut ended: Option<usize> = None;
+        let mut made = 0usize;
+        let mut s = 0usize;
+        loop {
+            // the segment [s, e), its stream from a, its frames up to e + 8 on hand
+            while ended.is_none() && base + frames.len() < s + SEG + 8 {
+                match next()? {
+                    Some(f) => frames.push_back(resize::prepare(&f, &geo)),
+                    None => ended = Some(base + frames.len()),
+                }
+            }
+            let have = base + frames.len();
+            let e = (s + SEG).min(ended.unwrap_or(usize::MAX)).min(have);
+            if e <= s {
+                break;
+            }
+            let a = s.saturating_sub(WARM);
+            let stop = (e + 8).min(have);
+            let mut seg: Vec<Vec<u8>> = vec![vec![0u8; fsize]; e - s];
+            for (j, &y0) in ys.iter().enumerate() {
+                for (i, &x0) in xs.iter().enumerate() {
+                    let mut idx = a;
+                    let mut out = a;
+                    let mut st = *set;
+                    st.lat_base = a / 4;
+                    let fr = &frames;
+                    self.run(tgeo, &st, true, None, &mut || {
+                        if idx >= stop {
+                            return Ok(None);
+                        }
+                        let src = &fr[idx - base];
+                        let mut t = vec![0u8; tile_w * tile_h * 3];
+                        for r in 0..tile_h {
+                            let at = ((y0 + r) * tw + x0) * 3;
+                            t[r * tile_w * 3..(r + 1) * tile_w * 3].copy_from_slice(&src[at..at + tile_w * 3]);
+                        }
+                        idx += 1;
+                        Ok(Some(t))
+                    }, &mut |p| {
+                        let k = out;
+                        out += 1;
+                        if k < s || k >= e {
+                            return Ok(());
+                        }
+                        let dst = &mut seg[k - s];
+                        for r in 0..tile_h {
+                            let ay = if j > 0 && r < ys[j - 1] + tile_h - y0 { (r as f32 + 0.5) / (ys[j - 1] + tile_h - y0) as f32 } else { 1.0 };
+                            for c in 0..tile_w {
+                                let ax = if i > 0 && c < xs[i - 1] + tile_w - x0 { (c as f32 + 0.5) / (xs[i - 1] + tile_w - x0) as f32 } else { 1.0 };
+                                let wgt = ax.min(ay).min(1.0);
+                                let o = ((y0 + r) * tw + x0 + c) * 3;
+                                let q = (r * tile_w + c) * 3;
+                                for ch in 0..3 {
+                                    let v = p.data[q + ch] as f32;
+                                    dst[o + ch] = if wgt >= 1.0 { v as u8 } else { (dst[o + ch] as f32 + (v - dst[o + ch] as f32) * wgt).round() as u8 };
+                                }
+                            }
+                        }
+                        Ok(())
+                    }, &mut |_| Ok(()), &mut NoHooks)?;
+                }
+            }
+            for f in seg {
+                let mut pic = Picture::new(geo.sw as u32, geo.sh as u32, 3);
+                for r in 0..geo.sh {
+                    let at = ((geo.top + r) * tw + geo.left) * 3;
+                    pic.data[r * geo.sw * 3..(r + 1) * geo.sw * 3].copy_from_slice(&f[at..at + geo.sw * 3]);
+                }
+                emit(pic)?;
+                made += 1;
+            }
+            progress(Step { picture: 0, at: made as u32, of: ended.map(|n| n as u32).or(total_hint).unwrap_or(0), seconds: t0.elapsed().as_secs_f64() })?;
+            s = e;
+            // the next segment's warm-up onward stays
+            let keep = s.saturating_sub(WARM);
+            while base < keep && !frames.is_empty() {
+                frames.pop_front();
+                base += 1;
             }
         }
         Ok(made as u32)
@@ -722,7 +887,12 @@ impl ImageEngine for FlashVsr {
         let t0 = Instant::now();
         let set = Self::settings(req.variant.as_deref(), req.scale, req.seed, &req.extra)?;
         let geo = Geometry::new(req.width as usize, req.height as usize, set.scale);
-        let n = self.run(geo, &set, false, req.frames, next, emit, progress, &mut NoHooks)?;
+        let tiled = match std::env::var("NC_FLASHVSR_TILE").as_deref() {
+            Ok("1") => true,
+            Ok("0") => false,
+            _ => !self.fits(&geo),
+        };
+        let n = if tiled { self.run_tiled(geo, &set, req.frames, next, emit, progress)? } else { self.run(geo, &set, false, req.frames, next, emit, progress, &mut NoHooks)? };
         Ok(UpscaleInfo { variant: VARIANTS[0].id.into(), scale: set.scale as u32, noise: None, tile: 0, tiles: n, seconds: t0.elapsed().as_secs_f64() })
     }
 }

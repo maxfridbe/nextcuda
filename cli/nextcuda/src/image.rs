@@ -401,20 +401,35 @@ fn upscale_clip_cmd(cfg: &Config, args: &[String]) -> Result<(), String> {
     }
     let mut dec = dec.args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
     let mut stdout = dec.stdout.take().ok_or("ffmpeg's output")?;
-    let mut buf = vec![0u8; w * h * 3];
+    // ffmpeg's frames read on a thread of their own, a few ahead (the engine's thread drives the cards)
+    let (ftx, frx) = std::sync::mpsc::sync_channel::<Vec<u8>>(16);
+    let reader = std::thread::spawn(move || {
+        let mut buf = vec![0u8; w * h * 3];
+        while stdout.read_exact(&mut buf).is_ok() {
+            if ftx.send(buf.clone()).is_err() {
+                break;
+            }
+        }
+    });
     let mut enc: Option<std::process::Child> = None;
+    let mut writer: Option<(std::sync::mpsc::SyncSender<Vec<u8>>, std::thread::JoinHandle<bool>)> = None;
     let mut n = 0u32;
     let t0 = std::time::Instant::now();
     let req = nextcuda_image::ClipUpscaleRequest { width: w as u32, height: h as u32, frames: limit, variant: opt(args, "--variant").map(str::to_string),
                                                    scale: opt(args, "--scale").and_then(|v| v.parse().ok()), seed: opt(args, "--seed").and_then(|v| v.parse().ok()), extra };
-    let info = e.upscale_clip(&req, &mut || Ok(stdout.read_exact(&mut buf).is_ok().then(|| buf.clone())), &mut |pic| {
+    let info = e.upscale_clip(&req, &mut || Ok(frx.recv().ok()), &mut |pic| {
         if enc.is_none() {
-            enc = Some(Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{}x{}", pic.width, pic.height), "-r", &fps, "-i", "-"])
+            let mut child = Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{}x{}", pic.width, pic.height), "-r", &fps, "-i", "-"])
                 .args(["-c:v", "libx264", "-preset", "medium", "-crf", "16", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]).arg(output.as_str())
-                .stdin(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| nextcuda_core::Error(format!("ffmpeg: {e}")))?);
+                .stdin(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| nextcuda_core::Error(format!("ffmpeg: {e}")))?;
+            // the encoder fed from a thread of its own: a full pipe does not hold the cards up
+            let mut stdin = child.stdin.take().ok_or_else(|| nextcuda_core::Error("ffmpeg's input".into()))?;
+            let (wtx, wrx) = std::sync::mpsc::sync_channel::<Vec<u8>>(16);
+            writer = Some((wtx, std::thread::spawn(move || wrx.iter().all(|f| stdin.write_all(&f).is_ok()))));
+            enc = Some(child);
         }
-        enc.as_mut().and_then(|e| e.stdin.as_mut()).ok_or_else(|| nextcuda_core::Error("ffmpeg's input".into()))?
-            .write_all(&pic.data).map_err(|e| nextcuda_core::Error(format!("the encoder: {e}")))?;
+        writer.as_ref().ok_or_else(|| nextcuda_core::Error("the encoder".into()))?.0.send(pic.data)
+            .map_err(|_| nextcuda_core::Error("the encoder stopped".into()))?;
         n += 1;
         Ok(())
     }, &mut |st| {
@@ -423,8 +438,13 @@ fn upscale_clip_cmd(cfg: &Config, args: &[String]) -> Result<(), String> {
         Ok(())
     }).map_err(|e| e.0)?;
     let _ = dec.kill();
+    drop(frx);
+    let _ = reader.join();
+    if let Some((tx, h)) = writer {
+        drop(tx);
+        let _ = h.join();
+    }
     if let Some(mut c) = enc {
-        drop(c.stdin.take());
         let _ = c.wait();
     }
     let s = t0.elapsed().as_secs_f64();

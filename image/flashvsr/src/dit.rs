@@ -37,7 +37,7 @@ pub const LAYERS: usize = 30;
 pub const TEXT: usize = 4096;
 const EPS: f32 = 1e-6;
 /// rows of the MLP made at a time (its 8,960-wide hidden layer)
-const FFN_ROWS: usize = 8192;
+const FFN_ROWS: usize = 4096;
 
 /// A linear layer on the card: weight half [n, k], bias float32 [n]
 pub struct Lin {
@@ -173,6 +173,8 @@ struct Work {
 
 /// Layers [from, to) of the DiT on one card
 pub struct Stage {
+    /// seconds by operation (NC_FLASHVSR_PROFILE=1: the card waited for after each)
+    pub ops: Vec<(&'static str, f64)>,
     pub gpu: Arc<Gpu>,
     pub nsd: Nsd,
     pub from: usize,
@@ -303,14 +305,14 @@ impl Stage {
             layers.push(layer);
         }
         log(format!("flashvsr: blocks {from}-{} on {} ({:.2} GiB)", to - 1, gpu.name, bytes as f64 / (1u64 << 30) as f64));
-        Ok(Stage { gpu: gpu.clone(), nsd, from, to, layers, work: None, weight_bytes: bytes })
+        Ok(Stage { ops: Vec::new(), gpu: gpu.clone(), nsd, from, to, layers, work: None, weight_bytes: bytes })
     }
 
     /// What the KV cache and the working buffers take for a grid of nb blocks a pair (bytes)
     pub fn need_bytes(&self, nb: usize) -> usize {
         let per = 2 * 3 * nb * 128 * DIM * 2 + 4 * nb * DIM * 4;
         let rows = 3 * nb * 128;
-        let work = rows * DIM * (2 + 2 + 2 + 4) + FFN_ROWS * FFN * 2 + 2 * nb * 128 * DIM * 2 + HEADS * 3 * nb * 4 * nb * (4 + 4) + (1 << 26);
+        let work = rows * DIM * (2 + 2) + nb * 128 * DIM * (2 + 4) + FFN_ROWS * FFN * 2 + 2 * nb * 128 * DIM * 2 + HEADS * 3 * nb * 4 * nb * (4 + 4) + (1 << 26);
         per * self.layers.len() + work
     }
 
@@ -342,10 +344,11 @@ impl Stage {
         self.work = Some(Work {
             rows,
             nb,
-            h: DevBuf::new(gpu, rows * DIM * 2)?,
+            // the row-wise work goes a latent pair at a time: h and y for one pair
+            h: DevBuf::new(gpu, nb * 128 * DIM * 2)?,
             q: DevBuf::new(gpu, rows * DIM * 2)?,
             attn: DevBuf::new(gpu, rows * DIM * 2)?,
-            y: DevBuf::new(gpu, rows * DIM * 4)?,
+            y: DevBuf::new(gpu, nb * 128 * DIM * 4)?,
             hid: DevBuf::new(gpu, FFN_ROWS * FFN * 2)?,
             kt: DevBuf::new(gpu, nb * 128 * DIM * 2)?,
             vt: DevBuf::new(gpu, nb * 128 * DIM * 2)?,
@@ -371,19 +374,46 @@ impl Stage {
         let nsd = &self.nsd;
         let xp = x.ptr() as *mut f32;
         let (nq, nk) = (c.groups * nb, c.nk());
+        let prof = std::env::var("NC_FLASHVSR_PROFILE").is_ok_and(|v| v == "1");
+        let mut t = std::time::Instant::now();
+        let gpu = self.gpu.clone();
+        let mut ops: Vec<(&'static str, f64)> = std::mem::take(&mut self.ops);
+        let mut mark = |name: &'static str| {
+            if !prof {
+                return;
+            }
+            let _ = gpu.sync();
+            let s = t.elapsed().as_secs_f64();
+            t = std::time::Instant::now();
+            match ops.iter_mut().find(|(n, _)| *n == name) {
+                Some(e) => e.1 += s,
+                None => ops.push((name, s)),
+            }
+        };
+        // a latent pair's rows at a time for the row-wise work (h and y hold one pair)
+        let grp = nb * 128;
+        let slices: Vec<(usize, usize)> = (0..rows).step_by(grp).map(|r0| (r0, grp.min(rows - r0))).collect();
+        // a row's place in a buffer of DIM-wide rows of `el` bytes
+        let at = |p: *mut std::ffi::c_void, r0: usize, el: usize| -> *mut std::ffi::c_void {
+            // SAFETY: r0 is a row of the buffer (the slices stay inside the chunk's rows)
+            unsafe { (p as *mut u8).add(r0 * DIM * el) as *mut std::ffi::c_void }
+        };
         for (li, l) in self.layers.iter().enumerate() {
             let (kc, vc, km) = (l.kc.as_ref().unwrap(), l.vc.as_ref().unwrap(), l.km.as_ref().unwrap());
             // self-attention
             // SAFETY (every call below): the buffers hold what the call reads and writes, sized by prepare.
-            check(unsafe { (k.ln)(gp, xp, rows as i64, DIM as i64, EPS, l.sc1.fp(), l.sh1.fp(), w.h.ptr()) }, "ln1")?;
             let (kd, vd) = if c.first { (kc, vc) } else { (&w.kt, &w.vt) };
-            l.q.apply(nsd, w.h.ptr(), rows, w.q.ptr(), Dt::F16)?;
-            l.k.apply(nsd, w.h.ptr(), rows, kd.ptr(), Dt::F16)?;
-            l.v.apply(nsd, w.h.ptr(), rows, vd.ptr(), Dt::F16)?;
+            for &(r0, r) in &slices {
+                check(unsafe { (k.ln)(gp, xp.add(r0 * DIM), r as i64, DIM as i64, EPS, l.sc1.fp(), l.sh1.fp(), w.h.ptr()) }, "ln1")?;
+                l.q.apply(nsd, w.h.ptr(), r, at(w.q.ptr(), r0, 2), Dt::F16)?;
+                l.k.apply(nsd, w.h.ptr(), r, at(kd.ptr(), r0, 2), Dt::F16)?;
+                l.v.apply(nsd, w.h.ptr(), r, at(vd.ptr(), r0, 2), Dt::F16)?;
+            }
             nsd.rms_norm_mod(w.q.ptr(), Dt::F16, rows, DIM, l.norm_q.ptr(), EPS, none(), none(), none(), w.q.ptr(), Dt::F16)?;
             nsd.rms_norm_mod(kd.ptr(), Dt::F16, rows, DIM, l.norm_k.ptr(), EPS, none(), none(), none(), kd.ptr(), Dt::F16)?;
             nsd.rope(w.q.ptr(), Dt::F16, rows, HEADS, HEAD, DIM, cs.ptr(), HEAD)?;
             nsd.rope(kd.ptr(), Dt::F16, rows, HEADS, HEAD, DIM, cs.ptr(), HEAD)?;
+            mark("ln + q k v + norms + rope");
             // the draft: block means, their scores, the top k, the lists
             let km_at = if c.first { 0 } else { 3 * nb * DIM * 4 };
             check(unsafe { (k.block_mean)(gp, w.q.ptr(), nq as i64, DIM as i64, DIM as i64, w.qm.fp()) }, "query means")?;
@@ -396,8 +426,10 @@ impl Stage {
             check(unsafe { (k.topk_thr)(gp, w.probs.fp(), (HEADS * c.groups) as i64, n as i64, rank, w.thr.fp()) }, "top k")?;
             check(unsafe { (k.block_lists)(gp, w.probs.fp(), w.thr.fp(), HEADS as i64, nq as i64, nk as i64, nb as i64, w.lists.ptr() as *mut i32,
                                            w.counts.ptr() as *mut i32) }, "block lists")?;
+            mark("draft: block scores, top k, lists");
             check(unsafe { (k.sparse_attn)(gp, w.q.ptr(), rows as i64, HEADS as i64, kc.ptr(), vc.ptr(), w.kt.ptr(), w.vt.ptr(), (3 * nb) as i64,
                                            w.lists.ptr() as *const i32, w.counts.ptr() as *const i32, nk as i64, w.attn.ptr()) }, "sparse attention")?;
+            mark("sparse attention");
             if !c.first {
                 // the chunk's pair over the oldest
                 let pair = nb * 128 * DIM * 2;
@@ -405,31 +437,40 @@ impl Stage {
                 vc.copy_within(c.evict * pair, &w.vt, 0, pair)?;
                 km.copy_within(c.evict * nb * DIM * 4, km, 3 * nb * DIM * 4, nb * DIM * 4)?;
             }
-            l.o.apply(nsd, w.attn.ptr(), rows, w.y.ptr(), Dt::F32)?;
-            check(unsafe { (k.gate_add)(gp, xp, w.y.fp(), rows as i64, DIM as i64, l.g1.fp()) }, "attention residual")?;
+            for &(r0, r) in &slices {
+                l.o.apply(nsd, at(w.attn.ptr(), r0, 2), r, w.y.ptr(), Dt::F32)?;
+                check(unsafe { (k.gate_add)(gp, xp.add(r0 * DIM), w.y.fp(), r as i64, DIM as i64, l.g1.fp()) }, "attention residual")?;
+            }
+            mark("kv cache + o + residual");
             // cross-attention to the prompt
-            check(unsafe { (k.ln)(gp, xp, rows as i64, DIM as i64, EPS, l.n3_w.fp(), l.n3_b.fp(), w.h.ptr()) }, "ln3")?;
-            l.cq.apply(nsd, w.h.ptr(), rows, w.q.ptr(), Dt::F16)?;
+            for &(r0, r) in &slices {
+                check(unsafe { (k.ln)(gp, xp.add(r0 * DIM), r as i64, DIM as i64, EPS, l.n3_w.fp(), l.n3_b.fp(), w.h.ptr()) }, "ln3")?;
+                l.cq.apply(nsd, w.h.ptr(), r, at(w.q.ptr(), r0, 2), Dt::F16)?;
+            }
             nsd.rms_norm_mod(w.q.ptr(), Dt::F16, rows, DIM, l.cnorm_q.ptr(), EPS, none(), none(), none(), w.q.ptr(), Dt::F16)?;
             nsd.flash_attention(w.q.ptr(), rows, DIM, l.ck.ptr(), l.cv.ptr(), l.ctx_rows, DIM, HEADS, HEADS, w.attn.ptr())?;
-            l.co.apply(nsd, w.attn.ptr(), rows, w.y.ptr(), Dt::F32)?;
-            check(unsafe { (k.gate_add)(gp, xp, w.y.fp(), rows as i64, DIM as i64, std::ptr::null()) }, "cross residual")?;
-            // the MLP, in slices of rows
-            check(unsafe { (k.ln)(gp, xp, rows as i64, DIM as i64, EPS, l.sc2.fp(), l.sh2.fp(), w.h.ptr()) }, "ln2")?;
-            let mut r0 = 0;
-            while r0 < rows {
-                let r = FFN_ROWS.min(rows - r0);
-                // SAFETY: row offsets inside h (half) and y (float32)
-                let hp = unsafe { (w.h.ptr() as *mut u8).add(r0 * DIM * 2) };
-                l.w1.apply(nsd, hp as *const _, r, w.hid.ptr(), Dt::F16)?;
-                nsd.gelu(w.hid.ptr(), Dt::F16, r * FFN, true)?;
-                l.w2.apply(nsd, w.hid.ptr(), r, w.y.ptr(), Dt::F32)?;
-                let xr = unsafe { xp.add(r0 * DIM) };
-                check(unsafe { (k.gate_add)(gp, xr, w.y.fp(), r as i64, DIM as i64, l.g2.fp()) }, "mlp residual")?;
-                r0 += r;
+            for &(r0, r) in &slices {
+                l.co.apply(nsd, at(w.attn.ptr(), r0, 2), r, w.y.ptr(), Dt::F32)?;
+                check(unsafe { (k.gate_add)(gp, xp.add(r0 * DIM), w.y.fp(), r as i64, DIM as i64, std::ptr::null()) }, "cross residual")?;
             }
+            mark("cross-attention");
+            // the MLP, a pair's rows at a time, its hidden layer FFN_ROWS rows at a time
+            for &(g0, gr) in &slices {
+                check(unsafe { (k.ln)(gp, xp.add(g0 * DIM), gr as i64, DIM as i64, EPS, l.sc2.fp(), l.sh2.fp(), w.h.ptr()) }, "ln2")?;
+                let mut r0 = 0;
+                while r0 < gr {
+                    let r = FFN_ROWS.min(gr - r0);
+                    l.w1.apply(nsd, at(w.h.ptr(), r0, 2), r, w.hid.ptr(), Dt::F16)?;
+                    nsd.gelu(w.hid.ptr(), Dt::F16, r * FFN, true)?;
+                    l.w2.apply(nsd, w.hid.ptr(), r, w.y.ptr(), Dt::F32)?;
+                    check(unsafe { (k.gate_add)(gp, xp.add((g0 + r0) * DIM), w.y.fp(), r as i64, DIM as i64, l.g2.fp()) }, "mlp residual")?;
+                    r0 += r;
+                }
+            }
+            mark("mlp");
             grab(self.from + li, x)?;
         }
+        self.ops = ops;
         Ok(())
     }
 }

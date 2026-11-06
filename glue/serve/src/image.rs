@@ -710,35 +710,61 @@ impl ImageServer {
                 let creq = nextcuda_image::ClipUpscaleRequest { width: w as u32, height: h as u32, frames: (frames > 0).then_some(frames), variant: req0.variant.clone(),
                                                                 scale: req0.scale, seed: b["seed"].as_u64(), extra };
                 let mut stopped = None;
-                let mut next = || -> nextcuda_core::Result<Option<Vec<u8>>> {
-                    if self.cancel.stopping() {
-                        return Err(nextcuda_core::Error("cancelled".into()));
-                    }
-                    Ok(stdout.read_exact(&mut buf).is_ok().then(|| buf.clone()))
-                };
-                let mut emit = |pic: nextcuda_image::Picture| -> nextcuda_core::Result<()> {
-                    if enc.is_none() {
-                        out_size = (pic.width as usize, pic.height as usize);
-                        enc = Some(Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{}x{}", pic.width, pic.height),
-                                                           "-r", &fps, "-i", "-", "-i"]).arg(&src.0)
-                            .args(["-map", "0:v:0", "-map", "1:a?", "-c:v", "libx264", "-preset", "medium", "-crf", &crf, "-pix_fmt", "yuv420p", "-c:a", "copy",
-                                   "-movflags", "+faststart"]).arg(&out_path)
-                            .stdin(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| nextcuda_core::Error(format!("ffmpeg: {e}")))?);
-                    }
-                    enc.as_mut().and_then(|e| e.stdin.as_mut()).ok_or_else(|| nextcuda_core::Error("ffmpeg's input".into()))?
-                        .write_all(&pic.data).map_err(|e| nextcuda_core::Error(format!("the encoder: {e}")))?;
-                    n += 1;
-                    Ok(())
-                };
-                let info = engine.upscale_clip(&creq, &mut next, &mut emit, &mut |st| {
-                    *p.lock().unwrap() = json!({"busy": true, "prompt": format!("upscale a clip {w}x{h}"), "at": st.at, "of": st.of.max(st.at), "phase": "frames",
-                                                "seconds": t0.elapsed().as_secs_f64()});
-                    if self.cancel.stopping() {
-                        stopped = Some(());
-                        return Err(nextcuda_core::Error("cancelled".into()));
-                    }
-                    Ok(())
-                }).map_err(|e| (if e.0 == "cancelled" || stopped.is_some() { 499u16 } else { 400 }, e.0))?;
+                // ffmpeg's frames read on a thread of their own and the encoder fed from another, through short queues: the
+                // engine's thread drives the cards and waits for neither pipe
+                let (ftx, frx) = std::sync::mpsc::sync_channel::<Vec<u8>>(16);
+                let info = std::thread::scope(|sc| -> Result<nextcuda_image::UpscaleInfo, (u16, String)> {
+                    let (fw, fh) = (w, h);
+                    sc.spawn(move || {
+                        let mut buf = vec![0u8; fw * fh * 3];
+                        while stdout.read_exact(&mut buf).is_ok() {
+                            if ftx.send(buf.clone()).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    let mut wtx: Option<std::sync::mpsc::SyncSender<Vec<u8>>> = None;
+                    let r = {
+                        let mut next = || -> nextcuda_core::Result<Option<Vec<u8>>> {
+                            if self.cancel.stopping() {
+                                return Err(nextcuda_core::Error("cancelled".into()));
+                            }
+                            Ok(frx.recv().ok())
+                        };
+                        let mut emit = |pic: nextcuda_image::Picture| -> nextcuda_core::Result<()> {
+                            if enc.is_none() {
+                                out_size = (pic.width as usize, pic.height as usize);
+                                let mut child = Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{}x{}", pic.width, pic.height),
+                                                                   "-r", &fps, "-i", "-", "-i"]).arg(&src.0)
+                                    .args(["-map", "0:v:0", "-map", "1:a?", "-c:v", "libx264", "-preset", "medium", "-crf", &crf, "-pix_fmt", "yuv420p", "-c:a", "copy",
+                                           "-movflags", "+faststart"]).arg(&out_path)
+                                    .stdin(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| nextcuda_core::Error(format!("ffmpeg: {e}")))?;
+                                let mut stdin = child.stdin.take().ok_or_else(|| nextcuda_core::Error("ffmpeg's input".into()))?;
+                                let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(16);
+                                sc.spawn(move || rx.iter().all(|f| stdin.write_all(&f).is_ok()));
+                                wtx = Some(tx);
+                                enc = Some(child);
+                            }
+                            wtx.as_ref().ok_or_else(|| nextcuda_core::Error("the encoder".into()))?.send(pic.data)
+                                .map_err(|_| nextcuda_core::Error("the encoder stopped".into()))?;
+                            n += 1;
+                            Ok(())
+                        };
+                        engine.upscale_clip(&creq, &mut next, &mut emit, &mut |st| {
+                            *p.lock().unwrap() = json!({"busy": true, "prompt": format!("upscale a clip {w}x{h}"), "at": st.at, "of": st.of.max(st.at), "phase": "frames",
+                                                        "seconds": t0.elapsed().as_secs_f64()});
+                            if self.cancel.stopping() {
+                                stopped = Some(());
+                                return Err(nextcuda_core::Error("cancelled".into()));
+                            }
+                            Ok(())
+                        })
+                    };
+                    // the reader stops at its next frame, the writer when its queue is drained
+                    drop(frx);
+                    drop(wtx);
+                    r.map_err(|e| (if e.0 == "cancelled" || stopped.is_some() { 499u16 } else { 400 }, e.0))
+                })?;
                 info_last = Some(info);
                 return Ok(());
             }

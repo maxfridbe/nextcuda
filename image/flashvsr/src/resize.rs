@@ -55,7 +55,8 @@ fn clip8(v: i64) -> u8 {
 pub fn bicubic_resize(rgb: &[u8], w: usize, h: usize, ow: usize, oh: usize) -> Vec<u8> {
     let (_, cx) = coeffs(w, ow);
     let (_, cy) = coeffs(h, oh);
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+    // a few bands: several frames are prepared at once, each on its own thread
+    let threads = 4;
     // horizontal, over the rows the vertical pass reads (all of them when upscaling)
     let mut tmp = vec![0u8; h * ow * 3];
     let band = h.div_ceil(threads);
