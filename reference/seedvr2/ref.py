@@ -63,6 +63,11 @@ def flash_attn_varlen_func(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q=Non
 
 
 def stubs():
+    import importlib.machinery
+    # diffusers looks for these packages when it is imported: it is imported before the stubs exist
+    import diffusers  # noqa: F401
+    import diffusers.models.normalization  # noqa: F401
+    import diffusers.models.embeddings  # noqa: F401
     apex = types.ModuleType("apex")
     norm = types.ModuleType("apex.normalization")
     norm.FusedRMSNorm, norm.FusedLayerNorm = FusedRMSNorm, FusedLayerNorm
@@ -70,6 +75,10 @@ def stubs():
     sys.modules["apex"], sys.modules["apex.normalization"] = apex, norm
     fa = types.ModuleType("flash_attn")
     fa.flash_attn_varlen_func = flash_attn_varlen_func
+    # diffusers' attention dispatch imports this name when the (half-installed) package is found; never called here
+    fa.flash_attn_func = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("flash_attn_func is not stubbed"))
+    for m in (apex, norm, fa):
+        m.__spec__ = importlib.machinery.ModuleSpec(m.__name__, None)
     sys.modules["flash_attn"] = fa
 
 
@@ -98,6 +107,10 @@ def main():
     from common.config import load_config, create_object
     from einops import rearrange
 
+    # the VAE's slicing asks the (one-process) group for its neighbours' ranks
+    import torch.distributed as dist
+    if not dist.is_initialized():
+        dist.init_process_group("gloo", init_method="tcp://127.0.0.1:29517", rank=0, world_size=1)
     config = load_config(os.path.join(a.src, "configs_3b/main.yaml"))
     dit = create_object(config.dit.model)
     print(dit.load_state_dict(torch.load(os.path.join(a.model, "seedvr2_ema_3b.pth"), map_location="cpu", weights_only=True, mmap=True), strict=True))

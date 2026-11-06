@@ -106,7 +106,8 @@ Done here: the feasibility above, the weights (`~/nextcuda/models/seedvr2-3b` on
 reference: `reference/seedvr2/ref.py` runs the official code (configs_3b) on the CPU in float32 (apex and flash-attn
 stubbed with plain torch) and dumps every stage - the prepared frames, the VAE's latents (mean and sample), the
 noise, the timestep embedding, the video tokens after blocks 0, 9, 10 and 31, the DiT's output, x0 and the decoded
-frames. The engine itself is not written yet. What it is, read from the code (the facts a port needs):
+frames. A run is at brainiac-nvidia:~/nextcuda/ref/sv/d5 (5 frames of the platform film's singer, 256 x 192 -> 512 x 384;
+33 minutes on the CPU), the matching reference for FlashVSR at ~/nextcuda/ref/fv/d33. The engine itself is not written yet. What it is, read from the code (the facts a port needs):
 
 - **Input:** torchvision bicubic (a = -0.75, float) to scale x the frame, clamped to [0, 1], cropped to multiples of 16,
   to [-1, 1]; the clip padded with its last frame to 4n + 1.
