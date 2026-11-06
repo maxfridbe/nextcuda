@@ -322,6 +322,24 @@ fn is_device_oom(e: &str) -> bool {
     nextcuda_image::untag_no_room(e).is_some() || e.contains("out of memory") || e.contains("device allocation of")
 }
 
+/// The KV cache, workspaces and stream states a frame size takes on each card of stages with `layers` blocks (the decoder
+/// on `dec`), beyond the weights
+fn cache_need(geo: &Geometry, layers: &[usize], dec: usize) -> Vec<usize> {
+    let (hp, wp) = (geo.th / 16, geo.tw / 16);
+    let nb = (hp / 8) * (wp / 8);
+    let mut v: Vec<usize> = layers.iter().map(|&l| dit::need_bytes_for(l, nb)).collect();
+    v[0] += LqProj::need_bytes(hp, wp);
+    v[dec] += Tcd::need_bytes(geo.th / 8, geo.tw / 8);
+    v
+}
+
+/// Whether a size runs whole: every card holds its weights and cache within the budget. The run's own buffers are not in
+/// it: the budget was measured without them (a size that ran must still run), and the run checks them against the card's
+/// free memory (`run_bytes`)
+fn fits_budget(cache_need: &[usize], weights: &[usize]) -> bool {
+    cache_need.iter().zip(weights).all(|(n, w)| n + w <= CARD_BUDGET)
+}
+
 /// The buffers one run makes on each card (`ns` stages, the decoder on `dec`), freed when it ends: up to 25 frames of
 /// bytes and halves, the LQ tokens, noise, x, the conditioning rows, the latents, the decoder's conditioning and the
 /// output frame - all sized by the frame, none by the clip's length (the clip streams through)
@@ -438,15 +456,18 @@ impl FlashVsr {
     /// The memory a frame size takes on each card beyond the weights (bytes)
     pub fn need_bytes(&self, geo: &Geometry) -> Vec<usize> {
         let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        let (hp, wp) = (geo.th / 16, geo.tw / 16);
-        let nb = (hp / 8) * (wp / 8);
-        let mut v: Vec<usize> = inner.stages.iter().map(|s| s.need_bytes(nb)).collect();
-        v[0] += LqProj::need_bytes(hp, wp);
-        v[inner.dec] += Tcd::need_bytes(geo.th / 8, geo.tw / 8);
+        let mut v = cache_need(geo, &inner.stages.iter().map(|s| s.layer_count()).collect::<Vec<_>>(), inner.dec);
         for (n, r) in v.iter_mut().zip(run_bytes(geo, inner.stages.len(), inner.dec)) {
             *n += r;
         }
         v
+    }
+
+    /// The memory a frame size takes on each card beyond the weights without the run's own buffers (`run_bytes`): what the
+    /// tiling budget (`CARD_BUDGET`) was measured against
+    fn cache_need_bytes(&self, geo: &Geometry) -> Vec<usize> {
+        let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        cache_need(geo, &inner.stages.iter().map(|s| s.layer_count()).collect::<Vec<_>>(), inner.dec)
     }
 
     /// A clip through the stream: frames from `next` (RGB [h, w, 3], or already prepared [th, tw, 3] when `prepared`),
@@ -842,8 +863,7 @@ fn tiles_along(total: usize, max: usize) -> (usize, Vec<usize>) {
 impl FlashVsr {
     /// Whether a size runs whole on the cards (else in tiles)
     pub fn fits(&self, geo: &Geometry) -> bool {
-        let need = self.need_bytes(geo);
-        need.iter().zip(&self.weight_bytes).all(|(n, w)| n + w <= CARD_BUDGET)
+        fits_budget(&self.cache_need_bytes(geo), &self.weight_bytes)
     }
 
     /// A clip too big for the cards whole: in tiles of the upscaled frame (each its own stream), over segments of SEG
@@ -1034,7 +1054,7 @@ impl ImageEngine for FlashVsr {
 
 #[cfg(test)]
 mod room_tests {
-    use super::{run_bytes, short_of};
+    use super::{cache_need, fits_budget, run_bytes, short_of};
 
     #[test]
     fn a_card_is_short_only_when_its_free_memory_is_known_and_below_the_need_and_the_stage_is_not_prepared() {
@@ -1055,5 +1075,26 @@ mod room_tests {
         // the decoder's card (0) holds the conditioning: 24 frames of bytes and halves
         assert!(b[0] > 72 * big.th * big.tw * 3 && b[0] > a[0] * 3);
         assert!(b[1] > 0);
+    }
+
+    #[test]
+    fn the_film_size_848_x_480_at_x2_fits_two_12_gb_cards_whole() {
+        // 848 x 480 x2 = 1696 x 960, mirrored out to 1792 x 1024 inside; the default split of 17 + 13 blocks, the decoder
+        // and the LQ projection on the first card (the 5070)
+        let geo = crate::resize::Geometry::new(848, 480, 2.0);
+        assert_eq!((geo.tw, geo.th, geo.sw, geo.sh), (1792, 1024, 1696, 960));
+        let gib = |x: f64| (x * (1u64 << 30) as f64) as usize;
+        let need = cache_need(&geo, &[17, 13], 0);
+        assert_eq!(need, vec![8_463_745_024, 4_110_319_616]);
+        // weights of about 2.5 GiB and 1.5 GiB beside those (the card's own load log gives the exact ones)
+        let weights = [gib(2.5), gib(1.5)];
+        assert!(fits_budget(&need, &weights), "a size that ran whole must still run whole");
+        // counting the run's own buffers in the budget is what refused it (card 0: 8.9 GiB + 2.5 GiB > 10.65 GiB)
+        let run = run_bytes(&geo, 2, 0);
+        let with_run: Vec<usize> = need.iter().zip(&run).map(|(a, b)| a + b).collect();
+        assert!(!fits_budget(&with_run, &weights));
+        // a size that genuinely needs tiles still does: 2560 x 1440 inside
+        let big = crate::resize::Geometry::new(1280, 720, 2.0);
+        assert!(!fits_budget(&cache_need(&big, &[17, 13], 0), &weights));
     }
 }

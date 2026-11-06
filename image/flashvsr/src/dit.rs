@@ -310,10 +310,12 @@ impl Stage {
 
     /// What the KV cache and the working buffers take for a grid of nb blocks a pair (bytes)
     pub fn need_bytes(&self, nb: usize) -> usize {
-        let per = 2 * 3 * nb * 128 * DIM * 2 + 4 * nb * DIM * 4;
-        let rows = 3 * nb * 128;
-        let work = rows * DIM * (2 + 2) + nb * 128 * DIM * (2 + 4) + FFN_ROWS * FFN * 2 + 2 * nb * 128 * DIM * 2 + HEADS * 3 * nb * 4 * nb * (4 + 4) + (1 << 26);
-        per * self.layers.len() + work
+        need_bytes_for(self.layers.len(), nb)
+    }
+
+    /// The blocks this stage holds
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
     }
 
     /// Frees the KV cache and the working buffers (the weights stay); `prepare` makes them again
@@ -541,4 +543,12 @@ pub fn rope_table(groups: usize, hp: usize, wp: usize, t0: usize) -> Vec<f32> {
         }
     }
     cs
+}
+
+/// What the KV cache and the working buffers of a stage of `layers` blocks take for a grid of nb blocks a pair (bytes)
+pub fn need_bytes_for(layers: usize, nb: usize) -> usize {
+    let per = 2 * 3 * nb * 128 * DIM * 2 + 4 * nb * DIM * 4;
+    let rows = 3 * nb * 128;
+    let work = rows * DIM * (2 + 2) + nb * 128 * DIM * (2 + 4) + FFN_ROWS * FFN * 2 + 2 * nb * 128 * DIM * 2 + HEADS * 3 * nb * 4 * nb * (4 + 4) + (1 << 26);
+    per * layers + work
 }
