@@ -98,3 +98,42 @@ picture: it is a video model).
 
 With no `model`, a `flashvsr-...` variant picks the flashvsr card. The platform's client sends `model` from its
 CP_REMOTE_MODELS map, so its catalogue entry should send `"model": "flashvsr"` with `"variant": "flashvsr-v1.1"`.
+
+## SeedVR2: what is done, what a port needs
+
+Done here: the feasibility above, the weights (`~/nextcuda/models/seedvr2-3b` on brainiac-nvidia: ByteDance-Seed/SeedVR2-3B
+@ 37255ff8, `seedvr2_ema_3b.pth` 13.6 GB float32, `ema_vae.pth`, `pos_emb.pt`; Apache-2.0, commercial yes), and the
+reference: `reference/seedvr2/ref.py` runs the official code (configs_3b) on the CPU in float32 (apex and flash-attn
+stubbed with plain torch) and dumps every stage - the prepared frames, the VAE's latents (mean and sample), the
+noise, the timestep embedding, the video tokens after blocks 0, 9, 10 and 31, the DiT's output, x0 and the decoded
+frames. The engine itself is not written yet. What it is, read from the code (the facts a port needs):
+
+- **Input:** torchvision bicubic (a = -0.75, float) to scale x the frame, clamped to [0, 1], cropped to multiples of 16,
+  to [-1, 1]; the clip padded with its last frame to 4n + 1.
+- **VAE** (video_vae_v3, SD3-style, 16 latent channels, x8 space, x4 time, scaling 0.9152, no shift): causal
+  3-D convs (time padding = the first frame repeated, or the previous slice's last frames: the "memory"), GroupNorm
+  per frame, a mid block with single-head spatial attention per frame (512 channels), the encoder's down blocks
+  with temporal down in two of them, the decoder's up blocks with an upscale 1x1 conv + pixel shuffle (+ the first
+  frame's duplicate removed on temporal up). Every part is per-frame or causal: run in slices of 4 frames with
+  memory (as the official `slicing` does), it streams a film of any length exactly, in both directions.
+- **DiT** (NaDiT 3B): 32 blocks of 2,560 (20 heads x 128), the first 10 with separate video / text weights (MM), the
+  rest shared, the last updating only the video. In: 1x2x2 patches of [noise 16, LQ latent 16, mask 1] = 132 -> 2,560;
+  text: pos_emb [L, 5120] -> linear. AdaSingle modulation (one shared time embedding 15,360 = 6 x 2,560, plus each
+  layer's own shift / scale / gate). Attention: windows over the patch grid sized as for 720p (3 x 3 spatial windows
+  at 1280 x 720, scaled to the frame's area; time windows of ceil(min(t, 30) / 4) latent frames), shifted by half a
+  window on odd layers. Each window attends jointly with the whole text; text outputs are averaged over the windows.
+  RoPE "mmrope3d": video (t + L, h, w) local to the window, text (i, i, i), 42 dims an axis, interleaved pairs; q / k
+  RMS-normed per head. SwiGLU MLP (6,912 hidden). Out: RMS norm + modulation, linear 2,560 -> 64.
+- **Sampling:** one step at t = 1000 (the shift transform leaves it there): x0 = noise - v. cfg 1 (the negative prompt
+  unused).
+- **On the two cards:** the DiT 6.8 GB in half on one card, the VAE beside it (0.5 GB) or on the other. At 1728 x 960 the
+  VAE needs spatial tiles or streaming by rows (a 128-channel 3x3x3 conv's im2col of a full frame is 11 GB); 1.0-1.5 s a
+  frame expected.
+- **Long films:** the VAE streams exactly; the DiT sees a chunk of latent frames at once (the official code does the whole
+  clip in one pass, memory growing with it). The plan: encode the film as a stream, run the DiT on overlapping chunks
+  of latent frames (e.g. 8 latent frames = 29 frames, overlap 2), blend x0 linearly across each overlap, then decode
+  the blended latents as a stream. No seams in the decoder; the overlap carries the DiT's context across chunks.
+
+hardac1 (nextsycl) is porting SeedVR2 now with the same names. Its engine is Rust over the same nsd ABI (nextcuda's
+nsd.h is nextsycl's H3 interface), so taking that engine over, checked against these dumps, is probably cheaper than a
+second port from scratch.
