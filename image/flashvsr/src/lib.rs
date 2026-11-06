@@ -45,7 +45,8 @@ use crate::tcd::Tcd;
 pub const ARCH: &str = "flashvsr";
 
 pub const OPTIONS: &[EngineOption] = &[
-    EngineOption { name: "split", env: "NC_FLASHVSR_SPLIT", value: "N,M", help: "the DiT's 30 blocks over the model's cards, in order (default: 18,12 on two, 30 on one)", at: At::Load },
+    EngineOption { name: "split", env: "NC_FLASHVSR_SPLIT", value: "N,M", help: "the DiT's 30 blocks over the model's cards, in order (default: 12,18 on two, 30 on one)", at: At::Load },
+    EngineOption { name: "decoder", env: "NC_FLASHVSR_DECODER", value: "first|last", help: "the card the decoder runs on (default first: the decoder is the heaviest stage, the first card the fastest)", at: At::Load },
     EngineOption { name: "sparse_ratio", env: "", value: "R", help: "the attention's top-k as FlashVSR's sparse_ratio (default 2.0; 1.5 faster, 2.0 steadier)", at: At::Request },
     EngineOption { name: "local_range", env: "", value: "N", help: "the attention's local window in 128-pixel blocks (default 11: steadier; 9 sharper)", at: At::Request },
     EngineOption { name: "color_fix", env: "", value: "0|1", help: "match each frame's colour to the upscaled input frame (AdaIN, default 1)", at: At::Request },
@@ -57,7 +58,7 @@ pub fn kind() -> ImageKind {
 }
 
 fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<Box<dyn ImageEngine>> {
-    Ok(Box::new(FlashVsr::load(files, gpus, o.setting("NC_FLASHVSR_SPLIT").as_deref(), log)?))
+    Ok(Box::new(FlashVsr::load(files, gpus, o.setting("NC_FLASHVSR_SPLIT").as_deref(), o.setting("NC_FLASHVSR_DECODER").as_deref(), log)?))
 }
 
 const VARIANTS: &[UpscaleVariant] = &[UpscaleVariant {
@@ -102,10 +103,139 @@ pub trait Hooks {
 struct NoHooks;
 impl Hooks for NoHooks {}
 
+/// Where a run's time goes (NC_FLASHVSR_PROFILE=1: the cards waited for at each mark, the totals logged at the end)
+struct Prof {
+    on: bool,
+    t: Instant,
+    acc: Vec<(&'static str, f64)>,
+}
+
+/// A chunk for the last cards' blocks and the head
+struct Job {
+    chunk: usize,
+    f: usize,
+    lat0: usize,
+    rows: usize,
+    c: Chunk,
+    cs: Vec<f32>,
+    noise: Option<Vec<Vec<f32>>>,
+}
+
+/// What the second card's thread tells the first: x has been taken, chunk n's latents are made
+enum Msg {
+    Copied,
+    Lat(usize),
+}
+
+/// The cards after the first: their blocks, the head and the step
+struct Back<'a> {
+    ends: &'a Ends,
+    stages: &'a mut [Stage],
+    xs: &'a [DevBuf],
+    css: &'a [DevBuf],
+    x0: &'a DevBuf,
+    noise: &'a DevBuf,
+    hbuf: &'a DevBuf,
+    pred: &'a DevBuf,
+    lat: &'a DevBuf,
+    /// with one card, the head runs there: its kernel context and the card
+    one: (&'a nextcuda_diffusion::kernels::Nsd, Arc<Gpu>),
+    seed: u64,
+    h8: usize,
+    w8: usize,
+}
+
+impl Back<'_> {
+    /// x from the first card into the second's buffer
+    fn copy_in(&self, job: &Job, staging: &mut [u8]) -> Result<()> {
+        if let Some(x1) = self.xs.first() {
+            let src = self.x0.view(0, job.rows * DIM * 4)?;
+            x1.copy_from_peer(&src, staging)?;
+        }
+        Ok(())
+    }
+
+    /// the blocks after the first card's, the head and the step: latents = noise - output, in `lat`
+    fn run(&mut self, job: &Job, grab: &mut dyn FnMut(usize, &str, &DevBuf, usize) -> Result<()>) -> Result<()> {
+        let k = ffi::api()?;
+        let (f, rows, h8, w8) = (job.f, job.rows, self.h8, self.w8);
+        for (i, st) in self.stages.iter_mut().enumerate() {
+            if i > 0 {
+                let mut staging = vec![0u8; rows * DIM * 4];
+                let src = self.xs[i - 1].view(0, rows * DIM * 4)?;
+                self.xs[i].copy_from_peer(&src, &mut staging)?;
+            }
+            // SAFETY: plain floats as bytes
+            self.css[i].write(0, unsafe { std::slice::from_raw_parts(job.cs.as_ptr().cast::<u8>(), job.cs.len() * 4) })?;
+            st.run(&self.xs[i], &self.css[i], &job.c, &mut |layer, x| {
+                if [0, 15, 29].contains(&layer) {
+                    grab(job.chunk, &format!("b{layer}"), x, rows)?;
+                }
+                Ok(())
+            })?;
+        }
+        let (x, nsd, gpu) = match self.stages.last() {
+            Some(st) => (self.xs.last().unwrap(), &st.nsd, st.gpu.clone()),
+            None => (self.x0, self.one.0, self.one.1.clone()),
+        };
+        write_noise(self.noise, &gpu, job.noise.as_deref(), f, job.lat0, h8, w8, self.seed)?;
+        let gl = g(&gpu);
+        // SAFETY: the buffers hold rows x 1536 / 64 values and 16 x f x h8 x w8 latents
+        ck(unsafe { (k.ln)(gl, x.fp(), rows as i64, DIM as i64, 1e-6, self.ends.head_sc.fp(), self.ends.head_sh.fp(), self.hbuf.ptr()) }, "head norm")?;
+        self.ends.head.apply(nsd, self.hbuf.ptr(), rows, self.pred.ptr(), Dt::F32)?;
+        ck(unsafe { (k.unpatchify_sub)(gl, self.pred.fp(), self.noise.fp(), f as i64, h8 as i64, w8 as i64, self.lat.fp()) }, "step")?;
+        grab(job.chunk, "lat", self.lat, 16 * f * h8 * w8)?;
+        nsd.wait()
+    }
+}
+
+/// A chunk's noise [16, f, h8, w8] into buf: given (a check's, per latent frame [16, h8, w8]) or the engine's own
+#[allow(clippy::too_many_arguments)]
+fn write_noise(buf: &DevBuf, gpu: &Arc<Gpu>, given: Option<&[Vec<f32>]>, f: usize, lat0: usize, h8: usize, w8: usize, seed: u64) -> Result<()> {
+    let k = ffi::api()?;
+    for t in 0..f {
+        for c in 0..16 {
+            match given {
+                Some(v) => {
+                    // SAFETY: plain floats as bytes
+                    let b = unsafe { std::slice::from_raw_parts(v[t][c * h8 * w8..].as_ptr().cast::<u8>(), h8 * w8 * 4) };
+                    buf.write(((c * f + t) * h8 * w8) * 4, b)?;
+                }
+                None => {
+                    // SAFETY: plane (c, t) of buf
+                    let p = unsafe { buf.fp().add((c * f + t) * h8 * w8) };
+                    ck(unsafe { (k.randn)(g(gpu), p, (h8 * w8) as i64, seed, (((lat0 + t) * 16 + c) * h8 * w8) as u64) }, "noise")?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+impl Prof {
+    fn mark(&mut self, name: &'static str, gpus: &[Arc<Gpu>]) {
+        if !self.on {
+            return;
+        }
+        for g in gpus {
+            let _ = g.sync();
+        }
+        let s = self.t.elapsed().as_secs_f64();
+        self.t = Instant::now();
+        match self.acc.iter_mut().find(|(n, _)| *n == name) {
+            Some(e) => e.1 += s,
+            None => self.acc.push((name, s)),
+        }
+    }
+}
+
 struct Inner {
     stages: Vec<Stage>,
     lq: LqProj,
     tcd: Tcd,
+    /// the decoder's card (an index into the stages' cards) and its kernel context
+    dec: usize,
+    dec_nsd: nextcuda_diffusion::kernels::Nsd,
 }
 
 pub struct FlashVsr {
@@ -121,7 +251,7 @@ fn pth_table(path: &Path) -> Result<SafeTensors> {
 }
 
 impl FlashVsr {
-    pub fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], split: Option<&str>, log: &mut dyn FnMut(String)) -> Result<FlashVsr> {
+    pub fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], split: Option<&str>, decoder: Option<&str>, log: &mut dyn FnMut(String)) -> Result<FlashVsr> {
         let t0 = Instant::now();
         if gpus.is_empty() {
             return Err(Error("flashvsr needs a GPU".into()));
@@ -131,7 +261,8 @@ impl FlashVsr {
         let st = SafeTensors::open(&path("dit")?).map_err(|e| Error(e.0))?;
         let counts: Vec<usize> = match split {
             Some(s) if !s.trim().is_empty() => s.split(',').map(|v| v.trim().parse::<usize>().map_err(|_| Error(format!("NC_FLASHVSR_SPLIT {s}: block counts")))).collect::<Result<_>>()?,
-            _ if gpus.len() >= 2 => vec![18, 12],
+            // the first card (the 5070) also holds the LQ projection and the decoder: fewer blocks there
+            _ if gpus.len() >= 2 => vec![12, 18],
             _ => vec![dit::LAYERS],
         };
         if counts.iter().sum::<usize>() != dit::LAYERS || counts.len() > gpus.len() || counts.contains(&0) {
@@ -152,13 +283,20 @@ impl FlashVsr {
         let last = gpus.last().unwrap().clone();
         let ends = Ends::load(&st, &gpus[0], &last, &t)?;
         let lq = LqProj::load(&pth_table(&path("lq-proj")?)?, &gpus[0])?;
-        let tcd = Tcd::load(&pth_table(&path("decoder")?)?, &last)?;
+        let dec = match decoder.unwrap_or("first") {
+            "first" | "" => 0,
+            "last" => gpus.len() - 1,
+            d => return Err(Error(format!("NC_FLASHVSR_DECODER {d}: first or last"))),
+        };
+        let tcd = Tcd::load(&pth_table(&path("decoder")?)?, &gpus[dec])?;
+        let dec_nsd = nextcuda_diffusion::kernels::Nsd::new(&gpus[dec])?;
         let mut weight_bytes: Vec<usize> = stages.iter().map(|s| s.weight_bytes).collect();
         weight_bytes[0] += lq.bytes;
-        *weight_bytes.last_mut().unwrap() += tcd.bytes;
+        weight_bytes[dec] += tcd.bytes;
         log(format!("flashvsr: loaded in {:.1} s ({})", t0.elapsed().as_secs_f64(),
                     weight_bytes.iter().zip(&gpus).map(|(b, g)| format!("{:.2} GiB on {}", *b as f64 / (1u64 << 30) as f64, g.name)).collect::<Vec<_>>().join(", ")));
-        Ok(FlashVsr { gpus, ends, inner: Mutex::new(Inner { stages, lq, tcd }), load_secs: t0.elapsed().as_secs_f64(), weight_bytes })
+        let _ = last;
+        Ok(FlashVsr { gpus, ends, inner: Mutex::new(Inner { stages, lq, tcd, dec, dec_nsd }), load_secs: t0.elapsed().as_secs_f64(), weight_bytes })
     }
 
     /// The settings of a request (its variant, scale and options)
@@ -190,7 +328,7 @@ impl FlashVsr {
         let nb = (hp / 8) * (wp / 8);
         let mut v: Vec<usize> = inner.stages.iter().map(|s| s.need_bytes(nb)).collect();
         v[0] += LqProj::need_bytes(hp, wp);
-        *v.last_mut().unwrap() += Tcd::need_bytes(geo.th / 8, geo.tw / 8);
+        v[inner.dec] += Tcd::need_bytes(geo.th / 8, geo.tw / 8);
         v
     }
 
@@ -211,7 +349,7 @@ impl FlashVsr {
         let need = {
             let mut v: Vec<usize> = inner.stages.iter().map(|s| s.need_bytes(nb)).collect();
             v[0] += LqProj::need_bytes(hp, wp);
-            *v.last_mut().unwrap() += Tcd::need_bytes(h8, w8);
+            v[inner.dec] += Tcd::need_bytes(h8, w8);
             v
         };
         for (s, n) in inner.stages.iter_mut().zip(&need) {
@@ -229,6 +367,7 @@ impl FlashVsr {
         let topk = ((nb * nb) as f64 * ratio) as i64 - 1;
         let first_gpu = self.gpus[0].clone();
         let last_gpu = self.gpus.last().unwrap().clone();
+        let dec_gpu = self.gpus[inner.dec].clone();
         let fsize = th * tw * 3;
         // the frames on the host, prepared: [base, base + len) of the clip; the clip's count once it has ended
         let mut frames: VecDeque<Vec<u8>> = VecDeque::new();
@@ -273,183 +412,241 @@ impl FlashVsr {
         let hbuf = DevBuf::new(&last_gpu, rows0 * DIM * 2)?;
         let pred = DevBuf::new(&last_gpu, rows0 * 64 * 4)?;
         let lat = DevBuf::new(&last_gpu, 16 * 6 * h8 * w8 * 4)?;
-        let cond_u8 = DevBuf::new(&last_gpu, 24 * fsize)?;
-        let cond = DevBuf::new(&last_gpu, 24 * fsize * 2)?;
-        let sums = DevBuf::new(&last_gpu, 12 * 8)?;
-        let ms = DevBuf::new(&last_gpu, 12 * 4)?;
-        let out_u8 = DevBuf::new(&last_gpu, geo.sh * geo.sw * 3)?;
+        let lat_d = if inner.dec == self.gpus.len() - 1 { lat.view(0, lat.len)? } else { DevBuf::new(&dec_gpu, lat.len)? };
+        let mut lat_staging = vec![0u8; lat.len];
+        let cond_u8 = DevBuf::new(&dec_gpu, 24 * fsize)?;
+        let cond = DevBuf::new(&dec_gpu, 24 * fsize * 2)?;
+        let sums = DevBuf::new(&dec_gpu, 12 * 8)?;
+        let ms = DevBuf::new(&dec_gpu, 12 * 4)?;
+        let out_u8 = DevBuf::new(&dec_gpu, geo.sh * geo.sw * 3)?;
         let mut staging = vec![0u8; if inner.stages.len() > 1 { rows0 * DIM * 4 } else { 0 }];
-        let nsd0 = &inner.stages[0].nsd as *const nextcuda_diffusion::kernels::Nsd;
-        let mut made = 0usize;
-        let mut chunk = 0usize;
+        let ns = inner.stages.len();
+        let dec = inner.dec;
+        let mut prof = Prof { on: std::env::var("NC_FLASHVSR_PROFILE").is_ok_and(|v| v == "1"), t: Instant::now(), acc: Vec::new() };
+        // the cards overlap when the decoder is not on the last card: the last card runs chunk k's blocks while the
+        // first decodes chunk k - 1 and starts chunk k + 1 (not when profiling: the marks wait for both cards)
+        let pipelined = ns > 1 && dec != ns - 1 && !prof.on && std::env::var("NC_FLASHVSR_PIPELINE").map_or(true, |v| v != "0");
         let g0 = g(&first_gpu);
-        let gl = g(&last_gpu);
-        loop {
-            let hi = if chunk == 0 { 25 } else { 8 * chunk + 25 };
-            read(hi, &mut frames, base, &mut ended, &mut last)?;
-            if let Some(n) = ended {
-                if n == 0 {
-                    return Err(Error("flashvsr: the clip has no frames".into()));
-                }
-                let nn = (n + 3).div_ceil(8).max(3);
-                if chunk >= nn - 2 {
-                    break;
-                }
-            }
-            let (f, lat0, calls): (usize, usize, Vec<(usize, usize)>) = if chunk == 0 {
-                (6, 0, (0..7).map(|i| (if i == 0 { 0 } else { 4 * i - 3 }, 4 * i + 1)).collect())
-            } else {
-                (2, 4 + 2 * chunk, vec![(8 * chunk + 17, 8 * chunk + 21), (8 * chunk + 21, 8 * chunk + 25)])
-            };
-            let rows = f / 2 * nb * 128;
-            // SAFETY (the kernel calls below): every buffer holds what the call reads or writes, sized above.
-            // the LQ projection
-            {
-                let nsd = unsafe { &*nsd0 };
-                let mut got = 0;
-                for (a, b) in calls {
-                    let n = b - a;
-                    let mut bytes = Vec::with_capacity(n * fsize);
-                    for i in a..b {
-                        bytes.extend_from_slice(&get(i, &frames, base, &last));
-                    }
-                    frames_u8.write(0, &bytes)?;
-                    ck(unsafe { (k.u8_to_half)(g0, frames_u8.ptr() as *const u8, (n * fsize) as i64, frames_h.ptr()) }, "frames")?;
-                    let out = lqtok.view(got * hp * wp * DIM * 4, hp * wp * DIM * 4)?;
-                    if inner.lq.stream(nsd, &frames_h, n, &out)? {
-                        got += 1;
-                    }
-                }
-                if got != f {
-                    return Err(Error(format!("flashvsr: the LQ projection made {got} latent frames, {f} expected")));
-                }
-                hooks.tensor(chunk, "lq", &lqtok, f * hp * wp)?;
-            }
-            // the noise, on the first card (the patches) and the last (the step)
-            for (buf, gpu) in [(&noise0, &first_gpu), (&noise_l, &last_gpu)] {
-                for t in 0..f {
-                    match hooks.noise(lat0 + t, h8, w8) {
-                        Some(v) => {
-                            for c in 0..16 {
-                                // SAFETY: plain floats as bytes
-                                let b = unsafe { std::slice::from_raw_parts(v[c * h8 * w8..].as_ptr().cast::<u8>(), h8 * w8 * 4) };
-                                buf.write(((c * f + t) * h8 * w8) * 4, b)?;
+        let gd = g(&dec_gpu);
+        let (front_stage, back_stages) = inner.stages.split_at_mut(1);
+        let stage0 = &mut front_stage[0];
+        let (lq, tcd, dec_nsd) = (&mut inner.lq, &mut inner.tcd, &inner.dec_nsd);
+        let (x0, xs_b) = xs.split_first().unwrap();
+        let (cs0, css_b) = css.split_first().unwrap();
+        let back = Back { ends: &self.ends, stages: back_stages, xs: xs_b, css: css_b, x0, noise: &noise_l, hbuf: &hbuf, pred: &pred, lat: &lat, one: (dec_nsd, first_gpu.clone()), seed: set.seed, h8, w8 };
+        let mut made = 0usize;
+        std::thread::scope(|sc| -> Result<()> {
+            let (jtx, jrx) = std::sync::mpsc::channel::<Job>();
+            let (rtx, rrx) = std::sync::mpsc::channel::<std::result::Result<Msg, String>>();
+            let (atx, arx) = std::sync::mpsc::channel::<()>();
+            let mut back_inline = None;
+            if pipelined {
+                let mut back = back;
+                let mut staging = std::mem::take(&mut staging);
+                sc.spawn(move || {
+                    let mut owed = false;
+                    while let Ok(job) = jrx.recv() {
+                        let r = (|| -> Result<()> {
+                            back.copy_in(&job, &mut staging)?;
+                            rtx.send(Ok(Msg::Copied)).map_err(|_| Error("stopped".into()))?;
+                            // the latents' buffer is free once the first card has taken the last ones
+                            if owed {
+                                arx.recv().map_err(|_| Error("stopped".into()))?;
                             }
+                            back.run(&job, &mut |_, _, _, _| Ok(()))?;
+                            owed = true;
+                            rtx.send(Ok(Msg::Lat(job.chunk))).map_err(|_| Error("stopped".into()))
+                        })();
+                        if let Err(e) = r {
+                            let _ = rtx.send(Err(e.0));
+                            return;
+                        }
+                    }
+                });
+            } else {
+                back_inline = Some(back);
+            }
+            // the second card's messages, kept until asked for (its "latents made" can come before "x taken" of the next)
+            let mut early: Vec<Msg> = Vec::new();
+            let mut wait = |want: &dyn Fn(&Msg) -> bool| -> Result<()> {
+                if let Some(i) = early.iter().position(|m| want(m)) {
+                    early.remove(i);
+                    return Ok(());
+                }
+                loop {
+                    match rrx.recv() {
+                        Ok(Ok(m)) if want(&m) => return Ok(()),
+                        Ok(Ok(m)) => early.push(m),
+                        Ok(Err(e)) => return Err(Error(e)),
+                        Err(_) => return Err(Error("flashvsr: the second card's thread stopped".into())),
+                    }
+                }
+            };
+            let mut pending: Option<(usize, usize)> = None;
+            let mut chunk = 0usize;
+            loop {
+                let hi = if chunk == 0 { 25 } else { 8 * chunk + 25 };
+                prof.mark("other", &self.gpus);
+                read(hi, &mut frames, base, &mut ended, &mut last)?;
+                prof.mark("read + prepare frames (host)", &self.gpus);
+                let done = match ended {
+                    Some(0) => return Err(Error("flashvsr: the clip has no frames".into())),
+                    Some(n) => chunk + 2 >= (n + 3).div_ceil(8).max(3),
+                    None => false,
+                };
+                if !done {
+                    let (f, lat0, calls): (usize, usize, Vec<(usize, usize)>) = if chunk == 0 {
+                        (6, 0, (0..7).map(|i| (if i == 0 { 0 } else { 4 * i - 3 }, 4 * i + 1)).collect())
+                    } else {
+                        (2, 4 + 2 * chunk, vec![(8 * chunk + 17, 8 * chunk + 21), (8 * chunk + 21, 8 * chunk + 25)])
+                    };
+                    let rows = f / 2 * nb * 128;
+                    // SAFETY (the kernel calls below): every buffer holds what the call reads or writes, sized above.
+                    // the LQ projection
+                    let mut got = 0;
+                    for (a, b) in calls {
+                        let n = b - a;
+                        let mut bytes = Vec::with_capacity(n * fsize);
+                        for i in a..b {
+                            bytes.extend_from_slice(&get(i, &frames, base, &last));
+                        }
+                        frames_u8.write(0, &bytes)?;
+                        ck(unsafe { (k.u8_to_half)(g0, frames_u8.ptr() as *const u8, (n * fsize) as i64, frames_h.ptr()) }, "frames")?;
+                        let out = lqtok.view(got * hp * wp * DIM * 4, hp * wp * DIM * 4)?;
+                        if lq.stream(&stage0.nsd, &frames_h, n, &out)? {
+                            got += 1;
+                        }
+                    }
+                    if got != f {
+                        return Err(Error(format!("flashvsr: the LQ projection made {got} latent frames, {f} expected")));
+                    }
+                    hooks.tensor(chunk, "lq", &lqtok, f * hp * wp)?;
+                    prof.mark("lq projection", &self.gpus);
+                    // the noise (a check's from its hooks, else the engine's own on each card)
+                    let given: Option<Vec<Vec<f32>>> = (0..f).map(|t| hooks.noise(lat0 + t, h8, w8)).collect();
+                    write_noise(&noise0, &first_gpu, given.as_deref(), f, lat0, h8, w8, set.seed)?;
+                    // the tokens and the first card's blocks
+                    ck(unsafe { (k.patchify)(g0, noise0.fp(), f as i64, h8 as i64, w8 as i64, patches.ptr()) }, "patches")?;
+                    self.ends.patch.apply(&stage0.nsd, patches.ptr(), rows, x0.ptr(), Dt::F32)?;
+                    ck(unsafe { (k.add_lq)(g0, x0.fp(), lqtok.fp(), f as i64, hp as i64, wp as i64, DIM as i64) }, "lq residual")?;
+                    let cs = dit::rope_table(f / 2, hp, wp, lat0);
+                    let c = Chunk { groups: f / 2, nbh, nbw, first: chunk == 0, evict: if chunk == 0 { 0 } else { (chunk - 1) % 3 }, topk, local: set.local_range };
+                    // SAFETY: plain floats as bytes
+                    cs0.write(0, unsafe { std::slice::from_raw_parts(cs.as_ptr().cast::<u8>(), cs.len() * 4) })?;
+                    stage0.run(x0, cs0, &c, &mut |layer, x| {
+                        if [0, 15, 29].contains(&layer) {
+                            hooks.tensor(chunk, &format!("b{layer}"), x, rows)?;
+                        }
+                        Ok(())
+                    })?;
+                    prof.mark("dit stage 1", &self.gpus);
+                    let job = Job { chunk, f, lat0, rows, c, cs, noise: given };
+                    match back_inline.as_mut() {
+                        Some(b) => {
+                            if ns > 1 {
+                                b.copy_in(&job, &mut staging)?;
+                                prof.mark("x to the next card", &self.gpus);
+                            }
+                            b.run(&job, &mut |c, name, v, n| hooks.tensor(c, name, v, n))?;
+                            prof.mark("dit stage 2 + head", &self.gpus);
                         }
                         None => {
-                            for c in 0..16 {
-                                let p = unsafe { buf.fp().add((c * f + t) * h8 * w8) };
-                                ck(unsafe { (k.randn)(g(gpu), p, (h8 * w8) as i64, set.seed, (((lat0 + t) * 16 + c) * h8 * w8) as u64) }, "noise")?;
+                            jtx.send(job).map_err(|_| Error("flashvsr: the second card's thread stopped".into()))?;
+                            wait(&|m| matches!(m, Msg::Copied))?;
+                        }
+                    }
+                }
+                // the chunk before (pipelined), or this one: its latents to the decoder, its frames out
+                let finish = if pipelined { pending.take() } else if done { None } else { Some((chunk, if chunk == 0 { 6 } else { 2 })) };
+                if let Some((pc, f)) = finish {
+                    if pipelined {
+                        wait(&|m| matches!(m, Msg::Lat(c) if *c == pc))?;
+                    }
+                    if dec != ns - 1 {
+                        let src = lat.view(0, 16 * f * h8 * w8 * 4)?;
+                        lat_d.copy_from_peer(&src, &mut lat_staging)?;
+                    }
+                    if pipelined {
+                        let _ = atx.send(());
+                    }
+                    // the decoder's condition: the frames it makes (chunk 0: 0-20 with frame 0 three times in front)
+                    let (pre, cur) = if pc == 0 { (0, 21) } else { (8 * pc + 13, 8 * pc + 21) };
+                    let front = if pc == 0 { 3 } else { 0 };
+                    let mut bytes = Vec::with_capacity((cur - pre + front) * fsize);
+                    for _ in 0..front {
+                        bytes.extend_from_slice(&get(0, &frames, base, &last));
+                    }
+                    for i in pre..cur {
+                        bytes.extend_from_slice(&get(i, &frames, base, &last));
+                    }
+                    let nc = cur - pre + front;
+                    cond_u8.write(0, &bytes)?;
+                    ck(unsafe { (k.u8_to_half)(gd, cond_u8.ptr() as *const u8, (nc * fsize) as i64, cond.ptr()) }, "cond")?;
+                    let mut idx = pre;
+                    let limit = ended;
+                    let real = |i: usize| limit.is_none_or(|n| i < n);
+                    let mut emitted = Vec::new();
+                    for t in 0..f {
+                        let cp = unsafe { (cond.ptr() as *mut u8).add(4 * t * fsize * 2) };
+                        tcd.frame(dec_nsd, &lat_d, f, t, cp as *const _, &mut |dec| {
+                            let i = idx;
+                            idx += 1;
+                            if !real(i) {
+                                return Ok(());
                             }
-                        }
+                            hooks.decoded(i, dec)?;
+                            let ci = i - pre + front;
+                            let lqf = unsafe { (cond.ptr() as *mut u8).add(ci * fsize * 2) };
+                            let msp = if set.color_fix {
+                                sums.fill(0)?;
+                                let s8 = sums.ptr() as *mut f64;
+                                ck(unsafe { (k.stats)(gd, dec.ptr(), tw as i64, geo.left as i64, geo.top as i64, geo.sw as i64, geo.sh as i64, 2.0, -1.0, s8) },
+                                   "stats")?;
+                                ck(unsafe { (k.stats)(gd, lqf as *const _, tw as i64, geo.left as i64, geo.top as i64, geo.sw as i64, geo.sh as i64, 1.0, 0.0,
+                                                      s8.add(6)) }, "stats")?;
+                                ck(unsafe { (k.adain)(gd, s8, (geo.sw * geo.sh) as f64, ms.fp()) }, "colour")?;
+                                ms.fp() as *const f32
+                            } else {
+                                std::ptr::null()
+                            };
+                            ck(unsafe { (k.to_u8)(gd, dec.ptr(), tw as i64, geo.left as i64, geo.top as i64, geo.sw as i64, geo.sh as i64, msp,
+                                                  out_u8.ptr() as *mut u8) }, "bytes")?;
+                            let mut pic = Picture::new(geo.sw as u32, geo.sh as u32, 3);
+                            out_u8.read(0, &mut pic.data)?;
+                            emitted.push(pic);
+                            Ok(())
+                        })?;
                     }
+                    prof.mark("decoder + colour + bytes", &self.gpus);
+                    for p in emitted {
+                        emit(p)?;
+                        made += 1;
+                    }
+                    progress(Step { picture: 0, at: made as u32, of: ended.map(|n| n as u32).or(total_hint).unwrap_or(0), seconds: t0.elapsed().as_secs_f64() })?;
+                    prof.mark("emit", &self.gpus);
                 }
-            }
-            // the tokens
-            ck(unsafe { (k.patchify)(g0, noise0.fp(), f as i64, h8 as i64, w8 as i64, patches.ptr()) }, "patches")?;
-            self.ends.patch.apply(unsafe { &*nsd0 }, patches.ptr(), rows, xs[0].ptr(), Dt::F32)?;
-            ck(unsafe { (k.add_lq)(g0, xs[0].fp(), lqtok.fp(), f as i64, hp as i64, wp as i64, DIM as i64) }, "lq residual")?;
-            let cs = dit::rope_table(f / 2, hp, wp, lat0);
-            let c = Chunk { groups: f / 2, nbh, nbw, first: chunk == 0, evict: if chunk == 0 { 0 } else { (chunk - 1) % 3 }, topk, local: set.local_range };
-            let ns = inner.stages.len();
-            for si in 0..ns {
-                if si > 0 {
-                    let src = xs[si - 1].view(0, rows * DIM * 4)?;
-                    xs[si].copy_from_peer(&src, &mut staging)?;
+                if done {
+                    break;
                 }
-                // SAFETY: plain floats as bytes
-                let csb = unsafe { std::slice::from_raw_parts(cs.as_ptr().cast::<u8>(), cs.len() * 4) };
-                css[si].write(0, csb)?;
-                let stage = &mut inner.stages[si];
-                let x = &xs[si];
-                stage.run(x, &css[si], &c, &mut |layer, x| {
-                    if [0, 15, 29].contains(&layer) {
-                        hooks.tensor(chunk, &format!("b{layer}"), x, rows)?;
-                    }
-                    Ok(())
-                })?;
+                if pipelined {
+                    pending = Some((chunk, if chunk == 0 { 6 } else { 2 }));
+                }
+                // the frames no later chunk (nor the chunk still to decode) reads
+                let keep = pending.map_or(8 * (chunk + 1) + 13, |(pc, _)| if pc == 0 { 0 } else { 8 * pc + 13 });
+                while base < keep && !frames.is_empty() {
+                    frames.pop_front();
+                    base += 1;
+                }
+                chunk += 1;
             }
-            // the head and the step: latents = noise - output
-            let x = &xs[ns - 1];
-            let nsdl = &inner.stages[ns - 1].nsd;
-            ck(unsafe { (k.ln)(gl, x.fp(), rows as i64, DIM as i64, 1e-6, self.ends.head_sc.fp(), self.ends.head_sh.fp(), hbuf.ptr()) }, "head norm")?;
-            self.ends.head.apply(nsdl, hbuf.ptr(), rows, pred.ptr(), Dt::F32)?;
-            ck(unsafe { (k.unpatchify_sub)(gl, pred.fp(), noise_l.fp(), f as i64, h8 as i64, w8 as i64, lat.fp()) }, "step")?;
-            hooks.tensor(chunk, "lat", &lat, 16 * f * h8 * w8)?;
-            // the decoder's condition: the frames it makes (chunk 0: 0-20 with frame 0 three times in front)
-            let (pre, cur) = if chunk == 0 { (0, 21) } else { (8 * chunk + 13, 8 * chunk + 21) };
-            let front = if chunk == 0 { 3 } else { 0 };
-            let mut bytes = Vec::with_capacity((cur - pre + front) * fsize);
-            for _ in 0..front {
-                bytes.extend_from_slice(&get(0, &frames, base, &last));
+            drop(jtx);
+            Ok(())
+        })?;
+        if prof.on {
+            let total: f64 = prof.acc.iter().map(|(_, s)| s).sum();
+            for (n, s) in &prof.acc {
+                eprintln!("flashvsr profile: {n:<30} {s:8.1} s  {:5.1}%  {:.3} s a frame", 100.0 * s / total.max(1e-9), s / made.max(1) as f64);
             }
-            for i in pre..cur {
-                bytes.extend_from_slice(&get(i, &frames, base, &last));
-            }
-            let nc = cur - pre + front;
-            cond_u8.write(0, &bytes)?;
-            ck(unsafe { (k.u8_to_half)(gl, cond_u8.ptr() as *const u8, (nc * fsize) as i64, cond.ptr()) }, "cond")?;
-            let mut idx = pre;
-            let limit = ended;
-            let real = |i: usize| limit.is_none_or(|n| i < n);
-            let mut emitted = Vec::new();
-            for t in 0..f {
-                let cp = unsafe { (cond.ptr() as *mut u8).add(4 * t * fsize * 2) };
-                inner.tcd.frame(nsdl, &lat, f, t, cp as *const _, &mut |dec| {
-                    let i = idx;
-                    idx += 1;
-                    if !real(i) {
-                        return Ok(());
-                    }
-                    hooks.decoded(i, dec)?;
-                    let ci = i - pre + front;
-                    let lqf = unsafe { (cond.ptr() as *mut u8).add(ci * fsize * 2) };
-                    let msp = if set.color_fix {
-                        sums.fill(0)?;
-                        let s8 = sums.ptr() as *mut f64;
-                        ck(unsafe { (k.stats)(gl, dec.ptr(), tw as i64, geo.left as i64, geo.top as i64, geo.sw as i64, geo.sh as i64, 2.0, -1.0, s8) },
-                           "stats")?;
-                        ck(unsafe { (k.stats)(gl, lqf as *const _, tw as i64, geo.left as i64, geo.top as i64, geo.sw as i64, geo.sh as i64, 1.0, 0.0,
-                                              s8.add(6)) }, "stats")?;
-                        let mut raw = [0u8; 96];
-                        sums.read(0, &mut raw)?;
-                        let s: Vec<f64> = raw.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect();
-                        let n = (geo.sw * geo.sh) as f64;
-                        let mut m = [0f32; 12];
-                        for ch in 0..3 {
-                            let (md, ml) = (s[ch] / n, s[6 + ch] / n);
-                            let (vd, vl) = ((s[3 + ch] / n - md * md).max(0.0), (s[9 + ch] / n - ml * ml).max(0.0));
-                            m[ch * 4] = md as f32;
-                            m[ch * 4 + 1] = (vd + 1e-5).sqrt() as f32;
-                            m[ch * 4 + 2] = ml as f32;
-                            m[ch * 4 + 3] = (vl + 1e-5).sqrt() as f32;
-                        }
-                        // SAFETY: plain floats as bytes
-                        ms.write(0, unsafe { std::slice::from_raw_parts(m.as_ptr().cast::<u8>(), 48) })?;
-                        ms.fp() as *const f32
-                    } else {
-                        std::ptr::null()
-                    };
-                    ck(unsafe { (k.to_u8)(gl, dec.ptr(), tw as i64, geo.left as i64, geo.top as i64, geo.sw as i64, geo.sh as i64, msp,
-                                          out_u8.ptr() as *mut u8) }, "bytes")?;
-                    let mut pic = Picture::new(geo.sw as u32, geo.sh as u32, 3);
-                    out_u8.read(0, &mut pic.data)?;
-                    emitted.push(pic);
-                    Ok(())
-                })?;
-            }
-            for p in emitted {
-                emit(p)?;
-                made += 1;
-            }
-            progress(Step { picture: 0, at: made as u32, of: ended.map(|n| n as u32).or(total_hint).unwrap_or(0), seconds: t0.elapsed().as_secs_f64() })?;
-            // the frames no later chunk reads
-            let keep = 8 * (chunk + 1) + 13;
-            while base < keep && !frames.is_empty() {
-                frames.pop_front();
-                base += 1;
-            }
-            chunk += 1;
         }
         Ok(made as u32)
     }

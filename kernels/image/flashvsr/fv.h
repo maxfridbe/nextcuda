@@ -79,6 +79,12 @@ int ns_image_fv_stats(ns_gpu* g, const void* x, int64_t W, int64_t x0, int64_t y
  * y = clamp((v - mean_d) / std_d * std_l + mean_l, -1, 1) per channel (ms float32 [12]: mean_d, std_d, mean_l, std_l
  * for each channel; NULL: y = clamp(v)), out bytes [h, w, 3] = trunc(clamp((y + 1) * 127.5, 0, 255)) */
 int ns_image_fv_to_u8(ns_gpu* g, const void* dec, int64_t W, int64_t x0, int64_t y0, int64_t w, int64_t h, const float* ms, uint8_t* out);
+/* The colour fix's parameters from ns_image_fv_stats' sums (sums double [12]: the decoded frame's 6, then the input
+ * frame's 6, over n pixels each): ms float32 [12] as ns_image_fv_to_u8 takes them (std = sqrt(var + 1e-5)) */
+int ns_image_fv_adain(ns_gpu* g, const double* sums, double n, float* ms);
+/* A 3 x 3 convolution with few outputs (co <= 4), zero padding 1, one thread a pixel: x half [H, W, ci] -> out half
+ * [H, W, co]; w float32 [co, 3, 3, ci], bias float32 [co] or NULL */
+int ns_image_fv_conv3_small(ns_gpu* g, const void* x, int64_t H, int64_t W, int64_t ci, const float* w, int64_t co, const float* bias, void* out);
 /* out float32 [n]: standard normal numbers from (seed, the index + offset) - a counter-based generator, so a chunk's
  * noise is the same whatever came before */
 int ns_image_fv_randn(ns_gpu* g, float* out, int64_t n, uint64_t seed, uint64_t offset);

@@ -465,6 +465,43 @@ __global__ void to_u8_k(const __half* dec, int64_t W, int64_t x0, int64_t y0, in
     out[id] = (uint8_t) fminf(fmaxf((v + 1.0f) * 127.5f, 0.0f), 255.0f);
 }
 
+__global__ void adain_k(const double* s, double n, float* ms) {
+    const int c = threadIdx.x;
+    if (c >= 3) return;
+    const double md = s[c] / n, ml = s[6 + c] / n;
+    const double vd = fmax(s[3 + c] / n - md * md, 0.0), vl = fmax(s[9 + c] / n - ml * ml, 0.0);
+    ms[c * 4] = (float) md;
+    ms[c * 4 + 1] = (float) sqrt(vd + 1e-5);
+    ms[c * 4 + 2] = (float) ml;
+    ms[c * 4 + 3] = (float) sqrt(vl + 1e-5);
+}
+
+__global__ void conv3_small_k(const __half* x, int64_t H, int64_t W, int64_t ci, const float* w, int64_t co, const float* bias, __half* out) {
+    const int64_t p = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= H * W) return;
+    const int64_t xx = p % W, yy = p / W;
+    float acc[4] = {0, 0, 0, 0};
+    for (int dy = 0; dy < 3; ++dy) {
+        const int64_t y = yy + dy - 1;
+        if (y < 0 || y >= H) continue;
+        for (int dx = 0; dx < 3; ++dx) {
+            const int64_t x0 = xx + dx - 1;
+            if (x0 < 0 || x0 >= W) continue;
+            const __half2* row = reinterpret_cast<const __half2*>(x + (y * W + x0) * ci);
+            const int tap = dy * 3 + dx;
+            for (int64_t c = 0; c < ci / 2; ++c) {
+                const float2 v = __half22float2(row[c]);
+                for (int o = 0; o < 4; ++o) {
+                    if (o >= co) break;
+                    const float* wr = w + (o * 9 + tap) * ci + 2 * c;
+                    acc[o] += v.x * wr[0] + v.y * wr[1];
+                }
+            }
+        }
+    }
+    for (int o = 0; o < co; ++o) out[p * co + o] = f2h(acc[o] + (bias ? bias[o] : 0.0f));
+}
+
 __device__ inline uint64_t splitmix(uint64_t z) {
     z += 0x9e3779b97f4a7c15ull;
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
@@ -607,6 +644,18 @@ int ns_image_fv_stats(ns_gpu* g, const void* x, int64_t W, int64_t x0, int64_t y
 
 int ns_image_fv_to_u8(ns_gpu* g, const void* dec, int64_t W, int64_t x0, int64_t y0, int64_t w, int64_t h, const float* ms, uint8_t* out) {
     FV_LAUNCH(to_u8_k, w * h * 3, (const __half*) dec, W, x0, y0, w, h, ms, out);
+}
+
+int ns_image_fv_adain(ns_gpu* g, const double* sums, double n, float* ms) {
+    NS_CU(cudaSetDevice(g->dev));
+    adain_k<<<1, 32, 0, g->q>>>(sums, n, ms);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_image_fv_conv3_small(ns_gpu* g, const void* x, int64_t H, int64_t W, int64_t ci, const float* w, int64_t co, const float* bias, void* out) {
+    if (co > 4 || ci % 2) return ns_fail("ns_image_fv_conv3_small: at most 4 outputs, an even number of inputs");
+    FV_LAUNCH(conv3_small_k, H * W, (const __half*) x, H, W, ci, w, co, bias, (__half*) out);
 }
 
 int ns_image_fv_randn(ns_gpu* g, float* out, int64_t n, uint64_t seed, uint64_t offset) { FV_LAUNCH(randn_k, n, out, n, seed, offset); }

@@ -33,6 +33,8 @@ pub struct Api {
     pub stats: unsafe extern "C" fn(G, P, i64, i64, i64, i64, i64, f32, f32, *mut f64) -> c_int,
     pub to_u8: unsafe extern "C" fn(G, P, i64, i64, i64, i64, i64, *const f32, *mut u8) -> c_int,
     pub randn: unsafe extern "C" fn(G, *mut f32, i64, u64, u64) -> c_int,
+    pub adain: unsafe extern "C" fn(G, *const f64, f64, *mut f32) -> c_int,
+    pub conv3_small: unsafe extern "C" fn(G, P, i64, i64, i64, *const f32, i64, *const f32, M) -> c_int,
 }
 
 // SAFETY: function pointers into the library, which stays loaded for the process.
@@ -80,6 +82,8 @@ pub fn api() -> Result<&'static Api> {
             stats: sym!("ns_image_fv_stats"),
             to_u8: sym!("ns_image_fv_to_u8"),
             randn: sym!("ns_image_fv_randn"),
+            adain: sym!("ns_image_fv_adain"),
+            conv3_small: sym!("ns_image_fv_conv3_small"),
         })
     })
     .as_ref()

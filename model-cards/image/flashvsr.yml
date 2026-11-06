@@ -9,10 +9,10 @@ license: apache-2.0
 commercial: true
 license_note: 'Apache-2.0 for the weights (JunhaoZhuang/FlashVSR-v1.1) and the code (OpenImagingLab/FlashVSR); the base model, Wan 2.1 T2V-1.3B, is Apache-2.0 too'
 title: 'FlashVSR v1.1 video upscaler (one-step diffusion, whole clip, 2x-4x; real footage and faces)'
-about: 'OpenImagingLab''s FlashVSR v1.1: Wan 2.1 T2V-1.3B distilled to one step, streaming 8 frames a step with a KV cache of the last three latent pairs and locality-constrained block-sparse attention, a causal LQ projection in and a tiny conditional decoder out. Temporally steady, natural detail on real footage; a film runs as one stream (no seams, no length limit). The DiT 2.8 GiB in half; at 1792 x 1024 its KV cache is 7.9 GiB, so its 30 blocks are split over both cards (18 on the first with the LQ projection, 12 on the second with the decoder)'
+about: 'OpenImagingLab''s FlashVSR v1.1: Wan 2.1 T2V-1.3B distilled to one step, streaming 8 frames a step with a KV cache of the last three latent pairs and locality-constrained block-sparse attention, a causal LQ projection in and a tiny conditional decoder out. Temporally steady, natural detail on real footage; a film runs as one stream (no seams, no length limit). The DiT 2.8 GiB in half; at 1792 x 1024 its KV cache is 7.9 GiB, so its 30 blocks are split over both cards (12 on the first with the LQ projection and the decoder, 18 on the second), the two cards pipelined: 0.43 s a frame at 864 x 480 -> 1728 x 960'
 gpus: '0,1'
-split: true                      # nextcuda: the DiT's blocks 0-17 and the LQ projection on the first card, 18-29 and the decoder on the second
-vram_gib: 9.0                    # the first card's at 1728 x 960 out (1792 x 1024 inside); the second's about 8
+split: true                      # nextcuda: the LQ projection, the DiT's blocks 0-11 and the decoder on the first card, blocks 12-29 on the second
+vram_gib: 9.5                    # measured (nvidia-smi, the process): the first card (LQ projection, blocks 0-11, decoder) at 1728 x 960 out (1792 x 1024 inside); the second (blocks 12-29) 7.0
 defaults: {}
 env: {}
 files:

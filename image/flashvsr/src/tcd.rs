@@ -63,7 +63,8 @@ pub struct Tcd {
     tg21: Lin,
     c22: Lin,
     c24: Lin,
-    c26: Lin,
+    /// the last conv (128 -> 3): float32 [3, 3, 3, 128] and its bias, run directly (an unfolding for 3 outputs is waste)
+    c26: (DevBuf, DevBuf),
     pub bytes: usize,
     state: Option<State>,
 }
@@ -106,11 +107,22 @@ impl Tcd {
             tg21: c("21.conv", false)?,
             c22: c("22", false)?,
             c24: c("24", false)?,
-            c26: c("26", true)?,
+            c26: {
+                let w = st.f32("decoder.26.weight").map_err(|e| Error(e.0))?;
+                let mut r = vec![0f32; w.len()];
+                for o in 0..3 {
+                    for ci in 0..128 {
+                        for k in 0..9 {
+                            r[(o * 9 + k) * 128 + ci] = w[(o * 128 + ci) * 9 + k];
+                        }
+                    }
+                }
+                (DevBuf::from_f32(gpu, &r)?, DevBuf::from_f32(gpu, &st.f32("decoder.26.bias").map_err(|e| Error(e.0))?)?)
+            },
             bytes: 0,
             state: None,
         };
-        let mut bytes = [&t.c1, &t.c3, &t.tg9, &t.c10, &t.tg15, &t.c16, &t.tg21, &t.c22, &t.c24, &t.c26].iter().map(|l| l.bytes()).sum::<usize>();
+        let mut bytes = [&t.c1, &t.c3, &t.tg9, &t.c10, &t.tg15, &t.c16, &t.tg21, &t.c22, &t.c24].iter().map(|l| l.bytes()).sum::<usize>() + 3 * 9 * 128 * 4;
         for m in t.mb0.iter().chain(&t.mb1).chain(&t.mb2) {
             bytes += m.c1.bytes() + m.c2.bytes() + m.c3.bytes();
         }
@@ -275,7 +287,8 @@ impl Tcd {
                 self.relu(&x, p1 * 128)?;
                 self.conv(nsd, &self.c24, x.ptr(), 128, 128, None, 0, h1, w1, false, &s.col, &y)?;
                 self.relu(&y, p1 * 128)?;
-                self.conv(nsd, &self.c26, y.ptr(), 128, 128, None, 0, h1, w1, false, &s.col, &s.out)?;
+                // SAFETY: y holds h1 x w1 x 128 halves, out h1 x w1 x 3.
+                check(unsafe { (k.conv3_small)(gp, y.ptr(), h1 as i64, w1 as i64, 128, self.c26.0.fp(), 3, self.c26.1.fp(), s.out.ptr()) }, "decoder out")?;
                 if s.trim > 0 {
                     s.trim -= 1;
                 } else {

@@ -618,7 +618,7 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
     if m["arch"].as_str() == Some(nextcuda_image_flashvsr::ARCH) {
         let gs = gpus(args)?;
         let mut log = |s: String| eprintln!("{s}");
-        let e = nextcuda_image_flashvsr::FlashVsr::load(&files, &gs, opt(args, "--split"), &mut log).map_err(|e| e.0)?;
+        let e = nextcuda_image_flashvsr::FlashVsr::load(&files, &gs, opt(args, "--split"), opt(args, "--decoder"), &mut log).map_err(|e| e.0)?;
         let worst = nextcuda_image_flashvsr::check::run(&e, dir, &mut log).map_err(|e| e.0)?;
         println!("worst relative error {worst:.2e}");
         return Ok(());

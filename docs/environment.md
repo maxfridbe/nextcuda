@@ -29,7 +29,10 @@ nextsycl's, kept until phase 2 replaces it.)
 | `NC_SD_OFFLOAD` | 1 | 0: the weights on the card; 1: in host memory, staged to the card per graph (`--opt-offload`) | image qwenimage21 |
 | `NC_SD_MAX_VRAM` | what the card has free | GiB of card memory the weights and buffers may take (`--opt-max-vram`) | image qwenimage21 |
 | `NC_SD_ARGS` | none | the bridge's own, `k=v;...`: threads=N, flash_attn=0\|1, vae_tiling=0\|1 (`--opt-sd-args`) | image qwenimage21 |
-| `NC_FLASHVSR_SPLIT` | 18,12 on two cards, 30 on one | the FlashVSR DiT's 30 blocks over the model's cards, in order (`--opt-split`); the first card also holds the LQ projection, the last the decoder | image flashvsr |
+| `NC_FLASHVSR_SPLIT` | 12,18 on two cards, 30 on one | the FlashVSR DiT's 30 blocks over the model's cards, in order (`--opt-split`); the first card also holds the LQ projection | image flashvsr |
+| `NC_FLASHVSR_DECODER` | first | the card FlashVSR's decoder runs on: first or last of the model's cards (`--opt-decoder`) | image flashvsr |
+| `NC_FLASHVSR_PROFILE` | 0 | 1: FlashVSR waits for its cards at each stage and logs where a clip's time went | image flashvsr |
+| `NC_FLASHVSR_PIPELINE` | 1 | 0: FlashVSR's cards take turns instead of overlapping (the second card's blocks for a chunk beside the first card's decoding of the one before) | image flashvsr |
 | `NC_PYTHON` | python3 | the interpreter that runs the image worker | image qwenimage21 |
 | `NC_IMAGE_WORKER` | python/worker.py beside the program, else the source tree's | the worker script that drives the platform's engine | image qwenimage21 |
 

@@ -27,7 +27,7 @@ pub fn read_npy(path: &Path) -> Result<(Vec<usize>, Vec<f32>)> {
         .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
     let d = &b[at + hl..];
     let v = if head.contains("'<f4'") {
-        d.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+        d.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
     } else if head.contains("'|u1'") {
         d.iter().map(|x| *x as f32).collect()
     } else {
@@ -53,13 +53,13 @@ pub fn compare(got: &[f32], want: &[f32]) -> (f64, f64, f64) {
 fn halves(v: &DevBuf, n: usize) -> Result<Vec<f32>> {
     let mut raw = vec![0u8; n * 2];
     v.read(0, &mut raw)?;
-    Ok(raw.chunks_exact(2).map(|c| nextcuda_gguf::safetensors::f16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect())
+    Ok(raw.as_chunks::<2>().0.iter().map(|c| nextcuda_gguf::safetensors::f16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect())
 }
 
 fn floats(v: &DevBuf, n: usize) -> Result<Vec<f32>> {
     let mut raw = vec![0u8; n * 4];
     v.read(0, &mut raw)?;
-    Ok(raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Ok(raw.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
 }
 
 /// window order -> (frame, y, x) order, rows of c
@@ -160,7 +160,7 @@ impl Hooks for Check<'_> {
         self.dec_err.0 = self.dec_err.0.max(rel);
         self.dec_err.1 = self.dec_err.1.max(mx);
         self.dec_err.2 += 1;
-        if i % 8 == 0 {
+        if i.is_multiple_of(8) {
             (self.log)(format!("frame {i:<4} decoded rel {rel:.2e}  max {mx:.3e}"));
         }
         Ok(())
