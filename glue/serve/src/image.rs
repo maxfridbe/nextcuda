@@ -630,7 +630,7 @@ impl ImageServer {
         };
         let t0 = Instant::now();
         *self.progress.lock().unwrap() = json!({"busy": true, "prompt": format!("remove the background of {}x{}", pic.width, pic.height), "at": 0, "of": 1, "phase": "mask"});
-        let out = engine.remove_background(&pic);
+        let out = engine.remove_background(&pic, b["post_process_mask"].as_bool().unwrap_or(false));
         *self.progress.lock().unwrap() = json!({"busy": false});
         let (rgba, mask) = out.map_err(|e| (500u16, e.0))?;
         let seconds = t0.elapsed().as_secs_f64();

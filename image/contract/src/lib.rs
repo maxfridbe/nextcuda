@@ -361,8 +361,9 @@ pub trait ImageEngine: Send + Sync {
         false
     }
     /// the picture's object kept, its background removed: (the picture as RGBA - its own RGB, straight alpha: the mask -
-    /// and the mask alone, 8 bits a pixel), both the picture's size
-    fn remove_background(&self, _pic: &Picture) -> Result<(Picture, Picture)> {
+    /// and the mask alone, 8 bits a pixel), both the picture's size; `post_process`: rembg's post_process_mask (an
+    /// opening, a blur, a threshold: a hard 0 / 255 mask)
+    fn remove_background(&self, _pic: &Picture, _post_process: bool) -> Result<(Picture, Picture)> {
         Err(Error(format!("{} does not remove backgrounds (birefnet, isnet-general-use do)", self.arch())))
     }
     /// whether it upscales whole clips (`upscale_clip`: a video super-resolution model); video.upscale then gives it

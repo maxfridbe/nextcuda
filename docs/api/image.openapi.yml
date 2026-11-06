@@ -768,6 +768,12 @@ components:
           - type: string
           - type: 'null'
           description: 'the model''s id (birefnet, isnet-general-use); none: the loaded one, else the first enabled'
+        post_process_mask:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: false
+          description: 'rembg''s post_process_mask: an opening, a blur and a threshold at 127 - a hard 0 / 255 mask (what the platform asked rembg for)'
         response_format:
           anyOf:
           - $ref: '#/components/schemas/ResponseFormat'

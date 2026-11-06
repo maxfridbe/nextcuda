@@ -222,6 +222,11 @@ export interface ImageRemoveBackgroundBody {
   mask?: boolean | null;
   /** the model's id (birefnet, isnet-general-use); none: the loaded one, else the first enabled */
   model?: string | null;
+  /**
+   * rembg's post_process_mask: an opening, a blur and a threshold at 127 - a hard 0 / 255 mask (what the platform asked rembg for)
+   * @default false
+   */
+  post_process_mask?: boolean | null;
   /** b64_json (default): the PNGs as base64; url: the server keeps them and links them */
   response_format?: ResponseFormat | null;
   /** other keys */

@@ -635,6 +635,15 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         println!("lowest cosine {worst:.6}");
         return Ok(());
     }
+    if m["arch"].as_str() == Some(nextcuda_image_rembg::ARCH_ISNET) {
+        let gs = gpus(args)?;
+        let f = files.get("isnet").ok_or("isnet: no file")?;
+        let net = nextcuda_image_rembg::isnet::IsNet::load(&nextcuda_image_rembg::onnx::Model::open(f).map_err(|e| e.0)?, &gs[0]).map_err(|e| e.0)?;
+        let mut log = |s: String| eprintln!("{s}");
+        let worst = nextcuda_image_rembg::check::run(&net, dir, &mut log).map_err(|e| e.0)?;
+        println!("worst relative error of the prediction {worst:.2e}");
+        return Ok(());
+    }
     if m["arch"].as_str() == Some(nextcuda_image_flashvsr::ARCH) {
         let gs = gpus(args)?;
         let mut log = |s: String| eprintln!("{s}");

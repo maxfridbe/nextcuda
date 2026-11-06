@@ -810,6 +810,10 @@ pub struct ImageRemoveBackgroundBody {
     /// the model's id (birefnet, isnet-general-use); none: the loaded one, else the first enabled
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// rembg's post_process_mask: an opening, a blur and a threshold at 127 - a hard 0 / 255 mask (what the platform asked rembg for)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(default = false)]
+    pub post_process_mask: Option<bool>,
     /// b64_json (default): the PNGs as base64; url: the server keeps them and links them
     #[serde(rename = "response_format", default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
