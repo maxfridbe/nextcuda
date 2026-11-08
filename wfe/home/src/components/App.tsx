@@ -283,6 +283,16 @@ function ModelRow(m: Model) {
   );
 }
 
+/** A kind's models as the page lists them: the ones in use (working, loading, loaded, ready) on top, then the enabled,
+ *  then the disabled, each by name with its numbers read as numbers (qwen3.8-27b-q4 before -q8). The box's own order
+ *  is its catalogue's, which nextsycl keeps grouped by family and this box did not (2026-11-07). */
+const IN_USE: Model["state"][] = ["busy", "loading", "loaded", "ready"];
+const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+function sortModels(list: Model[]): Model[] {
+  const group = (m: Model) => (IN_USE.includes(m.state) ? 0 : m.enabled ? 1 : 2);
+  return [...list].sort((a, b) => group(a) - group(b) || byName.compare(a.id, b.id));
+}
+
 function Models() {
   const st = ui.state;
   if (!st) return <section class="panel"><div class="pbody"><Spinner label="Loading the models…" /></div></section>;
@@ -292,7 +302,7 @@ function Models() {
         <span class="hint">enabled models load on their first request and unload after {st.idle_minutes} min idle · disabled ones are off Open WebUI and the API</span></div>
       <div class="pbody">
         {KINDS.map((k) => {
-          const list = st.models.filter((m) => m.kind === k.kind);
+          const list = sortModels(st.models.filter((m) => m.kind === k.kind));
           if (!list.length) return null;
           const on = list.filter((m) => m.enabled).length;
           const shut = !!ui.collapsed[k.kind];
