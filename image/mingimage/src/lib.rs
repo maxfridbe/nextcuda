@@ -10,20 +10,22 @@
 //!   latents -> the VAE (Wan 2.1's decoder, 4 channels) -> RGBA
 //! ```
 //!
+//! The DiT is Z-Image's, the foundation's (crates/zimage, which Z-Image-Turbo runs too).
+//!
 //! Two cards: the DiT and the VAE on the first (7.3 GB and their activations), the text encoder on the second (9.3
 //! GB), every weight resident in its GGUF's type - nothing streamed. Sizes: the pipeline's buckets (1024, 2048) at
 //! the closest of their aspect ratios, the picture resized to the size asked (Lanczos) as infer.py does.
 
 pub mod check;
-pub mod dit;
 pub mod ffi;
+pub use nextcuda_zimage::dit;
 pub mod te;
 pub mod vae;
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use nextcuda_core::{DevBuf, Gpu};
+use nextcuda_core::Gpu;
 use nextcuda_diffusion::kernels::Nsd;
 use nextcuda_gguf::Gguf;
 use nextcuda_image::{Defaults, Error, ImageEngine, ImageKind, ImageRequest, LoadOptions, ModelFiles, Picture, Result, Sampler, Schedule, Step};
@@ -137,7 +139,8 @@ impl MingImage {
         // the text encoder first on its card: on one card, a full one says so before the DiT is read
         let te = te::TextEncoder::load(role(files, "text-encoder")?, &te_gpu, log)?;
         let nsd = Nsd::new(&gpu)?;
-        let dit = dit::Dit::load(&f, &nsd, log)?;
+        // inclusionAI's reference masks the padding rows out (Z-Image's attends to its pad tokens)
+        let dit = dit::Dit::load(&f, &nsd, dit::Pad::Masked, log)?;
         let vae = vae::Vae::load(role(files, "vae")?, &nsd, log)?;
         Ok(MingImage { te, nsd, dit, vae, gpu, loaded: Instant::now(), load_s: t0.elapsed().as_secs_f64(), busy: Mutex::new(()), conds: Mutex::new(Vec::new()) })
     }
@@ -161,30 +164,7 @@ impl MingImage {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sample(&self, pre: &dit::Prefix, npre: Option<&dit::Prefix>, cfg: f32, start: &[f32], lh: usize, lw: usize, sig: &[f32],
                          step: &mut dyn FnMut(usize) -> Result<()>) -> Result<Vec<f32>> {
-        let k = ffi::api()?;
-        let gpu = &self.gpu;
-        let hw = (lh / 2, lw / 2);
-        let n = hw.0 * hw.1 * dit::PATCH_IN;
-        let mods = self.dit.mods(&self.nsd, sig)?;
-        let lat = DevBuf::from_f32(gpu, &dit::patchify(start, lh, lw))?;
-        for i in 0..sig.len() - 1 {
-            let (s, sn) = (sig[i], sig[i + 1]);
-            if sn != s {
-                let v = self.dit.velocity(&self.nsd, pre, &lat, hw, &mods[i], None)?;
-                if let Some(np) = npre {
-                    let vn = self.dit.velocity(&self.nsd, np, &lat, hw, &mods[i], None)?;
-                    // SAFETY: n floats each: vn = vn - v, then v += -cfg vn (v + cfg (v - vn))
-                    ffi::check(unsafe { (k.axpy)(gpu.raw(), vn.fp(), v.fp(), n as i64, -1.0) }, "guidance")?;
-                    ffi::check(unsafe { (k.axpy)(gpu.raw(), v.fp(), vn.fp(), n as i64, -cfg) }, "guidance")?;
-                }
-                // the scheduler's step on the pipeline's minus the model's output
-                // SAFETY: n floats each.
-                ffi::check(unsafe { (k.axpy)(gpu.raw(), lat.fp(), v.fp(), n as i64, -(sn - s)) }, "euler step")?;
-                gpu.sync()?;
-            }
-            step(i)?;
-        }
-        Ok(dit::unpatchify(&lat.to_f32()?, lh, lw))
+        nextcuda_zimage::sample(&self.dit, &self.nsd, &self.gpu, pre, npre, cfg, start, lh, lw, sig, step)
     }
 }
 

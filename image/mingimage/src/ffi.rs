@@ -1,4 +1,5 @@
-//! This engine's own kernels (`kernels/image/mingimage/mi.h`), bound from the image kernel library by name.
+//! This engine's own kernels (`kernels/image/mingimage/mi.h`), bound from the image kernel library by name; the DiT's
+//! are the foundation's (nextcuda_zimage::ffi).
 
 use std::ffi::{c_int, c_void};
 use std::sync::OnceLock;
@@ -8,20 +9,16 @@ type M = *mut c_void;
 type P = *const c_void;
 
 pub struct Api {
-    pub ln_mod: unsafe extern "C" fn(G, *const f32, i64, i64, f32, *const f32, M) -> c_int,
     pub rms_mod: unsafe extern "C" fn(G, *const f32, i64, i64, *const f32, f32, *const f32, M) -> c_int,
     pub softmax_rows: unsafe extern "C" fn(G, *const f32, i64, i64, f32, M) -> c_int,
     pub silu: unsafe extern "C" fn(G, M, i64) -> c_int,
-    pub axpy: unsafe extern "C" fn(G, *mut f32, *const f32, i64, f32) -> c_int,
     pub to_half: unsafe extern "C" fn(G, *const f32, M, i64) -> c_int,
     pub to_float: unsafe extern "C" fn(G, P, *mut f32, i64) -> c_int,
     pub up2: unsafe extern "C" fn(G, P, i64, i64, i64, M) -> c_int,
     pub to_rgba8: unsafe extern "C" fn(G, P, i64, i64, *mut u8) -> c_int,
     pub gather_rows: unsafe extern "C" fn(G, P, i64, *const i32, i64, M) -> c_int,
     pub combine: unsafe extern "C" fn(G, *mut f32, i64, i64, P, *const i32, *const f32, i64) -> c_int,
-    pub gate_add: unsafe extern "C" fn(G, *mut f32, i64, i64, P, *const f32) -> c_int,
     pub swiglu_scaled: unsafe extern "C" fn(G, P, i64, i64, f32, M) -> c_int,
-    pub to_half_rows: unsafe extern "C" fn(G, *const f32, i64, i64, f32, M, i64) -> c_int,
     pub repeat_heads: unsafe extern "C" fn(G, P, i64, i64, i64, i64, i64, i64, M) -> c_int,
 }
 
@@ -47,20 +44,16 @@ pub fn api() -> nextcuda_core::Result<&'static Api> {
             }};
         }
         Ok(Api {
-            ln_mod: sym!("ns_image_mi_ln_mod"),
             rms_mod: sym!("ns_image_mi_rms_mod"),
             softmax_rows: sym!("ns_image_mi_softmax_rows"),
             silu: sym!("ns_image_mi_silu"),
-            axpy: sym!("ns_image_mi_axpy"),
             to_half: sym!("ns_image_mi_to_half"),
             to_float: sym!("ns_image_mi_to_float"),
             up2: sym!("ns_image_mi_up2"),
             to_rgba8: sym!("ns_image_mi_to_rgba8"),
             gather_rows: sym!("ns_image_mi_gather_rows"),
             combine: sym!("ns_image_mi_combine"),
-            gate_add: sym!("ns_image_mi_gate_add"),
             swiglu_scaled: sym!("ns_image_mi_swiglu_scaled"),
-            to_half_rows: sym!("ns_image_mi_to_half_rows"),
             repeat_heads: sym!("ns_image_mi_repeat_heads"),
         })
     })

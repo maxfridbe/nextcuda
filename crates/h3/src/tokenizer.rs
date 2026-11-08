@@ -56,8 +56,19 @@ fn bytes_to_unicode() -> [char; 256] {
 }
 
 impl Tokenizer {
-    /// From a directory with `vocab.json`, `merges.txt` and `tokenizer_config.json` (the repository's `tokenizer/`).
+    /// From a directory with `vocab.json`, `merges.txt` and `tokenizer_config.json` (the repository's `tokenizer/`),
+    /// with the tokens MiniMax H3's tokenizer adds.
     pub fn load(dir: &Path) -> Result<Tokenizer> {
+        Self::load_with(dir, &MINIMAX_EXTRA)
+    }
+
+    /// Qwen's own tokenizer: the files' tokens alone (Z-Image-Turbo's Qwen3, whose `tokenizer_config.json` lists its
+    /// added tokens; MiniMax's `<d>` ... are plain text there).
+    pub fn load_qwen(dir: &Path) -> Result<Tokenizer> {
+        Self::load_with(dir, &[])
+    }
+
+    fn load_with(dir: &Path, extra: &[(&str, u32)]) -> Result<Tokenizer> {
         let vocab: HashMap<String, u32> =
             serde_json::from_slice(&std::fs::read(dir.join("vocab.json")).ctx("reading vocab.json")?).ctx("parsing vocab.json")?;
         let merges = std::fs::read_to_string(dir.join("merges.txt")).ctx("reading merges.txt")?;
@@ -74,7 +85,7 @@ impl Tokenizer {
             .iter()
             .filter_map(|(id, t)| Some((t["content"].as_str()?.to_string(), id.parse().ok()?)))
             .collect();
-        special.extend(MINIMAX_EXTRA.iter().map(|(s, id)| (s.to_string(), *id)));
+        special.extend(extra.iter().map(|(s, id)| (s.to_string(), *id)));
         special.sort_by_key(|(s, _)| std::cmp::Reverse(s.len()));
         Ok(Tokenizer { vocab, ranks, special, pattern: Regex::new(PATTERN).map_err(|e| Error(e.to_string()))?, byte_char: bytes_to_unicode() })
     }

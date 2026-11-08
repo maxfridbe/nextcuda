@@ -1,12 +1,13 @@
-//! The denoiser: Ming-Image's DiT, Z-Image's single-stream transformer (inclusionAI's diffusion/transformer.py
-//! `DiffusionTransformer`): 30 blocks of 3,840 features (30 heads x 128), two noise-refiner blocks over the image's
-//! tokens and two context-refiner blocks over the caption's, the matrices kept on the card in the GGUF's types (Q8_0
-//! for the blocks, bfloat16 for the refiners: 7 GB).
+//! The denoiser: Z-Image's single-stream DiT (Tongyi-MAI's src/zimage/transformer.py `ZImageTransformer2DModel`,
+//! diffusers' transformer_z_image.py), which Ming-Image's DiT (inclusionAI's diffusion/transformer.py
+//! `DiffusionTransformer`) is too: 30 blocks of 3,840 features (30 heads x 128), two noise-refiner blocks over the
+//! image's tokens and two context-refiner blocks over the caption's, the matrices kept on the card in the GGUF's types
+//! (Q8_0 for the blocks; the refiners Q8_0 or bfloat16, as the file has them: 7 GB).
 //!
 //! ```text
 //!   image tokens: the latents' 2 x 2 patches [N, 64] -> x_embedder -> noise refiner (modulated)
-//!   caption: rmsnorm + linear of the 256 query features [256, 2560], then the direct condition [L, 3840] as it is ->
-//!            context refiner (not modulated; computed once a prompt)
+//!   caption: rmsnorm + linear of the text features [L, 2560] (Ming-Image: its 256 query features, then the direct
+//!            condition [L, 3840] as it is) -> context refiner (not modulated; computed once a prompt)
 //!   [image | caption] -> 30 blocks -> the image's rows: layernorm * (1 + scale), linear -> [N, 64]
 //!   block: x += tanh(g1) * rmsnorm(attention(rmsnorm(x) * (1 + s1)))
 //!          x += tanh(g2) * rmsnorm(w2(silu(w1 h) * w3 h)),  h = rmsnorm(x) * (1 + s2)
@@ -14,8 +15,17 @@
 //!
 //! s1 g1 s2 g2: the block's adaLN linear of the timestep's embedding (no SiLU before it, Z-Image's), the same for every
 //! token. Positions: caption token j at (1 + j, 0, 0); the image's at (the caption's length rounded up to 32, + 1,
-//! row, column) - the padding the reference masks out is left out. The RoPE pairs features (2i, 2i + 1); the shared
-//! kernel rotates (i, 64 + i), so q's and k's rows (and their norms) are permuted at load.
+//! row, column). The RoPE pairs features (2i, 2i + 1); the shared kernel rotates (i, 64 + i), so q's and k's rows
+//! (and their norms) are permuted at load.
+//!
+//! The padding to 32 tokens differs between the two references, so the caller says which it runs (`Pad`): Z-Image fills
+//! the caption up to a multiple of 32 with `cap_pad_token` and the image with `x_pad_token` (at position (0, 0, 0)),
+//! and those rows take part in every attention - only a batch's padding is masked; Ming-Image masks its padding, so
+//! there it is left out.
+//!
+//! Two namings of the tensors are read: diffusers' (`all_x_embedder.2-1`, `attention.to_q`, `attention.norm_q` ... -
+//! the Ming-Image GGUF) and ComfyUI's (`x_embedder`, one `attention.qkv` matrix split here by rows, `attention.out`,
+//! `attention.q_norm`, `final_layer` - the Z-Image-Turbo GGUFs).
 
 use std::sync::Arc;
 
@@ -37,6 +47,15 @@ const ADALN: usize = 256;
 const AXES: [usize; 3] = [32, 48, 48];
 const THETA: f64 = 256.0;
 const SEQ_MULTI_OF: usize = 32;
+
+/// How the image's and the caption's tokens are padded to multiples of 32 (see the header)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Pad {
+    /// no padding rows (Ming-Image: its reference masks them out)
+    Masked,
+    /// the files' pad tokens, attended to (Z-Image)
+    Tokens,
+}
 
 fn ge(e: nextcuda_gguf::Error) -> Error {
     Error(e.0)
@@ -90,6 +109,8 @@ pub struct Dit {
     final_ada: (Vec<f32>, Vec<f32>),
     final_w: DevBuf,
     final_b: DevBuf,
+    /// the pad tokens (float32 [3840] each: the image's, the caption's) when the rows are padded with them
+    pads: Option<(DevBuf, DevBuf)>,
     pub bytes: u64,
 }
 
@@ -132,13 +153,20 @@ fn rope_perm(j: usize) -> usize {
     }
 }
 
+/// A tensor as float32 on the host: float files as they are, Q8_0 (the Z-Image GGUFs' adaLN linears) expanded
 fn host_vec(f: &Gguf, name: &str) -> Result<Vec<f32>> {
     let t = f.tensor(name).ok_or_else(|| Error(format!("{}: no tensor {name}", f.paths[0].display())))?;
     let b = f.read(t).map_err(ge)?;
+    let f16 = nextcuda_gguf::safetensors::f16_to_f32;
     Ok(match t.ty {
         GType::BF16 => b.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
         GType::F32 => b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
-        GType::F16 => b.chunks_exact(2).map(|c| nextcuda_gguf::safetensors::f16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect(),
+        GType::F16 => b.chunks_exact(2).map(|c| f16(u16::from_le_bytes([c[0], c[1]]))).collect(),
+        // blocks of 32: a half scale, then 32 signed bytes
+        GType::Q8_0 => b.chunks_exact(34).flat_map(|blk| {
+            let d = f16(u16::from_le_bytes([blk[0], blk[1]]));
+            blk[2..].iter().map(move |q| d * (*q as i8) as f32)
+        }).collect(),
         other => return Err(Error(format!("{name}: a {} tensor where float was expected", other.name()))),
     })
 }
@@ -172,20 +200,32 @@ fn silu(v: &mut [f32]) {
 }
 
 impl Dit {
-    pub fn load(f: &Gguf, nsd: &Nsd, log: &mut dyn FnMut(String)) -> Result<Dit> {
+    /// The DiT of the GGUF `f` on `nsd`'s card; `pad`: how its reference pads the rows (Z-Image's files carry the pad
+    /// tokens `Pad::Tokens` needs)
+    pub fn load(f: &Gguf, nsd: &Nsd, pad: Pad, log: &mut dyn FnMut(String)) -> Result<Dit> {
         let gpu = nsd.gpu.clone();
         let t0 = std::time::Instant::now();
         let tensor = |name: &str| f.tensor(name).ok_or_else(|| Error(format!("{}: no tensor {name}", f.paths[0].display())));
-        let part = |name: &str, perm: bool| -> Result<Part> {
+        // ComfyUI's naming (the Z-Image GGUFs) or diffusers' (Ming-Image's)
+        let comfy = f.tensor("x_embedder.weight").is_some();
+        // rows [row0, row0 + rows) of a matrix (all of it: rows 0), q / k rows permuted for the shared RoPE kernel
+        let part_rows = |name: &str, row0: usize, rows: usize, perm: bool| -> Result<Part> {
             let t = tensor(name)?;
             let code = t.ty.code();
             if ![0, 1, 8, 12, 13, 14, 30].contains(&code) {
                 return Err(Error(format!("{name}: {} weights are not read yet", t.ty.name())));
             }
-            let (rows, k) = (t.shape[0] as usize, t.shape[1] as usize);
+            let (all, k) = (t.shape[0] as usize, t.shape[1] as usize);
+            let rows = if rows == 0 { all } else { rows };
+            if row0 + rows > all {
+                return Err(Error(format!("{name}: rows {row0}..{} of {all}", row0 + rows)));
+            }
             let mut bytes = f.read(t).map_err(ge)?;
+            let rb = bytes.len() / all;
+            if rows != all {
+                bytes = bytes[row0 * rb..(row0 + rows) * rb].to_vec();
+            }
             if perm {
-                let rb = bytes.len() / rows;
                 let mut out = Vec::with_capacity(bytes.len());
                 for r in 0..rows {
                     let (h, j) = (r / HEAD, r % HEAD);
@@ -198,22 +238,32 @@ impl Dit {
             w.write(0, &bytes)?;
             Ok(Part { w, qtype: code, rows, k })
         };
+        let part = |name: &str, perm: bool| part_rows(name, 0, 0, perm);
         let vecd = |name: &str, permute: bool| -> Result<DevBuf> {
             let v = host_vec(f, name)?;
             let v = if permute { (0..v.len()).map(|j| v[rope_perm(j)]).collect() } else { v };
             DevBuf::from_f32(&gpu, &v)
         };
         let block = |p: &str, modulated: bool| -> Result<Block> {
+            let (q, k, v, o) = if comfy {
+                let qkv = format!("{p}attention.qkv.weight");
+                (part_rows(&qkv, 0, DIM, true)?, part_rows(&qkv, DIM, DIM, true)?, part_rows(&qkv, 2 * DIM, DIM, false)?,
+                 part(&format!("{p}attention.out.weight"), false)?)
+            } else {
+                (part(&format!("{p}attention.to_q.weight"), true)?, part(&format!("{p}attention.to_k.weight"), true)?,
+                 part(&format!("{p}attention.to_v.weight"), false)?, part(&format!("{p}attention.to_out.0.weight"), false)?)
+            };
+            let (nq, nk) = if comfy { ("q_norm", "k_norm") } else { ("norm_q", "norm_k") };
             Ok(Block {
-                q: part(&format!("{p}attention.to_q.weight"), true)?,
-                k: part(&format!("{p}attention.to_k.weight"), true)?,
-                v: part(&format!("{p}attention.to_v.weight"), false)?,
-                o: part(&format!("{p}attention.to_out.0.weight"), false)?,
+                q,
+                k,
+                v,
+                o,
                 w1: part(&format!("{p}feed_forward.w1.weight"), false)?,
                 w3: part(&format!("{p}feed_forward.w3.weight"), false)?,
                 w2: part(&format!("{p}feed_forward.w2.weight"), false)?,
-                norm_q: vecd(&format!("{p}attention.norm_q.weight"), true)?,
-                norm_k: vecd(&format!("{p}attention.norm_k.weight"), true)?,
+                norm_q: vecd(&format!("{p}attention.{nq}.weight"), true)?,
+                norm_k: vecd(&format!("{p}attention.{nk}.weight"), true)?,
                 n1: vecd(&format!("{p}attention_norm1.weight"), false)?,
                 n2: vecd(&format!("{p}attention_norm2.weight"), false)?,
                 f1: vecd(&format!("{p}ffn_norm1.weight"), false)?,
@@ -225,15 +275,21 @@ impl Dit {
                 },
             })
         };
-        let count = |pre: &str| (0..).take_while(|i| f.tensor(&format!("{pre}{i}.attention.to_q.weight")).is_some()).count();
+        let qname = if comfy { "attention.qkv.weight" } else { "attention.to_q.weight" };
+        let count = |pre: &str| (0..).take_while(|i| f.tensor(&format!("{pre}{i}.{qname}")).is_some()).count();
         let (nl, nr, nc) = (count("layers."), count("noise_refiner."), count("context_refiner."));
-        if nl == 0 || f.tensor("all_x_embedder.2-1.weight").is_none() {
-            return Err(Error(format!("{}: not Ming-Image's DiT (no layers / all_x_embedder.2-1)", f.paths[0].display())));
+        let (xe, fl) = if comfy { ("x_embedder", "final_layer") } else { ("all_x_embedder.2-1", "all_final_layer.2-1") };
+        if nl == 0 || f.tensor(&format!("{xe}.weight")).is_none() {
+            return Err(Error(format!("{}: not Z-Image's DiT (no layers / x_embedder)", f.paths[0].display())));
         }
+        let pads = match pad {
+            Pad::Masked => None,
+            Pad::Tokens => Some((vecd("x_pad_token", false)?, vecd("cap_pad_token", false)?)),
+        };
         let dit = Dit {
             gpu: gpu.clone(),
-            x_w: vecd("all_x_embedder.2-1.weight", false)?,
-            x_b: vecd("all_x_embedder.2-1.bias", false)?,
+            x_w: vecd(&format!("{xe}.weight"), false)?,
+            x_b: vecd(&format!("{xe}.bias"), false)?,
             cap_norm: vecd("cap_embedder.0.weight", false)?,
             cap_w: part("cap_embedder.1.weight", false)?,
             cap_b: vecd("cap_embedder.1.bias", false)?,
@@ -242,12 +298,13 @@ impl Dit {
             noise_refiner: (0..nr).map(|i| block(&format!("noise_refiner.{i}."), true)).collect::<Result<_>>()?,
             context_refiner: (0..nc).map(|i| block(&format!("context_refiner.{i}."), false)).collect::<Result<_>>()?,
             layers: (0..nl).map(|i| block(&format!("layers.{i}."), true)).collect::<Result<_>>()?,
-            final_ada: (host_vec(f, "all_final_layer.2-1.adaLN_modulation.1.weight")?, host_vec(f, "all_final_layer.2-1.adaLN_modulation.1.bias")?),
-            final_w: vecd("all_final_layer.2-1.linear.weight", false)?,
-            final_b: vecd("all_final_layer.2-1.linear.bias", false)?,
+            final_ada: (host_vec(f, &format!("{fl}.adaLN_modulation.1.weight"))?, host_vec(f, &format!("{fl}.adaLN_modulation.1.bias"))?),
+            final_w: vecd(&format!("{fl}.linear.weight"), false)?,
+            final_b: vecd(&format!("{fl}.linear.bias"), false)?,
+            pads,
             bytes: f.tensors.iter().map(|t| t.bytes).sum(),
         };
-        log(format!("ming-image dit: {nl} blocks, {nr} + {nc} refiners on {} in {:.1} s", gpu.name, t0.elapsed().as_secs_f64()));
+        log(format!("z-image dit: {nl} blocks, {nr} + {nc} refiners on {} in {:.1} s", gpu.name, t0.elapsed().as_secs_f64()));
         Ok(dit)
     }
 
@@ -349,21 +406,30 @@ impl Dit {
         ffi::check(unsafe { (k.gate_add)(gpu.raw(), x.fp(), m as i64, DIM as i64, t.h.ptr(), g2) }, "gate")
     }
 
-    /// The caption's rows: the query features (float32 [256, 2560]) embedded, the direct condition ([L, 3840]) after
-    /// them, through the context refiner
+    /// The caption's rows: the text features (float32 [L, 2560]) embedded, the direct condition ([L', 3840]; Ming-Image's,
+    /// none for Z-Image) after them, the caption's pad tokens up to a multiple of 32 (`Pad::Tokens`), through the
+    /// context refiner
     pub fn prefix(&self, nsd: &Nsd, cap: &[f32], direct: &[f32], direct_rows: usize, grabs: Option<&mut Grabs>) -> Result<Prefix> {
         let gpu = &self.gpu;
         let k = ffi::api()?;
         let nq = cap.len() / self.cap_w.k;
-        let c = nq + direct_rows;
+        let filled = nq + direct_rows;
+        let c = if self.pads.is_some() { filled.div_ceil(SEQ_MULTI_OF) * SEQ_MULTI_OF } else { filled };
         let cf = DevBuf::from_f32(gpu, cap)?;
         let ch = DevBuf::new(gpu, cap.len() * 2)?;
         // SAFETY: nq x 2560 values; the weight 2560 floats.
         ffi::check(unsafe { (k.rms_mod)(gpu.raw(), cf.fp(), nq as i64, self.cap_w.k as i64, self.cap_norm.fp(), EPS, std::ptr::null(), ch.ptr()) }, "norm")?;
         let x = DevBuf::f32(gpu, c * DIM)?;
         nsd.linear_q(ch.ptr(), Dt::F16, nq, self.cap_w.k, self.cap_w.w.ptr(), self.cap_w.qtype, DIM, self.cap_b.fp().cast(), x.ptr(), Dt::F32, 0)?;
-        let d = DevBuf::from_f32(gpu, direct)?;
-        x.copy_within(nq * DIM * 4, &d, 0, direct_rows * DIM * 4)?;
+        if direct_rows > 0 {
+            let d = DevBuf::from_f32(gpu, direct)?;
+            x.copy_within(nq * DIM * 4, &d, 0, direct_rows * DIM * 4)?;
+        }
+        if let Some((_, cap_pad)) = &self.pads {
+            for r in filled..c {
+                x.copy_within(r * DIM * 4, cap_pad, 0, DIM * 4)?;
+            }
+        }
         let idx: Vec<[i64; 3]> = (0..c).map(|j| [1 + j as i64, 0, 0]).collect();
         let cs = DevBuf::from_f32(gpu, &rope_table(&idx))?;
         let t = Tmp::new(gpu, c)?;
@@ -382,14 +448,22 @@ impl Dit {
     pub fn velocity(&self, nsd: &Nsd, pre: &Prefix, lat: &DevBuf, hw: (usize, usize), md: &StepMods, mut grabs: Option<&mut Grabs>) -> Result<DevBuf> {
         let gpu = &self.gpu;
         let k = ffi::api()?;
-        let n = hw.0 * hw.1;
+        let n_img = hw.0 * hw.1;
+        // the image's rows: its patches, then (Pad::Tokens) the pad token up to a multiple of 32
+        let n = if self.pads.is_some() { n_img.div_ceil(SEQ_MULTI_OF) * SEQ_MULTI_OF } else { n_img };
         let c = pre.rows;
         let s = n + c;
         let x = DevBuf::f32(gpu, s * DIM)?;
-        nsd.linear(lat.ptr(), Dt::F32, n, PATCH_IN, self.x_w.ptr(), DIM, self.x_b.fp().cast(), x.ptr(), Dt::F32)?;
-        // positions: the image at the frame after the caption (its length rounded up to 32), rows and columns from 0
+        nsd.linear(lat.ptr(), Dt::F32, n_img, PATCH_IN, self.x_w.ptr(), DIM, self.x_b.fp().cast(), x.ptr(), Dt::F32)?;
+        if let Some((x_pad, _)) = &self.pads {
+            for r in n_img..n {
+                x.copy_within(r * DIM * 4, x_pad, 0, DIM * 4)?;
+            }
+        }
+        // positions: the image at the frame after the caption (its length rounded up to 32), rows and columns from 0;
+        // the pad rows at (0, 0, 0)
         let frame = (c.div_ceil(SEQ_MULTI_OF) * SEQ_MULTI_OF + 1) as i64;
-        let idx: Vec<[i64; 3]> = (0..n).map(|i| [frame, (i / hw.1) as i64, (i % hw.1) as i64]).collect();
+        let idx: Vec<[i64; 3]> = (0..n).map(|i| if i < n_img { [frame, (i / hw.1) as i64, (i % hw.1) as i64] } else { [0, 0, 0] }).collect();
         let mut cs_all = rope_table(&idx);
         let cs_img = DevBuf::from_f32(gpu, &cs_all)?;
         let t = Tmp::new(gpu, s)?;
@@ -414,7 +488,8 @@ impl Dit {
                 }
             }
         }
-        // the final layer on the image's rows
+        // the final layer on the image's rows (not its pad rows)
+        let n = n_img;
         // SAFETY: n x 3840 values each way; the scale 3840 floats.
         ffi::check(unsafe { (k.ln_mod)(gpu.raw(), x.fp(), n as i64, DIM as i64, 1e-6, md.final_scale.fp(), t.h.ptr()) }, "final norm")?;
         let hf = DevBuf::f32(gpu, n * DIM)?;

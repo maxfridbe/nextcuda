@@ -1,6 +1,6 @@
-// mi.cu: the Ming-Image engine's own small kernels - what the shared diffusion kernels (nsd) do not have: the DiT's
-// modulated norms and tanh-gated residuals, the text encoder's mixture-of-experts rows (gathered by expert, summed back
-// by token), the grouped heads made full, the sampler's step, the VAE's upsampling, softmax and the picture's bytes.
+// mi.cu: the Ming-Image engine's own small kernels - what the shared diffusion kernels (nsd) and the DiT's (zimage.h:
+// the DiT is the foundation's, crates/zimage) do not have: the text encoder's mixture-of-experts rows (gathered by
+// expert, summed back by token), the grouped heads made full, the VAE's upsampling, softmax and the picture's bytes.
 // Elementwise or one block a row, on the GPU's stream.
 #include "ns.h"
 #include "ns_internal.hpp"
@@ -37,34 +37,6 @@ __device__ float block_max(float v) {
     for (int i = 1; i < WG / 32; ++i) t = fmaxf(t, s[i]);
     __syncthreads();
     return t;
-}
-
-__global__ void ln_mod_k(const float* x, int64_t C, float eps, const float* scale, __half* o) {
-    const size_t r = blockIdx.x;
-    const int l = threadIdx.x;
-    const float* row = x + r * C;
-    float v[PER];
-    float s = 0.0f;
-#pragma unroll
-    for (int j = 0; j < PER; ++j) {
-        const int64_t i = (int64_t) j * WG + l;
-        v[j] = i < C ? row[i] : 0.0f;
-        s += v[j];
-    }
-    const float mean = block_sum(s) / (float) C;
-    float s2 = 0.0f;
-#pragma unroll
-    for (int j = 0; j < PER; ++j) {
-        const int64_t i = (int64_t) j * WG + l;
-        const float d = i < C ? v[j] - mean : 0.0f;
-        s2 += d * d;
-    }
-    const float inv = rsqrtf(block_sum(s2) / (float) C + eps);
-#pragma unroll
-    for (int j = 0; j < PER; ++j) {
-        const int64_t i = (int64_t) j * WG + l;
-        if (i < C) o[r * C + i] = f2h((v[j] - mean) * inv * (scale ? 1.0f + scale[i] : 1.0f));
-    }
 }
 
 __global__ void rms_mod_k(const float* x, int64_t C, const float* w, float eps, const float* scale, __half* o) {
@@ -107,11 +79,6 @@ __global__ void silu_k(__half* p, int64_t n) {
     p[i] = f2h(v / (1.0f + expf(-v)));
 }
 
-__global__ void axpy_k(float* x, const float* y, int64_t n, float a) {
-    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) x[i] += a * y[i];
-}
-
 __global__ void to_half_k(const float* x, __half* o, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) o[i] = f2h(x[i]);
@@ -151,12 +118,6 @@ __global__ void swiglu_scaled_k(const __half* x, int64_t C, int64_t n, float s, 
     o[i] = f2h(a / (1.0f + expf(-a)) * b * s);
 }
 
-__global__ void to_half_rows_k(const float* x, int64_t C, int64_t n, float s, __half* o, int64_t ld) {
-    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    o[(i / C) * ld + i % C] = f2h(x[i] * s);
-}
-
 __global__ void combine_k(float* x, int64_t C, const float* y, const int32_t* slot, const float* w, int64_t K) {
     const int64_t t = blockIdx.x;
     for (int64_t i = threadIdx.x; i < C; i += blockDim.x) {
@@ -167,12 +128,6 @@ __global__ void combine_k(float* x, int64_t C, const float* y, const int32_t* sl
         }
         x[t * C + i] += s;
     }
-}
-
-__global__ void gate_add_k(float* x, int64_t C, int64_t n, const __half* o, const float* gate) {
-    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    x[i] += h2f(o[i]) * (gate ? gate[i % C] : 1.0f);
 }
 
 __global__ void repeat_heads_k(const __half* x, int64_t stride, int64_t off, int64_t Hkv, int64_t Hq, int64_t D, __half* o) {
@@ -189,14 +144,6 @@ inline unsigned blocks(int64_t n) { return (unsigned) ((n + 255) / 256); }
 }  // namespace
 
 extern "C" {
-
-int ns_image_mi_ln_mod(ns_gpu* g, const float* x, int64_t M, int64_t C, float eps, const float* scale, void* out) {
-    if (C > (int64_t) WG * PER) return ns_fail("ns_image_mi_ln_mod: rows longer than 8192");
-    NS_CU(cudaSetDevice(g->dev));
-    ln_mod_k<<<(unsigned) M, WG, 0, g->q>>>(x, C, eps, scale, (__half*) out);
-    NS_LAUNCH_CHECK();
-    return 0;
-}
 
 int ns_image_mi_rms_mod(ns_gpu* g, const float* x, int64_t M, int64_t C, const float* w, float eps, const float* scale, void* out) {
     if (C > (int64_t) WG * PER) return ns_fail("ns_image_mi_rms_mod: rows longer than 8192");
@@ -216,13 +163,6 @@ int ns_image_mi_softmax_rows(ns_gpu* g, const float* x, int64_t M, int64_t N, fl
 int ns_image_mi_silu(ns_gpu* g, void* x, int64_t n) {
     NS_CU(cudaSetDevice(g->dev));
     silu_k<<<blocks(n), 256, 0, g->q>>>((__half*) x, n);
-    NS_LAUNCH_CHECK();
-    return 0;
-}
-
-int ns_image_mi_axpy(ns_gpu* g, float* x, const float* y, int64_t n, float a) {
-    NS_CU(cudaSetDevice(g->dev));
-    axpy_k<<<blocks(n), 256, 0, g->q>>>(x, y, n, a);
     NS_LAUNCH_CHECK();
     return 0;
 }
@@ -274,20 +214,6 @@ int ns_image_mi_combine(ns_gpu* g, float* x, int64_t M, int64_t C, const void* y
 int ns_image_mi_swiglu_scaled(ns_gpu* g, const void* x, int64_t M, int64_t C, float s, void* out) {
     NS_CU(cudaSetDevice(g->dev));
     swiglu_scaled_k<<<blocks(M * C), 256, 0, g->q>>>((const __half*) x, C, M * C, s, (__half*) out);
-    NS_LAUNCH_CHECK();
-    return 0;
-}
-
-int ns_image_mi_to_half_rows(ns_gpu* g, const float* x, int64_t M, int64_t C, float s, void* out, int64_t ld) {
-    NS_CU(cudaSetDevice(g->dev));
-    to_half_rows_k<<<blocks(M * C), 256, 0, g->q>>>(x, C, M * C, s, (__half*) out, ld);
-    NS_LAUNCH_CHECK();
-    return 0;
-}
-
-int ns_image_mi_gate_add(ns_gpu* g, float* x, int64_t M, int64_t C, const void* other, const float* gate) {
-    NS_CU(cudaSetDevice(g->dev));
-    gate_add_k<<<blocks(M * C), 256, 0, g->q>>>(x, C, M * C, (const __half*) other, gate);
     NS_LAUNCH_CHECK();
     return 0;
 }

@@ -1,0 +1,11 @@
+[package]
+name = "nextcuda-zimage"
+description = "Z-Image's 6B single-stream DiT and its Euler sampler - what Ming-Image (image/mingimage) and Z-Image-Turbo (image/zimage) share"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextcuda-core.workspace = true
+nextcuda-diffusion.workspace = true
+nextcuda-gguf.workspace = true
