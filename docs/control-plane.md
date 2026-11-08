@@ -126,6 +126,7 @@ Table to fill in (one row a model; "unmeasured" until a bench is run and its blo
 | `qwen-image-2.1-q6k` | image | unmeasured | 1 | 1 | shared | | |
 | `qwen-image-2.1-q8` | image | unmeasured | 1 | 1 | shared | | |
 | `qwen-image-2.1-rrq4` | image | unmeasured | 1 | 1 | shared | | |
+| `qwen-image-2.1-turbo-q8` | image | unmeasured | 1 | 1 | shared | | |
 | `qwen-image-2512-q4km` | image | unmeasured | 1 | 1 | shared | | |
 | `real-esrgan` | image | unmeasured | 1 | 1 | shared | | |
 | `starvector-1b-im2svg` | image | unmeasured | 1 | 1 | shared | | |

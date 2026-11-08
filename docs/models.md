@@ -13,6 +13,7 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 | chat | `nemotron-3.5-super-iq1m` | NVIDIA Nemotron 3.5 Super 120B-A12B, unsloth's UD-IQ1_M (text) | 43.0 GiB | served (one card, experts streamed; off by default) |
 | image | `qwen-image-2.1-q8` | Qwen-Image 2.1 Q8_0 with Qwen3-VL 8B: text to image, RGBA, edits from up to 8 pictures | 13.6 GiB | served |
 | image | `qwen-image-2.1-rrq4` | Qwen-Image 2.1, [realrebelai's Q4](https://huggingface.co/realrebelai/Qwen-Image-2.1_GGUFs) | 5.5 GiB | served |
+| image | `qwen-image-2.1-turbo-q8` | Qwen-Image 2.1 with Viggle's 6-step turbo merged (cfg 1, its own sigmas; the Rust engine, the transformer on the card) | 7.2 GiB more | served |
 | image | `qwen-image-2512-q4km` | Qwen-Image 2512 Q4_K_M with Qwen2.5-VL 7B and the Lightning 4-step LoRA | 17.7 GiB | served |
 | image | `qwen-image-2.1-q6k` | Qwen-Image 2.1 with a Q6_K transformer | 12.0 GiB | download |
 | image | `ming-image-0.1-design` | Ming-Image-0.1-Design: UI, posters, infographics - text spelled right; over both cards | 16.3 GiB | served |
