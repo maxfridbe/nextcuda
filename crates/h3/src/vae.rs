@@ -85,8 +85,11 @@ struct VBlock {
 
 pub struct VideoDecoder {
     dev: Arc<Device>,
-    /// the activations' type: bfloat16 for the int8 checkpoint, half for the fp16 one
+    /// the activations' type: bfloat16 for the int8 checkpoint, half for the fp16 one and for int8 ConvRot
     act: DType,
+    /// the residual stream's: float32 beside int8 ConvRot (half's range runs out in it: black blotches in P-H3-Image's
+    /// pictures; the reference keeps it float32), else `act`
+    stream: DType,
     blocks: Vec<VBlock>,
     x_embed: Linear,
     /// [REGISTERS + 1, DIM] in `act`: the register tokens and a zero token, appended after the image tokens
@@ -131,6 +134,7 @@ impl VideoDecoder {
         // the int8 GEMM's Hadamard rotation (ConvRot, P-H3-Image's int8 decoder) takes half activations; plain int8
         // rows run on bfloat16
         let act = if q0.as_ref().is_some_and(|q| !q.convrot) { DType::BF16 } else { DType::F16 };
+        let stream = if q0.as_ref().is_some_and(|q| q.convrot) { DType::F32 } else { act };
         let wanted = |name: &str| {
             name.strip_prefix("decoder.transformer_blocks.").and_then(|r| r.split_once('.')).is_some_and(|(_, t)| {
                 LIN.iter().any(|l| t == format!("{l}.weight") || t == format!("{l}.weight_scale"))
@@ -213,9 +217,10 @@ impl VideoDecoder {
         Ok(VideoDecoder {
             dev: dev.clone(),
             act,
+            stream,
             blocks,
             x_embed: lin32("x_embedder")?,
-            suffix: Tensor::from_bytes(dev, act, &[REGISTERS + 1, DIM], &act_bytes(&suffix, act))?,
+            suffix: Tensor::from_bytes(dev, stream, &[REGISTERS + 1, DIM], &act_bytes(&suffix, stream))?,
             norm_out_w: small(dev, ck, &format!("{PREFIX}norm_out.weight"))?,
             norm_out_b: small(dev, ck, &format!("{PREFIX}norm_out.bias"))?,
             proj_out,
@@ -250,9 +255,9 @@ impl VideoDecoder {
             }
         }
         let input = f32_tensor(dev, &[nb * n, LATENT_C], &rows)?;
-        let x = Tensor::new(dev, self.act, &[rows_all, DIM])?;
+        let x = Tensor::new(dev, self.stream, &[rows_all, DIM])?;
         {
-            let e = Tensor::new(dev, self.act, &[nb * n, DIM])?;
+            let e = Tensor::new(dev, self.stream, &[nb * n, DIM])?;
             self.x_embed.forward(&input, &e)?;
             for k in 0..nb {
                 x.copy_rows(k * s, &e, k * n, n)?;
@@ -366,7 +371,7 @@ impl VideoDecoder {
         }
         let normed = Tensor::new(dev, DType::F32, &[nb * n, DIM])?;
         {
-            let img = Tensor::new(dev, self.act, &[nb * n, DIM])?;
+            let img = Tensor::new(dev, self.stream, &[nb * n, DIM])?;
             for k in 0..nb {
                 img.copy_rows(k * n, &x, k * s, n)?;
             }
