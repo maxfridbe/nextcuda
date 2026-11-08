@@ -42,6 +42,9 @@ const NORMS: [&str; 4] = ["input_layernorm", "post_attention_layernorm", "self_a
 
 pub struct TextEncoder {
     file: Gguf,
+    /// where the language model's tensors are: `model.` (H3's 32B file) or `model.language_model.` (a whole
+    /// Qwen3-VL's file, as P-H3-Image's text encoder comes)
+    root: String,
     pub layers: usize,
     pub hidden: usize,
     pub heads: usize,
@@ -138,6 +141,15 @@ fn f16_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f32_to_f16(*f).to_le_bytes()).collect()
 }
 
+/// A norm's weight as float32 (bfloat16 or float32 in the file)
+fn norm_values(b: &[u8], e: &GEntry) -> Result<Vec<f32>> {
+    match e.ty {
+        GType::BF16 => Ok(b.chunks_exact(2).map(|c| bf16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect()),
+        GType::F32 => Ok(b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()),
+        t => Err(Error(format!("{}: a norm of type {t:?}", e.name))),
+    }
+}
+
 fn f32_tensor(dev: &Arc<Device>, v: &[f32]) -> Result<Tensor> {
     Tensor::from_bytes(dev, DType::F32, &[v.len()], &v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>())
 }
@@ -145,30 +157,62 @@ fn f32_tensor(dev: &Arc<Device>, v: &[f32]) -> Result<Tensor> {
 impl TextEncoder {
     pub fn open(path: &Path) -> Result<TextEncoder> {
         let file = Gguf::open(path)?;
-        let layers = file.entries.keys().filter_map(|k| k.strip_prefix("model.layers.")?.split('.').next()?.parse::<usize>().ok()).max().map_or(0, |m| m + 1);
-        let q = file.get("model.layers.0.self_attn.q_proj.weight")?.shape.clone(); // [heads * 128, hidden]
-        let k = file.get("model.layers.0.self_attn.k_proj.weight")?.shape.clone();
-        let ffn = file.get("model.layers.0.mlp.gate_proj.weight")?.shape[0];
-        Ok(TextEncoder { layers, hidden: q[1], heads: q[0] / HEAD_DIM, kv_heads: k[0] / HEAD_DIM, ffn, file, source: Mutex::new(String::new()) })
+        let root = if file.entries.contains_key("model.language_model.embed_tokens.weight") { "model.language_model." } else { "model." }.to_string();
+        let lead = format!("{root}layers.");
+        let layers = file.entries.keys().filter_map(|k| k.strip_prefix(lead.as_str())?.split('.').next()?.parse::<usize>().ok()).max().map_or(0, |m| m + 1);
+        let q = file.get(&format!("{lead}0.self_attn.q_proj.weight"))?.shape.clone(); // [heads * 128, hidden]
+        let k = file.get(&format!("{lead}0.self_attn.k_proj.weight"))?.shape.clone();
+        let ffn = file.get(&format!("{lead}0.mlp.gate_proj.weight"))?.shape[0];
+        Ok(TextEncoder { layers, hidden: q[1], heads: q[0] / HEAD_DIM, kv_heads: k[0] / HEAD_DIM, ffn, file, root, source: Mutex::new(String::new()) })
     }
 
     fn layer_mats(&self, i: usize) -> Result<Vec<GEntry>> {
-        MATS.iter().map(|m| self.file.get(&format!("model.layers.{i}.{m}.weight")).cloned()).collect()
+        MATS.iter().map(|m| self.file.get(&format!("{}layers.{i}.{m}.weight", self.root)).cloned()).collect()
     }
 
     /// A layer's four norms, as float32 (small: read from the file every time).
     fn read_norms(&self, i: usize) -> Result<Vec<Vec<f32>>> {
-        let norms: Vec<GEntry> = NORMS.iter().map(|m| self.file.get(&format!("model.layers.{i}.{m}.weight")).cloned()).collect::<Result<_>>()?;
+        let norms: Vec<GEntry> = NORMS.iter().map(|m| self.file.get(&format!("{}layers.{i}.{m}.weight", self.root)).cloned()).collect::<Result<_>>()?;
         let ranges: Vec<(u64, usize)> = norms.iter().map(|e| (e.offset, e.bytes)).collect();
         let nb = read_ranges(&self.file.path, &ranges, 1)?;
-        nb.iter()
-            .zip(&norms)
-            .map(|(b, e)| match e.ty {
-                GType::BF16 => Ok(b.chunks_exact(2).map(|c| bf16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect()),
-                GType::F32 => Ok(b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()),
-                t => Err(Error(format!("{}: a norm of type {t:?}", e.name))),
-            })
-            .collect::<Result<Vec<Vec<f32>>>>()
+        nb.iter().zip(&norms).map(|(b, e)| norm_values(b, e)).collect::<Result<Vec<Vec<f32>>>>()
+    }
+
+    /// The final norm's weight (the hidden state the model's head reads is the last layer's output through it)
+    pub fn final_norm(&self) -> Result<Vec<f32>> {
+        let e = self.file.get(&format!("{}norm.weight", self.root))?.clone();
+        let b = read_ranges(&self.file.path, &[(e.offset, e.bytes)], 1)?;
+        norm_values(&b[0], &e)
+    }
+
+    /// The input rows of `tokens` [tokens, hidden] float32, from the embedding table in the file (bfloat16, or Q8_0
+    /// made float32 here: a row is 80 blocks of 32)
+    fn embed_rows(&self, tokens: &[u32]) -> Result<Vec<f32>> {
+        let c = self.hidden;
+        let emb = self.file.get(&format!("{}embed_tokens.weight", self.root))?;
+        if emb.shape[1] != c || !matches!(emb.ty, GType::BF16 | GType::Q8_0) {
+            return Err(Error(format!("the token embedding is expected as bfloat16 or Q8_0 [vocab, {c}], got {:?} {:?}", emb.ty, emb.shape)));
+        }
+        let row_bytes = emb.ty.bytes(c);
+        let f = File::open(&self.file.path)?;
+        let mut x0 = Vec::with_capacity(tokens.len() * c);
+        let mut row = vec![0u8; row_bytes];
+        for t in tokens {
+            if *t as usize >= emb.shape[0] {
+                return Err(Error(format!("token id {t} is outside the vocabulary")));
+            }
+            f.read_exact_at(&mut row, emb.offset + (*t as u64) * row_bytes as u64).ctx("reading the token embedding")?;
+            match emb.ty {
+                GType::BF16 => x0.extend(row.chunks_exact(2).map(|b| bf16_to_f32(u16::from_le_bytes([b[0], b[1]])))),
+                _ => {
+                    for blk in row.chunks_exact(34) {
+                        let d = nextcuda_gguf::safetensors::f16_to_f32(u16::from_le_bytes([blk[0], blk[1]]));
+                        x0.extend(blk[2..].iter().map(|q| d * (*q as i8) as f32));
+                    }
+                }
+            }
+        }
+        Ok(x0)
     }
 
     /// The conditioning for `tokens`: [tokens, hidden] float32. `tick(layer)` before each layer. `vision`: the vision
@@ -181,20 +225,7 @@ impl TextEncoder {
         let (c, hq, hkv, ffn) = (self.hidden, self.heads, self.kv_heads, self.ffn);
         let (wq, wkv) = (hq * HEAD_DIM, hkv * HEAD_DIM);
         // embeddings: the tokens' rows, read straight from the file
-        let emb = self.file.get("model.embed_tokens.weight")?;
-        if emb.ty != GType::BF16 || emb.shape[1] != c {
-            return Err(Error("the token embedding is expected as bfloat16 [vocab, hidden]".into()));
-        }
-        let f = File::open(&self.file.path)?;
-        let mut x0 = Vec::with_capacity(l * c);
-        let mut row = vec![0u8; c * 2];
-        for t in tokens {
-            if *t as usize >= emb.shape[0] {
-                return Err(Error(format!("token id {t} is outside the vocabulary")));
-            }
-            f.read_exact_at(&mut row, emb.offset + (*t as u64) * (c as u64 * 2)).ctx("reading the token embedding")?;
-            x0.extend(row.chunks_exact(2).map(|b| bf16_to_f32(u16::from_le_bytes([b[0], b[1]]))));
-        }
+        let mut x0 = self.embed_rows(tokens)?;
         for v in vision {
             let n = v.grid.0 * v.grid.1;
             if v.tokens.len() != n * c || v.at + n > l {
@@ -478,23 +509,25 @@ impl TextEncoder {
     /// `encode` on the resident layers: the same arithmetic, the stream moving to the next card where its layers start
     pub fn encode_resident(&self, r: &Resident, tokens: &[u32], vision: &[crate::vision::Seen], embeds: &[(usize, Vec<f32>)],
                            tick: &mut dyn FnMut(usize) -> Result<()>) -> Result<Vec<f32>> {
+        let mut out = self.encode_resident_taps(r, tokens, vision, embeds, &[self.layers], None, tick)?;
+        Ok(out.pop().expect("one tap"))
+    }
+
+    /// `encode_resident`, the hidden state taken after each of `taps` layers (0: the embeddings; transformers'
+    /// `output_hidden_states` numbering), in that order, each [tokens, hidden] float32; with `final_norm` (the norm's
+    /// weight) the tap after the last layer goes through it, as the model's own last hidden state does (P-H3-Image's
+    /// connector reads layers 13, 19, 25, 31 and that normed last one)
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_resident_taps(&self, r: &Resident, tokens: &[u32], vision: &[crate::vision::Seen], embeds: &[(usize, Vec<f32>)], taps: &[usize],
+                                final_norm: Option<&[f32]>, tick: &mut dyn FnMut(usize) -> Result<()>) -> Result<Vec<Vec<f32>>> {
+        if let Some(bad) = taps.iter().find(|t| **t > self.layers) {
+            return Err(Error(format!("a tap after layer {bad} of {}", self.layers)));
+        }
+        let mut got: Vec<Option<Vec<f32>>> = vec![None; taps.len()];
         let l = tokens.len();
         let (c, hq, hkv, ffn) = (self.hidden, self.heads, self.kv_heads, self.ffn);
         let (wq, wkv) = (hq * HEAD_DIM, hkv * HEAD_DIM);
-        let emb = self.file.get("model.embed_tokens.weight")?;
-        if emb.ty != GType::BF16 || emb.shape[1] != c {
-            return Err(Error("the token embedding is expected as bfloat16 [vocab, hidden]".into()));
-        }
-        let f = File::open(&self.file.path)?;
-        let mut x0 = Vec::with_capacity(l * c);
-        let mut row = vec![0u8; c * 2];
-        for t in tokens {
-            if *t as usize >= emb.shape[0] {
-                return Err(Error(format!("token id {t} is outside the vocabulary")));
-            }
-            f.read_exact_at(&mut row, emb.offset + (*t as u64) * (c as u64 * 2)).ctx("reading the token embedding")?;
-            x0.extend(row.chunks_exact(2).map(|b| bf16_to_f32(u16::from_le_bytes([b[0], b[1]]))));
-        }
+        let mut x0 = self.embed_rows(tokens)?;
         for v in vision {
             let n = v.grid.0 * v.grid.1;
             if v.tokens.len() != n * c || v.at + n > l {
@@ -540,6 +573,22 @@ impl TextEncoder {
         let mut cur = r.layers.first().map_or(0, |l| l.dev);
         let mut work = make(&r.devs[cur])?;
         let mut x = Tensor::from_bytes(&r.devs[cur], dt, &[l, c], &f16_bytes(&x0))?;
+        // the taps after `k` layers, as the stream holds them (the last through the final norm when given)
+        let take = |k: usize, x: &Tensor, h: &Tensor, got: &mut [Option<Vec<f32>>]| -> Result<()> {
+            for (j, t) in taps.iter().enumerate().filter(|(_, t)| **t == k) {
+                let _ = t;
+                got[j] = Some(match final_norm.filter(|_| k == self.layers) {
+                    Some(w) => {
+                        let wt = f32_tensor(x.buf.device(), w)?;
+                        ops::rms_norm_mod(x, &wt, EPS, None, h)?;
+                        h.to_f32()?
+                    }
+                    None => x.to_f32()?,
+                });
+            }
+            Ok(())
+        };
+        take(0, &x, &work.h, &mut got)?;
         for (i, layer) in r.layers.iter().enumerate() {
             tick(i)?;
             if layer.dev != cur {
@@ -599,7 +648,8 @@ impl TextEncoder {
                 let dt_ = Tensor::from_bytes(dev, DType::F16, &[l, c], &f16_bytes(dh))?;
                 ops::add(&x, &dt_)?;
             }
+            take(i + 1, &x, &w.h, &mut got)?;
         }
-        x.to_f32()
+        got.into_iter().map(|g| g.ok_or_else(|| Error("a tap was not reached".into()))).collect()
     }
 }

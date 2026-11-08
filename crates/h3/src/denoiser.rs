@@ -349,6 +349,10 @@ pub struct Conditions {
     pub seed: u64,
     /// the references (ref2va), in the order the prompt presents them
     pub refs: Vec<RefIn>,
+    /// the keyframes' and references' latents come mixed with their noise already (P-H3-Image draws it as diffusers
+    /// does, from the request's one generator, before the starting noise); `visual_aug` then sets only the timestep
+    /// they are presented at
+    pub mixed: bool,
 }
 
 /// A reference's normalized latents
@@ -380,6 +384,7 @@ impl Default for Conditions {
             audio_aug: crate::layout::AUDIO_COND_TIMESTEP as f32,
             seed: 0,
             refs: Vec::new(),
+            mixed: false,
         }
     }
 }
@@ -447,7 +452,7 @@ impl<'a> Denoiser<'a> {
                 Ok(out)
             };
             let aug = |mut rows: Vec<f32>, a: f32, seed: u64| -> Vec<f32> {
-                if a < 1.0 {
+                if a < 1.0 && !cond.mixed {
                     let noise = crate::noise::Mt19937::new(seed).randn(rows.len());
                     rows.iter_mut().zip(noise).for_each(|(r, n)| *r = a * *r + (1.0 - a) * n);
                 }

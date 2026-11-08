@@ -102,7 +102,7 @@ impl Checkpoint {
                     GType::F32 => (DType::F32, None),
                     GType::F16 => (DType::F16, None),
                     GType::BF16 => (DType::BF16, None),
-                    GType::Q4K | GType::Q6K => (DType::U8, Some(e.ty)),
+                    GType::Q8_0 | GType::Q4K | GType::Q6K => (DType::U8, Some(e.ty)),
                 };
                 (e.name.clone(), Entry { name: e.name, dtype, shape: e.shape, offset: e.offset, bytes: e.bytes, kquant })
             })

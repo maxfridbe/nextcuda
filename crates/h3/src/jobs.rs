@@ -39,6 +39,9 @@ pub struct Engine {
     count: Option<usize>,
     pub outer: Outer,
     pub threads: usize,
+    /// room kept on each card beside its blocks for a run's buffers (the stream, the scratch, the tables): 2 GiB for a
+    /// clip; P-H3-Image sets its own
+    pub reserve: u64,
 }
 
 impl Engine {
@@ -61,7 +64,7 @@ impl Engine {
         let mut cfg = dit::Config::from_checkpoint(&ck)?;
         cfg.blocks = count.unwrap_or(cfg.blocks).min(cfg.blocks);
         denoiser::check_fits(&cfg, &outer)?;
-        let e = Engine { dev, devs, ck, cfg, model: std::sync::Mutex::new(None), count, outer, threads };
+        let e = Engine { dev, devs, ck, cfg, model: std::sync::Mutex::new(None), count, outer, threads, reserve: 2u64 << 30 };
         if e.devs.len() == 1 {
             let m = e.blocks()?;
             log(format!("blocks : {} loaded, {:.2} GiB in {:.1} s", m.blocks.len(), gib(m.load_bytes), m.load_seconds));
@@ -76,8 +79,7 @@ impl Engine {
             return Ok(b.clone());
         }
         let b = if self.devs.len() > 1 {
-            // room kept on each card for a clip's buffers beside its blocks (the stream, the scratch, the tables)
-            let reserve: Vec<u64> = self.devs.iter().map(|_| 2u64 << 30).collect();
+            let reserve: Vec<u64> = self.devs.iter().map(|_| self.reserve).collect();
             dit::Blocks::load_split(&self.devs, &self.ck, &reserve, self.threads)?
         } else {
             dit::Blocks::load(&self.dev, &self.ck, self.count, self.threads)?

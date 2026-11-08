@@ -7,6 +7,9 @@
 //! A clip is decoded in pieces, exactly as the reference does it (ComfyUI `ldm/minimax/vae.py`), because the
 //! decoder was trained on pieces of that size: chunks of 5 latent frames (+2 frames of overlap, cross-faded) and
 //! tiles of 256 x 256 pixels (16 x 16 latent pixels, overlaps of at least 64 pixels, cross-faded).
+//!
+//! P-H3-Image's decoder is the same network for one latent frame (diffusers' `PH3ImageViTDecoder`): a token is one
+//! 16 x 16 patch of a single frame (its output layer 768 wide, not 3,072), every token at the same time coordinate.
 
 use std::sync::Arc;
 
@@ -30,6 +33,9 @@ const PATCH: usize = 16;
 const PATCH_T: usize = 4;
 const OUT_C: usize = 3;
 const LATENT_C: usize = 24;
+
+/// the time coordinate of every token of P-H3-Image's one-frame decoder (diffusers' FRAME_POSITION)
+const IMAGE_FRAME_POSITION: f64 = 2.0 * (0.5 / 7.0) - 1.0;
 
 // temporal chunking (clip_length 17, token_drop 3)
 const CLIP_LENGTH: usize = 17;
@@ -95,6 +101,8 @@ pub struct VideoDecoder {
     pq_b: Vec<f32>,
     lat_mean: Vec<f32>,
     lat_std: Vec<f32>,
+    /// pixel frames a token decodes to: 4 (H3's video decoder) or 1 (P-H3-Image's picture decoder)
+    pt: usize,
     pub load_seconds: f64,
     pub load_bytes: u64,
 }
@@ -118,8 +126,11 @@ impl VideoDecoder {
         if n == 0 {
             return Err(Error(format!("{}: no video decoder blocks", ck.path.display())));
         }
-        let int8 = ck.quant(&format!("{PREFIX}transformer_blocks.0.attn.to_qkv"))?.is_some();
-        let act = if int8 { DType::BF16 } else { DType::F16 };
+        let q0 = ck.quant(&format!("{PREFIX}transformer_blocks.0.attn.to_qkv"))?;
+        let int8 = q0.is_some();
+        // the int8 GEMM's Hadamard rotation (ConvRot, P-H3-Image's int8 decoder) takes half activations; plain int8
+        // rows run on bfloat16
+        let act = if q0.as_ref().is_some_and(|q| !q.convrot) { DType::BF16 } else { DType::F16 };
         let wanted = |name: &str| {
             name.strip_prefix("decoder.transformer_blocks.").and_then(|r| r.split_once('.')).is_some_and(|(_, t)| {
                 LIN.iter().any(|l| t == format!("{l}.weight") || t == format!("{l}.weight_scale"))
@@ -190,6 +201,11 @@ impl VideoDecoder {
             let e = ck.get(&format!("{PREFIX}{name}.weight"))?;
             Ok(Linear { weight: f32_tensor(dev, &e.shape, &w)?, bias: Some(small(dev, ck, &format!("{PREFIX}{name}.bias"))?) })
         };
+        let proj_out = lin32("proj_out")?;
+        let pt = proj_out.outputs() / (OUT_C * PATCH * PATCH);
+        if pt != PATCH_T && pt != 1 {
+            return Err(Error(format!("the decoder's output layer is {} wide: neither a video ({PATCH_T} frames a token) nor a picture decoder", proj_out.outputs())));
+        }
         let mut suffix = host(ck, &format!("{PREFIX}register_tokens"))?;
         suffix.extend(std::iter::repeat_n(0.0, DIM));
         let pq = host(ck, "post_quant_conv.weight")?;
@@ -202,7 +218,8 @@ impl VideoDecoder {
             suffix: Tensor::from_bytes(dev, act, &[REGISTERS + 1, DIM], &act_bytes(&suffix, act))?,
             norm_out_w: small(dev, ck, &format!("{PREFIX}norm_out.weight"))?,
             norm_out_b: small(dev, ck, &format!("{PREFIX}norm_out.bias"))?,
-            proj_out: lin32("proj_out")?,
+            proj_out,
+            pt,
             ones: f32_tensor(dev, &[HEAD_DIM], &[1.0; HEAD_DIM])?,
             inv_freq,
             pq_w: pq,
@@ -246,9 +263,11 @@ impl VideoDecoder {
         let mut pos = Vec::with_capacity(s * 3);
         let c = |i: usize, d: usize| (2.0 * ((i as f64 + 0.5) / d as f64) - 1.0) * std::f64::consts::TAU;
         for ti in 0..t {
+            // a picture decoder's tokens all sit at its one frame's time
+            let tc = if self.pt == 1 { IMAGE_FRAME_POSITION * std::f64::consts::TAU } else { c(ti, t) };
             for yi in 0..h {
                 for xi in 0..w {
-                    pos.extend_from_slice(&[c(ti, t), c(yi, h), c(xi, w)]);
+                    pos.extend_from_slice(&[tc, c(yi, h), c(xi, w)]);
                 }
             }
         }
@@ -353,12 +372,13 @@ impl VideoDecoder {
             }
             ops::layer_norm(&img, DIM, Some(&self.norm_out_w), Some(&self.norm_out_b), EPS, &normed)?;
         }
-        let per = OUT_C * PATCH_T * PATCH * PATCH;
+        let pt = self.pt;
+        let per = OUT_C * pt * PATCH * PATCH;
         let out = Tensor::new(dev, DType::F32, &[nb * n, per])?;
         self.proj_out.forward(&normed, &out)?;
         let o = out.to_f32()?;
         // token (t, h, w) -> pixels (c, t*4 + a, h*16 + y, w*16 + x)
-        let (ft, fh, fw) = (t * PATCH_T, h * PATCH, w * PATCH);
+        let (ft, fh, fw) = (t * pt, h * PATCH, w * PATCH);
         let mut res = Vec::with_capacity(nb);
         for k in 0..nb {
             let o = &o[k * n * per..(k + 1) * n * per];
@@ -368,10 +388,10 @@ impl VideoDecoder {
                     for xi in 0..w {
                         let tok = &o[((ti * h + yi) * w + xi) * per..][..per];
                         for ch in 0..OUT_C {
-                            for a in 0..PATCH_T {
+                            for a in 0..pt {
                                 for y in 0..PATCH {
-                                    let dst = ((ch * ft + ti * PATCH_T + a) * fh + yi * PATCH + y) * fw + xi * PATCH;
-                                    let src = ((ch * PATCH_T + a) * PATCH + y) * PATCH;
+                                    let dst = ((ch * ft + ti * pt + a) * fh + yi * PATCH + y) * fw + xi * PATCH;
+                                    let src = ((ch * pt + a) * PATCH + y) * PATCH;
                                     px[dst..dst + PATCH].copy_from_slice(&tok[src..src + PATCH]);
                                 }
                             }
@@ -386,7 +406,7 @@ impl VideoDecoder {
 
     /// Latents [24, t, h, w] (raw, denormalized) through tiling: pixels [3, 4t, 16h, 16w], raw.
     fn tiled(&self, z: &[f32], t: usize, h: usize, w: usize, tick: &mut dyn FnMut() -> Result<()>) -> Result<Vec<f32>> {
-        let (fh, fw, ft) = (h * PATCH, w * PATCH, t * PATCH_T);
+        let (fh, fw, ft) = (h * PATCH, w * PATCH, t * self.pt);
         let (ys, yo) = split_tiles(fh);
         let (xs, xo) = split_tiles(fw);
         let tile_px = |len: usize| len.min(TILE);
@@ -490,12 +510,16 @@ impl VideoDecoder {
         let plane = fh * fw;
         if t == 1 {
             let raw = self.tiled(&zp, 1, h, w, tick)?;
-            // the last of the 4 decoded frames
+            // the last of the decoded frames (of 4 for the video decoder, the one for the picture decoder)
+            let pt = self.pt;
             let mut out = vec![0f32; OUT_C * plane];
             for c in 0..OUT_C {
-                out[c * plane..][..plane].copy_from_slice(&raw[(c * PATCH_T + PATCH_T - 1) * plane..][..plane]);
+                out[c * plane..][..plane].copy_from_slice(&raw[(c * pt + pt - 1) * plane..][..plane]);
             }
             return Ok((finalize(out, 1, plane), 1));
+        }
+        if self.pt == 1 {
+            return Err(Error(format!("a picture decoder decodes one latent frame, not {t}")));
         }
 
         // temporal chunks: pad the latent frames, decode 5 + 2 at a time, cross-fade 5 frames

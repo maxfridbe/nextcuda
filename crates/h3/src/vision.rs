@@ -140,9 +140,22 @@ impl Presented {
 }
 
 /// The pieces as ids (each text piece tokenized on its own, as the reference does), the vision blocks through the
-/// tower (`visual`: its file; `gpu`: the card)
+/// tower (`visual`: its file, the tensors under `visual.`; `gpu`: the card)
 pub fn present(pieces: &[Piece], tok: &crate::tokenizer::Tokenizer, visual: Option<&Path>, embeddings: Option<&Path>, gpu: usize,
                log: &mut dyn FnMut(String)) -> Result<Presented> {
+    let st = match visual {
+        Some(path) if pieces.iter().any(|p| matches!(p, Piece::Vision(_))) => {
+            Some(nextcuda_gguf::safetensors::SafeTensors::open(path).map_err(|e| Error(format!("{}: {}", path.display(), e.0)))?)
+        }
+        _ => None,
+    };
+    present_with(pieces, tok, st.as_ref().map(|st| (st, "visual.")), embeddings, gpu, log)
+}
+
+/// `present` with the tower's tensors given: a table and the prefix its names start with (P-H3-Image's tower is
+/// `model.visual.` in its text encoder's GGUF, read through a table of that file's tensors)
+pub fn present_with(pieces: &[Piece], tok: &crate::tokenizer::Tokenizer, tower: Option<(&nextcuda_gguf::safetensors::SafeTensors, &str)>,
+                    embeddings: Option<&Path>, gpu: usize, log: &mut dyn FnMut(String)) -> Result<Presented> {
     let mut ids = Vec::new();
     let mut tags = Vec::new();
     let mut blocks: Vec<(usize, &Frames)> = Vec::new();
@@ -187,13 +200,12 @@ pub fn present(pieces: &[Piece], tok: &crate::tokenizer::Tokenizer, visual: Opti
     }
     let mut seen = Vec::new();
     if !blocks.is_empty() {
-        let path = visual.ok_or("pictures for the text encoder need its vision tower (the model's \"visual\" file)")?;
+        let (st, prefix) = tower.ok_or("pictures for the text encoder need its vision tower (the model's \"visual\" file)")?;
         let t0 = std::time::Instant::now();
         nextcuda_core::use_kind("video");
         let g: Arc<nextcuda_core::Gpu> = nextcuda_core::Gpu::open(gpu).map_err(|e| Error(e.0))?;
         let nsd = nextcuda_diffusion::kernels::Nsd::new(&g).map_err(|e| Error(e.0))?;
-        let st = nextcuda_gguf::safetensors::SafeTensors::open(path).map_err(|e| Error(format!("{}: {}", path.display(), e.0)))?;
-        let v = Vision::load_from(&st, "visual.", &g, &mut |l| log(l)).map_err(|e| Error(e.0))?;
+        let v = Vision::load_from(st, prefix, &g, &mut |l| log(l)).map_err(|e| Error(e.0))?;
         for (at, f) in blocks {
             let rgb: Vec<Vec<f32>> = f.frames.iter().map(|x| x.iter().map(|v| v * 255.0).collect()).collect();
             let pair = [rgb[0].as_slice(), rgb[rgb.len() - 1].as_slice()];

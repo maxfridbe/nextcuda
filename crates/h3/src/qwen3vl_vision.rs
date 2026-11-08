@@ -4,7 +4,8 @@
 //!
 //! Qwen3-VL's vision tower: pictures to the language model's image tokens (transformers' Qwen3VLVisionModel), from
 //! the bf16 tensors in the same file as the text tower (`model.visual.*`; MiniMax H3's 32B: `visual.*` in a file of
-//! its own), float32 on the GPU. The 8B and the 32B towers are the same but for the merger's output width.
+//! its own), float32 on the GPU. The 8B and the 32B towers are the same but for the merger's output width; the 4B's
+//! (P-H3-Image's) is narrower (1,024, 24 blocks, deepstack after 5, 11, 17).
 //!
 //! ```text
 //!   picture (RGB, sides multiples of 32) -> 16 x 16 patches, each twice in time (3 x 2 x 16 x 16 = 1,536 values,
@@ -28,8 +29,18 @@ const TEMPORAL: usize = 2;
 const PATCH_IN: usize = 3 * TEMPORAL * PATCH * PATCH;
 const EPS: f32 = 1e-6;
 const THETA: f64 = 10000.0;
-/// the blocks after which the deepstack mergers read (Qwen3-VL 8B's deepstack_visual_indexes)
-const DEEP_AT: [usize; 3] = [8, 16, 24];
+/// the blocks after which the deepstack mergers read (the config's deepstack_visual_indexes, which the file does not
+/// carry): Qwen3-VL 8B's and 32B's 27-block tower reads after 8, 16, 24; the 2B's and 4B's 24-block one (P-H3-Image's
+/// text encoder) after 5, 11, 17
+fn deep_at(blocks: usize) -> Option<[usize; 3]> {
+    match blocks {
+        27 => Some([8, 16, 24]),
+        24 => Some([5, 11, 17]),
+        _ => None,
+    }
+}
+/// attention heads: 16 in every Qwen3-VL tower (72 features each at 1,152 wide, 64 at 1,024)
+const HEADS: usize = 16;
 
 struct Block {
     n1w: DevBuf,
@@ -180,11 +191,10 @@ impl Vision {
         };
         let n_deep = (0..).take_while(|i| st.tensor(&format!("{prefix}deepstack_merger_list.{i}.norm.weight")).is_some()).count();
         let deep = (0..n_deep).map(|i| merger(&format!("deepstack_merger_list.{i}"), true)).collect::<Result<Vec<_>>>()?;
-        // the config's deepstack_visual_indexes (Qwen3-VL 8B: 8, 16, 24; the file does not carry them)
-        let deep_at: Vec<usize> = DEEP_AT.iter().copied().take(n_deep).collect();
-        if n_deep != DEEP_AT.len() || n_blocks <= DEEP_AT[DEEP_AT.len() - 1] {
-            return Err(Error(format!("the vision tower: {n_blocks} blocks, {n_deep} deepstack mergers - not Qwen3-VL 8B's 27 and 3")));
-        }
+        let deep_at: Vec<usize> = match deep_at(n_blocks) {
+            Some(at) if n_deep == at.len() => at.to_vec(),
+            _ => return Err(Error(format!("the vision tower: {n_blocks} blocks, {n_deep} deepstack mergers - not Qwen3-VL's 27 or 24 and 3"))),
+        };
         let pos = st.f32(&format!("{prefix}pos_embed.weight")).map_err(ge)?;
         let side = ((pos.len() / hidden) as f64).sqrt() as usize;
         let pw = st.f32(&format!("{prefix}patch_embed.proj.weight")).map_err(ge)?;
@@ -202,7 +212,7 @@ impl Vision {
             deep,
             merger: merger("merger", false)?,
             hidden,
-            heads: hidden / 72,
+            heads: HEADS,
             ffn,
             out,
         };

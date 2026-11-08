@@ -261,6 +261,33 @@ impl VideoEncoder {
         Ok((z, keep_t))
     }
 
+    /// A picture [H, W, 3] in [0, 1] (H, W multiples of 16) -> normalized latents [24, 1, H/16, W/16] by diffusers'
+    /// conditioning recipe (`encode_vae_condition`, P-H3-Image's edits): the posterior *sampled* - mean + exp(logvar / 2)
+    /// times torch.randn from a generator seeded `seed` afresh for every picture, logvar clamped to [-30, 20] -, rounded
+    /// to half, then normalized. `encode` takes the mean, as ComfyUI does.
+    pub fn encode_sampled(&self, px: &[f32], h: usize, w: usize, seed: u64, tick: &mut dyn FnMut() -> Result<()>) -> Result<Vec<f32>> {
+        if !h.is_multiple_of(RATIO) || !w.is_multiple_of(RATIO) || px.len() != h * w * 3 {
+            return Err(Error(format!("encode: {} values for a {w}x{h} picture (multiples of 16)", px.len())));
+        }
+        let norm: Vec<f32> = px.iter().enumerate().map(|(i, v)| (v - IMAGENET_MEAN[i % 3]) / IMAGENET_STD[i % 3]).collect();
+        let (m, ct) = self.tiled(&norm, 1, h, w, tick)?;
+        let n = (h / RATIO) * (w / RATIO);
+        let last = &m[(ct - 1) * n * 48..ct * n * 48];
+        let eps = crate::noise::Mt19937::new(seed).randn(24 * n);
+        let mut z = vec![0f32; 24 * n];
+        for i in 0..n {
+            let mo = &last[i * 48..(i + 1) * 48];
+            let q = |o: usize| self.quant_b[o] + self.quant_w[o * 48..(o + 1) * 48].iter().zip(mo).map(|(a, b)| a * b).sum::<f32>();
+            for o in 0..24 {
+                let (mean, logvar) = (q(o), q(24 + o).clamp(-30.0, 20.0));
+                let s = mean + (0.5 * logvar).exp() * eps[o * n + i];
+                let s = crate::dtype::f16_to_f32(crate::dtype::f32_to_f16(s));
+                z[o * n + i] = (s - self.mean[o]) / self.std[o];
+            }
+        }
+        Ok(z)
+    }
+
     /// One temporal clip through spatial tiles of 256 px, cross-faded in latent space: [t', lh, lw, 48].
     fn tiled(&self, clip: &[f32], t: usize, h: usize, w: usize, tick: &mut dyn FnMut() -> Result<()>) -> Result<(Vec<f32>, usize)> {
         let (ys, yo) = split_tiles(h);
