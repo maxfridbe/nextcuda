@@ -1,0 +1,62 @@
+# Z-Image-Turbo (Tongyi-MAI): few-step text to image - Z-Image's 6B single-stream DiT, 8 steps, no guidance
+# model card (model-cards/README.md): what `nextcuda models pull` offers and what the registry entry gets.
+# The DiT is unsloth's Q8_0 GGUF of Tongyi-MAI's transformer (the 30 blocks Q8_0, the refiners, embedders, final layer
+# and pad tokens bfloat16 / float32 - checked by range reads against the official weights: the float tensors equal,
+# the Q8_0 rows 0.55% off as Q8_0 is; jayn7's Q8_0 is the same file), the text encoder Qwen's own Q8_0 GGUF of
+# Qwen3-4B (Z-Image's text_encoder is Qwen3-4B: the same shards, only the unused last layer's MLP differs; its first
+# 35 layers are run), the VAE and the tokenizer Tongyi-MAI's files at the release's revision.
+id: z-image-turbo
+kind: image
+arch: z-image
+license: apache-2.0
+commercial: true
+title: 'Z-Image-Turbo (text to image in 8 steps, strong at text in pictures; Rust + CUDA)'
+about: 'Tongyi-MAI''s Z-Image-Turbo (Apache-2.0): Z-Image''s 6B single-stream DiT distilled to 8 steps without guidance (Decoupled-DMD + DMDR), conditioned by Qwen3-4B, FLUX''s 16-channel VAE; photoreal pictures and legible English and Chinese text. The DiT (Q8_0, 6.7 GiB) and the VAE on the first card, the text encoder (Q8_0, 3.8 GiB) on the second; nothing streamed'
+gpus: '0,1'
+split: true                      # nextcuda: the DiT and the VAE on the first card, the text encoder on the second
+vram_gib: 9.5                    # the first card's at 1024 x 1024 (the DiT's 6.7 GiB, activations and the VAE's); the second's ~4.3
+defaults:
+  steps: 8
+  cfg: 1.0
+  sampler: euler
+  schedule: shift
+  size: 1024x1024
+env: {}
+files:
+  transformer:
+    key: z-image-turbo-q80
+    url: https://huggingface.co/unsloth/Z-Image-Turbo-GGUF/resolve/b40f712c569ecfff42f2307dcc43399ae1d71318/z-image-turbo-Q8_0.gguf
+    size: 7224707136
+    sha256: f163d60b0eb427469510b8226243d196574a18139a2e40c017409cfbda95ecfe
+    path: z-image-turbo/z-image-turbo-Q8_0.gguf
+  text-encoder:
+    key: qwen3-4b-q80
+    url: https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/bc640142c66e1fdd12af0bd68f40445458f3869b/Qwen3-4B-Q8_0.gguf
+    size: 4280404704
+    sha256: 8c2f07f26af9747e41988551106f149b03eb9b5cb6df636027b6bf6278473300
+    path: z-image-turbo/Qwen3-4B-Q8_0.gguf
+  vae:
+    key: z-image-turbo-vae
+    url: https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/resolve/f332072aa78be7aecdf3ee76d5c247082da564a6/vae/diffusion_pytorch_model.safetensors
+    size: 167666902
+    sha256: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
+    path: z-image-turbo/vae/diffusion_pytorch_model.safetensors
+  tokenizer:
+    key: z-image-turbo-tokenizer-vocab
+    url: https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/resolve/f332072aa78be7aecdf3ee76d5c247082da564a6/tokenizer/vocab.json
+    size: 2776833
+    sha256: ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910
+    path: z-image-turbo/tokenizer/vocab.json
+  tokenizer-merges:
+    key: z-image-turbo-tokenizer-merges
+    url: https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/resolve/f332072aa78be7aecdf3ee76d5c247082da564a6/tokenizer/merges.txt
+    size: 1671853
+    sha256: 8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5
+    path: z-image-turbo/tokenizer/merges.txt
+  tokenizer-config:
+    key: z-image-turbo-tokenizer-config
+    url: https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/resolve/f332072aa78be7aecdf3ee76d5c247082da564a6/tokenizer/tokenizer_config.json
+    size: 9732
+    sha256: d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101
+    path: z-image-turbo/tokenizer/tokenizer_config.json
+guide: guides/z-image-turbo.md

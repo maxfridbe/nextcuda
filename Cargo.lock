@@ -697,6 +697,7 @@ dependencies = [
  "nextcuda-image-starvector",
  "nextcuda-image-unlimitedocr",
  "nextcuda-image-upscale",
+ "nextcuda-image-zimage",
  "nextcuda-llm",
  "nextcuda-llm-nemotronh",
  "nextcuda-llm-qwen35",
@@ -1004,6 +1005,18 @@ dependencies = [
  "nextcuda-core",
  "nextcuda-diffusion",
  "nextcuda-image",
+]
+
+[[package]]
+name = "nextcuda-image-zimage"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-h3",
+ "nextcuda-image",
+ "nextcuda-zimage",
 ]
 
 [[package]]

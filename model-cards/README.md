@@ -95,6 +95,7 @@ repository's `cardData.license` and its licence text (2026-10-27):
 | voxcpm2, voxcpm2-int8 | apache-2.0 | yes | https://huggingface.co/openbmb/VoxCPM2 |
 | whisper-large-v3-turbo | mit | yes | https://huggingface.co/openai/whisper-large-v3-turbo |
 | ming-image-0.1-design | mit | yes | https://huggingface.co/inclusionAI/Ming-Image-0.1-Design, https://huggingface.co/Comfy-Org/Ming-Image |
+| z-image-turbo | apache-2.0 | yes | https://huggingface.co/Tongyi-MAI/Z-Image-Turbo (the GGUF https://huggingface.co/unsloth/Z-Image-Turbo-GGUF and Qwen3-4B https://huggingface.co/Qwen/Qwen3-4B-GGUF: Apache-2.0) |
 | moss-image-sft-q8, -turbo4-q8, -turbo8-q8, -dmd2-q8 | apache-2.0 | yes | https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT (the text encoder: Qwen3.5-9B, Apache-2.0) |
 | olmocr-2-7b-q8 | apache-2.0 | yes | https://huggingface.co/allenai/olmOCR-2-7B-1025 |
 | paddleocr-vl-1.6 | apache-2.0 | yes | https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6 |

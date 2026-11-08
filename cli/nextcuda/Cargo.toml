@@ -22,6 +22,7 @@ nextcuda-image-olmocr2.workspace = true
 nextcuda-image-mingimage.workspace = true
 nextcuda-image-mossimage.workspace = true
 nextcuda-image-ph3image.workspace = true
+nextcuda-image-zimage.workspace = true
 nextcuda-image-upscale.workspace = true
 nextcuda-image-flashvsr.workspace = true
 nextcuda-image-rembg.workspace = true

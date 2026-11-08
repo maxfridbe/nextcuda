@@ -68,7 +68,7 @@ curl -s -X POST http://127.0.0.1:8000/rpc/image.status -H "Authorization: Bearer
 | kind | models | on the two cards | detail |
 |---|---|---|---|
 | chat | Qwen3.8-27B (DeltaNet + attention, MTP drafts, vision), Nemotron 3.5 Super | Qwen3.8 over both, pipelined; Nemotron on the 5070 | [llm.md](docs/llm.md) |
-| image, OCR | Qwen-Image 2.1 and 2512, Ming-Image, P-H3-Image, Unlimited-OCR, PaddleOCR-VL, olmOCR-2 | one card each; Ming-Image the DiT on the 5070, its text encoder on the 3060; P-H3-Image's H3 denoiser over both | [image.md](docs/image.md) |
+| image, OCR | Qwen-Image 2.1 and 2512, Ming-Image, Z-Image-Turbo, P-H3-Image, Unlimited-OCR, PaddleOCR-VL, olmOCR-2 | one card each; Ming-Image and Z-Image-Turbo the DiT on the 5070, the text encoder on the 3060; P-H3-Image's H3 denoiser over both | [image.md](docs/image.md) |
 | upscale | Real-ESRGAN, waifu2x (their ncnn graphs); FlashVSR v1.1 (video super-resolution, a clip as one stream) | one card; FlashVSR over both, pipelined: 0.43 s a frame for 864 x 480 -> 1728 x 960 | [image.md](docs/image.md), [VSR_PORT.md](docs/VSR_PORT.md) |
 | vectors | StarVector-1B | one card (3.35 GiB at the peak) | [image.md](docs/image.md) |
 | speech | Breeze TTS 2, Qwen3-TTS, VoxCPM2, VibeVoice (several speakers) | one card each; VoxCPM2 int8 fits beside the chat model | [audio.md](docs/audio.md) |
@@ -85,7 +85,7 @@ Not here yet: HunyuanImage 2.1; the bigger cards' forms (the models [marked too 
 - [models.md](docs/models.md) - every model card: what it is, its size, whether it runs here
 - [control-plane.md](docs/control-plane.md) - the front door, downloads, shared cards, maintenance mode, `system.ping`
 - [llm.md](docs/llm.md) - Qwen3.8-27B over both cards, Nemotron 3.5 Super: the numbers, the settings, the server
-- [image.md](docs/image.md) - Qwen-Image and its clocks, Ming-Image designs, upscaling, StarVector
+- [image.md](docs/image.md) - Qwen-Image and its clocks, Ming-Image designs, Z-Image-Turbo, upscaling, StarVector
 - [audio.md](docs/audio.md) - speech, conversation, listening, songs
 - [3d.md](docs/3d.md) - meshes, rigs, Hunyuan3D 2.1 paint on a 12 GB card
 - [build.md](docs/build.md) - how it is built, running it as a service, clocking and checking it

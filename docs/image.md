@@ -100,10 +100,11 @@ refused as no_room - a smaller canvas (`size`) or smaller pictures fit.
 
 ## Designs: Ming-Image-0.1-Design
 
-inclusionAI's design model (`image/mingimage`): Z-Image's 6B single-stream DiT conditioned by Ling-Mini-2.0 (a 16B MoE,
-1.4B active, 256 experts a layer routed on the host) through a 1.5B connector, and an RGBA VAE (Wan 2.1's decoder) -
-inclusionAI's pipeline on the shared kernels and its own (`kernels/image/mingimage`). The DiT and the VAE on the 5070,
-the text encoder on the 3060, every weight resident in its GGUF's type.
+inclusionAI's design model (`image/mingimage`): Z-Image's 6B single-stream DiT (the foundation's, `crates/zimage`)
+conditioned by Ling-Mini-2.0 (a 16B MoE, 1.4B active, 256 experts a layer routed on the host) through a 1.5B
+connector, and an RGBA VAE (Wan 2.1's decoder) - inclusionAI's pipeline on the shared kernels and its own
+(`kernels/image/mingimage`). The DiT and the VAE on the 5070, the text encoder on the 3060, every weight resident in
+its GGUF's type.
 
 - **Checked** (2026-10-19) against inclusionAI's own DiT class and its text side line for line, in float32 on the
   CPU on the same files (`reference/mingimage/ref.py`): tokens identical; the direct condition 8e-3, the query
@@ -120,6 +121,41 @@ the text encoder on the 3060, every weight resident in its GGUF's type.
   1024, 10.9 GB on the 5070 at 2048. Loads in 10 s.
 - **Transparency:** RGBA is decoded, but with these GGUF files the model's alpha comes back opaque (as through
   ComfyUI on the same files); the official phrase is put before the prompt when RGBA is asked.
+
+## Z-Image-Turbo: text to image in 8 steps
+
+Tongyi-MAI's few-step model (`image/zimage`, card `z-image-turbo`; Apache-2.0): Z-Image's 6B single-stream DiT - the
+same denoiser Ming-Image runs, now the foundation's (`crates/zimage`) - distilled to 8 steps without guidance,
+conditioned by Qwen3-4B, decoded by FLUX's 16-channel VAE. Photoreal pictures and legible text in them. Tongyi-MAI's pipeline
+(`src/zimage/pipeline.py`; diffusers' `ZImagePipeline` is the same) on the shared kernels, the DiT's and its own
+(`kernels/image/zimage`: the VAE's group norm and upsampling).
+
+- **Files:** unsloth's Q8_0 GGUF of the transformer (7.2 GB: the blocks Q8_0, the refiners, embedders and pad tokens
+  bfloat16 / float32 - range reads against Tongyi-MAI's weights: the float tensors bit-equal, the Q8_0 rows 0.55 % off),
+  Qwen's own Q8_0 GGUF of Qwen3-4B (Z-Image's text encoder is Qwen3-4B's weights; only the last layer's MLP differs,
+  and that layer is never read), Tongyi-MAI's VAE and tokenizer.
+- **Text:** Qwen3's chat template around the prompt (`<|im_start|>user ... <|im_end|> <|im_start|>assistant`, thinking
+  on: no empty think block), at most 512 tokens; the hidden state after layer 35 of 36 (`hidden_states[-2]`, no final
+  norm) is the condition - the encoder loads those 35 layers only (P-H3-Image's Qwen3 tower in `crates/h3`, here at
+  Qwen3's rotary base 1e6 and reading llama.cpp's tensor names).
+- **Sampling:** 8 Euler steps on FlowMatchEuler's levels as the official pipeline makes them - linspace(1, 1/8, 8)
+  shifted by 3 (static: the scheduler config sets no dynamic shift), then 0 - one pass a step, no guidance (the
+  pipeline's guidance_scale 0). The noise is torch.randn's on a CPU generator seeded `seed`. Unlike Ming-Image's
+  reference, Z-Image pads the caption and the image to multiples of 32 with its learned pad tokens and lets every
+  attention see them; the DiT does the same here.
+- **The request:** `steps` 1-50 (default 8), `shift` (default 3, the demo's time shift), `size` sides rounded to 16, 256
+  to 2048 a side, at most 2.4 MP (1536 x 1536, 2048 x 1152; at 2048 x 2048 the VAE's last stages pass the 5070's room).
+  A negative prompt, a cfg other than 1 (or 0), another sampler or schedule, LoRAs, RGBA and an init picture are
+  refused (invalid_params). Text to image only.
+- **Two 12 GB cards:** the DiT and the VAE resident on the 5070, the text encoder (3.5 GiB of Q8_0) on the 3060; loads
+  in 15 s with the files in the page cache (90 s from the drive).
+
+| picture | per step | total | peak (5070 / 3060) |
+|---|---:|---:|---:|
+| 1024 x 1024 | 1.36 s | 11.7 s (VAE 0.75 s) | 9.4 / 3.9 GB |
+| 1280 x 720 | 1.18 s | 10.2 s | 9.4 / 3.9 GB |
+| 832 x 1248 | 1.35 s | 11.6 s | 9.4 / 3.9 GB |
+| 1536 x 1536 | 4.26 s | 36.4 s (VAE 1.75 s) | 11.0 / 3.9 GB |
 
 ## Upscaling: Real-ESRGAN and waifu2x
 

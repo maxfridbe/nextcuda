@@ -25,6 +25,9 @@ crates/                    THE FOUNDATION - every kind uses it, it knows no kind
                                  hidden-state tap): the llm engine serves it, MOSS-Image encodes its prompts with it
   h3         nextcuda-h3         MiniMax H3's core (the denoiser, its text encoder and vision tower, the VAEs, the
                                  jobs): the video engine serves it, P-H3-Image runs its denoiser over one latent frame
+                                 (its Qwen3 text tower also reads llama.cpp files: Z-Image-Turbo's Qwen3-4B)
+  zimage     nextcuda-zimage     Z-Image's 6B single-stream DiT and its Euler sampler (its kernels in
+                                 kernels/diffusion/zimage.cu): Ming-Image and Z-Image-Turbo both run it
 
 llm/                       LANGUAGE MODELS
   contract   nextsycl-llm        the contract: Engine, Session / Decoder / Checkpoint, Sampler, EngineKind; host sampling
@@ -38,6 +41,8 @@ image/                     IMAGES
                                  OcrOutput for an engine that reads pictures (reads, ocr)
   qwenimage21 nextsycl-image-qwenimage21  Qwen-Image 2.1: DiT, VAE, pipeline, stage checks
   unlimitedocr nextsycl-image-unlimitedocr  Unlimited-OCR: pages to Markdown (SAM-B + CLIP-L, a DeepSeek-V2 MoE decoder)
+  zimage     nextcuda-image-zimage  Z-Image-Turbo: the foundation's Z-Image DiT, a Qwen3-4B text encoder (crates/h3's
+                                 tower), FLUX's 16-channel VAE decoder
   example    nextsycl-image-example  a template
 
 video/                     VIDEO
