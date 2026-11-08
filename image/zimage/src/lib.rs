@@ -15,6 +15,7 @@
 //! first 35 layers) on the second - every weight resident in its GGUF's type, nothing streamed. Sizes are multiples of
 //! 16 (the VAE's 8 times the DiT's 2 x 2 patches); the official demo offers 1024, 1280 and 1536 pictures.
 
+pub mod check;
 pub mod ffi;
 pub mod vae;
 

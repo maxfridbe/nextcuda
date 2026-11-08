@@ -183,6 +183,31 @@ conditioned by Qwen3-4B, decoded by FLUX's 16-channel VAE. Photoreal pictures an
 | 832 x 1248 | 1.35 s | 11.6 s | 9.4 / 3.9 GB |
 | 1536 x 1536 | 4.26 s | 36.4 s (VAE 1.75 s) | 11.0 / 3.9 GB |
 
+**Checked** (2026-11-08) against nextsycl's `reference/z-image-turbo/ref.py` (ddc7cc5: diffusers 84532a05's classes on
+the CPU in float32, run on this card's own files - the Q8_0 DiT and Qwen3-4B GGUFs, each matrix expanded for its own
+product): `nextcuda image check DIR --model z-image-turbo` (each stage fed the reference's input; `full` is a request's
+whole path from the prompt and seed). The README's prompt, 8 steps; relative L2 errors:
+
+| stage | 1024 x 1024, seed 42 | 1280 x 720, seed 7 (16 image pad rows) | nextsycl (BF16, B70) |
+|---|---|---|---|
+| noise (torch's CPU randn) | 3.2e-8 | 3.2e-8 | 3.2e-8 |
+| tokens, sigmas | identical (101), exact | identical, exact | identical, exact |
+| text encoder after layer 1 / 18 / 35 | 5.6e-4 / 1.7e-3 / 2.2e-3 | the same | 3.7e-4 / 6.1e-5 / 2.5e-4 |
+| context refiner, noise refiner | 1.4e-4, 1.1e-4 | 1.4e-4, 1.1e-4 | 1.5e-4, 1.2e-4 |
+| layer 0 (image / caption rows) | 1.3e-4 / 1.3e-4 | 1.3e-4 / 1.3e-4 | 1.4e-4 |
+| velocity, each of the 8 steps | 0.7e-3 .. 3.2e-3, cos >= 0.999995 | 0.8e-3 .. 1.9e-3 | 0.8e-3 .. 4.3e-3 |
+| latents after 8 steps | 1.3e-2, cos 0.99991 | 1.3e-2, cos 0.99991 | 1.6e-2 .. 4.9e-2 |
+| VAE decoder | 4.0e-4; 97.4 % of bytes equal, 100 % within 1 | 3.9e-4; 97.5 % | 3.2e-4 |
+| the whole request vs ref.png | cos 0.99977, PSNR 42.8 dB | cos 0.99974, 41.6 dB | cos 0.9996 / 0.9991 |
+
+A seed draws the same noise as diffusers (and nextsycl), so on the same files it gives the reference's picture. Against
+the full-precision model (ref.py on unsloth's BF16 GGUF - the official weights bit for bit - and the official text
+encoder; nextsycl's default card) the picture is the Q8_0 file's, not the engine's: ours cos 0.9906 (PSNR 26.8 dB),
+diffusers itself on the Q8_0 files 0.9908 - the same scene and composition, details drawn differently. The BF16 DiT
+(12.3 GB) does not fit the 5070 beside its work. The
+Q8_0 text encoder against the official bf16 one (ref.py on Tongyi-MAI's text_encoder shards): 6.3e-3 / 3.9e-3 / 7.0e-3
+after layers 1 / 18 / 35 - Qwen's Qwen3-4B GGUF is Z-Image's encoder up to its quantization.
+
 ## Upscaling: Real-ESRGAN and waifu2x
 
 `image.upscale` and `video.upscale` (every frame, the sound copied; an MP4 back): the graphs and weights

@@ -645,6 +645,15 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         println!("worst relative error {worst:.2e}");
         return Ok(());
     }
+    if m["arch"].as_str() == Some(nextcuda_image_zimage::ARCH) {
+        let gs = gpus(args)?;
+        let mut log = |s: String| eprintln!("{s}");
+        let e = nextcuda_image_zimage::ZImage::load(&files, &gs, &mut log).map_err(|e| e.0)?;
+        let st = opt(args, "--stages").unwrap_or("noise,tokens,te,dit,steps,vae,full");
+        let worst = nextcuda_image_zimage::check::run(&e, dir, &st.split(',').collect::<Vec<_>>(), &mut log).map_err(|e| e.0)?;
+        println!("worst relative error {worst:.2e}");
+        return Ok(());
+    }
     if m["arch"].as_str() == Some(nextcuda_image_mossimage::ARCH) {
         let gs = gpus(args)?;
         let mut log = |s: String| eprintln!("{s}");
