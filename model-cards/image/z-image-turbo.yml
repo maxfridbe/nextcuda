@@ -14,7 +14,7 @@ title: 'Z-Image-Turbo (text to image in 8 steps, strong at text in pictures; Rus
 about: 'Tongyi-MAI''s Z-Image-Turbo (Apache-2.0): Z-Image''s 6B single-stream DiT distilled to 8 steps without guidance (Decoupled-DMD + DMDR), conditioned by Qwen3-4B, FLUX''s 16-channel VAE; photoreal pictures and legible English and Chinese text. The DiT (Q8_0, 6.7 GiB) and the VAE on the first card, the text encoder (Q8_0, 3.8 GiB) on the second; nothing streamed'
 gpus: '0,1'
 split: true                      # nextcuda: the DiT and the VAE on the first card, the text encoder on the second
-vram_gib: 9.5                    # the first card's at 1024 x 1024 (the DiT's 6.7 GiB, activations and the VAE's); the second's ~4.3
+vram_gib: 10.7                   # the first card's at 1536 x 1536, the largest (9.3 at 1024 x 1024: the DiT's 6.7 and its activations); the second's 3.8
 defaults:
   steps: 8
   cfg: 1.0

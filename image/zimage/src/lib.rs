@@ -32,6 +32,8 @@ use nextcuda_image::{Defaults, Error, ImageEngine, ImageKind, ImageRequest, Load
 use nextcuda_zimage::dit;
 
 pub const ARCH: &str = "z-image";
+/// the model's name in what a request is told
+const NAME: &str = "Z-Image-Turbo";
 /// the transformer GGUF, the text encoder GGUF (Qwen3-4B), the VAE (diffusers' safetensors), the tokenizer
 /// (`vocab.json`; `merges.txt` and `tokenizer_config.json` beside it: the repository's tokenizer/)
 pub const ROLES: &[&str] = &["transformer", "text-encoder", "vae", "tokenizer"];
@@ -257,29 +259,29 @@ impl ImageEngine for ZImage {
         let t0 = Instant::now();
         let d = self.defaults();
         if req.edit.is_some() {
-            return Err(Error(format!("{ARCH} makes pictures from text only: it takes no picture to edit")));
+            return Err(Error(format!("{NAME} makes pictures from text only: it takes no picture to edit")));
         }
         if req.negative.as_deref().is_some_and(|n| !n.trim().is_empty()) {
-            return Err(Error(format!("{ARCH} takes no negative prompt: it is distilled from guidance (8 steps, one pass a step, no CFG)")));
+            return Err(Error(format!("{NAME} takes no negative prompt: it is distilled from guidance (8 steps, one pass a step, no CFG)")));
         }
         if req.cfg.is_some_and(|c| c != 1.0 && c != 0.0) {
-            return Err(Error(format!("{ARCH} takes no cfg (guidance scale): it is distilled from guidance - leave cfg out, or 1")));
+            return Err(Error(format!("{NAME} takes no cfg (guidance scale): it is distilled from guidance - leave cfg out, or 1")));
         }
         if !req.loras.is_empty() {
-            return Err(Error(format!("{ARCH} takes no LoRAs")));
+            return Err(Error(format!("{NAME} takes no LoRAs")));
         }
         if req.sampler.is_some_and(|s| s != Sampler::Euler) {
-            return Err(Error(format!("{ARCH} samples with euler only")));
+            return Err(Error(format!("{NAME} samples with euler only")));
         }
         if req.schedule.is_some_and(|s| s != Schedule::Shift) {
-            return Err(Error(format!("{ARCH} runs its scheduler's own levels (schedule shift)")));
+            return Err(Error(format!("{NAME} runs its scheduler's own levels (schedule shift)")));
         }
         if req.rgba {
-            return Err(Error(format!("{ARCH} makes opaque pictures (RGB): no rgba")));
+            return Err(Error(format!("{NAME} makes opaque pictures (RGB): no rgba")));
         }
         let steps = req.steps.unwrap_or(STEPS);
         if !(1..=MAX_STEPS).contains(&steps) {
-            return Err(Error(format!("steps {steps}: 1 to {MAX_STEPS} ({ARCH} is made for {STEPS})")));
+            return Err(Error(format!("steps {steps}: 1 to {MAX_STEPS} ({NAME} is made for {STEPS})")));
         }
         let shift = req.shift.unwrap_or(SHIFT);
         if !(shift > 0.0 && shift <= 20.0) {
