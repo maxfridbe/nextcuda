@@ -311,7 +311,8 @@ Qwen-Image 2.1 (`image/qwenimage21`).
 
 ## Video
 
-The video daemon and the studio (`nextsycl video`) and the H3 engine (`video/h3`).
+The video daemon and the studio (`nextsycl video`) and the H3 engine (`video/h3`, its core `crates/h3`, which P-H3-Image's
+image engine shares).
 
 | Variable | Default | What it does | Read by |
 |---|---|---|---|

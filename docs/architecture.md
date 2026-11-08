@@ -23,6 +23,8 @@ crates/                    THE FOUNDATION - every kind uses it, it knows no kind
   qwen3vl    nextsycl-qwen3vl    the Qwen3-VL text tower (int8 ConvRot): a text encoder image and video engines share
   qwen35     nextcuda-qwen35     the Qwen3.5 / Qwen3.8 model core (gated DeltaNet + gated full attention, sessions, a
                                  hidden-state tap): the llm engine serves it, MOSS-Image encodes its prompts with it
+  h3         nextcuda-h3         MiniMax H3's core (the denoiser, its text encoder and vision tower, the VAEs, the
+                                 jobs): the video engine serves it, P-H3-Image runs its denoiser over one latent frame
 
 llm/                       LANGUAGE MODELS
   contract   nextsycl-llm        the contract: Engine, Session / Decoder / Checkpoint, Sampler, EngineKind; host sampling
@@ -41,7 +43,7 @@ image/                     IMAGES
 video/                     VIDEO
   contract   nextsycl-video      the contract: VideoEngine (generate; jobs / run_job), VideoRequest (+ Keyframe),
                                  Progress, Clip, VideoKind
-  h3         nextsycl-video-h3   MiniMax H3: H3's engine, jobs and mp4 writer
+  h3         nextsycl-video-h3   MiniMax H3 behind the video contract (its core: crates/h3)
   example    nextsycl-video-example  a template
 
 audio/                     AUDIO

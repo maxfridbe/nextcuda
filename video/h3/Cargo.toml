@@ -1,6 +1,6 @@
 [package]
 name = "nextcuda-video-h3"
-description = "MiniMax H3 on Intel Arc (SYCL): text, pictures, a voice and other clips to video with sound - H3's engine and jobs"
+description = "MiniMax H3 on CUDA: text, pictures, a voice and other clips to video with sound - H3 behind the video contract (its core is nextcuda-h3)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,8 +8,5 @@ license.workspace = true
 [dependencies]
 nextcuda-core.workspace = true
 nextcuda-video.workspace = true
-nextcuda-diffusion.workspace = true
-nextcuda-gguf.workspace = true
+nextcuda-h3.workspace = true
 serde_json.workspace = true
-fancy-regex = "0.14"
-unicode-normalization = "0.1"

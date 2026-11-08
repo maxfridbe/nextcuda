@@ -1,5 +1,5 @@
 //! Raw bindings to the diffusion kernels (`kernels/diffusion/nsd.h`, H3's `h3sycl.h` under the `nsd_` prefix) in the
-//! video kind's library (`libnextcuda-video.so`): one function pointer per declaration, resolved by name at run
+//! process's kind library (`libnextcuda-video.so` for the video engine; every kind's holds them): one function pointer per declaration, resolved by name at run
 //! time, so the Rust side builds anywhere and the kernels rebuild without relinking. H3's binding (`h3-sys`) as it
 //! was, with the library nextcuda-core opens for the video kind. Nothing here is safe to call directly; the
 //! engine's `device` and `ops` wrap it.
@@ -159,8 +159,9 @@ pub struct Api {
 
 
 impl Api {
-    /// Resolves every function in the video kind's kernel library (nextcuda-core opens it; it stays loaded as long
-    /// as the process).
+    /// Resolves every function in the process's kernel library (nextcuda-core opens it; it stays loaded as long as
+    /// the process): the video kind's unless the process chose its kind first - an image server running P-H3-Image
+    /// has, and finds the same nsd kernels in the image library.
     pub fn load() -> Result<Api, String> {
         nextcuda_core::use_kind("video");
         let lib = nextcuda_core::api().map_err(|e| e.0)?;
