@@ -1,0 +1,44 @@
+# P-H3-Image (Pruna AI): text to image and edits from 1 to 8 pictures - MiniMax H3's denoiser over one latent frame
+# model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets.
+# The denoiser is vantagewithai's Q4_K_M GGUF of Pruna's own transformer (its block matrices Q4_K, checked against
+# Pruna's bf16 file: the other tensors equal), the text encoder SearchingMan's Q8_0 GGUF (Qwen3-VL-4B with its vision
+# tower and the text connector), the VAE Pruna's int8 ConvRot file (H3's encoder, the one-frame ViT decoder); the
+# tokenizer is Qwen's, the files MiniMax H3 uses. Pruna's LoRA for H3 (p-h3-image_lora_bf16) is not P-H3-Image: it
+# leaves out the fine-tuned AdaLN projections and explains 12-70% of the block matrices' change.
+id: p-h3-image
+kind: image
+arch: p-h3-image
+license: minimax-h3-community
+commercial: true
+license_note: 'The MiniMax H3 Community License: not licensed in the European Union, the United Kingdom, South Korea or the United States without a separate licence from MiniMax; written authorization above US$20 million yearly revenue; show "Powered by MiniMax H3" on a product built on it; its Acceptable Use Policy; its outputs may not train another model. The text encoder''s Qwen3-VL-4B parts are Apache-2.0.'
+title: 'P-H3-Image (text to image and edits from up to 8 pictures; MiniMax H3 over one frame, Rust + CUDA)'
+about: 'Pruna AI''s image model on MiniMax H3: the 50-block DiT (Q4_K_M) over one latent frame, a Qwen3-VL-4B text encoder (Q8_0) through a connector to H3''s text width, H3''s VAE encoder and a one-frame ViT decoder (int8); 8 steps on the checkpoint''s own sigmas, no guidance. The denoiser split over both cards, the encoder and decoder on the second; nothing streamed'
+gpus: '0,1'
+split: true                      # nextcuda: the denoiser's blocks over both cards, the text encoder and the decoder on the second
+defaults:
+  steps: 8
+  size: 2048x2048
+env: {}
+files:
+  denoiser:
+    key: p-h3-image-q4km
+    url: https://huggingface.co/vantagewithai/P-H3-Image-ComfyUI-GGUF/resolve/d4aa724c44c218d8ef397a74c415e14b006abc84/p-h3-image-Q4_K_M.gguf
+    size: 12617241344
+    sha256: e873f5f6dd6a8aabdfbffa62a5e43fa36d1c67b461c22a7c6717f3740fcddd61
+    path: p-h3-image/p-h3-image-Q4_K_M.gguf
+  text-encoder:
+    key: p-h3-image-te-q80
+    url: https://huggingface.co/SearchingMan/P-H3-Image-GGUF/resolve/6607218967c0ef47c252589675a8e0180ef274a5/p_h3_image_text_encoder-Q8_0.gguf
+    size: 5367118848
+    sha256: 558cd6a1b0c40f73e4b230faef548e9e6b5b19f1b887845d3452175532797422
+    path: p-h3-image/p_h3_image_text_encoder-Q8_0.gguf
+  vae:
+    key: p-h3-image-vae-int8
+    url: https://huggingface.co/PrunaAI/P-H3-Image-Comfy/resolve/44a0fb73f299da1bb715bdb5ff59ce3fd3c6f543/vae/p-h3-image_vae_int8_convrot.safetensors
+    size: 3146996440
+    sha256: 583e0d43354b6b833aa9a0815a5fac831b1ef6d0c19a7eaa0616980a3dab5ffe
+    path: p-h3-image/vae/p-h3-image_vae_int8_convrot.safetensors
+  tokenizer: h3-tokenizer-vocab
+  tokenizer-merges: h3-tokenizer-merges
+  tokenizer-config: h3-tokenizer-config
+guide: guides/p-h3-image.md

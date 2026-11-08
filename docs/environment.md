@@ -300,6 +300,7 @@ Qwen-Image 2.1 (`image/qwenimage21`).
 | `NS_MOSS_ATTN_WARPS` | the silo's own | warps a block for the silo's attention (a tuning A/B) | image mossimage |
 | `NS_MOSS_FUSED` | 1 | 0: the int8 products' nsd epilogue then the step's own kernels instead of the silo's fused epilogues | image mossimage |
 | `NS_MOSS_STEPS` | 50, or 4 with a turbo LoRA | the default step count (a turbo entry's card sets 8 for an 8-step distillation), 1 to 200 | image mossimage |
+| `NC_PH3_RESERVE_GIB` | 2 | P-H3-Image: the room (GiB, 0.5 to 8) each card keeps beside the denoiser's blocks for a picture's buffers; the blocks split over the cards around it | image ph3image |
 | `NS_QI_PROFILE` | off | Debug: set: a GPU wait after each named step, the totals printed (slower; shows where the time goes) | image qwenimage21 |
 | `NC_TE_HOST_CACHE` | 1 | 0: do not keep the streamed text-encoder layers in host RAM (they are re-read from disk for every prompt; saves ~5 GB of RAM) | image qwenimage21 |
 | `NS_QI_SIGMAS` | the model's own schedule | a few-step preset: noise levels from 1 down, comma separated (their count is the steps) (--opt-sigmas; per request too) | image qwenimage21 |

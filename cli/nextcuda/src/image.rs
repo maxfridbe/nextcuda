@@ -29,7 +29,7 @@ nextcuda image engines | selftest [--gpu N]";
 pub fn engines() -> Vec<nextcuda_image::ImageKind> {
     vec![nextcuda_image_qwenimage21::kind(), nextcuda_image_qwenimage21::kind_2512(), nextcuda_image_unlimitedocr::kind(), nextcuda_image_paddleocrvl::kind(),
          nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind(), nextcuda_image_upscale::kind(), nextcuda_image_flashvsr::kind(), nextcuda_image_rembg::kind(),
-         nextcuda_image_starvector::kind(), nextcuda_image_mossimage::kind()]
+         nextcuda_image_starvector::kind(), nextcuda_image_mossimage::kind(), nextcuda_image_ph3image::kind()]
 }
 
 /// `--gpu 0` or `--gpu 0,1` (an engine that splits over two cards takes the second too: olmOCR 2's vision tower)

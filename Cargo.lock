@@ -691,6 +691,7 @@ dependencies = [
  "nextcuda-image-mossimage",
  "nextcuda-image-olmocr2",
  "nextcuda-image-paddleocrvl",
+ "nextcuda-image-ph3image",
  "nextcuda-image-qwenimage21",
  "nextcuda-image-rembg",
  "nextcuda-image-starvector",
@@ -936,6 +937,17 @@ dependencies = [
  "nextcuda-gguf",
  "nextcuda-image",
  "nextcuda-tok",
+]
+
+[[package]]
+name = "nextcuda-image-ph3image"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-h3",
+ "nextcuda-image",
 ]
 
 [[package]]
