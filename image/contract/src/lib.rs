@@ -319,6 +319,11 @@ pub trait ImageEngine: Send + Sync {
     fn options(&self) -> &'static [EngineOption] {
         &[]
     }
+    /// the prompt as the model is given it (an answer's `revised_prompt`): the request's, unless the engine adds to it
+    /// (P-H3-Image puts "Edit <Picture 1>. " before an edit's instruction)
+    fn rendered_prompt(&self, req: &ImageRequest) -> String {
+        req.prompt.clone()
+    }
     /// the steps a request runs (its own, else the defaults; an engine whose options change it says so)
     fn steps_for(&self, req: &ImageRequest) -> u32 {
         req.steps.unwrap_or(self.defaults().steps)

@@ -1054,6 +1054,7 @@ impl ImageServer {
             req.extra = nextcuda_core::options::by_name(&given, engine.options());
         }
         let steps = engine.steps_for(&req);
+        let rendered = engine.rendered_prompt(&req);
         let p = &self.progress;
         let pics = engine.generate(&req, &mut |st| {
             *p.lock().unwrap() = json!({"busy": true, "prompt": prompt, "picture": st.picture + 1, "pictures": n, "at": st.at, "of": st.of,
@@ -1080,7 +1081,7 @@ impl ImageServer {
                         ("seconds", format!("{seconds:.2}")), ("wh", wh.map(|w| format!("{:.3}", w / pics.len() as f64)).unwrap_or_default()),
                         ("pictures", if n_pics > 0 { n_pics.to_string() } else { String::new() })];
             let png = pic.png_bytes(&meta).map_err(|e| (500u16, e))?;
-            let mut item = json!({"revised_prompt": prompt, "seed": s, "width": pic.width, "height": pic.height});
+            let mut item = json!({"revised_prompt": rendered, "seed": s, "width": pic.width, "height": pic.height});
             if let Some(dir) = &self.out_dir {
                 let model = self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_");
                 let mut file = owned_file(dir, |u| format!("{u}-{model}-{s}.png"), &png)?;

@@ -157,6 +157,13 @@ fn pixels_at(p: &Picture, (w, h): (u32, u32)) -> Vec<f32> {
     r.data.iter().map(|b| *b as f32 / 255.0).collect()
 }
 
+/// An edit's instruction as the encoder reads it: after "Edit <Picture 1>. " unless it starts so already (or is an
+/// upsampler's brief, "subject_definitions: ...")
+pub fn edit_prompt(prompt: &str) -> String {
+    let lead = prompt.trim_start();
+    if lead.starts_with("Edit <Picture 1>.") || lead.starts_with("subject_definitions:") { prompt.to_string() } else { format!("Edit <Picture 1>. {prompt}") }
+}
+
 /// A request's own grid (`options.sigmas`): strictly decreasing, at most 1, ending at 0, used as written (as the
 /// scheduler takes given sigmas: no shift)
 pub fn parse_sigmas(v: &str) -> std::result::Result<Vec<f32>, String> {
@@ -359,9 +366,7 @@ impl PH3Image {
             pieces.push(Piece::Text(format!("<Picture {}>: ", i + 1)));
             pieces.push(Piece::Vision(Frames { frames: vec![pixels_at(p, vs)], w: vs.0 as usize, h: vs.1 as usize }));
         }
-        let lead = prompt.trim_start();
-        let text = if lead.starts_with("Edit <Picture 1>.") || lead.starts_with("subject_definitions:") { prompt.to_string() } else { format!("Edit <Picture 1>. {prompt}") };
-        pieces.push(Piece::Text(text));
+        pieces.push(Piece::Text(edit_prompt(prompt)));
         Ok((refs, pieces, canvas))
     }
 }
@@ -413,6 +418,12 @@ impl ImageEngine for PH3Image {
     /// 8 steps (the checkpoint's grid); another count is refused, another grid comes as options.sigmas
     fn steps_free(&self) -> bool {
         false
+    }
+    fn rendered_prompt(&self, req: &ImageRequest) -> String {
+        match req.edit {
+            Some(_) => edit_prompt(&req.prompt),
+            None => req.prompt.clone(),
+        }
     }
     fn steps_for(&self, req: &ImageRequest) -> u32 {
         req.extra.get("sigmas").and_then(|v| parse_sigmas(v).ok()).map_or(STEPS, |s| s.len() as u32 - 1)
@@ -531,6 +542,13 @@ mod tests {
         assert_eq!(py_round(2.5), 2.0);
         assert_eq!(py_round(3.5), 4.0);
         assert_eq!(py_round(-2.5), -2.0);
+    }
+
+    #[test]
+    fn an_edit_is_rendered_after_its_prefix_once() {
+        assert_eq!(edit_prompt("add a hat"), "Edit <Picture 1>. add a hat");
+        assert_eq!(edit_prompt("  Edit <Picture 1>. add a hat"), "  Edit <Picture 1>. add a hat");
+        assert_eq!(edit_prompt("subject_definitions: a fox"), "subject_definitions: a fox");
     }
 
     #[test]
