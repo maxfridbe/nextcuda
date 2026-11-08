@@ -67,6 +67,37 @@ the encoder is the fix). [`PHASES.md`](PHASES.md) has the history of the numbers
 | `--opt-sd-args k=v;...` | `NC_SD_ARGS` | `threads=N`, `flash_attn=0\|1`, `vae_tiling=0\|1` |
 | `--opt-backend native\|rust\|python` | `NC_IMAGE_BACKEND` | stable-diffusion.cpp in process (default), the Rust engine on the shared CUDA kernels, or the phase 1 sd-cli worker |
 
+## P-H3-Image: text to image and edits on MiniMax H3
+
+Pruna AI's image model (`image/ph3image`, card `p-h3-image`; the MiniMax H3 Community License, its Qwen3-VL-4B parts
+Apache-2.0): MiniMax H3's own 50-block denoiser over one latent frame, conditioned by a Qwen3-VL-4B text encoder whose
+hidden states (after layers 13, 19, 25, 31 and the normed last) a connector maps to H3's 5120-wide text space; H3's VAE
+encoder and a one-frame ViT decoder. Pruna's diffusers pipeline over the foundation's H3 core (`crates/h3`), which the
+video engine runs too.
+
+- **Files:** vantagewithai's Q4_K_M GGUF of Pruna's transformer (12.6 GB; its non-quantized tensors are Pruna's bf16
+  ones), SearchingMan's Q8_0 text encoder GGUF (5.4 GB, the vision tower and connector inside), Pruna's int8 ConvRot
+  VAE (3.1 GB). Pruna's LoRA for an existing H3 is not used: it leaves out the fine-tuned AdaLN projections and
+  explains 12-70% of the block matrices' change (FL2VA Q4_K_M + LoRA measured 0.13 off in velocity on nextsycl).
+- **Sampling:** 8 Euler steps on the checkpoint's sigmas as written (no shift), no guidance; the 2 audio latents the
+  layout carries are stepped on the same grid and dropped; the noise from one torch generator, as diffusers draws it.
+- **Edits:** 1 to 8 pictures; each a `<Picture i>` vision block (about 1 MP) for the encoder and its latents (the
+  posterior sampled at seed 42, at its own size within 1-8 MP) as an H3 ref2va reference held at t 0.999;
+  `Edit <Picture 1>. ` goes before the instruction. Without a size the canvas is picture 1 at 4-8 MP.
+- **Two 12 GB cards:** the text encoder (3.6 GiB) and the decoder (2.25 GiB) resident on the 3060, the blocks 39 on
+  the 5070 and 11 on the 3060 (`NC_PH3_RESERVE_GIB`, 2, is the room each keeps); loads in ~15 s.
+
+| picture | per step | total | peak (5070 / 3060) |
+|---|---:|---:|---:|
+| 1024 x 1024 | 1.33 s | 12.5 s | 10.1 / 9.5 GB |
+| 2048 x 2048 (4 MP) | 6.1 s | 56 s | 10.1 / 9.9 GB |
+| 2912 x 2912 (8 MP, the default) | 19.1 s | 166 s | 10.6 / 10.6 GB |
+| edit, 1024 x 1024 from a 1 MP picture | 4.3 s | 44 s (7.5 s conditioning) | 10.9 / 10.0 GB |
+| edit, 2048 x 2048 (the default canvas) from a 1 MP picture | 23.2 s | 218 s (24 s conditioning) | 10.9 / 11.0 GB |
+
+An edit's references add their rows to the sequence: several pictures at a 4 MP canvas pass the cards' room and are
+refused as no_room - a smaller canvas (`size`) or smaller pictures fit.
+
 ## Designs: Ming-Image-0.1-Design
 
 inclusionAI's design model (`image/mingimage`): Z-Image's 6B single-stream DiT conditioned by Ling-Mini-2.0 (a 16B MoE,

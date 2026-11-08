@@ -15,9 +15,10 @@ title: 'P-H3-Image (text to image and edits from up to 8 pictures; MiniMax H3 ov
 about: 'Pruna AI''s image model on MiniMax H3: the 50-block DiT (Q4_K_M) over one latent frame, a Qwen3-VL-4B text encoder (Q8_0) through a connector to H3''s text width, H3''s VAE encoder and a one-frame ViT decoder (int8); 8 steps on the checkpoint''s own sigmas, no guidance. The denoiser split over both cards, the encoder and decoder on the second; nothing streamed'
 gpus: '0,1'
 split: true                      # nextcuda: the denoiser's blocks over both cards, the text encoder and the decoder on the second
+vram_gib: 10.4                   # each card's at 8 MP (measured 10.6 GB on both; a 4 MP edit 11.0)
 defaults:
   steps: 8
-  size: 2048x2048
+  size: 2912x2912
 env: {}
 files:
   denoiser:
