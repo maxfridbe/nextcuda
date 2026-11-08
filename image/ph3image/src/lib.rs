@@ -17,6 +17,7 @@
 //! split over both, the text encoder (Q8_0) and the decoder (int8 ConvRot) resident on the second - every weight on a
 //! card, nothing streamed. The prompt upsampler (Qwen3.5-9B) is not run: prompts are rendered as written.
 
+pub mod check;
 pub mod connector;
 
 use std::path::{Path, PathBuf};

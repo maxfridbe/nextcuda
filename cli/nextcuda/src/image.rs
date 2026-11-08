@@ -627,6 +627,24 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         println!("worst relative error {worst:.2e}");
         return Ok(());
     }
+    if m["arch"].as_str() == Some(nextcuda_image_ph3image::ARCH) {
+        let mut log = |s: String| eprintln!("{s}");
+        // --denoiser FILE: that denoiser alone over the cards (a larger quantization than the engine's, for its error)
+        if let Some(f) = opt(args, "--denoiser") {
+            let gs: Vec<usize> = opt(args, "--gpu").unwrap_or("0,1").split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            let st = opt(args, "--stages").unwrap_or("dit,steps");
+            let worst = nextcuda_image_ph3image::check::run_denoiser(Path::new(f), &gs, 400u64 << 20, dir, &st.split(',').collect::<Vec<_>>(), &mut log)
+                .map_err(|e| e.0)?;
+            println!("worst relative error {worst:.2e}");
+            return Ok(());
+        }
+        let gs = gpus(args)?;
+        let e = nextcuda_image_ph3image::PH3Image::load(&files, &gs, 2u64 << 30, &mut log).map_err(|e| e.0)?;
+        let st = opt(args, "--stages").unwrap_or("tokens,vision,te,venc,dit,steps,vae");
+        let worst = nextcuda_image_ph3image::check::run(&e, dir, &st.split(',').collect::<Vec<_>>(), &mut log).map_err(|e| e.0)?;
+        println!("worst relative error {worst:.2e}");
+        return Ok(());
+    }
     if m["arch"].as_str() == Some(nextcuda_image_mossimage::ARCH) {
         let gs = gpus(args)?;
         let mut log = |s: String| eprintln!("{s}");

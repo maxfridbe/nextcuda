@@ -95,6 +95,32 @@ video engine runs too.
 | edit, 1024 x 1024 from a 1 MP picture | 4.3 s | 44 s (7.5 s conditioning) | 10.9 / 10.0 GB |
 | edit, 2048 x 2048 (the default canvas) from a 1 MP picture | 23.2 s | 218 s (24 s conditioning) | 10.9 / 11.0 GB |
 
+**Checked** (2026-11-08) against nextsycl's `reference/p-h3-image/ref.py` (diffusers 84532a05 on the CPU in float32,
+Pruna's full bf16 model; 576 x 384, seed 3, the model's own prompt; an edit of one 1024 x 1024 picture on that canvas):
+`nextcuda image check DIR --model p-h3-image` (each stage fed the reference's input; `--denoiser FILE` runs another
+denoiser alone over both cards, `reftext` feeds it the reference's refined text). Relative L2 errors:
+
+| stage | text to image | edit | nextsycl (int8) t2i / edit |
+|---|---|---|---|
+| tokens | 33 of 33 equal | 1,071 of 1,071 equal | equal |
+| vision tower (float32) | - | 7e-6, deepstack 3e-6 - 1.1e-5 | - / 3.2e-4 |
+| hidden states 13 - 31 (Q8_0 encoder) | 5.6e-3 - 6.2e-3 | 3.4e-3 - 5.1e-3 | 5.9e-2 - 6.6e-2 / 2.5e-2 - 3.4e-2 |
+| hidden state 36 (final norm) | 3.9e-2 | 1.8e-2 | 7.4e-2 / 4.4e-2 |
+| connector output | 5.5e-4 (from the reference's states 4e-8) | 2.2e-3 | 1.6e-3 / 5.9e-3 |
+| VAE encoder (sampled posterior) | - | 4.2e-3 | - / 2.4e-3 |
+| positions | exact | exact | exact |
+| refined text | 7.6e-3 | 9.5e-3 | 6.3e-3 / 9.5e-3 |
+| velocities, Q4_K_M (the card's) | 6.1e-2 - 1.5e-1 | 9.2e-2 - 2.1e-1 | |
+| velocities, AtomicChat Q8_0 (blocks only) | 9.8e-3 - 3.1e-2 | 2.8e-2 - 4.8e-2 | 1.5e-2 - 2.9e-2 / 2.3e-2 - 5.5e-2 |
+| final latents, 8 steps: Q4_K_M / Q8_0 | 2.3e-1 / 2.9e-2 | 2.9e-1 / 5.9e-2 | 3.7e-2 / 3.4e-2 |
+| VAE decoder (int8) | 2.7e-3; 80.0 % of bytes equal, 99.2 % within 1 | 3.1e-3; 80.7 %, 99.35 % | 5.2e-3 / 6.2e-3 |
+
+Every stage but the denoiser is at or under nextsycl's error. The denoiser's is the Q4_K_M file's: the same engine on
+the Q8_0 file lands where nextsycl's int8 and Q8_0 do (nextsycl measured H3 FL2VA Q4_K_M + LoRA at 1.3e-1 / 2.2e-1 too).
+The Q8_0 blocks (19.1 GiB) fill both cards alone: beside the text encoder and decoder only a ~4-bit file fits two
+12 GB cards. The 8-step run is chaotic (nextsycl: two runs of the same kernels at 8 MP are 39 dB apart): the Q4_K_M
+pictures keep the reference's scene and composition, details differ.
+
 An edit's references add their rows to the sequence: several pictures at a 4 MP canvas pass the cards' room and are
 refused as no_room - a smaller canvas (`size`) or smaller pictures fit.
 
