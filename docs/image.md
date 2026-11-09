@@ -255,3 +255,25 @@ illustrations; a drawing that does not fit the length limit comes back cut off (
   reference's tokens, an icon's 300 greedy tokens the reference's text.
 - **Speed** (RTX 5070): 196 tokens/s greedy, 125 with 2 beams; a complex picture ran to the limit, 4,741 tokens in 38.8 s,
   3.35 GiB at the peak - it fits any card.
+
+## SVG paths: svgrender (DiffVG + LIVE)
+
+`image.svg_fit` (a picture to SVG) and `image.svg_generate` (a prompt to SVG), card `svgrender-live` (`image/svgrender`,
+`kernels/image/svgrender`): PyTorch-SVGRender's technique in Rust and CUDA - DiffVG's differentiable rasterizer
+(prefiltered: cubic Bezier paths, fill by winding number, stroke by distance, each pixel's coverage smoothed over the
+signed distance to the outline, and the gradient of every pixel to every control point, colour and stroke width) and
+LIVE's layer-wise optimiser on it (paths added where the fit is worst, Adam with LIVE's per-layer decay, the
+distance-weighted MSE and the xing loss), with VectorFusion's styles: `iconography`, `pixelart`, `sketch`,
+`painting`. No weights; a job like the others (progress per step with the SVG so far, cancel at the next step).
+`image.svg_generate` draws the prompt with Z-Image-Turbo first (with the style's words after it) and fits that.
+The port, its checks and what it leaves out: [ports/SVGRENDER.md](ports/SVGRENDER.md).
+
+- **Checked** (2026-11-09) against DiffVG 85802a7 (CPU, float32) and PyTorch-SVGRender dadfbba's LIVE
+  (`reference/svgrender/ref.py`, `nextcuda image svg-check DIR`): prefiltered pixels 9e-7 - 1.7e-4 relative L2,
+  colour and stroke-width gradients 6e-7 - 1e-5, control-point gradients 2.7e-4 - 2.2e-2; LIVE's xing loss 9e-8;
+  SparseCoordInit's placements the same (23 of 24); a whole LIVE fit (32 paths, 8 layers x 200 steps, 240 px) the
+  same quality: 17.73 / 22.93 dB against upstream's 17.79 / 22.72 dB.
+- **Speed** (a LIVE step: the distance weight, the backward pass, xing, Adam): 0.31 ms at 240 px with 128 paths,
+  1.1 ms at 512 px, 2.0 ms at 512 px with 512 paths (RTX 5070; the 3060 1.4-2.6x that). The default fit (128 paths,
+  2000 steps, 384 px) takes ~1.2 s; upstream LIVE's 1600 steps took 245 s on the CPU. Memory: ~0.2 GB.
+- **Text to SVG**: 12 s of drawing (1024 x 1024, 8 steps) and ~2 s of fitting for 96 paths.
