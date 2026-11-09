@@ -121,6 +121,7 @@ DECL_MMQ_CASE(GGML_TYPE_IQ2_S);
 DECL_MMQ_CASE(GGML_TYPE_IQ3_XXS);
 DECL_MMQ_CASE(GGML_TYPE_IQ3_S);
 DECL_MMQ_CASE(GGML_TYPE_IQ4_XS);
+DECL_MMQ_CASE(GGML_TYPE_Q8_0);   // the DSpine draft's layers (made Q8_0 at load)
 
 // the types the decode products (ggml-cuda's MMVQ) take here, and their values a block
 static int mmvq_block(int t) {
@@ -146,7 +147,7 @@ extern "C" bool ggml_is_quantized(enum ggml_type type) { return mmvq_block(type)
 static bool mmq_type(int t) {
     switch (t) {
         case GGML_TYPE_Q2_K: case GGML_TYPE_Q4_K: case GGML_TYPE_Q6_K: case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S:
-        case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_XS:
+        case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_XS: case GGML_TYPE_Q8_0:
             return true;
         default:
             return false;
@@ -186,8 +187,8 @@ int ns_q35_mmq(ns_gpu* g, int type, const void* w, int64_t n_out, int64_t K, con
     NS_TRY
     NS_CU(cudaSetDevice(g->dev));
     if (!mmq_type(type)) return ns_fail("ns_q35_mmq: type " + std::to_string(type) + " has no MMQ here");
-    // values a block (all of these: 256)
-    const int64_t qk = 256;
+    // values a block (Q8_0's 32, the others' 256)
+    const int64_t qk = mmvq_block(type);
     if (K % qk != 0) return ns_fail("ns_q35_mmq: K not a multiple of the type's block");
     const int64_t kp = GGML_PAD(K, MATRIX_ROW_PADDING);
     const int64_t s12 = T * kp * (int64_t) sizeof(block_q8_1) / (QK8_1 * (int64_t) sizeof(int));
@@ -208,6 +209,7 @@ int ns_q35_mmq(ns_gpu* g, int type, const void* w, int64_t n_out, int64_t K, con
         case GGML_TYPE_IQ3_XXS: mul_mat_q_case<GGML_TYPE_IQ3_XXS>(ctx, args, g->q); break;
         case GGML_TYPE_IQ3_S:   mul_mat_q_case<GGML_TYPE_IQ3_S>(ctx, args, g->q); break;
         case GGML_TYPE_IQ4_XS:  mul_mat_q_case<GGML_TYPE_IQ4_XS>(ctx, args, g->q); break;
+        case GGML_TYPE_Q8_0:    mul_mat_q_case<GGML_TYPE_Q8_0>(ctx, args, g->q); break;
         default: return ns_fail("ns_q35_mmq: no MMQ for this type");
     }
     NS_LAUNCH_CHECK();

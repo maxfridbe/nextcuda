@@ -59,6 +59,22 @@ pub struct Api {
     pub gdn_out: unsafe extern "C" fn(G, F, F, i64, F, FM, i64, i64, i64, f32) -> c_int,
     /// the greedy pick on the GPU (the MTP drafts)
     pub argmax: unsafe extern "C" fn(G, F, i64, i64, *mut i32) -> c_int,
+    /// q35.h: the verify passes' products (q35_vq8.cu: decode once, int8 tensor cores)
+    pub vq8_supported: unsafe extern "C" fn(c_int) -> c_int,
+    pub vq8: unsafe extern "C" fn(G, c_int, P, P, FM, i64, i64, i64) -> c_int,
+    /// nh.h: rows of bytes gathered by index (the DSpine candidates' head rows)
+    pub gather_rows: unsafe extern "C" fn(G, P, *const i32, M, i64, i64) -> c_int,
+    // q35.h: the DSpine draft's (dspine.cu)
+    pub dsp_bridge_norm: unsafe extern "C" fn(G, F, FM, FM, i64, i64, f32) -> c_int,
+    pub dsp_codes: unsafe extern "C" fn(G, F, F, FM, i64, i64, f32, f32) -> c_int,
+    pub dsp_message: unsafe extern "C" fn(G, F, F, FM, i64, i64) -> c_int,
+    pub dsp_write: unsafe extern "C" fn(G, F, F, F, FM, i64, i64) -> c_int,
+    pub dsp_base: unsafe extern "C" fn(G, F, F, P, FM, i64, i64, i64) -> c_int,
+    pub dsp_pick: unsafe extern "C" fn(G, F, F, F, i64, F, F, F, *mut i32, i64, i64, i64) -> c_int,
+    pub dsp_topk_scratch: unsafe extern "C" fn(i64, i64) -> i64,
+    pub dsp_topk: unsafe extern "C" fn(G, F, i64, i64, i64, *mut i32, FM) -> c_int,
+    pub dsp_attn_scratch: unsafe extern "C" fn(i64, i64, i64, i64) -> i64,
+    pub dsp_attn: unsafe extern "C" fn(G, F, i64, P, P, i64, i64, i64, i64, i64, i64, FM, FM) -> c_int,
 }
 
 // SAFETY: function pointers into the library, which stays loaded for the process.
@@ -121,6 +137,19 @@ pub fn api() -> nextcuda_core::Result<&'static Api> {
             expand: sym!("ns_q35_expand"),
             gdn_out: sym!("ns_q35_gdn_out"),
             argmax: sym!("ns_q35_argmax"),
+            vq8_supported: sym!("ns_q35_vq8_supported"),
+            vq8: sym!("ns_q35_vq8"),
+            gather_rows: sym!("ns_nh_gather_rows"),
+            dsp_bridge_norm: sym!("ns_q35_dsp_bridge_norm"),
+            dsp_codes: sym!("ns_q35_dsp_codes"),
+            dsp_message: sym!("ns_q35_dsp_message"),
+            dsp_write: sym!("ns_q35_dsp_write"),
+            dsp_base: sym!("ns_q35_dsp_base"),
+            dsp_pick: sym!("ns_q35_dsp_pick"),
+            dsp_topk_scratch: sym!("ns_q35_dsp_topk_scratch"),
+            dsp_topk: sym!("ns_q35_dsp_topk"),
+            dsp_attn_scratch: sym!("ns_q35_dsp_attn_scratch"),
+            dsp_attn: sym!("ns_q35_dsp_attn"),
         })
     })
     .as_ref()

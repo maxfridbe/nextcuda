@@ -269,7 +269,9 @@ Qwen3.8-27B dense (`llm/qwen35`, its silo `kernels/llm/qwen35/silo`).
 | `NS_PEAK_TF16` | 183 | Debug: f16 TFLOP/s peak the NS_Q35_PROFILE tables compare the f16 GEMMs with | llm qwen35 |
 | `NS_PEAK_TF32` | 22.9 | Debug: f32 TFLOP/s peak the NS_Q35_PROFILE tables compare the other kernels with | llm qwen35 |
 | `NS_Q35_CHUNK` | 2048 rows when they fit beside the weights and a session, else 1024 or 512 | a prompt pass's rows (at least 16) (--opt-chunk) | llm qwen35 |
-| `NS_Q35_DRAFTS` | 2 | tokens drafted a step with MTP (at most 7; 0: none) (--opt-drafts) | llm qwen35 |
+| `NS_Q35_DRAFTS` | 2 | tokens drafted a step with MTP or DSpine (at most 7; 0: none) (--opt-drafts) | llm qwen35 |
+| `NS_Q35_DSPINE` | unset (MTP) | the DSpine draft's folder (config.json, model.safetensors: Tencent's `Qwen3.8-27B-DSpine-b16`), or `auto`: a `dspine/` folder beside the model; loaded in MTP's place, its layers on the head's card, fc's share of a target layer on that layer's (--opt-dspine) | llm qwen35 |
+| `NS_Q35_DSPINE_DUMP` | unset | Debug: a folder the DSpine draft writes its inputs and outputs into (the residual stream after its target layers each pass, each draft's rows), for `tooling/dspine-ref.py` | llm qwen35 |
 | `NS_Q35_HEAD` | last | first: the head and the draft block on the first GPU (the faster card's room to layers; measured: prompts about the same, decode slower) | llm qwen35 |
 | `NS_Q35_KV` | auto | the attention cache's format a card: auto - q8_0 (272 bytes a head's row) on the card the plan fills first, half (512) on the others where it fits; auto-q4 - q4_0 (144) there instead; q8, q4, f16 - that on every card | llm qwen35 |
 | `NS_Q35_KV_ROT` | 0 | 1: a quantized cache rotated (a 32-value Hadamard transform a block on keys, values and queries, the output turned back: q4_0's error a third smaller) | llm qwen35 |
@@ -277,6 +279,11 @@ Qwen3.8-27B dense (`llm/qwen35`, its silo `kernels/llm/qwen35/silo`).
 | `NS_Q35_GRAPHS` | 1 | 0: a pipelined prompt's stages launched kernel by kernel instead of as one CUDA graph each | llm qwen35 |
 | `NS_Q35_MMVQ` | ggml | nh: the decode and verify products by the shared kernels instead of ggml-cuda's MMVQ | llm qwen35 |
 | `NS_Q35_PIPE` | 1 | 0: a prompt over two GPUs a pass a chunk instead of pipelined (the first GPU on chunk k+1 beside the last on k) | llm qwen35 |
+| `NS_Q35_VQ8` | 9 (never) | the rows (2..8) from which a decode / verify pass's products are q35_vq8's (each weight block decoded once, the rows on the int8 tensor cores) for IQ3_S / IQ3_XXS / IQ4_XS matrices: one number, or one a card in the engine's order | llm qwen35 |
+| `NS_Q35_VQ8_CHECK` | 0 | Debug: 1 - each q35_vq8 product compared with MMVQ's (the largest difference printed) | llm qwen35 |
+| `NS_Q35_VQ8_TYPES` | all it has | Experiment: the block types q35_vq8 takes (names, comma-separated: `IQ3_S,IQ4_XS`) | llm qwen35 |
+| `NS_Q35_VQ8_WARPS` | 8 under 2,048 rows, else 4 | Experiment: warps a block of q35_vq8 (2, 4 or 8) | kernels:qwen35 |
+| `NS_Q35_VERIFY_MMQ` | 9 (never) | the rows from which a decode / verify pass's products are ggml-cuda's MMQ (int8 tensor cores) where it has the matrix's type, instead of MMVQ's: one number, or one a card in the engine's order (`9,6`: the 3060 never, the 5070 from 6 rows) | llm qwen35 |
 | `NS_Q35_MMQ` | 1 | 0: a prompt chunk's products by each matrix expanded to half and cuBLAS instead of ggml-cuda's MMQ (int8 tensor cores from the blocks) | llm qwen35 |
 | `NS_Q35_VISION` | 1 | 0: no vision tower (the mmproj beside the model left unloaded: no pictures, its memory to the context) | llm qwen35 |
 | `NS_Q38_CASES` | none | Test: a directory the Qwen3.8 template test writes each case's prompt to (compared with the jinja template by tooling) | tok (tests) |

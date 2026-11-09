@@ -22,7 +22,8 @@ pub const ARCH: &str = "qwen35";
 pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "chunk", env: "NS_Q35_CHUNK", value: "TOKENS", help: "a prompt pass's rows (default 2048 when it fits beside the weights and a session, else 1024 or 512)", at: At::Load },
     EngineOption { name: "mtp", env: "NS_Q35_MTP", value: "FILE", help: "the MTP draft block's GGUF (default: the one in an MTP/ folder beside the model)", at: At::Load },
-    EngineOption { name: "drafts", env: "NS_Q35_DRAFTS", value: "N", help: "tokens drafted a step with MTP (default 3, at most 7; 0: none)", at: At::Load },
+    EngineOption { name: "drafts", env: "NS_Q35_DRAFTS", value: "N", help: "tokens drafted a step with MTP or DSpine (default 2, at most 7; 0: none)", at: At::Load },
+    EngineOption { name: "dspine", env: "NS_Q35_DSPINE", value: "DIR", help: "Tencent's DSpine draft (config.json, model.safetensors) in MTP's place; auto: a dspine/ folder beside the model", at: At::Load },
 ];
 
 pub fn kind() -> EngineKind {
@@ -121,7 +122,14 @@ impl Engine for Qwen35<'_> {
         // nsq35-2: a checkpoint carries the session's rotary shift (pictures); -3: the DeltaNet state value-column first
         // (each GPU's cache type: f16-kv, q8-kv, f16,q8-kv ... - NS_Q35_KV)
         let kv = format!("{}-kv", self.0.kv_types());
-        if self.has_draft() { format!("qwen35 {kv} nsq35-3 mtp") } else { format!("qwen35 {kv} nsq35-3") }
+        // (DSpine's: its context ring, not MTP's cache)
+        if self.0.drafts_with_dspine() {
+            format!("qwen35 {kv} nsq35-3 dspine")
+        } else if self.has_draft() {
+            format!("qwen35 {kv} nsq35-3 mtp")
+        } else {
+            format!("qwen35 {kv} nsq35-3")
+        }
     }
     fn session(&self, max_ctx: usize) -> Result<Session> {
         Ok(Session::new(Sess(self.0.session(max_ctx)?)))
