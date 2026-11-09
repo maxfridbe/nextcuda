@@ -216,6 +216,27 @@ paths:
                 $ref: '#/components/schemas/Vectorized'
         default:
           description: 'an error: the body''s `error` says what'
+  /v1/images/svg-fit:
+    post:
+      operationId: svgFit
+      summary: 'A picture fitted with SVG paths (svgrender: LIVE''s optimisation on the vector rasterizer)'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageSvgFitBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SvgFit'
+        default:
+          description: 'an error: the body''s `error` says what'
   /v1/images/upscale:
     post:
       operationId: upscale
@@ -563,6 +584,7 @@ components:
       enum:
       - ocr
       - vectorize
+      - svg-fit
       - upscale
       - upscale-video
       - cutout
@@ -783,6 +805,102 @@ components:
       - image
       additionalProperties: true
       description: 'What image.remove_background makes from: the body its kind''s server takes.'
+    ImageSvgFitBody:
+      type: object
+      properties:
+        image:
+          type: string
+          description: 'the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload)'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the fitter''s id (svgrender-live); none: the loaded one, else the first enabled'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        style:
+          anyOf:
+          - $ref: '#/components/schemas/SvgStyle'
+          - type: 'null'
+          description: the paths' kind (default iconography)
+        paths:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 1
+          maximum: 1024
+          description: 'paths in all (pixelart: squares a side); default 128 (pixelart 32, sketch and painting 96)'
+        schedule:
+          anyOf:
+          - type: array
+            items:
+              type: integer
+          - type: 'null'
+          description: 'the paths each layer adds, in order (their sum is the paths); default: the paths over eight layers'
+        iters:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 1
+          maximum: 5000
+          description: optimiser steps a layer (default 250); at most 40,000 steps a fit
+        segments:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 1
+          maximum: 16
+          description: cubic segments a path (default 4; sketch 2, painting 1)
+        size:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 64
+          maximum: 1024
+          description: 'the canvas''s longer side in pixels: the picture is fitted at that size (the SVG keeps its own); default 384'
+        stroke_width:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'sketch and painting: the strokes'' width in canvas pixels (default the longer side / 160, painting / 60)'
+        udf:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: LIVE's unsigned-distance weighting of the loss (default on; off for pixelart)
+        xing_weight:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0.0
+          maximum: 10.0
+          description: LIVE's self-intersection loss weight (default 0.01)
+        background:
+          anyOf:
+          - type: string
+          - type: 'null'
+          maxLength: 7
+          description: '"#rrggbb": a background rectangle in the SVG, and what the paths are fitted over; none: white, not written'
+        preview_every:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 0
+          maximum: 5000
+          default: 25
+          description: 'the progress carries the SVG as it stands every this many steps (and at each layer''s end; 0: then only); default 25'
+        png:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: false
+          description: 'true: the final paths rendered as a PNG too (png_b64_json)'
+      required:
+      - image
+      additionalProperties: true
+      description: 'What image.svg_fit makes from: the body its kind''s server takes.'
     ImageUpscaleBody:
       type: object
       properties:
@@ -1045,6 +1163,11 @@ components:
           - type: boolean
           - type: 'null'
           description: it writes pictures as SVG (a vectorizer)
+        svg_fit:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'it fits pictures with SVG paths (svgrender: image.svg_fit)'
         upscale:
           anyOf:
           - type: array
@@ -1244,6 +1367,32 @@ components:
           - type: number
           - type: 'null'
           description: seconds since it started
+        layer:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: 'an SVG fit: the layer of `layers`, the paths drawn, the loss after the step'
+        layers:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        paths:
+          anyOf:
+          - type: integer
+          - type: 'null'
+        loss:
+          anyOf:
+          - type: number
+          - type: 'null'
+        svg:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'an SVG fit: the SVG as it stood at `svg_at` (every preview_every steps and each layer''s end)'
+        svg_at:
+          anyOf:
+          - type: integer
+          - type: 'null'
         waiting:
           anyOf:
           - type: integer
@@ -1340,6 +1489,88 @@ components:
       - closed
       - tokens
       description: An SVG written
+    SvgFit:
+      type: object
+      properties:
+        created:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SvgFitted'
+        nextsycl:
+          $ref: '#/components/schemas/SvgFitRun'
+      required:
+      - created
+      - data
+      - nextsycl
+      description: A picture fitted with SVG paths (image.svg_fit's answer)
+    SvgFitRun:
+      type: object
+      properties:
+        seconds:
+          type: number
+        steps:
+          type: integer
+        ms_per_step:
+          type: number
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - seconds
+      - steps
+      - ms_per_step
+      description: How a fit ran
+    SvgFitted:
+      type: object
+      properties:
+        svg:
+          type: string
+          description: 'a complete SVG document: the canvas as its viewBox, shown at the picture''s size'
+        paths:
+          type: integer
+        layers:
+          type: integer
+        steps:
+          type: integer
+        width:
+          type: integer
+          description: the canvas it was fitted on
+        height:
+          type: integer
+        loss:
+          type: number
+          description: the last step's loss; the fit's MSE and PSNR (dB) against the picture at the canvas's size, over the background
+        mse:
+          type: number
+        psnr:
+          type: number
+        png_b64_json:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'png: true - the paths rendered at the canvas''s size'
+      required:
+      - svg
+      - paths
+      - layers
+      - steps
+      - width
+      - height
+      - loss
+      - mse
+      - psnr
+      description: A picture fitted with SVG paths
+    SvgStyle:
+      type: string
+      enum:
+      - iconography
+      - pixelart
+      - sketch
+      - painting
+      description: 'An SVG style (VectorFusion''s): iconography (filled closed paths: LIVE) | pixelart (a grid of squares) | sketch (black open strokes) | painting (coloured open strokes)'
     UpscaleInfo:
       type: object
       properties:

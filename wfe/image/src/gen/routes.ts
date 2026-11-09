@@ -119,7 +119,7 @@ export interface HistoryEntry {
 }
 
 /** What a history entry was: a picture made (none), or another kind of work */
-export type HistoryKind = "ocr" | "vectorize" | "upscale" | "upscale-video" | "cutout";
+export type HistoryKind = "ocr" | "vectorize" | "svg-fit" | "upscale" | "upscale-video" | "cutout";
 
 /** What image.edit makes from: the body its kind's server takes. */
 export interface ImageEditBody {
@@ -229,6 +229,72 @@ export interface ImageRemoveBackgroundBody {
   post_process_mask?: boolean | null;
   /** b64_json (default): the PNGs as base64; url: the server keeps them and links them */
   response_format?: ResponseFormat | null;
+  /** other keys */
+  [key: string]: unknown;
+}
+
+/** What image.svg_fit makes from: the body its kind's server takes. */
+export interface ImageSvgFitBody {
+  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload) */
+  image: string;
+  /** the fitter's id (svgrender-live); none: the loaded one, else the first enabled */
+  model?: string | null;
+  seed?: number | null;
+  /** the paths' kind (default iconography) */
+  style?: SvgStyle | null;
+  /**
+   * paths in all (pixelart: squares a side); default 128 (pixelart 32, sketch and painting 96)
+   * @minimum 1
+   * @maximum 1024
+   */
+  paths?: number | null;
+  /** the paths each layer adds, in order (their sum is the paths); default: the paths over eight layers */
+  schedule?: number[] | null;
+  /**
+   * optimiser steps a layer (default 250); at most 40,000 steps a fit
+   * @minimum 1
+   * @maximum 5000
+   */
+  iters?: number | null;
+  /**
+   * cubic segments a path (default 4; sketch 2, painting 1)
+   * @minimum 1
+   * @maximum 16
+   */
+  segments?: number | null;
+  /**
+   * the canvas's longer side in pixels: the picture is fitted at that size (the SVG keeps its own); default 384
+   * @minimum 64
+   * @maximum 1024
+   */
+  size?: number | null;
+  /** sketch and painting: the strokes' width in canvas pixels (default the longer side / 160, painting / 60) */
+  stroke_width?: number | null;
+  /** LIVE's unsigned-distance weighting of the loss (default on; off for pixelart) */
+  udf?: boolean | null;
+  /**
+   * LIVE's self-intersection loss weight (default 0.01)
+   * @minimum 0.0
+   * @maximum 10.0
+   */
+  xing_weight?: number | null;
+  /**
+   * "#rrggbb": a background rectangle in the SVG, and what the paths are fitted over; none: white, not written
+   * @maxLength 7
+   */
+  background?: string | null;
+  /**
+   * the progress carries the SVG as it stands every this many steps (and at each layer's end; 0: then only); default 25
+   * @minimum 0
+   * @maximum 5000
+   * @default 25
+   */
+  preview_every?: number | null;
+  /**
+   * true: the final paths rendered as a PNG too (png_b64_json)
+   * @default false
+   */
+  png?: boolean | null;
   /** other keys */
   [key: string]: unknown;
 }
@@ -360,6 +426,8 @@ export interface Info {
   wfe?: boolean | null;
   /** it writes pictures as SVG (a vectorizer) */
   vectorize?: boolean | null;
+  /** it fits pictures with SVG paths (svgrender: image.svg_fit) */
+  svg_fit?: boolean | null;
   /** an upscaler's variants (empty: it draws) */
   upscale?: UpscaleInfo[] | null;
 }
@@ -446,6 +514,14 @@ export interface Progress {
   tokens?: number | null;
   /** seconds since it started */
   seconds?: number | null;
+  /** an SVG fit: the layer of `layers`, the paths drawn, the loss after the step */
+  layer?: number | null;
+  layers?: number | null;
+  paths?: number | null;
+  loss?: number | null;
+  /** an SVG fit: the SVG as it stood at `svg_at` (every preview_every steps and each layer's end) */
+  svg?: string | null;
+  svg_at?: number | null;
   /** requests waiting for the engine */
   waiting?: number | null;
   /** the front door's job running, if it named one */
@@ -487,6 +563,42 @@ export interface Svg {
   closed: boolean;
   tokens: number;
 }
+
+/** A picture fitted with SVG paths (image.svg_fit's answer) */
+export interface SvgFit {
+  created: number;
+  data: SvgFitted[];
+  nextsycl: SvgFitRun;
+}
+
+/** How a fit ran */
+export interface SvgFitRun {
+  seconds: number;
+  steps: number;
+  ms_per_step: number;
+  wh?: number | null;
+}
+
+/** A picture fitted with SVG paths */
+export interface SvgFitted {
+  /** a complete SVG document: the canvas as its viewBox, shown at the picture's size */
+  svg: string;
+  paths: number;
+  layers: number;
+  steps: number;
+  /** the canvas it was fitted on */
+  width: number;
+  height: number;
+  /** the last step's loss; the fit's MSE and PSNR (dB) against the picture at the canvas's size, over the background */
+  loss: number;
+  mse: number;
+  psnr: number;
+  /** png: true - the paths rendered at the canvas's size */
+  png_b64_json?: string | null;
+}
+
+/** An SVG style (VectorFusion's): iconography (filled closed paths: LIVE) | pixelart (a grid of squares) | sketch (black open strokes) | painting (coloured open strokes) */
+export type SvgStyle = "iconography" | "pixelart" | "sketch" | "painting";
 
 /** A variant an upscaler offers */
 export interface UpscaleInfo {
@@ -708,6 +820,12 @@ export function routes(base = "", fetcher: typeof fetch = (u, i) => fetch(u, i))
      * @tags openai
      */
     vectorize: (req: ImageVectorizeBody): Promise<Vectorized> => r.json("POST", r.url("/v1/images/vectorize", req, false), JSON.stringify(req), "application/json", false),
+    /**
+     * A picture fitted with SVG paths (svgrender: LIVE's optimisation on the vector rasterizer)
+     * @route POST /v1/images/svg-fit
+     * @tags openai
+     */
+    svgFit: (req: ImageSvgFitBody): Promise<SvgFit> => r.json("POST", r.url("/v1/images/svg-fit", req, false), JSON.stringify(req), "application/json", false),
     /**
      * A picture upscaled (Real-ESRGAN, waifu2x): a link, or the PNG as base64
      * @route POST /v1/images/upscale

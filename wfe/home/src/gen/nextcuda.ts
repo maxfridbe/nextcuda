@@ -909,6 +909,274 @@ export interface ImageStatusReq {
   [key: string]: unknown;
 }
 
+/** What image.svg_fit takes. */
+export interface ImageSvgFitReq {
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
+  batch?: string | null;
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
+  held?: boolean | null;
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
+  label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
+  priority?: number | null;
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
+  project?: string | null;
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
+  queue?: boolean | null;
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
+  reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload) */
+  image: string;
+  /** the fitter's id (svgrender-live); none: the loaded one, else the first enabled */
+  model?: string | null;
+  seed?: number | null;
+  /** the paths' kind (default iconography) */
+  style?: SvgStyle | null;
+  /**
+   * paths in all (pixelart: squares a side); default 128 (pixelart 32, sketch and painting 96)
+   * @minimum 1
+   * @maximum 1024
+   */
+  paths?: number | null;
+  /** the paths each layer adds, in order (their sum is the paths); default: the paths over eight layers */
+  schedule?: number[] | null;
+  /**
+   * optimiser steps a layer (default 250); at most 40,000 steps a fit
+   * @minimum 1
+   * @maximum 5000
+   */
+  iters?: number | null;
+  /**
+   * cubic segments a path (default 4; sketch 2, painting 1)
+   * @minimum 1
+   * @maximum 16
+   */
+  segments?: number | null;
+  /**
+   * the canvas's longer side in pixels: the picture is fitted at that size (the SVG keeps its own); default 384
+   * @minimum 64
+   * @maximum 1024
+   */
+  size?: number | null;
+  /** sketch and painting: the strokes' width in canvas pixels (default the longer side / 160, painting / 60) */
+  stroke_width?: number | null;
+  /** LIVE's unsigned-distance weighting of the loss (default on; off for pixelart) */
+  udf?: boolean | null;
+  /**
+   * LIVE's self-intersection loss weight (default 0.01)
+   * @minimum 0.0
+   * @maximum 10.0
+   */
+  xing_weight?: number | null;
+  /**
+   * "#rrggbb": a background rectangle in the SVG, and what the paths are fitted over; none: white, not written
+   * @maxLength 7
+   */
+  background?: string | null;
+  /**
+   * the progress carries the SVG as it stands every this many steps (and at each layer's end; 0: then only); default 25
+   * @minimum 0
+   * @maximum 5000
+   * @default 25
+   */
+  preview_every?: number | null;
+  /**
+   * true: the final paths rendered as a PNG too (png_b64_json)
+   * @default false
+   */
+  png?: boolean | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
+  /** other keys */
+  [key: string]: unknown;
+}
+
+/** What image.svg_generate takes. */
+export interface ImageSvgGenerateReq {
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
+  batch?: string | null;
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
+  held?: boolean | null;
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
+  label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
+  priority?: number | null;
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
+  project?: string | null;
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
+  queue?: boolean | null;
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
+  reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /**
+   *
+   * @maxLength 4000
+   */
+  prompt: string;
+  /**
+   * the words put after the prompt for the drawing (none: the style's, VectorFusion's - iconography: "minimal flat 2d vector icon. lineal color. on a white background. trending on artstation"); "" for none
+   * @maxLength 1000
+   */
+  prompt_suffix?: string | null;
+  /** the model that draws the picture first (none: z-image-turbo when enabled, else the first enabled model that draws) */
+  draw_model?: string | null;
+  /**
+   * the drawing's size, WxH (default 1024x1024)
+   * @maxLength 12
+   */
+  draw_size?: string | null;
+  /**
+   * the drawing's steps (none: its model's default)
+   * @minimum 1
+   * @maximum 100
+   */
+  draw_steps?: number | null;
+  /** the fitter's id (svgrender-live); none: the loaded one, else the first enabled */
+  model?: string | null;
+  /** the drawing's seed and the fit's */
+  seed?: number | null;
+  /** the paths' kind (default iconography) */
+  style?: SvgStyle | null;
+  /**
+   * paths in all (pixelart: squares a side); default 128 (pixelart 32, sketch and painting 96)
+   * @minimum 1
+   * @maximum 1024
+   */
+  paths?: number | null;
+  /** the paths each layer adds, in order (their sum is the paths); default: the paths over eight layers */
+  schedule?: number[] | null;
+  /**
+   * optimiser steps a layer (default 250); at most 40,000 steps a fit
+   * @minimum 1
+   * @maximum 5000
+   */
+  iters?: number | null;
+  /**
+   * cubic segments a path (default 4; sketch 2, painting 1)
+   * @minimum 1
+   * @maximum 16
+   */
+  segments?: number | null;
+  /**
+   * the canvas's longer side in pixels: the picture is fitted at that size (the SVG keeps its own); default 384
+   * @minimum 64
+   * @maximum 1024
+   */
+  size?: number | null;
+  /** sketch and painting: the strokes' width in canvas pixels (default the longer side / 160, painting / 60) */
+  stroke_width?: number | null;
+  /** LIVE's unsigned-distance weighting of the loss (default on; off for pixelart) */
+  udf?: boolean | null;
+  /**
+   * LIVE's self-intersection loss weight (default 0.01)
+   * @minimum 0.0
+   * @maximum 10.0
+   */
+  xing_weight?: number | null;
+  /**
+   * "#rrggbb": a background rectangle in the SVG, and what the paths are fitted over; none: white, not written
+   * @maxLength 7
+   */
+  background?: string | null;
+  /**
+   * the progress carries the SVG as it stands every this many steps (and at each layer's end; 0: then only); default 25
+   * @minimum 0
+   * @maximum 5000
+   * @default 25
+   */
+  preview_every?: number | null;
+  /**
+   * true: the final paths rendered as a PNG too (png_b64_json)
+   * @default false
+   */
+  png?: boolean | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
+  /** other keys */
+  [key: string]: unknown;
+}
+
 /** What image.upload takes. */
 export interface ImageUploadReq {
   /** the picture, base64 (a data: URL too) */
@@ -1491,6 +1759,9 @@ export type ResponseFormat = "url" | "b64_json";
 
 /** YuE2's plan before the music: full (a melody and chords score) | melody (a melody alone) | off (none) */
 export type SongCot = "full" | "melody" | "off";
+
+/** An SVG style (VectorFusion's): iconography (filled closed paths: LIVE) | pixelart (a grid of squares) | sketch (black open strokes) | painting (coloured open strokes) */
+export type SvgStyle = "iconography" | "pixelart" | "sketch" | "painting";
 
 /** What system.busy takes. */
 export interface SystemBusyReq {
@@ -2416,6 +2687,18 @@ export interface Methods {
    */
   "image.vectorize": { req: ImageVectorizeReq; resp: any };
   /**
+   * A picture fitted with SVG paths (svgrender: LIVE's layer-wise optimisation through DiffVG's differentiable rasterizer, in CUDA): paths added a layer at a time where the fit is worst and moved by Adam each step; styles iconography, pixelart, sketch, painting. Always a complete SVG. A job like image.vectorize (wait, reentrant_id, image.status - its progress carries the step, the loss and every preview_every steps the SVG so far -, image.cancel stops it at the next step)
+   * @tags image
+   * @example {"image":"upload:up_1792400000_logo.png","paths":64,"style":"iconography"}
+   */
+  "image.svg_fit": { req: ImageSvgFitReq; resp: any };
+  /**
+   * Text to SVG (VectorFusion's first stages): the prompt, with the style's words, drawn by a picture model (Z-Image-Turbo), then that picture fitted with SVG paths as image.svg_fit. The answer has the SVG and the drawing. A job (wait, reentrant_id, image.status, image.cancel)
+   * @tags image
+   * @example {"paths":96,"prompt":"a red fox sitting in the snow","style":"iconography"}
+   */
+  "image.svg_generate": { req: ImageSvgGenerateReq; resp: any };
+  /**
    * A picture's background removed (BiRefNet, IS-Net general-use): the RGBA picture at its own size - its colours, the mask as straight alpha - and with mask: true the 8-bit mask alone; b64_json (default) or url. A job like image.upscale (wait, reentrant_id, status, cancel)
    * @tags image
    * @example {"image":"upload:up_1792400000_chair.png","mask":true,"model":"birefnet"}
@@ -3047,6 +3330,18 @@ export function client(post: Post, raw?: PostRaw) {
      * @example {"image":"upload:up_1792400000_logo.png","max_length":5000,"model":"starvector-1b-im2svg"}
      */
     "image.vectorize": (req: ImageVectorizeReq): Promise<any> => post("image.vectorize", req),
+    /**
+     * A picture fitted with SVG paths (svgrender: LIVE's layer-wise optimisation through DiffVG's differentiable rasterizer, in CUDA): paths added a layer at a time where the fit is worst and moved by Adam each step; styles iconography, pixelart, sketch, painting. Always a complete SVG. A job like image.vectorize (wait, reentrant_id, image.status - its progress carries the step, the loss and every preview_every steps the SVG so far -, image.cancel stops it at the next step)
+     * @tags image
+     * @example {"image":"upload:up_1792400000_logo.png","paths":64,"style":"iconography"}
+     */
+    "image.svg_fit": (req: ImageSvgFitReq): Promise<any> => post("image.svg_fit", req),
+    /**
+     * Text to SVG (VectorFusion's first stages): the prompt, with the style's words, drawn by a picture model (Z-Image-Turbo), then that picture fitted with SVG paths as image.svg_fit. The answer has the SVG and the drawing. A job (wait, reentrant_id, image.status, image.cancel)
+     * @tags image
+     * @example {"paths":96,"prompt":"a red fox sitting in the snow","style":"iconography"}
+     */
+    "image.svg_generate": (req: ImageSvgGenerateReq): Promise<any> => post("image.svg_generate", req),
     /**
      * A picture's background removed (BiRefNet, IS-Net general-use): the RGBA picture at its own size - its colours, the mask as straight alpha - and with mask: true the 8-bit mask alone; b64_json (default) or url. A job like image.upscale (wait, reentrant_id, status, cancel)
      * @tags image

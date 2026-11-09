@@ -1,0 +1,17 @@
+# svgrender LIVE (no weights): PyTorch-SVGRender's technique - DiffVG's differentiable rasterizer and LIVE's layer-wise
+# optimiser - in Rust and CUDA (image/svgrender). image.svg_fit (a picture to SVG) and image.svg_generate (a prompt,
+# drawn by a picture model, then fitted). The code it ports: PyTorch-SVGRender (MPL-2.0), DiffVG (Apache-2.0)
+id: svgrender-live
+kind: image
+arch: svgrender
+license: mpl-2.0
+commercial: true
+license_note: 'No weights: a port of PyTorch-SVGRender''s LIVE pipeline (MPL-2.0) and DiffVG''s rasterizer (Apache-2.0); the SVGs it writes are the caller''s. image.svg_generate''s drawing is under its drawing model''s licence (z-image-turbo: Apache-2.0)'
+title: 'svgrender LIVE (pictures fitted with SVG paths: iconography, pixel art, sketch, painting)'
+about: 'A picture fitted with editable SVG paths by LIVE''s layer-wise optimisation (paths added where the fit is worst, Adam on every control point and colour, the distance-weighted MSE and the xing loss) through DiffVG''s prefiltered rasterizer, all on the GPU; VectorFusion''s styles. Checked against DiffVG (pixels 1e-6, colour gradients 1e-6, point gradients 7e-4 - 2e-2) and upstream LIVE (the same PSNR, 230x faster than its CPU run). 128 paths at 384 px in about 1 s on the 5070'
+gpus: '1'
+vram_gib: 0.4                   # an estimate until measured on the box (the CUDA context and a few MB of buffers)
+defaults: {}
+env: {}
+files: {}
+guide: guides/svgrender.md

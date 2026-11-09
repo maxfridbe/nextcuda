@@ -34,6 +34,7 @@ nextsycl's, kept until phase 2 replaces it.)
 | `NC_FLASHVSR_PROFILE` | 0 | 1: FlashVSR waits for its cards at each stage and logs where a clip's time went | image flashvsr |
 | `NC_FLASHVSR_PIPELINE` | 1 | 0: FlashVSR's cards take turns instead of overlapping (the second card's blocks for a chunk beside the first card's decoding of the one before) | image flashvsr |
 | `NC_FLASHVSR_CONV` | implicit | im2col: FlashVSR's decoder convolutions unfolded and multiplied by cuBLAS (the first path) instead of its implicit-GEMM kernel | image flashvsr |
+| `NS_SVG_DUMP` | 0 | 1: `nextcuda image svg-check` writes its own pixels and point gradients beside the reference's (nextcuda_pre.npy, nextcuda_g_points.npy) | image svgrender |
 | `NC_FLASHVSR_TILE` | auto | 1: FlashVSR runs a clip in tiles over segments even when it fits the cards whole; 0: never (a size too big is refused); auto: in tiles when the cards cannot hold it whole (x4 of 864 x 480) | image flashvsr |
 | `NEXTCUDA_URL` | http://127.0.0.1:8000 | the front door tooling/test_vsr_frontdoor.sh sends its clips to | tooling |
 | `NEXTCUDA_BIN` | ../dist/nextcuda beside the script | the program tooling/test_upscale_names.sh starts its two servers with | tooling |
