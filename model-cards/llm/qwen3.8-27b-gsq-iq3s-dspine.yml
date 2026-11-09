@@ -1,0 +1,43 @@
+# Qwen3.8-27B GSQ-RCO IQ3_S with Tencent's DSpine draft in MTP's place (7 drafts a step) - for code; 48K context
+# model card (model-cards/README.md): the files of qwen3.8-27b-gsq-iq3s, plus the draft's two (docs/ports/dspine.md). The
+# draft's layers (1.9 GiB) and its ring cache go on the 5070 beside the head; the plan moves target layers to the 3060
+# for them (layers 0-28 there at 48K, 0-22 on the MTP card), so a round's verify pass costs more and the long drafts must
+# pay for it: they do on code (+18% tg against the MTP card, 67-75 against 57), not on prose or long documents (the MTP card
+# stays the default for those)
+id: qwen3.8-27b-gsq-iq3s-dspine
+kind: llm
+arch: qwen35
+license: apache-2.0
+commercial: true
+license_note: 'Both parts are Apache-2.0: Qwen3.8-27B (via ISTA-DASLab''s GSQ-RCO GGUF) and Tencent''s Qwen3.8-27B-DSpine-b16 draft.'
+title: Qwen3.8-27B GSQ-RCO IQ3_S + DSpine draft (code; two cards, 48K)
+about: 'The qwen3.8-27b-gsq-iq3s files with Tencent''s DSpine-b16 draft (5 layers, 2 B; Apache-2.0) in MTP''s place: a block of 7 drafts from one pass, verified by the model (the output is the model''s own). Greedy 256 tokens on the 5070 + 3060: code 75 tok/s against the MTP card''s 57; prose 32-38 and a 15K-token document 47-49 against MTP''s 44 and 52, and prompts read ~15% slower (fewer layers on the faster card) - use it for code. 48K of context (the MTP card: 80K), text and pictures.'
+gpus: '1,0'                      # the order the engine takes them: the last (the 5070, with the head and the draft) is filled first
+split: true
+vram_gib: 10.8                   # measured at 48K, 7 drafts: 5070 11,073 MB, 3060 7,091 MB (the 3060 keeps ~5 GB for a speech model)
+ctx: '49152'                     # 48K: the 5070 keeps 35 of the 64 layers (80K: 31 of them, 6-7% slower on code)
+tools: true
+tasks: true
+env:
+  NS_PARALLEL: '1'               # one session: all of the cache to it
+  NS_Q35_KV: 'q8'                # the cache q8_0 on both cards, as the MTP card
+  NS_Q35_DSPINE: auto            # the dspine/ folder beside the model (the two files below)
+  NS_Q35_DRAFTS: '7'             # drafts a step (at most 7: a verify pass is at most 8 rows)
+  NS_Q35_VERIFY_MMQ: '6'         # verify passes of 6..8 rows: MMQ's products for the types vq8 does not take (faster than MMVQ there)
+  NS_Q35_VQ8: '6'                # ... and q35_vq8's for IQ3_S / IQ3_XXS / IQ4_XS (8 rows: 61 ms a pass against MMQ's 63, MMVQ's 67)
+files:
+  model: qwen3.8-27b-gsq-rco-iq3s-mtp
+  mmproj: qwen3.8-27b-mmproj-bf16
+  dspine:
+    key: qwen3.8-27b-dspine-b16
+    url: https://huggingface.co/tencent/Qwen3.8-27B-DSpine-b16/resolve/5f54174d301dbca65d9aa4448dc47e56732d9a12/model.safetensors
+    size: 4051831880
+    sha256: ac90f1df842ea66b23e4224f3e86624add547526f689ffe9e9c6b7a5937116b1
+    path: qwen3.8-27b-gsq/dspine/model.safetensors
+  dspine_config:
+    key: qwen3.8-27b-dspine-b16-config
+    url: https://huggingface.co/tencent/Qwen3.8-27B-DSpine-b16/resolve/5f54174d301dbca65d9aa4448dc47e56732d9a12/config.json
+    size: 2302
+    sha256: c2aa9e3ff22766ea7df0fa5b5f5f7d2035ae722671c6b7eb58b65578705e6815
+    path: qwen3.8-27b-gsq/dspine/config.json
+guide: guides/chat.md

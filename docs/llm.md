@@ -59,6 +59,13 @@ size gives KL 0.00093:
 q8_0 is within the noise; q4_0 is ~3-9x it, the rotation (a 32-block Hadamard transform of keys, values and queries,
 QuaRot's) taking a third off. q4_0 on the 5070 is the fast and long-context choice: five more layers there.
 
+**For code: the DSpine draft** (`qwen3.8-27b-gsq-iq3s-dspine`, [ports/dspine.md](ports/dspine.md)): Tencent's parallel block
+drafter in MTP's place, 7 drafts from one pass of its five layers, verified the same way. Greedy 256 tokens: code 75 tok/s
+against the MTP card's 57 (4.9 tokens a round against 2.6); prose 32-38 against 44 and a 15K-token document 49 against 52 -
+so MTP stays the default. Its 1.9 GiB go on the 5070 (layers move to the 3060: prompts ~15% slower), at 48K of context so a
+speech model still fits on the 3060. Verify passes of 6-8 rows take MMQ's products (`NS_Q35_VERIFY_MMQ`) and `q35_vq8`'s
+(`NS_Q35_VQ8`: each i-quant block decoded once for all the rows, on the int8 tensor cores).
+
 Also done: prompts with pictures are pipelined too (their positions and rows through pinned slots); a layer's
 tensors are one allocation (one each had lost ~260 MB on the 5070 to 2 MiB rounding); a shared input is quantized
 once for the products that read it; four drafts a step load at 80K.
