@@ -867,6 +867,137 @@ pub struct ImageVectorizeBody {
     pub rest: serde_json::Map<String, serde_json::Value>,
 }
 
+/// An SVG style (VectorFusion's): iconography (filled closed paths: LIVE) | pixelart (a grid of squares) | sketch (black
+/// open strokes) | painting (coloured open strokes)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum SvgStyle {
+    #[serde(rename = "iconography")]
+    Iconography,
+    #[serde(rename = "pixelart")]
+    Pixelart,
+    #[serde(rename = "sketch")]
+    Sketch,
+    #[serde(rename = "painting")]
+    Painting,
+}
+
+/// How a picture is fitted with SVG paths (image.svg_fit, image.svg_generate)
+#[derive(Deserialize, Serialize, Rpc, Default)]
+pub struct SvgFitSettings {
+    /// the paths' kind (default iconography)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<SvgStyle>,
+    /// paths in all (pixelart: squares a side); default 128 (pixelart 32, sketch and painting 96)
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 1, max = 1024)]
+    pub paths: Option<i64>,
+    /// the paths each layer adds, in order (their sum is the paths); default: the paths over eight layers
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Vec<i64>>,
+    /// optimiser steps a layer (default 250); at most 40,000 steps a fit
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 1, max = 5000)]
+    pub iters: Option<i64>,
+    /// cubic segments a path (default 4; sketch 2, painting 1)
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 1, max = 16)]
+    pub segments: Option<i64>,
+    /// the canvas's longer side in pixels: the picture is fitted at that size (the SVG keeps its own); default 384
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 64, max = 1024)]
+    pub size: Option<i64>,
+    /// sketch and painting: the strokes' width in canvas pixels (default the longer side / 160, painting / 60)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_width: Option<f64>,
+    /// LIVE's unsigned-distance weighting of the loss (default on; off for pixelart)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udf: Option<bool>,
+    /// LIVE's self-intersection loss weight (default 0.01)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0.0, max = 10.0)]
+    pub xing_weight: Option<f64>,
+    /// "#rrggbb": a background rectangle in the SVG, and what the paths are fitted over; none: white, not written
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_length = 7)]
+    pub background: Option<String>,
+    /// the progress carries the SVG as it stands every this many steps (and at each layer's end; 0: then only); default 25
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 0, max = 5000, default = 25)]
+    pub preview_every: Option<i64>,
+    /// true: the final paths rendered as a PNG too (png_b64_json)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(default = false)]
+    pub png: Option<bool>,
+}
+
+/// What image.svg_fit takes.
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct ImageSvgFitReq {
+    #[serde(flatten)]
+    pub job: JobOpts,
+    #[serde(flatten)]
+    pub body: ImageSvgFitBody,
+}
+
+/// What image.svg_fit makes from: the body its kind's server takes.
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct ImageSvgFitBody {
+    /// the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload)
+    pub image: String,
+    /// the fitter's id (svgrender-live); none: the loaded one, else the first enabled
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    pub seed: Option<i64>,
+    #[serde(flatten)]
+    pub fit: SvgFitSettings,
+    /// what else the caller sent: passed on as it came
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What image.svg_generate takes.
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct ImageSvgGenerateReq {
+    #[serde(flatten)]
+    pub job: JobOpts,
+    #[serde(flatten)]
+    pub body: ImageSvgGenerateBody,
+}
+
+/// What image.svg_generate makes from: a prompt drawn by a picture model, then fitted.
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct ImageSvgGenerateBody {
+    #[schema(max_length = 4000)]
+    pub prompt: String,
+    /// the words put after the prompt for the drawing (none: the style's, VectorFusion's - iconography: "minimal flat 2d vector icon. lineal color. on a white background. trending on artstation"); "" for none
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_length = 1000)]
+    pub prompt_suffix: Option<String>,
+    /// the model that draws the picture first (none: z-image-turbo when enabled, else the first enabled model that draws)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw_model: Option<String>,
+    /// the drawing's size, WxH (default 1024x1024)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_length = 12)]
+    pub draw_size: Option<String>,
+    /// the drawing's steps (none: its model's default)
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 1, max = 100)]
+    pub draw_steps: Option<i64>,
+    /// the fitter's id (svgrender-live); none: the loaded one, else the first enabled
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// the drawing's seed and the fit's
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    pub seed: Option<i64>,
+    #[serde(flatten)]
+    pub fit: SvgFitSettings,
+    /// what else the caller sent: passed on as it came
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
 /// What video.upscale takes.
 #[derive(Deserialize, Serialize, Rpc)]
 pub struct VideoUpscaleReq {
@@ -2519,6 +2650,18 @@ fn image_vectorize(h: &Arc<Home>, req: ImageVectorizeReq) -> Answer {
     h.legacy("image.vectorize", req)
 }
 
+/// A picture fitted with SVG paths (svgrender: LIVE's layer-wise optimisation through DiffVG's differentiable rasterizer, in CUDA): paths added a layer at a time where the fit is worst and moved by Adam each step; styles iconography, pixelart, sketch, painting. Always a complete SVG. A job like image.vectorize (wait, reentrant_id, image.status - its progress carries the step, the loss and every preview_every steps the SVG so far -, image.cancel stops it at the next step)
+#[rpc(name = "image.svg_fit", tags = "image", example = r#"{"image": "upload:up_1792400000_logo.png", "paths": 64, "style": "iconography"}"#)]
+fn image_svg_fit(h: &Arc<Home>, req: ImageSvgFitReq) -> Answer {
+    h.legacy("image.svg_fit", req)
+}
+
+/// Text to SVG (VectorFusion's first stages): the prompt, with the style's words, drawn by a picture model (Z-Image-Turbo), then that picture fitted with SVG paths as image.svg_fit. The answer has the SVG and the drawing. A job (wait, reentrant_id, image.status, image.cancel)
+#[rpc(name = "image.svg_generate", tags = "image", example = r#"{"paths": 96, "prompt": "a red fox sitting in the snow", "style": "iconography"}"#)]
+fn image_svg_generate(h: &Arc<Home>, req: ImageSvgGenerateReq) -> Answer {
+    h.legacy("image.svg_generate", req)
+}
+
 /// A picture's background removed (BiRefNet, IS-Net general-use): the RGBA picture at its own size - its colours, the mask as straight alpha - and with mask: true the 8-bit mask alone; b64_json (default) or url. A job like image.upscale (wait, reentrant_id, status, cancel)
 #[rpc(name = "image.remove_background", tags = "image", example = r#"{"image": "upload:up_1792400000_chair.png", "mask": true, "model": "birefnet"}"#)]
 fn image_remove_background(h: &Arc<Home>, req: ImageRemoveBackgroundReq) -> Answer {
@@ -2951,7 +3094,7 @@ rpcgen::rpc_methods![sync Arc<Home>, RpcFail;
     system_gpus, system_disable, system_load, system_unload, system_pin, system_unpin, system_eta, system_config, system_config_set,
     system_restart, system_maintenance, system_drives, system_drive_measure, system_move, system_move_cancel,
     llm_chat, llm_requests, llm_models, llm_describe_prompt_guide_md, image_generate, image_edit,
-    image_upscale, image_vectorize, image_remove_background, video_upscale, image_ocr, image_info, image_status,
+    image_upscale, image_vectorize, image_svg_fit, image_svg_generate, image_remove_background, video_upscale, image_ocr, image_info, image_status,
     image_jobs, image_queue_list, image_queue_move, image_queue_pause, image_queue_resume, image_upload,
     image_cancel, image_canvases_list, image_progress, image_history, image_describe_prompt_guide_md, audio_generate,
     audio_speak, audio_transcribe, audio_voices_list, audio_voices_add, audio_voices_design, audio_voices_remove,

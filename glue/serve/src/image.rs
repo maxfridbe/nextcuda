@@ -401,6 +401,7 @@ impl ImageServer {
                 "loaded": loaded.iter().find(|l| l.name == k.id).map(|l| l.scale)})).collect::<Vec<_>>(),
             "saves": self.out_dir.is_some(), "wfe": self.wfe.is_some(),
             "vectorize": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.vectorizes())).unwrap_or(false),
+            "svg_fit": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.fits_svg())).unwrap_or(false),
             "upscale": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.upscale_variants())).unwrap_or_default().iter()
                 .map(|v| json!({"variant": v.id, "about": v.about, "scales": v.scales, "noise": v.noise})).collect::<Vec<_>>(),
         })
@@ -604,6 +605,105 @@ impl ImageServer {
         }
         Ok(json!({"created": now(), "data": [{"svg": out.svg, "closed": out.closed, "tokens": out.tokens}],
                   "nextsycl": {"seconds": out.prompt_seconds + out.seconds, "prompt_seconds": out.prompt_seconds, "tokens": out.tokens, "tok_s": tok_s, "wh": wh}}))
+    }
+
+    /// POST /v1/images/svg-fit: {image (base64 / data URL), style, paths, schedule, iters, segments, size, stroke_width,
+    /// udf, xing_weight, background, preview_every, png, seed} - the picture fitted with SVG paths (svgrender); the
+    /// progress carries each step, and the SVG so far every preview_every steps; a cancel stops it at the next step
+    fn svg_fit(&self, b: &Value) -> Result<Value, (u16, String)> {
+        let bad = |m: String| (400u16, m);
+        let raw = b["image"].as_str().filter(|v| !v.is_empty()).ok_or_else(|| bad("image: the picture (base64 or a data: URL) is required".into()))?;
+        let pic = init_picture(raw).map_err(bad)?;
+        let int = |k: &str| -> Result<u32, (u16, String)> {
+            match &b[k] {
+                Value::Null => Ok(0),
+                v => v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())).map(|x| x.min(u32::MAX as u64) as u32)
+                    .ok_or_else(|| bad(format!("{k}: a whole number"))),
+            }
+        };
+        let background = match b["background"].as_str().filter(|v| !v.is_empty()) {
+            None => None,
+            Some(h) => {
+                let x = h.trim_start_matches('#');
+                if x.len() != 6 || !x.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(bad(format!("background {h:?}: #rrggbb")));
+                }
+                let c = |i: usize| u8::from_str_radix(&x[i..i + 2], 16).unwrap_or(255) as f32 / 255.0;
+                Some([c(0), c(2), c(4)])
+            }
+        };
+        let req = nextcuda_image::SvgFitRequest {
+            picture: pic,
+            style: b["style"].as_str().unwrap_or("").to_string(),
+            paths: int("paths")?,
+            schedule: b["schedule"].as_array().map(|a| a.iter().filter_map(Value::as_u64).map(|v| v.min(4096) as u32).collect()).unwrap_or_default(),
+            iters: int("iters")?,
+            segments: int("segments")?,
+            size: int("size")?,
+            stroke_width: b["stroke_width"].as_f64().unwrap_or(0.0) as f32,
+            udf: b["udf"].as_bool(),
+            xing_weight: b["xing_weight"].as_f64().map(|v| v as f32),
+            background,
+            preview_every: if b["preview_every"].is_null() { 25 } else { int("preview_every")? },
+            seed: b["seed"].as_u64().unwrap_or(0),
+        };
+        if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty() && *m != self.model) {
+            return Err((404, format!("model {m} is not served here (this server: {})", self.model)));
+        }
+        self.waiting.fetch_add(1, Ordering::Relaxed);
+        let g = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        self.waiting.fetch_sub(1, Ordering::Relaxed);
+        let (engine, _) = match g.as_ref() {
+            None => return Err((503, "the engine is not loaded".into())),
+            Some((e, _)) if !e.fits_svg() => return Err((400, format!("{} does not fit pictures with SVG paths (svgrender-live does)", self.model))),
+            Some(x) => x,
+        };
+        let Some(_running) = self.cancel.begin(b["request_id"].as_str()) else {
+            return Err((499, "cancelled".into()));
+        };
+        let j0 = self.tele.joules();
+        let p = &self.progress;
+        let what = format!("svg {} {}x{}", if req.style.is_empty() { "iconography" } else { &req.style }, req.picture.width, req.picture.height);
+        let mut svg: Option<(String, u32)> = None;
+        let out = engine.svg_fit(&req, &mut |st| {
+            if let Some(s) = &st.svg {
+                svg = Some((s.clone(), st.at));
+            }
+            let mut v = json!({"busy": true, "prompt": what, "at": st.at, "of": st.of, "phase": "steps", "seconds": st.seconds, "layer": st.layer,
+                               "layers": st.layers, "paths": st.paths, "loss": st.loss});
+            if let Some((s, at)) = &svg {
+                v["svg"] = json!(s);
+                v["svg_at"] = json!(at);
+            }
+            *p.lock().unwrap() = v;
+            if self.cancel.stopping() {
+                return Err(nextcuda_core::Error("cancelled".into()));
+            }
+            Ok(())
+        });
+        *p.lock().unwrap() = json!({"busy": false});
+        let out = out.map_err(|e| engine_fail(e, false))?;
+        let wh = match (j0, self.tele.joules()) {
+            (Some(a), Some(b)) if b >= a => Some((b - a) / 3600.0),
+            _ => None,
+        };
+        let png = match (b["png"].as_bool().unwrap_or(false), &out.render) {
+            (true, Some(r)) => Some(http::base64(&r.png_bytes(&[("model", self.model.clone())]).map_err(|e| (500u16, e))?)),
+            _ => None,
+        };
+        {
+            let mut h = self.history.lock().unwrap();
+            h.push_front(json!({"kind": "svg-fit", "prompt": format!("{} paths, {} steps, PSNR {:.1} dB", out.paths, out.steps, out.psnr),
+                                "seconds": out.seconds, "wh": wh, "created": now()}));
+            h.truncate(200);
+        }
+        let mut item = json!({"svg": out.svg, "paths": out.paths, "layers": out.layers, "steps": out.steps, "width": out.width, "height": out.height,
+                              "loss": out.loss, "mse": out.mse, "psnr": out.psnr});
+        if let Some(p) = png {
+            item["png_b64_json"] = json!(p);
+        }
+        Ok(json!({"created": now(), "data": [item],
+                  "nextsycl": {"seconds": out.seconds, "steps": out.steps, "ms_per_step": 1e3 * out.seconds / out.steps.max(1) as f64, "wh": wh}}))
     }
 
     /// POST /v1/images/remove-background: {image (base64 / data URL), model, mask, response_format}: the RGBA picture

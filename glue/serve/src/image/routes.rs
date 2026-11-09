@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{edit_body, err, init_picture, ImageServer};
-use crate::home::methods::{ImageEditBody, ImageGenerateBody, ImageOcrReq, ImageRemoveBackgroundBody, ImageUpscaleBody, ImageVectorizeBody, VideoUpscaleBody};
+use crate::home::methods::{ImageEditBody, ImageGenerateBody, ImageOcrReq, ImageRemoveBackgroundBody, ImageSvgFitBody, ImageUpscaleBody, ImageVectorizeBody, VideoUpscaleBody};
 use crate::page::{CancelReq, Cancelled, Cx, Fail, FileName, Gpu, Health, ModelList};
 
 /// The engine's own defaults (a request's absent fields)
@@ -158,6 +158,9 @@ pub struct Info {
     /// it writes pictures as SVG (a vectorizer)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vectorize: Option<bool>,
+    /// it fits pictures with SVG paths (svgrender: image.svg_fit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub svg_fit: Option<bool>,
     /// an upscaler's variants (empty: it draws)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upscale: Option<Vec<UpscaleInfo>>,
@@ -197,6 +200,20 @@ pub struct Progress {
     /// seconds since it started
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seconds: Option<f64>,
+    /// an SVG fit: the layer of `layers`, the paths drawn, the loss after the step
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loss: Option<f64>,
+    /// an SVG fit: the SVG as it stood at `svg_at` (every preview_every steps and each layer's end)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub svg: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub svg_at: Option<i64>,
     /// requests waiting for the engine
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<i64>,
@@ -212,6 +229,8 @@ pub enum HistoryKind {
     Ocr,
     #[serde(rename = "vectorize")]
     Vectorize,
+    #[serde(rename = "svg-fit")]
+    SvgFit,
     #[serde(rename = "upscale")]
     Upscale,
     #[serde(rename = "upscale-video")]
@@ -329,6 +348,43 @@ pub struct Vectorized {
     pub created: i64,
     pub data: Vec<Svg>,
     pub nextsycl: VectorizeRun,
+}
+
+/// A picture fitted with SVG paths
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct SvgFitted {
+    /// a complete SVG document: the canvas as its viewBox, shown at the picture's size
+    pub svg: String,
+    pub paths: i64,
+    pub layers: i64,
+    pub steps: i64,
+    /// the canvas it was fitted on
+    pub width: i64,
+    pub height: i64,
+    /// the last step's loss; the fit's MSE and PSNR (dB) against the picture at the canvas's size, over the background
+    pub loss: f64,
+    pub mse: f64,
+    pub psnr: f64,
+    /// png: true - the paths rendered at the canvas's size
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub png_b64_json: Option<String>,
+}
+
+/// How a fit ran
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct SvgFitRun {
+    pub seconds: f64,
+    pub steps: i64,
+    pub ms_per_step: f64,
+    pub wh: Option<f64>,
+}
+
+/// A picture fitted with SVG paths (image.svg_fit's answer)
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct SvgFit {
+    pub created: i64,
+    pub data: Vec<SvgFitted>,
+    pub nextsycl: SvgFitRun,
 }
 
 /// A picture or a clip upscaled: its link or its bytes (b64_json)
@@ -518,6 +574,12 @@ fn vectorize(s: &ImageServer, _cx: &mut Cx, req: ImageVectorizeBody) -> Result<C
     s.vectorize(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?).map(Checked::new)
 }
 
+/// A picture fitted with SVG paths (svgrender: LIVE's optimisation on the vector rasterizer)
+#[route(post = "/v1/images/svg-fit", tags = "openai")]
+fn svg_fit(s: &ImageServer, _cx: &mut Cx, req: ImageSvgFitBody) -> Result<Checked<SvgFit>, Fail> {
+    s.svg_fit(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?).map(Checked::new)
+}
+
 /// A picture upscaled (Real-ESRGAN, waifu2x): a link, or the PNG as base64
 #[route(post = "/v1/images/upscale", tags = "openai")]
 fn upscale(s: &ImageServer, cx: &mut Cx, req: ImageUpscaleBody) -> Result<Checked<Upscaled>, Fail> {
@@ -542,7 +604,7 @@ fn ocr(s: &ImageServer, _cx: &mut Cx, req: ImageOcrReq) -> Result<Checked<Readin
     s.ocr(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?).map(Checked::new)
 }
 
-routes![sync ImageServer, Cx, Fail; gpu, health, models, info, progress, history, cancel, file, generations, edits, vectorize, upscale, remove_background, upscale_video, ocr];
+routes![sync ImageServer, Cx, Fail; gpu, health, models, info, progress, history, cancel, file, generations, edits, vectorize, svg_fit, upscale, remove_background, upscale_video, ocr];
 
 /// The table, made once
 pub fn table() -> &'static [rpcgen::SyncRoute<ImageServer, Cx, Fail>] {

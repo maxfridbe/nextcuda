@@ -23,6 +23,12 @@ nextcuda image upscale-clip IN.mp4 OUT.mp4 [--model flashvsr] [--variant V] [--s
                           (a video super-resolution model over a clip, in this process: the frames streamed, the sound copied)
 nextcuda image vectorize PICTURE [--model starvector-1b-im2svg | --dir CHECKPOINT_DIR] [--max-length N] [--beams N] [--greedy] [--top-p P] [--seed S] [--out FILE.svg] [--gpu N]
 nextcuda image vectorize PICTURE --check REFERENCE_DIR [--stages pixels,encoder,prefill,logits,greedy] [--dir ...]   (against reference/starvector/ref.py's dumps)
+nextcuda image svg-fit PICTURE [--style iconography|pixelart|sketch|painting] [--paths N] [--schedule 4,4,8] [--iters N] [--segments N] [--size N]
+                       [--stroke-width W] [--no-udf] [--background RRGGBB] [--seed S] [--out FILE.svg] [--png FILE.png] [--gpu N]
+                       (svgrender: the picture fitted with SVG paths - LIVE's layer-wise optimisation on the vector rasterizer)
+nextcuda image svg-check REFERENCE_DIR [--only raster,udf,xing,sparse,live] [--gpu N]   (against reference/svgrender/ref.py's dumps)
+nextcuda image svg-selftest [--gpu N]   (the rasterizer's kernels against the host's float64 arithmetic: pixels and gradients)
+nextcuda image svg-bench [--sizes 240,512] [--paths 64,256] [--gpu N]   (a backward pass's time by canvas and path count)
 nextcuda image engines | selftest [--gpu N]";
 
 /// The image engines this program has (image/<arch>)
@@ -30,7 +36,7 @@ pub fn engines() -> Vec<nextcuda_image::ImageKind> {
     vec![nextcuda_image_qwenimage21::kind(), nextcuda_image_qwenimage21::kind_2512(), nextcuda_image_unlimitedocr::kind(), nextcuda_image_paddleocrvl::kind(),
          nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind(), nextcuda_image_upscale::kind(), nextcuda_image_flashvsr::kind(), nextcuda_image_rembg::kind(),
          nextcuda_image_starvector::kind(), nextcuda_image_mossimage::kind(), nextcuda_image_ph3image::kind(),
-         nextcuda_image_zimage::kind()]
+         nextcuda_image_zimage::kind(), nextcuda_image_svgrender::kind()]
 }
 
 /// `--gpu 0` or `--gpu 0,1` (an engine that splits over two cards takes the second too: olmOCR 2's vision tower)
@@ -583,6 +589,100 @@ fn vectorize_cmd(cfg: &Config, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `image svg-fit`: svgrender in this process, the progress on stderr
+fn svg_fit_cmd(args: &[String]) -> Result<(), String> {
+    let input = args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && (*i == 0 || !args[i - 1].starts_with("--") || args[i - 1] == "--no-udf"))
+        .map(|(_, a)| a.clone()).ok_or(USAGE)?;
+    nextcuda_core::use_kind("image");
+    let gs = gpus(args)?;
+    let pic = nextcuda_image::Picture::decode(&std::fs::read(&input).map_err(|e| format!("{input}: {e}"))?)?;
+    let num = |k: &str| opt(args, k).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+    let bg = match opt(args, "--background") {
+        Some(h) => {
+            let h = h.trim_start_matches('#');
+            let c = |i: usize| u8::from_str_radix(h.get(i..i + 2).unwrap_or("ff"), 16).map(|v| v as f32 / 255.0).map_err(|e| format!("--background {h}: {e}"));
+            Some([c(0)?, c(2)?, c(4)?])
+        }
+        None => None,
+    };
+    let req = nextcuda_image::SvgFitRequest {
+        picture: pic,
+        style: opt(args, "--style").unwrap_or("iconography").to_string(),
+        paths: num("--paths"),
+        schedule: opt(args, "--schedule").map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default(),
+        iters: num("--iters"),
+        segments: num("--segments"),
+        size: num("--size"),
+        stroke_width: opt(args, "--stroke-width").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+        udf: if args.iter().any(|a| a == "--no-udf") { Some(false) } else { None },
+        background: bg,
+        seed: opt(args, "--seed").and_then(|v| v.parse().ok()).unwrap_or(0),
+        ..Default::default()
+    };
+    let e = nextcuda_image_svgrender::SvgRender::load(&gs[0]).map_err(|e| e.0)?;
+    use nextcuda_image::ImageEngine;
+    let mut last = 0u32;
+    let out = e.svg_fit(&req, &mut |p| {
+        if p.layer != last || p.at == p.of {
+            last = p.layer;
+            eprintln!("layer {}/{}: {} paths, step {}/{}, loss {:.5}, {:.2} s", p.layer, p.layers, p.paths, p.at, p.of, p.loss, p.seconds);
+        }
+        Ok(())
+    }).map_err(|e| e.0)?;
+    eprintln!("{} paths, {} layers, {} steps in {:.2} s ({:.2} ms a step) on {}: {}x{}, MSE {:.5}, PSNR {:.2} dB", out.paths, out.layers, out.steps, out.seconds,
+              1e3 * out.seconds / out.steps.max(1) as f64, gs[0].name, out.width, out.height, out.mse, out.psnr);
+    if let (Some(p), Some(r)) = (opt(args, "--png"), &out.render) {
+        r.write_png(Path::new(p), &[("svgrender", format!("{} paths", out.paths))])?;
+        eprintln!("saved {p}");
+    }
+    match opt(args, "--out") {
+        Some(o) => {
+            std::fs::write(o, &out.svg).map_err(|e| format!("{o}: {e}"))?;
+            eprintln!("saved {o}");
+        }
+        None => println!("{}", out.svg),
+    }
+    Ok(())
+}
+
+/// `image svg-check DIR`: svgrender against ref.py's DiffVG and LIVE dumps
+fn svg_check_cmd(args: &[String]) -> Result<(), String> {
+    let dir = args.first().filter(|a| !a.starts_with("--")).ok_or(USAGE)?;
+    nextcuda_core::use_kind("image");
+    let gs = gpus(args)?;
+    let only: Vec<&str> = opt(args, "--only").map(|s| s.split(',').collect()).unwrap_or_default();
+    let worst = nextcuda_image_svgrender::check::run(&gs[0], Path::new(dir), &only, &mut |s| println!("{s}")).map_err(|e| e.0)?;
+    println!("worst relative error (the rasterizer's exact parts) {worst:.2e}");
+    Ok(())
+}
+
+/// `image svg-selftest`: the rasterizer's kernels against the host
+fn svg_selftest_cmd(args: &[String]) -> Result<(), String> {
+    nextcuda_core::use_kind("image");
+    let gs = gpus(args)?;
+    let rows = nextcuda_image_svgrender::selftest(&gs[0], &mut |s| println!("{s}")).map_err(|e| e.0)?;
+    let worst = rows.iter().map(|r| r.1).fold(0.0f64, f64::max);
+    println!("worst {worst:.2e} on {}", gs[0].name);
+    if worst > 1e-3 {
+        return Err(format!("svg selftest: {worst:.2e} off the host"));
+    }
+    Ok(())
+}
+
+/// `image svg-bench`: a LIVE step's time (bounds, the distance weight, the backward pass, xing, Adam) by canvas and paths
+fn svg_bench_cmd(args: &[String]) -> Result<(), String> {
+    nextcuda_core::use_kind("image");
+    let gs = gpus(args)?;
+    let list = |k: &str, d: &str| opt(args, k).unwrap_or(d).split(',').filter_map(|x| x.trim().parse::<u32>().ok()).collect::<Vec<_>>();
+    for size in list("--sizes", "240,512") {
+        for paths in list("--paths", "32,128,512") {
+            let r = nextcuda_image_svgrender::bench(&gs[0], size, paths).map_err(|e| e.0)?;
+            println!("{size} x {size}, {paths} paths: {:.3} ms a step (backward {:.3} ms, render {:.3} ms) on {}", r.0, r.1, r.2, gs[0].name);
+        }
+    }
+    Ok(())
+}
+
 fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
     let dir = Path::new(args.first().ok_or(USAGE)?);
     nextcuda_core::use_kind("image");
@@ -855,6 +955,10 @@ pub fn cmd(cfg: &Config, args: &[String], selftest: impl Fn(&[String]) -> Result
         Some("upscale-check") => upscale_cmd(cfg, rest, true),
         Some("upscale-clip") => upscale_clip_cmd(cfg, rest),
         Some("vectorize") => vectorize_cmd(cfg, rest),
+        Some("svg-fit") => svg_fit_cmd(rest),
+        Some("svg-check") => svg_check_cmd(rest),
+        Some("svg-selftest") => svg_selftest_cmd(rest),
+        Some("svg-bench") => svg_bench_cmd(rest),
         Some("bench") => crate::imagebench::run(cfg, rest),
         Some("ocr") => ocr(cfg, rest),
         Some("serve") => serve(cfg, rest),

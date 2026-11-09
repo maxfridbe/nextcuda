@@ -190,6 +190,81 @@ pub struct VectorizeOutput {
     pub seconds: f64,
 }
 
+/// One fit of a picture with vector paths (svgrender: LIVE's layer-wise optimisation through a differentiable
+/// rasterizer). Zero / empty fields take the style's defaults.
+#[derive(Clone, Debug)]
+pub struct SvgFitRequest {
+    pub picture: Picture,
+    /// iconography (filled closed paths: LIVE), pixelart (a grid of squares), sketch (black open strokes), painting
+    /// (coloured open strokes)
+    pub style: String,
+    /// paths in all (pixelart: squares a side)
+    pub paths: u32,
+    /// the paths each layer adds (their sum is the paths; empty: the style's schedule)
+    pub schedule: Vec<u32>,
+    /// optimiser steps a layer
+    pub iters: u32,
+    /// cubic segments a path
+    pub segments: u32,
+    /// the canvas's longer side in pixels (the picture is fitted at that size; the SVG keeps the picture's size)
+    pub size: u32,
+    /// the SVG's stroke width (sketch, painting), in canvas pixels
+    pub stroke_width: f32,
+    /// LIVE's unsigned-distance weighting of the loss
+    pub udf: Option<bool>,
+    pub xing_weight: Option<f32>,
+    /// a rectangle of this colour under the paths (and what they are fitted over); None: white, not written
+    pub background: Option<[f32; 3]>,
+    /// a preview SVG in the progress every this many steps (0: at each layer's end only)
+    pub preview_every: u32,
+    pub seed: u64,
+}
+
+impl Default for SvgFitRequest {
+    fn default() -> Self {
+        SvgFitRequest { picture: Picture::new(1, 1, 3), style: String::new(), paths: 0, schedule: Vec::new(), iters: 0, segments: 0, size: 0, stroke_width: 0.0,
+                        udf: None, xing_weight: None, background: None, preview_every: 0, seed: 0 }
+    }
+}
+
+/// How a fit goes, reported each step
+#[derive(Clone, Debug, Default)]
+pub struct SvgProgress {
+    /// steps done, of all the layers' steps
+    pub at: u32,
+    pub of: u32,
+    pub layer: u32,
+    pub layers: u32,
+    /// paths drawn now
+    pub paths: u32,
+    /// the image loss (the weighted MSE) and the xing loss after this step
+    pub loss: f32,
+    pub xing: f32,
+    /// the SVG as it stands (every preview_every steps and at each layer's end)
+    pub svg: Option<String>,
+    pub seconds: f64,
+}
+
+/// What a fit made
+#[derive(Clone, Debug, Default)]
+pub struct SvgFitOutput {
+    /// a complete SVG document
+    pub svg: String,
+    pub paths: u32,
+    pub steps: u32,
+    pub layers: u32,
+    /// the canvas it was fitted on
+    pub width: u32,
+    pub height: u32,
+    /// the last step's loss, and the fit's MSE / PSNR against the target at the canvas's size (unweighted)
+    pub loss: f32,
+    pub mse: f32,
+    pub psnr: f32,
+    /// the final paths rendered (RGB8, the canvas's size)
+    pub render: Option<Picture>,
+    pub seconds: f64,
+}
+
 /// One variant an upscaler offers, for `info` and a page
 #[derive(Clone, Debug)]
 pub struct UpscaleVariant {
@@ -382,6 +457,14 @@ pub trait ImageEngine: Send + Sync {
     fn upscale_clip(&self, _req: &ClipUpscaleRequest, _next: &mut dyn FnMut() -> Result<Option<Vec<u8>>>, _emit: &mut dyn FnMut(Picture) -> Result<()>,
                     _progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<UpscaleInfo> {
         Err(Error(format!("{} does not upscale clips (a video super-resolution model: flashvsr)", self.arch())))
+    }
+    /// whether it fits pictures with vector paths (`svg_fit`: svgrender)
+    fn fits_svg(&self) -> bool {
+        false
+    }
+    /// the picture fitted with paths, reporting each step (an error from `progress` stops it: a cancel)
+    fn svg_fit(&self, _req: &SvgFitRequest, _progress: &mut dyn FnMut(&SvgProgress) -> Result<()>) -> Result<SvgFitOutput> {
+        Err(Error(format!("{} does not fit pictures with paths (svgrender does)", self.arch())))
     }
     /// whether it writes a picture as SVG (`vectorize`: StarVector)
     fn vectorizes(&self) -> bool {

@@ -695,6 +695,7 @@ dependencies = [
  "nextcuda-image-qwenimage21",
  "nextcuda-image-rembg",
  "nextcuda-image-starvector",
+ "nextcuda-image-svgrender",
  "nextcuda-image-unlimitedocr",
  "nextcuda-image-upscale",
  "nextcuda-image-zimage",
@@ -984,6 +985,16 @@ dependencies = [
  "nextcuda-gguf",
  "nextcuda-image",
  "nextcuda-tok",
+ "serde_json",
+]
+
+[[package]]
+name = "nextcuda-image-svgrender"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-image",
  "serde_json",
 ]
 

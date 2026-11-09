@@ -39,7 +39,7 @@ const FEATURES: &[&str] = &[
     "video.negative_prompt.ignored", "image.canvases", "image.cancel", "spec.open",
     "image.edit.strength", "audio.speak.continue_from", "video.preview", "system.busy.parallel",
     "errors.retryable", "errors.no_room", "jobs.precheck", "image.info.steps", "image.generate.init_image", "image.edit.reference",
-    "video.failure", "video.gpu", "video.engines.ignored", "audio.speak.precheck.voice", "jobs.cancel.reentrant_id", "rpc.errors.body", "audio.transcribe", "image.upscale", "video.upscale", "image.vectorize", "image.remove_background", "jobs.result_gone",
+    "video.failure", "video.gpu", "video.engines.ignored", "audio.speak.precheck.voice", "jobs.cancel.reentrant_id", "rpc.errors.body", "audio.transcribe", "image.upscale", "video.upscale", "image.vectorize", "image.svg_fit", "image.svg_generate", "image.remove_background", "jobs.result_gone",
     "rpc.http200", "result.run", "models.capabilities", "system.cards", "jobs.list", "jobs.status.one", "jobs.queue", "jobs.priority", "jobs.held",
     "jobs.stage", "uploads", "voices.owner", "voices.ready", "room.free_idle", "room.wait", "llm.no_room", "llm.keep_up_s",
     "system.maintenance", "errors.maintenance", "jobs.model3d", "model3d.generate", "model3d.rig", "model3d.upload.mesh",
@@ -807,7 +807,7 @@ impl Home {
                     self.pick("image", b, &all)?
                 } else {
                     // no model named: the loaded or first enabled one that draws (not a reader, not an upscaler)
-                    let draws = |m: &Value| !s(m, "arch").contains("ocr") && !upscales(m) && !vectorizes(m) && !removes_background(m);
+                    let draws = |m: &Value| !s(m, "arch").contains("ocr") && !upscales(m) && !vectorizes(m) && !removes_background(m) && !fits_svg(m);
                     let on: Vec<&Value> = all.iter().filter(|m| registry::kind_of(m) == "image" && m["enabled"] != false && draws(m)).collect();
                     self.loaded_of("image").into_iter().find(|l| on.iter().any(|m| m["id"] == l.as_str())).or_else(|| on.first().map(|m| s(m, "id")))
                         .ok_or_else(|| (409, "no image model that draws is enabled (system.enable qwen-image-2.1-q8)".to_string()))?
@@ -817,6 +817,9 @@ impl Home {
                 }
                 if all.iter().any(|m| m["id"] == id.as_str() && vectorizes(m)) {
                     return Err((400, format!("{id} writes pictures as SVG; image.{} needs a model that draws (image.vectorize for {id})", m.name)));
+                }
+                if all.iter().any(|m| m["id"] == id.as_str() && fits_svg(m)) {
+                    return Err((400, format!("{id} fits pictures with SVG paths; image.{} needs a model that draws (image.svg_fit for {id})", m.name)));
                 }
                 let job = b["request_id"].as_str();
                 let t = self.ensure_for(&id, job)?;
@@ -847,6 +850,81 @@ impl Home {
                 let mut body = b.clone();
                 body["model"] = json!(id);
                 relay(&t, "POST", "/v1/images/vectorize", Some(&body), 3600)
+            }
+            ("image", "svg_fit") => {
+                let id = self.svg_fitter(b, &all)?;
+                let job = b["request_id"].as_str();
+                let mut body = b.clone();
+                body["model"] = json!(id);
+                self.relay_with_room(&id, &|| {
+                    let t = self.ensure_for(&id, job)?;
+                    self.sent(job);
+                    relay(&t, "POST", "/v1/images/svg-fit", Some(&body), 3600)
+                })
+            }
+            ("image", "svg_generate") => {
+                // VectorFusion's first stages: the prompt (with its style's words) drawn by a picture model, then the
+                // picture fitted with paths by the fitter - two servers, one after the other, under the one job
+                let fitter = self.svg_fitter(b, &all)?;
+                let draws = |m: &Value| registry::kind_of(m) == "image" && !s(m, "arch").contains("ocr") && !upscales(m) && !vectorizes(m)
+                    && !removes_background(m) && !fits_svg(m);
+                let draw = match b["draw_model"].as_str().filter(|x| !x.is_empty()) {
+                    Some(d) => {
+                        let m = all.iter().find(|m| m["id"] == d).ok_or_else(|| (404, format!("draw_model {d}: no such model")))?;
+                        if !draws(m) {
+                            return Err((400, format!("draw_model {d}: it does not draw pictures from a prompt")));
+                        }
+                        if m["enabled"] == false {
+                            return Err((409, format!("draw_model {d} is disabled (system.enable {d})")));
+                        }
+                        d.to_string()
+                    }
+                    None => {
+                        let on: Vec<&Value> = all.iter().filter(|m| m["enabled"] != false && draws(m)).collect();
+                        on.iter().find(|m| m["id"] == "z-image-turbo").or(on.first()).map(|m| s(m, "id"))
+                            .ok_or_else(|| (409, "no image model that draws is enabled (system.enable z-image-turbo)".to_string()))?
+                    }
+                };
+                let style = b["style"].as_str().unwrap_or("iconography");
+                let suffix = match b["prompt_suffix"].as_str() {
+                    Some(x) => x.to_string(),
+                    None => svg_style_words(style).to_string(),
+                };
+                let prompt = s(b, "prompt");
+                let prompt = if suffix.trim().is_empty() { prompt } else { format!("{}. {suffix}", prompt.trim_end_matches(['.', ' '])) };
+                let job = b["request_id"].as_str();
+                let mut gb = json!({"model": draw, "prompt": prompt, "n": 1, "response_format": "b64_json", "size": b["draw_size"].as_str().unwrap_or("1024x1024")});
+                for (k, to) in [("draw_steps", "steps"), ("seed", "seed")] {
+                    if !b[k].is_null() {
+                        gb[to] = b[k].clone();
+                    }
+                }
+                if let Some(j) = job {
+                    gb["request_id"] = json!(j);
+                }
+                let pics = self.relay_with_room(&draw, &|| {
+                    let t = self.ensure_for(&draw, job)?;
+                    self.sent(job);
+                    relay(&t, "POST", "/v1/images/generations", Some(&gb), 3600)
+                })?;
+                let pic = pics["data"][0]["b64_json"].as_str().filter(|x| !x.is_empty())
+                    .ok_or_else(|| (502, format!("{draw} answered no picture")))?.to_string();
+                let mut fb = b.clone();
+                if let Some(o) = fb.as_object_mut() {
+                    for k in ["prompt", "prompt_suffix", "draw_model", "draw_size", "draw_steps"] {
+                        o.remove(k);
+                    }
+                }
+                fb["image"] = json!(pic);
+                fb["model"] = json!(fitter);
+                let mut out = self.relay_with_room(&fitter, &|| {
+                    let t = self.ensure_for(&fitter, job)?;
+                    self.sent(job);
+                    relay(&t, "POST", "/v1/images/svg-fit", Some(&fb), 3600)
+                })?;
+                out["drawing"] = json!({"model": draw, "prompt": prompt, "b64_json": pic, "seed": pics["nextsycl"]["seed"],
+                                        "seconds": pics["nextsycl"]["seconds"]});
+                Ok(out)
             }
             ("image", "remove_background") => {
                 let id = if b["model"].as_str().is_some_and(|x| !x.is_empty()) {
@@ -1178,7 +1256,7 @@ impl Home {
             "audio.generate" => ("audio", &[("audio", false)]),
             "audio.voices.add" => ("audio", &[("sample", false)]),
             "model3d.generate" => ("model3d", &[("image", false), ("images", true)]),
-            "image.upscale" | "image.vectorize" | "image.remove_background" => ("image", &[("image", false)]),
+            "image.upscale" | "image.vectorize" | "image.remove_background" | "image.svg_fit" => ("image", &[("image", false)]),
             "model3d.rig" | "model3d.tool" => ("model3d", &[("mesh", false)]),
             _ => ("", &[]),
         }
@@ -1564,4 +1642,36 @@ pub(super) fn removes_background(m: &Value) -> bool {
 
 pub(super) fn vectorizes(m: &Value) -> bool {
     s(m, "arch") == "starvector"
+}
+
+/// A registry entry that fits pictures with SVG paths (svgrender: image.svg_fit)
+pub(super) fn fits_svg(m: &Value) -> bool {
+    s(m, "arch") == "svgrender"
+}
+
+/// The words VectorFusion puts after a prompt for each style's drawing (its README's prompts; "on a white background"
+/// because the paths are fitted over white)
+pub(super) fn svg_style_words(style: &str) -> &'static str {
+    match style {
+        "pixelart" => "pixel art. trending on artstation",
+        "sketch" => "minimal 2d line drawing, black lines on a white background. trending on artstation",
+        "painting" => "a painting with visible brush strokes. trending on artstation",
+        _ => "minimal flat 2d vector icon. lineal color. on a white background. trending on artstation",
+    }
+}
+
+impl Home {
+    /// The fitter a request names (it must fit SVG), else the loaded or first enabled one
+    fn svg_fitter(&self, b: &Value, all: &[Value]) -> Result<String, Fail> {
+        if b["model"].as_str().is_some_and(|x| !x.is_empty()) {
+            let id = self.pick("image", b, all)?;
+            if all.iter().any(|m| m["id"] == id.as_str() && !fits_svg(m)) {
+                return Err((400, format!("{id} does not fit pictures with SVG paths; image.svg_fit needs svgrender-live")));
+            }
+            return Ok(id);
+        }
+        let on: Vec<&Value> = all.iter().filter(|m| registry::kind_of(m) == "image" && m["enabled"] != false && fits_svg(m)).collect();
+        self.loaded_of("image").into_iter().find(|l| on.iter().any(|m| m["id"] == l.as_str())).or_else(|| on.first().map(|m| s(m, "id")))
+            .ok_or_else(|| (409, "no SVG fitter is enabled (system.enable svgrender-live)".to_string()))
+    }
 }
