@@ -17,6 +17,10 @@
 //! pass's rows (so its cache follows the conversation); `step` drafts `NS_Q35_DRAFTS` tokens (the block chained on its
 //! own normed output), verifies [token, drafts] in one pass and keeps the longest prefix the sampled tokens match - a
 //! rejected row's DeltaNet states come back from the pass's snapshots.
+//!
+//! DSpine (NS_Q35_DSPINE, `dspine.rs`): Tencent's parallel block drafter in MTP's place - a block of drafts from one pass
+//! of its five layers over its own context (the target's residual stream after five of its layers, written behind every
+//! pass), verified the same way.
 
 use std::collections::HashMap;
 use std::ffi::c_int;
@@ -178,6 +182,28 @@ pub struct Session {
     id: u64,
     /// the draft block's cache and inputs (MTP loaded)
     mtp: Option<MtpState>,
+    /// the DSpine draft's context cache (DSpine loaded)
+    dsp: Option<DspState>,
+}
+
+/// A session's DSpine state: its context cache, [layers][kv heads][slots][128] half for keys and values alike, a ring of
+/// the draft's attention window (`dspine::Ring`)
+struct DspState {
+    k: DevBuf,
+    v: DevBuf,
+    ring: crate::dspine::Ring,
+}
+
+/// A pipelined prompt's chunk waiting for the last GPU: its tokens, first position, rows there, positions, the shift
+/// after it, DSpine's partial sum there
+type Pending<'a> = (&'a [u32], usize, DevBuf, Rope, i64, Option<DspPart>);
+
+/// The DSpine context's partial sum over a pass's rows - fc_j . (the residual stream after target layer j), summed over
+/// the target layers run so far - on the GPU the rows are on; `filled` once a target layer has written it. It crosses to
+/// the next GPU with the rows (one row set for the target layers before the split, not one each)
+struct DspPart {
+    buf: DevBuf,
+    filled: bool,
 }
 
 /// A session's draft block state: its cache ([kv heads][max_ctx][256] half), the normed hidden state of the last
@@ -315,6 +341,18 @@ fn mtp_path(f: &Gguf, layers: usize) -> Option<std::path::PathBuf> {
     v.into_iter().next()
 }
 
+/// NS_Q35_VERIFY_MMQ: the rows from which a decode / verify pass's products are MMQ's (int8 tensor cores) instead of
+/// MMVQ's (9, the default: never) - one number for every GPU, or one a GPU in the engine's order ("9,6")
+fn verify_mmq(n: usize) -> Vec<usize> {
+    rows_setting("NS_Q35_VERIFY_MMQ", n, 9)
+}
+
+/// A rows threshold a GPU from `var`: one number for every GPU, or one a GPU in the engine's order (at least 2)
+fn rows_setting(var: &str, n: usize, default: usize) -> Vec<usize> {
+    let v: Vec<usize> = std::env::var(var).unwrap_or_default().split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    (0..n).map(|i| v.get(i).or(v.last()).copied().unwrap_or(default).max(2)).collect()
+}
+
 /// One GPU's share: its layers [lb, le), a prompt chunk's work memory and the half buffer its products expand into
 struct Dev {
     gpu: Arc<Gpu>,
@@ -387,6 +425,11 @@ pub struct Qwen35<'g> {
     work: Mutex<()>,
     /// the draft block (loaded with drafts on and its file found)
     mtp: Option<Mtp>,
+    /// the DSpine draft (`dspine.rs`), in MTP's place when NS_Q35_DSPINE names it: its layers on the head's GPU, fc's share
+    /// of each target layer on that layer's
+    dspine: Option<crate::dspine::Dspine>,
+    /// over two GPUs: the two buffers on the last that pipelined chunks' DSpine partial sums cross into (as `pipe`)
+    dsp_pipe: Vec<DevBuf>,
     /// drafts a step
     drafts: usize,
     /// the verify passes' DeltaNet snapshots (under `work`)
@@ -414,6 +457,15 @@ pub struct Qwen35<'g> {
     pipe: Vec<DevBuf>,
     /// the decode products by ggml-cuda's MMVQ (NS_Q35_MMVQ=nh: the shared kernels)
     ggml_mmvq: bool,
+    /// NS_Q35_VERIFY_MMQ: passes of at least this many rows (a verify pass) take MMQ's products where it has the type,
+    /// not MMVQ's (9: never), a GPU (in the engine's order)
+    verify_mmq: Vec<usize>,
+    /// NS_Q35_VQ8: passes of at least this many rows (and at most 8) take q35_vq8's products where it has the type (a GPU)
+    vq8: Vec<usize>,
+    /// NS_Q35_VQ8_CHECK=1: each vq8 product compared with MMVQ's (the largest difference said)
+    vq8_check: bool,
+    /// NS_Q35_VQ8_TYPES: the block types vq8 takes (names, comma-separated; unset: all it has)
+    vq8_types: Option<Vec<String>>,
     /// a prompt pass's inputs already quantized for MMQ: (x's address, rows, columns, layout) -> its q8_1 tiles (in
     /// the arena), so the products that read one input (q k v, gate up, DeltaNet's) quantize it once; emptied when a
     /// norm writes and when a layer's arena is rewound
@@ -534,7 +586,23 @@ impl<'g> Qwen35<'g> {
         // 512) when they leave room for a session, else 1,024, else 512
         // the draft block: its file's tensors but its token embedding (rows read from the file), its snapshots
         let drafts = if draft { draft_count() } else { 0 };
-        let mfile = match (drafts > 0).then(|| mtp_path(f, g.layers)).flatten() {
+        // the DSpine draft (NS_Q35_DSPINE): in MTP's place. Its bytes (on the head's GPU; fc's share of a target layer on
+        // that layer's) and a session's ring cache (2 x layers x kv heads x slots x 128 halfs)
+        let dsp_dir = (drafts > 0).then(|| f.paths.first().and_then(|p| crate::dspine::path(p))).flatten();
+        let dsp_bytes = match &dsp_dir {
+            Some(d) => Some(crate::dspine::weight_bytes(d).map_err(|x| e(format!("the DSpine draft {}: {}", d.display(), x.0)))?),
+            None => None,
+        };
+        let dsp_ring = match &dsp_dir {
+            Some(d) => {
+                let c = crate::dspine::Cfg::parse(&std::fs::read(d.join("config.json")).map_err(|x| e(format!("{}: {x}", d.display())))?)?;
+                let ctx = if kv.0 > 0 { kv.0 } else { 32768 };
+                (2 * c.layers * c.kv_heads * crate::dspine::Ring::new(c.window, ctx).slots * c.head_dim * 2 * kv.1.max(1)) as u64
+            }
+            None => 0,
+        };
+        let has_dsp = dsp_dir.is_some();
+        let mfile = match (drafts > 0 && !has_dsp).then(|| mtp_path(f, g.layers)).flatten() {
             Some(p) => match Gguf::open(&p) {
                 Ok(m) => Some(Box::new(m)),
                 Err(x) => {
@@ -550,7 +618,9 @@ impl<'g> Qwen35<'g> {
         let in_file = mfile.as_ref().is_some_and(|m| m.paths.first() == f.paths.first());
         let mtp_w = mfile.as_ref().map_or(0, |m| m.tensors.iter().filter(|t| if in_file { t.name.starts_with(&format!("blk.{}.", g.layers)) } else { t.name != "token_embd.weight" })
             .map(|t| t.bytes).sum::<u64>());
-        let mtp_bytes = mtp_w + if mfile.is_some() { snap_bytes as u64 } else { 0 };
+        let mtp_bytes = mtp_w + if mfile.is_some() || has_dsp { snap_bytes as u64 } else { 0 };
+        // (DSpine's: all of it on the one GPU, its sessions' rings)
+        let dsp_all = dsp_bytes.map_or(0, |(head, fc)| head + 5 * fc + dsp_ring);
         let margin: u64 = 512 << 20;
         let gib = |b: u64| b as f64 / (1u64 << 30) as f64;
         // the vision tower: a Qwen3-VL projector beside the model (NS_Q35_VISION=0: none), its weights on the first GPU
@@ -562,14 +632,18 @@ impl<'g> Qwen35<'g> {
         };
         // the draft block's pass behind a chunk's: its inputs and outputs beside the main pass's
         let has_mtp = mfile.is_some();
-        let arena_of = |c: usize| arena_bytes(&g, c) + if has_mtp { c * 8 * g.n_embd * 4 } else { 0 };
+        // DSpine's behind it: the context's partial sum, its normed rows, the draft layers' keys and values (3 x n_embd a row)
+        let arena_of = |c: usize| arena_bytes(&g, c) + if has_mtp { c * 8 * g.n_embd * 4 } else { 0 } + if has_dsp { c * 3 * g.n_embd * 4 } else { 0 };
         // the head and the draft block: on the last GPU, or (NS_Q35_HEAD=first) on the first - the slower card when the
         // server orders them weakest first, so the faster one's room goes to layers (a prompt pass runs ~2.7x faster
         // there; decode reads the head and the draft block from the slower card)
         let head_first = gpus.len() > 1 && std::env::var("NS_Q35_HEAD").is_ok_and(|v| v == "first");
+        if head_first && has_dsp {
+            return Err(e("the DSpine draft runs on the last GPU (the head's): not with NS_Q35_HEAD=first"));
+        }
         let head_i = if head_first { 0 } else { gpus.len() - 1 };
         let (chunk, bounds, kv_q8s) = if gpus.len() == 1 {
-            let fixed = weights + mtp_bytes + vision_bytes + w16_bytes as u64 + margin;
+            let fixed = weights + mtp_bytes + dsp_all + vision_bytes + w16_bytes as u64 + margin;
             let chunk = chunk_setting().unwrap_or_else(|| {
                 [2048, 1024].into_iter().find(|c| fixed + arena_bytes(&g, *c) as u64 + SESSION_ROOM <= free[0]).unwrap_or(512)
             });
@@ -585,12 +659,14 @@ impl<'g> Qwen35<'g> {
             // state and verify snapshots (DeltaNet)
             let ctx = if kv.0 > 0 { kv.0 } else { 32768 };
             let mtp_on = has_mtp;
+            // (a verify pass's DeltaNet snapshots: MTP's or DSpine's drafts)
+            let snaps_on = has_mtp || has_dsp;
             let (fill_ty, other_ty) = kv_mode();
             // (a layer with a matrix MMQ does not take: its GPU's half buffer as large as it)
             let cost_of = |ty: KvTy| -> Vec<u64> {
                 let row = kv_row_bytes(&g, ty);
                 (0..g.layers).map(|l| layer_w[l] + layer_x16[l] as u64 + if g.full(l) { (2 * g.heads_kv * ctx * row) as u64 } else {
-                    (lin_state * (1 + if mtp_on { drafts } else { 0 })) as u64
+                    (lin_state * (1 + if snaps_on { drafts } else { 0 })) as u64
                 }).collect()
             };
             let costs = [cost_of(KvTy::F16), cost_of(KvTy::Q8), cost_of(KvTy::Q4)];
@@ -612,10 +688,12 @@ impl<'g> Qwen35<'g> {
                     if i == head_i {
                         // (the draft block's cache the type its GPU starts with; one that ends q8 needs less)
                         over += head_w + tail_x16 as u64 + if mtp_on { mtp_w + (2 * g.heads_kv * ctx * kv_row_bytes(&g, first_ty(i, n))) as u64 } else { 0 };
+                        // DSpine: all of it here (fc's share of the other GPUs' target layers too: a little over), its rings
+                        over += dsp_all;
                     }
                     if n == 2 && head_i == 1 && i == 1 {
-                        // the two buffers a pipelined prompt's rows cross into (`pipe`)
-                        over += (2 * c * g.n_embd * 4) as u64;
+                        // the two buffers a pipelined prompt's rows cross into (`pipe`; DSpine's partial sums too)
+                        over += (2 * c * g.n_embd * 4) as u64 * if has_dsp { 2 } else { 1 };
                     }
                     free[i] as i64 - over as i64
                 }).collect();
@@ -792,8 +870,20 @@ impl<'g> Qwen35<'g> {
             Some(m) => Some(load_mtp(m, &g, &lastg, k, in_file, &mut loaded)?),
             None => None,
         };
+        let dspine = match &dsp_dir {
+            Some(d) => {
+                let x = crate::dspine::Dspine::load(d, &lastg, &|l| gpus[layer_dev[l]].clone(), g.n_embd, g.layers, &output, &mut *log)
+                    .map_err(|x| e(format!("the DSpine draft {}: {}", d.display(), x.0)))?;
+                if (x.cfg.eps - g.eps).abs() > 1e-12 {
+                    return Err(e(format!("the DSpine draft's norm eps {} (the model's {})", x.cfg.eps, g.eps)));
+                }
+                loaded += x.bytes;
+                Some(x)
+            }
+            None => None,
+        };
         mem("the head and the draft block", &mut *log);
-        let drafts = if mtp.is_some() { drafts } else { 0 };
+        let drafts = if mtp.is_some() || dspine.is_some() { drafts } else { 0 };
         let mut snap_layers = Vec::new();
         if drafts > 0 {
             for l in (0..g.layers).filter(|l| !g.full(*l)) {
@@ -802,6 +892,12 @@ impl<'g> Qwen35<'g> {
             }
         }
         log(match &mtp {
+            _ if dspine.is_some() => {
+                let x = dspine.as_ref().map(|x| (x.cfg.target_layers.clone(), x.cfg.window, x.bytes)).unwrap_or_default();
+                let on: Vec<String> = x.0.iter().map(|l| gpus[layer_dev[*l]].name.clone()).collect();
+                format!("qwen35: DSpine drafts ({drafts} a step; target layers {:?} on {}; window {}; {:.2} GiB of weights, its cache a ring of the window: \
+                         {:.2} GiB a session)", x.0, on.join(" / "), x.1, gib(x.2), gib(dsp_ring / kv.1.max(1) as u64))
+            }
             Some(_) => format!("qwen35: MTP drafts ({drafts} a step)"),
             None if draft => "qwen35: no MTP file (NS_Q35_MTP or an MTP/ folder beside the model): no drafts".into(),
             None => "qwen35: drafts off".into(),
@@ -853,11 +949,20 @@ impl<'g> Qwen35<'g> {
         } else {
             Vec::new()
         };
+        let dsp_pipe = if devs.len() == 2 && head == 1 && dspine.is_some() {
+            (0..2).map(|_| DevBuf::new(&devs[1].gpu, chunk * g.n_embd * 4)).collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        let verify_mmq = verify_mmq(devs.len());
+        let vq8 = rows_setting("NS_Q35_VQ8", devs.len(), 9);
+        let vq8_check = std::env::var("NS_Q35_VQ8_CHECK").is_ok_and(|v| v == "1");
+        let vq8_types = std::env::var("NS_Q35_VQ8_TYPES").ok().map(|v| v.split(',').map(|x| x.trim().to_uppercase()).collect());
         Ok(Qwen35 { g, file: f, devs, layer_dev, cur: 0.into(), staging: Mutex::new(None), k, layers, output_norm, output, embd, chunk,
-                    work: Mutex::new(()), mtp, drafts, snaps: Mutex::new(Snaps { layers: snap_layers, of: None }), vh, next_id: 0.into(), load_s,
+                    work: Mutex::new(()), mtp, dspine, dsp_pipe, drafts, snaps: Mutex::new(Snaps { layers: snap_layers, of: None }), vh, next_id: 0.into(), load_s,
                     load_bytes: loaded, pictures: Mutex::new(HashMap::new()), vision,
                     mmq: !std::env::var("NS_Q35_MMQ").is_ok_and(|v| v == "0"), head, kv_ty, kv_rot, pipe,
-                    ggml_mmvq: !std::env::var("NS_Q35_MMVQ").is_ok_and(|v| v == "nh"), xq: Mutex::new(Vec::new()),
+                    ggml_mmvq: !std::env::var("NS_Q35_MMVQ").is_ok_and(|v| v == "nh"), xq: Mutex::new(Vec::new()), verify_mmq, vq8, vq8_check, vq8_types,
                     prof: ["NS_Q35_PROFILE", "NS_PROFILE"].iter().any(|k| std::env::var(k).is_ok_and(|v| v == "1")).then(|| Mutex::new(Profile::default())) })
     }
 
@@ -996,7 +1101,35 @@ impl<'g> Qwen35<'g> {
         // SAFETY: arithmetic only.
         let ggml_mmvq = self.ggml_mmvq && unsafe { (k.q35_mmvq_supported)(w.ty.code() as i32) } != 0;
         let mmvq = ggml_mmvq || unsafe { (k.mmvq_supported)(w.ty.code() as i32) } != 0;
-        if t <= 8 && mmvq {
+        // SAFETY: arithmetic only.
+        let cur = self.cur.load(std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: arithmetic only.
+        if t <= 8 && t >= self.vq8[cur] && unsafe { (k.vq8_supported)(w.ty.code() as i32) } != 0 && rows.is_multiple_of(16) && cols.is_multiple_of(256)
+            && self.vq8_types.as_ref().is_none_or(|v| v.iter().any(|x| x == w.ty.name())) {
+            let own;
+            let qb = match xq {
+                Some(q) => q,
+                None => {
+                    own = self.quantize(x, cols, t, &key)?;
+                    &own
+                }
+            };
+            // SAFETY: the matrix in its blocks, x's Q8_1 rows, y [t, rows].
+            self.op("vq8", key, wb + 36 * t * cols / 32 + 4 * t * rows, flops,
+                    || unsafe { (k.vq8)(self.raw(), w.ty.code() as i32, w.buf.ptr(), qb.std.ptr(), y.fp(), kk, n, t as i64) })?;
+            if self.vq8_check {
+                let r = self.arena().f32(t * rows)?;
+                // SAFETY: as above, into r.
+                ffi::check(unsafe { (k.q35_mmvq)(self.raw(), w.ty.code() as i32, w.buf.ptr(), qb.std.ptr(), r.fp(), kk, n, t as i64) }, "mmvq (check)")?;
+                let (a, b) = (y.view(0, t * rows * 4)?.to_f32()?, r.to_f32()?);
+                let scale = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-30);
+                let worst = a.iter().zip(&b).fold(0f32, |m, (p, q)| m.max((p - q).abs()));
+                eprintln!("[vq8 check: {role} {} {rows}x{cols} {t} rows: largest difference {:.2e} of {:.2e} ({:.1e})]", w.ty.name(), worst, scale, worst / scale);
+            }
+            return Ok(());
+        }
+        let to_mmq = t >= self.verify_mmq[cur] && self.mmq && unsafe { (k.mmq_supported)(w.ty.code() as i32) } != 0;
+        if t <= 8 && mmvq && !to_mmq {
             // SAFETY: arithmetic only.
             let q8 = unsafe { (k.q8_1_bytes)(kk, t as i64) };
             let own;
@@ -1351,7 +1484,8 @@ impl<'g> Qwen35<'g> {
         snaps.of = None;
         self.phase("embed");
         let x = self.embed_with(self.file, &self.embd, self.g.vocab, tokens)?;
-        let x = self.run_layers(s, 0..self.g.layers, x, t, p0, &rope, snapping.then_some(&*snaps), &mut *tap)?;
+        let mut part = None;
+        let x = self.run_layers(s, 0..self.g.layers, x, t, p0, &rope, snapping.then_some(&*snaps), &mut *tap, &mut part)?;
         if snapping {
             snaps.of = Some((s.id, p0, t));
         }
@@ -1359,7 +1493,7 @@ impl<'g> Qwen35<'g> {
         s.pos += t;
         s.shift = shift_after;
         s.last_rows = t;
-        self.finish(s, x, tokens, p0, &rope, n_out, tap)
+        self.finish(s, x, tokens, p0, &rope, n_out, tap, part)
     }
 
     /// A pass of t rows at p0 fits the chunk and the context
@@ -1377,16 +1511,26 @@ impl<'g> Qwen35<'g> {
     }
 
     /// Layers `range` over the rows x [t, n_embd] at p0 (on the current GPU, its arena from where it is; the rows
-    /// cross to the next GPU where its layers start): the rows after them. `snaps`: a verify pass's DeltaNet snapshots
+    /// cross to the next GPU where its layers start): the rows after them. `snaps`: a verify pass's DeltaNet snapshots.
+    /// `part`: DSpine's partial context sum for these rows (made here when a target layer is in the range and none came
+    /// in; it crosses with the rows)
     #[allow(clippy::too_many_arguments)]
     fn run_layers(&self, s: &Session, range: std::ops::Range<usize>, mut x: DevBuf, t: usize, p0: usize, rope: &Rope, snaps: Option<&Snaps>,
-                  tap: Tap) -> Result<DevBuf> {
+                  tap: Tap, part: &mut Option<DspPart>) -> Result<DevBuf> {
         let g = &self.g;
         self.xq.lock().unwrap().clear();
         let mut h = self.arena().f32(t * g.n_embd)?;
         let mut ffn_g = self.arena().f32(t * g.n_ff)?;
         let mut ffn_u = self.arena().f32(t * g.n_ff)?;
         let mut ffn = self.arena().f32(t * g.n_embd)?;
+        // DSpine: the target layers this range runs, and the partial sum's buffer (on this GPU, before the layers' marks)
+        let dsp = self.dspine.as_ref().filter(|_| s.dsp.is_some());
+        let end = range.end;
+        let targets_from = |l: usize| dsp.is_some_and(|d| d.cfg.target_layers.iter().any(|x| *x >= l && *x < end));
+        if part.is_none() && targets_from(range.start) {
+            *part = Some(DspPart { buf: self.arena().f32(t * g.n_embd)?, filled: false });
+        }
+        let dump = dsp.and_then(|_| std::env::var("NS_Q35_DSPINE_DUMP").ok());
         // the DeltaNet layers before the range (their snapshots' index)
         let mut li = (0..range.start).filter(|l| !g.full(*l)).count();
         // the arena past this point is the layer's own, made again each layer
@@ -1400,6 +1544,12 @@ impl<'g> Qwen35<'g> {
                 ffn_g = self.arena().f32(t * g.n_ff)?;
                 ffn_u = self.arena().f32(t * g.n_ff)?;
                 ffn = self.arena().f32(t * g.n_embd)?;
+                // the DSpine partial sum crosses too (or is made here)
+                *part = match part.take() {
+                    Some(p) if p.filled => Some(DspPart { buf: self.hop(&p.buf, self.layer_dev[l])?, filled: true }),
+                    _ if targets_from(l) => Some(DspPart { buf: self.arena().f32(t * g.n_embd)?, filled: false }),
+                    _ => None,
+                };
             }
             let mark = self.arena().mark();
             self.phase(if ly.full.is_some() { "attention" } else { "deltanet" });
@@ -1425,6 +1575,27 @@ impl<'g> Qwen35<'g> {
             self.matmul("down", &ly.down, &ffn_g, None, t, &ffn)?;
             self.add(&x, &ffn, t * g.n_embd)?;
             tap(&format!("l_out-{l}"), &x)?;
+            // DSpine: this layer's share of the context, fc_j . x, into the partial sum
+            if let (Some(ds), Some(pt)) = (dsp, part.as_mut()) {
+                if let Some(j) = ds.cfg.target_layers.iter().position(|y| *y == l) {
+                    self.phase("dspine fc");
+                    self.xq.lock().unwrap().clear();
+                    if let Some(dir) = &dump {
+                        // the residual stream after target layer j, for the reference (tooling/dspine-ref.py)
+                        let v = x.to_f32()?;
+                        std::fs::write(format!("{dir}/aux-{p0}-{t}-{j}.f32"), v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>())
+                            .map_err(|x| e(format!("{dir}: {x}")))?;
+                    }
+                    if pt.filled {
+                        let tmp = self.arena().f32(t * g.n_embd)?;
+                        self.matmul("dspine fc", &ds.fc[j], &x, None, t, &tmp)?;
+                        self.add(&pt.buf, &tmp, t * g.n_embd)?;
+                    } else {
+                        self.matmul("dspine fc", &ds.fc[j], &x, None, t, &pt.buf)?;
+                        pt.filled = true;
+                    }
+                }
+            }
             self.arena().rewind(mark);
             self.xq.lock().unwrap().clear();
         }
@@ -1434,7 +1605,7 @@ impl<'g> Qwen35<'g> {
     /// A pass's end over its rows x after the last layer (the session's position already past them): the draft block
     /// over them (MTP), the head's logits for the last n_out rows (0: no head, nothing read back)
     #[allow(clippy::too_many_arguments)]
-    fn finish(&self, s: &Session, mut x: DevBuf, tokens: &[u32], p0: usize, rope: &Rope, n_out: usize, tap: Tap) -> Result<Vec<Vec<f32>>> {
+    fn finish(&self, s: &Session, mut x: DevBuf, tokens: &[u32], p0: usize, rope: &Rope, n_out: usize, tap: Tap, part: Option<DspPart>) -> Result<Vec<Vec<f32>>> {
         let g = &self.g;
         let t = tokens.len();
         // the output norm: the last rows' for the head; every row's with MTP (the draft block reads them). n_out 0: no
@@ -1446,6 +1617,17 @@ impl<'g> Qwen35<'g> {
         if self.cur.load(std::sync::atomic::Ordering::Relaxed) != self.head {
             self.phase("GPU to GPU");
             x = self.hop(&x, self.head)?;
+        }
+        // DSpine: the context rows of this pass into the draft's cache
+        if let (Some(ds), Some(st), Some(pt)) = (&self.dspine, s.dsp.as_ref(), part.filter(|p| p.filled)) {
+            self.phase("dspine");
+            let feat = if Arc::ptr_eq(pt.buf.gpu(), &self.devs[self.head].gpu) { pt.buf } else { self.hop(&pt.buf, self.head)? };
+            let r0 = match rope {
+                Rope::From(f) => *f,
+                // (a picture's rows: the slot less the shift after them)
+                _ => p0 as i64 - s.shift,
+            };
+            self.dspine_rows(ds, st, &feat, p0, r0, t)?;
         }
         self.phase("head");
         let (normed, nq8) = if let Some(ms) = s.mtp.as_ref().filter(|_| self.mtp.is_some()) {
@@ -1500,7 +1682,7 @@ impl<'g> Qwen35<'g> {
         let split = self.devs[1].lb;
         let ne = self.g.n_embd;
         // (chunk, its p0, its rows on the last GPU, its positions, the shift after it) waiting for the last GPU's part
-        let mut pending: Option<(&[u32], usize, DevBuf, Rope, i64)> = None;
+        let mut pending: Option<Pending> = None;
         // the rotary shift before the next chunk (pictures move it)
         let mut shift = s.shift;
         let mut queued = 0;
@@ -1523,12 +1705,18 @@ impl<'g> Qwen35<'g> {
             let (rope, shift_after) = self.rope_of(c, p0, shift)?;
             shift = shift_after;
             let (here, slot) = self.rope_here(&rope)?;
-            let x = self.stage(s, 0..split, x, t, p0, &here, k > 0, &mut *tap)?;
+            let mut part = None;
+            let x = self.stage(s, 0..split, x, t, p0, &here, k > 0, &mut *tap, &mut part)?;
             if let Some(sl) = slot {
                 self.release(sl)?;
             }
             self.phase("GPU to GPU");
             let xb = self.pipe[k % 2].view(0, t * ne * 4)?;
+            // DSpine: the first GPU's share of the context crosses beside the rows
+            let pb = match (part, self.dsp_pipe.get(k % 2)) {
+                (Some(p), Some(b)) if p.filled => Some((p.buf, b.view(0, t * ne * 4)?)),
+                _ => None,
+            };
             {
                 let mut st = self.staging.lock().unwrap();
                 if st.as_ref().is_none_or(|b| b.len < x.len) {
@@ -1538,17 +1726,21 @@ impl<'g> Qwen35<'g> {
                     *st = Some(HostBuf::new(&self.devs[0].gpu, (self.chunk * ne * 4).next_power_of_two())?);
                 }
                 xb.copy_from_peer_async(&x, st.as_mut().unwrap())?;
+                if let Some((src, dst)) = &pb {
+                    dst.copy_from_peer_async(src, st.as_mut().unwrap())?;
+                }
             }
+            let part = pb.map(|(_, buf)| DspPart { buf, filled: true });
             queued += t;
             // the last GPU's part of chunk k-1
-            if let Some((pc, pp0, px, pr, ps)) = pending.take() {
-                self.last_part(s, pc, pp0, px, &pr, ps, 0, k > 1, &mut *tap)?;
+            if let Some((pc, pp0, px, pr, ps, pp)) = pending.take() {
+                self.last_part(s, pc, pp0, px, &pr, ps, 0, k > 1, &mut *tap, pp)?;
             }
-            pending = Some((c, p0, xb, rope, shift_after));
+            pending = Some((c, p0, xb, rope, shift_after, part));
         }
-        if let Some((pc, pp0, px, pr, ps)) = pending.take() {
+        if let Some((pc, pp0, px, pr, ps, pp)) = pending.take() {
             let all = queued == tokens.len();
-            logits = self.last_part(s, pc, pp0, px, &pr, ps, if all { 1 } else { 0 }, true, &mut *tap)?.pop().unwrap_or_default();
+            logits = self.last_part(s, pc, pp0, px, &pr, ps, if all { 1 } else { 0 }, true, &mut *tap, pp)?.pop().unwrap_or_default();
         }
         Ok(Some((queued, logits)))
     }
@@ -1556,39 +1748,49 @@ impl<'g> Qwen35<'g> {
     /// `run_layers` over one GPU's layers, as one graph when `graph` (NS_Q35_GRAPHS=0: never; not while profiling):
     /// the stage's thousand kernels one entry in the GPU's queue. A capture that fails is run again as launches
     #[allow(clippy::too_many_arguments)]
-    fn stage(&self, s: &Session, range: std::ops::Range<usize>, x: DevBuf, t: usize, p0: usize, rope: &Rope, graph: bool, tap: Tap) -> Result<DevBuf> {
-        let graph = graph && self.prof.is_none() && !std::env::var("NS_Q35_GRAPHS").is_ok_and(|v| v == "0");
+    #[allow(clippy::too_many_arguments)]
+    fn stage(&self, s: &Session, range: std::ops::Range<usize>, x: DevBuf, t: usize, p0: usize, rope: &Rope, graph: bool, tap: Tap,
+             part: &mut Option<DspPart>) -> Result<DevBuf> {
+        // (DSpine's debug dump reads rows back mid-stage: no graph)
+        let graph = graph && self.prof.is_none() && !std::env::var("NS_Q35_GRAPHS").is_ok_and(|v| v == "0")
+            && !(self.dspine.is_some() && std::env::var("NS_Q35_DSPINE_DUMP").is_ok());
         if graph {
             let mark = self.arena().mark();
             let xv = x.view(0, x.len)?;
-            match self.dev().gpu.graph(|| self.run_layers(s, range.clone(), xv, t, p0, rope, None, &mut *tap))? {
+            let saved = match part.as_ref() {
+                Some(p) => Some((p.buf.view(0, p.buf.len)?, p.filled)),
+                None => None,
+            };
+            match self.dev().gpu.graph(|| self.run_layers(s, range.clone(), xv, t, p0, rope, None, &mut *tap, part))? {
                 Ok(y) => return Ok(y),
                 Err(why) => {
                     static SAID: std::sync::Once = std::sync::Once::new();
                     SAID.call_once(|| eprintln!("[qwen35: a prompt stage as a graph failed ({why}); its kernels launched one by one]"));
                     self.arena().rewind(mark);
                     self.xq.lock().unwrap().clear();
+                    *part = saved.map(|(buf, filled)| DspPart { buf, filled });
                 }
             }
         }
-        self.run_layers(s, range, x, t, p0, rope, None, tap)
+        self.run_layers(s, range, x, t, p0, rope, None, tap, part)
     }
 
     /// The last GPU's part of a pipelined chunk (rows x there, at p0 = the session's position): its layers, the
     /// session past them, the pass's end
     #[allow(clippy::too_many_arguments)]
     fn last_part(&self, s: &mut Session, tokens: &[u32], p0: usize, x: DevBuf, rope: &Rope, shift_after: i64, n_out: usize, graph: bool,
-                 tap: Tap) -> Result<Vec<Vec<f32>>> {
+                 tap: Tap, part: Option<DspPart>) -> Result<Vec<Vec<f32>>> {
         let t = tokens.len();
         debug_assert_eq!(p0, s.pos);
         self.devs[1].arena.reset();
         self.on(1);
         let (here, slot) = self.rope_here(rope)?;
-        let x = self.stage(s, self.devs[1].lb..self.g.layers, x, t, p0, &here, graph, &mut *tap)?;
+        let mut part = part;
+        let x = self.stage(s, self.devs[1].lb..self.g.layers, x, t, p0, &here, graph, &mut *tap, &mut part)?;
         s.pos += t;
         s.shift = shift_after;
         s.last_rows = t;
-        let out = self.finish(s, x, tokens, p0, &here, n_out, tap)?;
+        let out = self.finish(s, x, tokens, p0, &here, n_out, tap, part)?;
         if let Some(sl) = slot {
             self.release(sl)?;
         }
@@ -1646,9 +1848,263 @@ impl<'g> Qwen35<'g> {
         Ok(Some(u32::from_le_bytes(b)))
     }
 
+    /// DSpine behind a pass of t rows at p0 (rotary positions from r0): each row's context - hidden_norm(the pass's fc
+    /// partial sum `feat`) - through every draft layer's k / v into its ring at the row's position
+    fn dspine_rows(&self, ds: &crate::dspine::Dspine, st: &DspState, feat: &DevBuf, p0: usize, r0: i64, t: usize) -> Result<()> {
+        let (ne, k, c) = (self.g.n_embd, self.k, &ds.cfg);
+        let (kvh, d) = (c.kv_heads, c.head_dim);
+        let kw = kvh * d;
+        let layer_bytes = kvh * st.ring.slots * d * 2;
+        if let Ok(dir) = std::env::var("NS_Q35_DSPINE_DUMP") {
+            // the pass's partial sum (all five target layers': the context before its norm), for the reference
+            std::fs::write(format!("{dir}/feat-{p0}-{t}.f32"), feat.to_f32()?.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>())
+                .map_err(|x| e(format!("{dir}: {x}")))?;
+        }
+        let ctx = self.arena().f32(t * ne)?;
+        let cq = self.norm(feat, &ds.hidden_norm, &ctx, t, ne)?;
+        let (kk, vv, kr) = (self.arena().f32(t * kw)?, self.arena().f32(t * kw)?, self.arena().f32(t * kw)?);
+        let none = String::new;
+        for (l, ly) in ds.layers.iter().enumerate() {
+            self.matmul("dspine k", &ly.k, &ctx, cq.as_ref(), t, &kk)?;
+            self.matmul("dspine v", &ly.v, &ctx, cq.as_ref(), t, &vv)?;
+            let (kc, vc) = (st.k.view(l * layer_bytes, layer_bytes)?, st.v.view(l * layer_bytes, layer_bytes)?);
+            // SAFETY: rows [t, kvh x d] float32; the layer's cache [kvh][slots][d] half (a view of the session's).
+            unsafe {
+                self.op("dspine k norm rope", none, 8 * t * kw, 10 * t * kw,
+                        || (k.qk_norm_rope)(self.raw(), kk.fp(), kw as i64, d as i64, kr.fp(), kw as i64, t as i64, kvh as i64, d as i64, ly.k_norm.fp(), c.eps,
+                                            d as i64, c.theta, r0))?;
+                for sp in st.ring.spans(p0, t) {
+                    self.op("dspine kv store", none, 12 * sp.n * kw, 0,
+                            || (k.kv_store)(self.raw(), kr.fp().add(sp.row * kw), kw as i64, vv.fp().add(sp.row * kw), kw as i64, sp.n as i64, kvh as i64, d as i64,
+                                            st.ring.slots as i64, sp.slot as i64, kc.ptr(), vc.ptr()))?;
+                }
+            }
+        }
+        self.xq.lock().unwrap().clear();
+        Ok(())
+    }
+
+    /// DSpine drafts after `tail` (committed at s.pos, not fed): a block [tail, mask x k] through its layers over its
+    /// context ring, the bridge after each, then the target's head, each row's 16 candidates and the serial refinement
+    /// (dspine.rs). Two reads back: the candidates (their senders' codebook rows come from the checkpoint's file), then
+    /// the refinement's picks
+    fn dspine_draft(&self, ds: &crate::dspine::Dspine, s: &Session, st: &DspState, tail: u32) -> Result<Vec<u32>> {
+        let kmax = self.drafts.min(s.max_ctx.saturating_sub(s.pos + 1));
+        if kmax == 0 {
+            return Ok(Vec::new());
+        }
+        let (ne, k, cfg) = (self.g.n_embd, self.k, &ds.cfg);
+        let (kvh, hq, d, rk, c) = (cfg.kv_heads, cfg.heads, cfg.head_dim, cfg.rank, cfg.code);
+        let (qd, kw, rb) = (hq * d, kvh * d, d * 2);
+        let ring = st.ring;
+        let layer_bytes = kvh * ring.slots * rb;
+        let t = kmax + 1;
+        let (p0, r0) = (s.pos, s.pos as i64 - s.shift);
+        self.on(self.last());
+        self.arena().reset();
+        self.xq.lock().unwrap().clear();
+        self.phase("dspine draft");
+        let none = String::new;
+        let dump = std::env::var("NS_Q35_DSPINE_DUMP").ok();
+        let tokens = crate::dspine::block_tokens(tail, kmax, cfg.mask_id);
+        // the anchor's code row (through a pinned slot, no wait)
+        let anchor = self.arena().f32(c)?;
+        let (ab, slot) = self.upload_with(c * 4, &mut |raw| ds.anchor_row(tail, raw))?;
+        anchor.copy_within(0, &ab, 0, c * 4)?;
+        self.release(slot)?;
+        // the stream (the embeddings; then each layer's out), the layer's residual sum (the last one's: the refinement's
+        // raw), the bridge's rms and packed projections (the last one's kept)
+        let x = self.embed_with(self.file, &self.embd, self.g.vocab, &tokens)?;
+        let x0 = if dump.is_some() { Some(x.to_f32()?) } else { None };
+        let r = self.arena().f32(t * ne)?;
+        let rmsb = self.arena().f32(t)?;
+        let packed = self.arena().f32(t * 3 * rk)?;
+        let sqrt_c = (c as f32).sqrt();
+        let start = crate::dspine::window_start(p0, cfg.window);
+        let pa = p0 - start;
+        let s0 = ring.start_slot(start);
+        for (l, ly) in ds.layers.iter().enumerate() {
+            let mark = self.arena().mark();
+            // attention
+            let xn = self.arena().f32(t * ne)?;
+            let xq = self.norm(&x, &ly.in_norm, &xn, t, ne)?;
+            let (q, kk, vv) = (self.arena().f32(t * qd)?, self.arena().f32(t * kw)?, self.arena().f32(t * kw)?);
+            self.matmul("dspine q", &ly.q, &xn, xq.as_ref(), t, &q)?;
+            self.matmul("dspine k", &ly.k, &xn, xq.as_ref(), t, &kk)?;
+            self.matmul("dspine v", &ly.v, &xn, xq.as_ref(), t, &vv)?;
+            let (qn, kn, att) = (self.arena().f32(t * qd)?, self.arena().f32(t * kw)?, self.arena().f32(t * qd)?);
+            let (kc, vc) = (st.k.view(l * layer_bytes, layer_bytes)?, st.v.view(l * layer_bytes, layer_bytes)?);
+            let (ks, vs) = (st.k.view(l * layer_bytes + s0 * rb, layer_bytes - s0 * rb)?, st.v.view(l * layer_bytes + s0 * rb, layer_bytes - s0 * rb)?);
+            // SAFETY: the rows and the layer's cache ([kvh][slots][d] half); the block's keys written first, then the
+            // attention reads each head's run from key `start` (its pointers moved there, its positions counted from there).
+            unsafe {
+                self.op("dspine q norm rope", none, 8 * t * qd, 10 * t * qd,
+                        || (k.qk_norm_rope)(self.raw(), q.fp(), qd as i64, d as i64, qn.fp(), qd as i64, t as i64, hq as i64, d as i64, ly.q_norm.fp(), cfg.eps,
+                                            d as i64, cfg.theta, r0))?;
+                self.op("dspine k norm rope", none, 8 * t * kw, 10 * t * kw,
+                        || (k.qk_norm_rope)(self.raw(), kk.fp(), kw as i64, d as i64, kn.fp(), kw as i64, t as i64, kvh as i64, d as i64, ly.k_norm.fp(), cfg.eps,
+                                            d as i64, cfg.theta, r0))?;
+                for sp in ring.spans(p0, t) {
+                    self.op("dspine kv store", none, 12 * sp.n * kw, 0,
+                            || (k.kv_store)(self.raw(), kn.fp().add(sp.row * kw), kw as i64, vv.fp().add(sp.row * kw), kw as i64, sp.n as i64, kvh as i64, d as i64,
+                                            ring.slots as i64, sp.slot as i64, kc.ptr(), vc.ptr()))?;
+                }
+                let sc = (k.dsp_attn_scratch)(t as i64, hq as i64, kvh as i64, pa as i64) as usize;
+                let part = self.arena().f32(sc.max(1))?;
+                let keys = t * pa + t * (t + 1) / 2;
+                self.op("dspine attention", none, keys * kw * 4 + 8 * t * qd, 4 * keys * qd,
+                        || (k.dsp_attn)(self.raw(), qn.fp(), qd as i64, ks.ptr(), vs.ptr(), t as i64, hq as i64, kvh as i64, d as i64, ring.slots as i64, pa as i64,
+                                        att.fp(), part.fp()))?;
+            }
+            self.matmul("dspine o", &ly.o, &att, None, t, &r)?;
+            self.add(&r, &x, t * ne)?;
+            // the SwiGLU: raw = r + down(silu(gate n) up n)
+            let h = self.arena().f32(t * ne)?;
+            let q8 = self.norm(&r, &ly.post_norm, &h, t, ne)?;
+            let (fg, fu) = (self.arena().f32(t * cfg.n_ff)?, self.arena().f32(t * cfg.n_ff)?);
+            self.matmul("dspine gate", &ly.gate, &h, q8.as_ref(), t, &fg)?;
+            self.matmul("dspine up", &ly.up, &h, q8.as_ref(), t, &fu)?;
+            let nf = t * cfg.n_ff;
+            // SAFETY: n floats each.
+            self.op("swiglu", none, 12 * nf, 6 * nf, || unsafe { (k.swiglu)(self.raw(), fg.fp(), fu.fp(), fg.fp(), nf as i64, f32::INFINITY) })?;
+            self.matmul("dspine down", &ly.down, &fg, None, t, &h)?;
+            self.add(&r, &h, t * ne)?;
+            // the code bridge: x = raw + rms x write(message)
+            self.phase("dspine bridge");
+            let (nrm, proj, codes, msg, delta) = (self.arena().f32(t * ne)?, self.arena().f32(t * c)?, self.arena().f32(t * c)?, self.arena().f32(t * rk)?, self.arena().f32(t * ne)?);
+            // SAFETY: rows [t, ne] / [t, c] / [t, 3 rank] / [t, rank] float32 as the kernels name them.
+            unsafe {
+                self.op("dspine bridge norm", none, 12 * t * ne, 6 * t * ne, || (k.dsp_bridge_norm)(self.raw(), r.fp(), nrm.fp(), rmsb.fp(), t as i64, ne as i64, cfg.bridge_eps))?;
+            }
+            self.matmul("dspine read", &ds.read[l], &nrm, None, t, &proj)?;
+            // SAFETY: as above.
+            unsafe {
+                self.op("dspine codes", none, 12 * t * c, 6 * t * c, || (k.dsp_codes)(self.raw(), proj.fp(), anchor.fp(), codes.fp(), t as i64, c as i64, sqrt_c, cfg.bridge_eps))?;
+            }
+            self.matmul("dspine packed", &ds.packed, &codes, None, t, &packed)?;
+            // SAFETY: as above.
+            unsafe {
+                self.op("dspine message", none, 16 * t * rk, 8 * t * rk, || (k.dsp_message)(self.raw(), packed.fp(), ds.gate_bias.fp(), msg.fp(), t as i64, rk as i64))?;
+            }
+            self.matmul("dspine write", &ds.write[l], &msg, None, t, &delta)?;
+            // SAFETY: as above (x [t, ne] is overwritten with the layer's out; the same element a thread reads from raw).
+            unsafe {
+                self.op("dspine write", none, 16 * t * ne, 4 * t * ne, || (k.dsp_write)(self.raw(), r.fp(), delta.fp(), rmsb.fp(), x.fp(), t as i64, ne as i64))?;
+            }
+            self.arena().rewind(mark);
+            self.xq.lock().unwrap().clear();
+            self.phase("dspine draft");
+        }
+        // the block's final rows, each but the anchor's through the head: logits, 16 candidates a row
+        let normed = self.arena().f32(t * ne)?;
+        self.rms(&x, &ds.norm, &normed, t, ne)?;
+        let n = t - 1;
+        let rows_in = normed.view(ne * 4, n * ne * 4)?;
+        let vocab = self.output.rows;
+        let topk = cfg.topk;
+        let logits = self.arena().f32(n * vocab)?;
+        self.phase("dspine head");
+        self.matmul("dspine head", &self.output, &rows_in, None, n, &logits)?;
+        let ids = self.arena().bytes(n * topk * 4)?;
+        // SAFETY: arithmetic only; then each row's logits [vocab] -> its `topk` best ids (int32) in ids[row].
+        unsafe {
+            let sc = (k.dsp_topk_scratch)(n as i64, topk as i64) as usize;
+            let scratch = self.arena().f32(sc.max(1))?;
+            self.op("dspine top k", none, 4 * n * vocab, 0,
+                    || (k.dsp_topk)(self.raw(), logits.fp(), n as i64, vocab as i64, topk as i64, ids.ptr().cast(), scratch.fp()))?;
+        }
+        // the candidates' head rows (gathered from the head's blocks, then to half), scored against raw; their tg rows
+        self.phase("dspine refine");
+        let nk = n * topk;
+        let row_bytes = self.output.ty.bytes(ne as u64).ok_or_else(|| e("the head's row is not whole blocks"))? as usize;
+        let gathered = self.arena().bytes(nk * row_bytes)?;
+        let rows16 = self.arena().bytes(nk * ne * 2)?;
+        let base = self.arena().f32(nk)?;
+        let tg = self.arena().f32(nk * rk)?;
+        let code = self.output.ty.code() as i32;
+        // SAFETY: the head's rows `ids` (int32 on the GPU) -> gathered [nk][row_bytes]; -> half [nk][ne] (directly, or
+        // through float32); base [nk]; tg [nk][rk] = rows16 . wt^T.
+        unsafe {
+            self.op("dspine gather", none, 2 * nk * row_bytes, 0,
+                    || (k.gather_rows)(self.raw(), self.output.buf.ptr(), ids.ptr().cast(), gathered.ptr(), row_bytes as i64, nk as i64))?;
+            let rc = self.op_rc("dspine rows f16", none, nk * row_bytes + 2 * nk * ne, 0,
+                                || (k.dequant_f16)(self.raw(), code, gathered.ptr(), (nk * ne) as i64, rows16.ptr()))?;
+            if rc != 0 {
+                let f = self.arena().f32(nk * ne)?;
+                self.op("dspine rows f32", none, nk * row_bytes + 4 * nk * ne, 0,
+                        || (k.dequant_f32)(self.raw(), code, gathered.ptr(), (nk * ne) as i64, f.fp()))?;
+                self.op("dspine rows to half", none, 6 * nk * ne, 0, || (k.to_half)(self.raw(), f.fp(), rows16.ptr(), (nk * ne) as i64))?;
+            }
+            self.op("dspine base", none, nk * ne * 2, 2 * nk * ne,
+                    || (k.dsp_base)(self.raw(), r.fp().add(ne), ds.norm.fp(), rows16.ptr(), base.fp(), n as i64, topk as i64, ne as i64))?;
+            self.op("dspine tg", none, 2 * nk * ne + 2 * rk * ne + 4 * nk * rk, 2 * nk * rk * ne,
+                    || (k.gemm_f16)(self.raw(), ds.wt.ptr(), rows16.ptr(), tg.fp(), nk as i64, rk as i64, ne as i64))?;
+        }
+        let mut b = vec![0u8; nk * 4];
+        ids.read(0, &mut b)?;
+        let cand: Vec<i32> = b.chunks_exact(4).map(|w| i32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
+        // each (row, candidate) pair's sender - the anchor, else the previous row's candidate - and its tsv row: its
+        // codebook row (sqrt(C) x, half) through [Gp; A]
+        let senders = crate::dspine::senders(tail, &cand, n, topk);
+        let xcode = self.arena().bytes(nk * c * 2)?;
+        let (xb, slot) = self.upload_with(nk * c * 2, &mut |raw| ds.code_rows_f16(&senders, raw))?;
+        xcode.copy_within(0, &xb, 0, nk * c * 2)?;
+        self.release(slot)?;
+        let tsv = self.arena().f32(nk * 2 * rk)?;
+        let idx = self.arena().bytes(nk * 4)?;
+        // SAFETY: tsv [nk][2 rk] = xcode . pv^T; then the picks from raw / rms / packed rows 1.. (the anchor's row has no
+        // refinement), the candidates' base and tg, the senders' tsv.
+        unsafe {
+            self.op("dspine tsv", none, 2 * nk * c + 4 * rk * c + 8 * nk * rk, 4 * nk * rk * c,
+                    || (k.gemm_f16)(self.raw(), ds.pv.ptr(), xcode.ptr(), tsv.fp(), nk as i64, (2 * rk) as i64, c as i64))?;
+            self.op("dspine pick", none, 4 * nk * topk * rk, 2 * nk * topk * rk,
+                    || (k.dsp_pick)(self.raw(), base.fp(), rmsb.fp().add(1), packed.fp().add(3 * rk), (3 * rk) as i64, tsv.fp(), tg.fp(), ds.gate_bias.fp(),
+                                    idx.ptr().cast(), n as i64, topk as i64, rk as i64))?;
+        }
+        let mut b = vec![0u8; nk * 4];
+        idx.read(0, &mut b)?;
+        let pick: Vec<i32> = b.chunks_exact(4).map(|w| i32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
+        let rows = |v: &[i32]| -> Vec<Vec<i32>> { v.chunks(topk).map(|c| c.to_vec()).collect() };
+        let drafts = crate::dspine::chain(&rows(&pick), &rows(&cand));
+        if let Some(dir) = dump {
+            // what a reference needs to redo this draft (nextsycl's draft-<pos>.bin): the block, its embedding rows, the
+            // final rows, the last layer's raw / rms / packed, the logits, the candidates' head rows, the choices
+            let f32s = |buf: &DevBuf, n: usize| -> Result<Vec<u8>> {
+                let mut v = vec![0u8; n * 4];
+                buf.read(0, &mut v)?;
+                Ok(v)
+            };
+            let mut out: Vec<u8> = Vec::new();
+            for v in [p0 as u32, tail, t as u32, topk as u32] {
+                out.extend(v.to_le_bytes());
+            }
+            for v in &tokens {
+                out.extend(v.to_le_bytes());
+            }
+            out.extend(x0.unwrap_or_default().iter().flat_map(|v| v.to_le_bytes()));
+            out.extend(f32s(&normed, t * ne)?);
+            out.extend(f32s(&r, t * ne)?);
+            out.extend(f32s(&rmsb, t)?);
+            out.extend(f32s(&packed, t * 3 * rk)?);
+            out.extend(f32s(&logits, n * vocab)?);
+            let mut h16 = vec![0u8; nk * ne * 2];
+            rows16.read(0, &mut h16)?;
+            out.extend(h16);
+            out.extend(cand.iter().flat_map(|v| v.to_le_bytes()));
+            out.extend(pick.iter().flat_map(|v| v.to_le_bytes()));
+            out.extend(drafts.iter().flat_map(|v| v.to_le_bytes()));
+            std::fs::write(format!("{dir}/draft-{p0}.bin"), out).map_err(|x| e(format!("{dir}: {x}")))?;
+        }
+        self.xq.lock().unwrap().clear();
+        Ok(drafts)
+    }
+
     /// Drafts for the positions after `tail` (committed at s.pos, not fed): the draft block on (the last fed
     /// position's hidden state, tail), then chained on its own normed output and each draft
     fn draft_in(&self, s: &Session, tail: u32) -> Result<Vec<u32>> {
+        if let (Some(ds), Some(st)) = (&self.dspine, &s.dsp) {
+            return self.dspine_draft(ds, s, st, tail);
+        }
         let Some(ms) = &s.mtp else { return Ok(Vec::new()) };
         let k = self.drafts.min(s.max_ctx.saturating_sub(s.pos + 1));
         let mut out = Vec::with_capacity(k);
@@ -1702,7 +2158,7 @@ impl<'g> Qwen35<'g> {
     pub fn session(&self, max_ctx: usize) -> Result<Session> {
         let g = &self.g;
         // the caches and states, checked against what is free first (a clear error before an allocation fails)
-        let mtp_kv = if self.mtp.is_some() { 2 * g.heads_kv * max_ctx * self.mtp_row() } else { 0 };
+        let mtp_kv = if self.mtp.is_some() { 2 * g.heads_kv * max_ctx * self.mtp_row() } else { 0 } + self.dsp_ring_bytes(max_ctx);
         // per GPU: its layers' share (the draft block's cache on the last)
         for (i, d) in self.devs.iter().enumerate() {
             let full = (d.lb..d.le).filter(|l| g.full(*l)).count();
@@ -1740,8 +2196,45 @@ impl<'g> Qwen35<'g> {
             }
             None => None,
         };
+        let dsp = match &self.dspine {
+            Some(ds) => {
+                let c = &ds.cfg;
+                let ring = crate::dspine::Ring::new(c.window, max_ctx);
+                let n = c.layers * c.kv_heads * ring.slots * c.head_dim * 2;
+                let gpu = &self.devs[self.last()].gpu;
+                Some(DspState { k: DevBuf::new(gpu, n)?, v: DevBuf::new(gpu, n)?, ring })
+            }
+            None => None,
+        };
         let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(Session { pos: 0, max_ctx, shift: 0, layers, last_rows: 0, id, mtp })
+        Ok(Session { pos: 0, max_ctx, shift: 0, layers, last_rows: 0, id, mtp, dsp })
+    }
+
+    /// A session's DSpine ring (keys and values) for a context of max_ctx (0 without DSpine)
+    fn dsp_ring_bytes(&self, max_ctx: usize) -> usize {
+        self.dspine.as_ref().map_or(0, |ds| {
+            let c = &ds.cfg;
+            2 * c.layers * c.kv_heads * crate::dspine::Ring::new(c.window, max_ctx).slots * c.head_dim * 2
+        })
+    }
+
+    /// Bytes of a DSpine head's row in its cache, and the (layer, kv head) runs of a cache [layers][kv heads][slots][row]
+    fn dsp_heads(&self) -> (usize, usize) {
+        self.dspine.as_ref().map_or((0, 0), |ds| (ds.cfg.head_dim * 2, ds.cfg.layers * ds.cfg.kv_heads))
+    }
+
+    /// The DSpine ring's positions [lo, lo + n) as runs that cross neither ring's wrap: (row of the run, slot in `a`,
+    /// slot in `b`, positions)
+    fn ring_runs(a: &crate::dspine::Ring, b: &crate::dspine::Ring, lo: usize, n: usize) -> Vec<(usize, usize, usize, usize)> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < n {
+            let (sa, sb) = ((lo + i) % a.r, (lo + i) % b.r);
+            let take = (a.r - sa).min(b.r - sb).min(n - i);
+            out.push((i, sa, sb, take));
+            i += take;
+        }
+        out
     }
 
     pub fn reset_session(&self, s: &mut Session) -> Result<()> {
@@ -1792,6 +2285,22 @@ impl<'g> Qwen35<'g> {
                 d.v.copy_within(h * dst.max_ctx * row, &sm.v, h * src.max_ctx * row, n)?;
             }
             d.pending.copy_within(0, &sm.pending, 0, g.n_embd * 4)?;
+        }
+        if let (Some(d), Some(sd)) = (&dst.dsp, &src.dsp) {
+            // the window's positions (all a ring holds), each also into the mirror
+            let (rb, heads) = self.dsp_heads();
+            let n = sd.ring.held(src.pos).min(d.ring.r);
+            for (_, sa, sb, len) in Self::ring_runs(&sd.ring, &d.ring, src.pos - n, n) {
+                for hh in 0..heads {
+                    for (dc, sc) in [(&d.k, &sd.k), (&d.v, &sd.v)] {
+                        let from = (hh * sd.ring.slots + sa) * rb;
+                        dc.copy_within((hh * d.ring.slots + sb) * rb, sc, from, len * rb)?;
+                        if d.ring.mirrored {
+                            dc.copy_within((hh * d.ring.slots + sb + d.ring.r) * rb, sc, from, len * rb)?;
+                        }
+                    }
+                }
+            }
         }
         dst.pos = src.pos;
         dst.shift = src.shift;
@@ -1852,6 +2361,11 @@ impl<'g> Qwen35<'g> {
         self.drafts > 0
     }
 
+    /// whether the drafts are DSpine's (else MTP's)
+    pub fn drafts_with_dspine(&self) -> bool {
+        self.dspine.is_some() && self.drafts > 0
+    }
+
     pub fn max_verify(&self) -> usize {
         self.drafts + 1
     }
@@ -1868,7 +2382,7 @@ impl<'g> Qwen35<'g> {
     /// sampling would draw it, the drafts kept while they match (what is committed is distributed as without drafts)
     pub fn step(&self, s: &mut Session, d: &mut Decoder, smp: &mut dyn FnMut(&[f32]) -> u32, tap: Tap) -> Result<Vec<u32>> {
         let _w = self.work.lock().unwrap();
-        let drafting = d.mtp && self.drafts > 0 && s.mtp.is_some();
+        let drafting = d.mtp && self.drafts > 0 && (s.mtp.is_some() || s.dsp.is_some());
         let out = match (d.logits.take(), d.next.take()) {
             (Some(l), _) => vec![smp(&l)],
             (None, Some(x)) => {
@@ -1945,6 +2459,20 @@ impl<'g> Qwen35<'g> {
             ms.pending.read(0, &mut b)?;
             bufs.push(b);
         }
+        if let Some(sd) = &s.dsp {
+            // the window's positions in order, [layer x kv head][n][row] for keys then values
+            let (rb, heads) = self.dsp_heads();
+            let n = sd.ring.held(s.pos);
+            for c in [&sd.k, &sd.v] {
+                let mut b = vec![0u8; heads * n * rb];
+                for (row, sa, _, len) in Self::ring_runs(&sd.ring, &sd.ring, s.pos - n, n) {
+                    for hh in 0..heads {
+                        c.read((hh * sd.ring.slots + sa) * rb, &mut b[(hh * n + row) * rb..(hh * n + row + len) * rb])?;
+                    }
+                }
+                bufs.push(b);
+            }
+        }
         // the rotary shift last (a checkpoint without it: none)
         bufs.push(s.shift.to_le_bytes().to_vec());
         let bytes = bufs.iter().map(|b| b.len()).sum();
@@ -1997,6 +2525,30 @@ impl<'g> Qwen35<'g> {
             }
             let b = it.next().ok_or_else(|| e("a checkpoint without the draft block's state"))?;
             ms.pending.write(0, b)?;
+        }
+        if let Some(sd) = &s.dsp {
+            let (rb, heads) = self.dsp_heads();
+            for c in [&sd.k, &sd.v] {
+                let b = it.next().ok_or_else(|| e("a checkpoint without the DSpine draft's cache"))?;
+                if b.len() % (heads * rb) != 0 {
+                    return Err(e("a checkpoint of another shape"));
+                }
+                let n = b.len() / (heads * rb);
+                if n > ck.pos {
+                    return Err(e("a checkpoint of another shape"));
+                }
+                // (a smaller ring than the checkpoint's: its window's last positions)
+                let keep = n.min(sd.ring.r);
+                for (row, sa, _, len) in Self::ring_runs(&sd.ring, &sd.ring, ck.pos - keep, keep) {
+                    for hh in 0..heads {
+                        let src = &b[(hh * n + (n - keep) + row) * rb..(hh * n + (n - keep) + row + len) * rb];
+                        c.write((hh * sd.ring.slots + sa) * rb, src)?;
+                        if sd.ring.mirrored {
+                            c.write((hh * sd.ring.slots + sa + sd.ring.r) * rb, src)?;
+                        }
+                    }
+                }
+            }
         }
         s.shift = it.next().filter(|b| b.len() == 8).map_or(0, |b| i64::from_le_bytes(b[..8].try_into().unwrap()));
         s.pos = ck.pos;

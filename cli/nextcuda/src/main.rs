@@ -98,7 +98,7 @@ language models (nextcuda llm ...; the names without `llm` still work):
                  [--cache-dir DIR [--cache-disk-gib G (32)] [--cache-ttl-hours H (24)]]
                                 the server itself (what start runs in its container)
   nextcuda llm generate <model.gguf> --prompt TEXT | --prompt-file PATH | --ids FILE [--ignore-eos] [--ctx N]
-                 [--effort low|high|max] [--max N] [--temp T] [--top-p P] [--seed S] [--gpu N[,M]] [--no-mtp] [--top N]
+                 [--effort low|high|max] [--max N] [--temp T] [--top-p P] [--seed S] [--gpu N[,M]] [--no-mtp] [--top N] [--rows-bench]
   nextcuda llm info <model.gguf>      the architecture and geometry, every tensor checked by role, bytes by group
   nextcuda llm tokenize <model.gguf> <text>
   nextcuda llm check <model.gguf> <dump dir> [--gpu N[,M]]    the forward pass against a reference dump
@@ -490,6 +490,24 @@ fn generate(args: &[String]) -> Result<(), String> {
     let t0 = std::time::Instant::now();
     let logits = eng.feed(&mut sess, &ids, &mut none).map_err(e)?;
     let prefill = t0.elapsed().as_secs_f64();
+    // --rows-bench: after the prompt, passes of 1..8 rows (the prompt's tokens again; the session moves on), each timed -
+    // what a verify pass of that many rows costs
+    if args.iter().any(|a| a == "--rows-bench") {
+        for t in 1..=8usize {
+            let rows: Vec<u32> = ids.iter().cycle().take(t).copied().collect();
+            let mut ms = Vec::new();
+            for i in 0..8 {
+                let t1 = std::time::Instant::now();
+                eng.forward_rows(&mut sess, &rows, t, &mut none).map_err(e)?;
+                if i >= 2 {
+                    ms.push(t1.elapsed().as_secs_f64() * 1e3);
+                }
+            }
+            ms.sort_by(f64::total_cmp);
+            eprintln!("[rows-bench: {t} rows a pass: {:.2} ms (median of {}; min {:.2})]", ms[ms.len() / 2], ms.len(), ms[0]);
+        }
+        return Ok(());
+    }
     // --score FILE: the text teacher-forced after the prompt, each next token's distribution kept: --dump OUT writes
     // them (float32 rows), --ref OUT compares with ones written before (a cache type against another: KL, top-1, perplexity)
     if let Some(sf) = opt("--score") {

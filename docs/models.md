@@ -10,6 +10,7 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 |---|---|---|---|---|
 | chat | `qwen3.8-27b-gsq-iq3s` | Qwen3.8-27B, ISTA-DASLab's GSQ-RCO IQ3_S with its MTP head and the BF16 vision projector: text and pictures, thinking switch, 80K context (192K with q4_0) | 12.2 GiB | served, both cards whole |
 | chat | `qwen3.8-27b-gsq-iq3s-long` | the same files, fast / long: the cache q4_0 rotated, 160K of context (a speech model still fits beside it) | (the above's) | served |
+| chat | `qwen3.8-27b-gsq-iq3s-dspine` | the same files with Tencent's DSpine-b16 draft (Apache-2.0, 4.1 GB) in MTP's place, 7 drafts a step, 48K: for code (75 tok/s against the MTP card's 57; slower on prose and long documents) ([ports/dspine.md](ports/dspine.md)) | (the above's) + 4.1 GB | served, opt-in |
 | chat | `nemotron-3.5-super-iq1m` | NVIDIA Nemotron 3.5 Super 120B-A12B, unsloth's UD-IQ1_M (text) | 43.0 GiB | served (one card, experts streamed; off by default) |
 | image | `qwen-image-2.1-q8` | Qwen-Image 2.1 Q8_0 with Qwen3-VL 8B: text to image, RGBA, edits from up to 8 pictures | 13.6 GiB | served |
 | image | `qwen-image-2.1-rrq4` | Qwen-Image 2.1, [realrebelai's Q4](https://huggingface.co/realrebelai/Qwen-Image-2.1_GGUFs) | 5.5 GiB | served |
