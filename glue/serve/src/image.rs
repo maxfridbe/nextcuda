@@ -83,6 +83,9 @@ pub struct ImageServer {
     load: Loader,
     engine: Mutex<Option<Loaded>>,
     progress: Mutex<Value>,
+    /// info's last answer: given while the engine is busy with a request (info would wait for its lock - a long
+    /// svg fit held a front door's image.status for the fit's whole length)
+    info_cache: Mutex<Option<Value>>,
     waiting: AtomicUsize,
     history: Mutex<VecDeque<Value>>,
     cancel: crate::cancel::Cancel,
@@ -274,7 +277,7 @@ impl ImageServer {
         }
         let tele = Telemetry::start(std::slice::from_ref(&gpu.pci));
         let history = Mutex::new(out_dir.as_deref().map(earlier).unwrap_or_default());
-        Ok(ImageServer { model, loras_known, out_dir, wfe, cors, gpu, tele, load, engine: Mutex::new(Some((e, loras))), progress: Mutex::new(json!({"busy": false})),
+        Ok(ImageServer { model, loras_known, out_dir, wfe, cors, gpu, tele, load, engine: Mutex::new(Some((e, loras))), progress: Mutex::new(json!({"busy": false})), info_cache: Mutex::new(None),
                          idle: None, license: Value::Null, waiting: AtomicUsize::new(0), history, cancel: Default::default() })
     }
 
@@ -373,7 +376,15 @@ impl ImageServer {
     }
 
     fn info(&self) -> Value {
-        let g = self.engine.lock();
+        let g = match self.engine.try_lock() {
+            Ok(g) => Ok(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => Ok(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => match self.info_cache.lock().unwrap().clone() {
+                // what it said before this request took the engine: an engine's capabilities do not change
+                Some(v) => return v,
+                None => self.engine.lock(),
+            },
+        };
         let (arch, d, edits, loaded, samplers, schedules, guidance, opts, reads, prompts, caps) = match g.as_ref().ok().and_then(|g| {
             g.as_ref().map(|(e, l)| (e.arch(), e.defaults(), e.edits(), l.clone(), e.samplers(), e.schedules(), e.guidance(), e.options(), e.reads(),
                                      e.ocr_prompts(), (e.grid(), e.transparent(), e.shift_schedules(), e.size_presets(), e.negative(), e.steps_free(), e.takes_loras(), e.sides(), e.ocr_takes())))
@@ -382,9 +393,11 @@ impl ImageServer {
             None => return json!({"model": self.model, "loading": true}),
         };
         let max_pixels = g.as_ref().ok().and_then(|g| g.as_ref().map(|(e, _)| e.max_pixels())).flatten();
+        let able = g.as_ref().ok().and_then(|g| g.as_ref().map(|(e, _)| (e.vectorizes(), e.fits_svg(), e.upscale_variants())));
         drop(g);
+        let (vectorizes, fits_svg, upscale_variants) = able.unwrap_or((false, false, Vec::new()));
         let (grid, transparent, shift_on, sizes, negative, steps_free, takes_loras, sides, ocr_takes) = caps;
-        json!({
+        let v = json!({
             "model": self.model, "arch": arch, "edits": edits, "reads": reads, "guidance": guidance, "grid": grid, "transparent": transparent, "shift": !shift_on.is_empty(),
             "shift_schedules": shift_on.iter().map(|s| s.name()).collect::<Vec<_>>(),
             "sizes": sizes.map(|s| json!({"ratios": s.ratios, "pixels": s.pixels})), "negative": negative, "steps_free": steps_free, "takes_loras": takes_loras,
@@ -400,11 +413,12 @@ impl ImageServer {
             "loras": self.loras_known.iter().map(|k| json!({"id": k.id, "title": k.title,
                 "loaded": loaded.iter().find(|l| l.name == k.id).map(|l| l.scale)})).collect::<Vec<_>>(),
             "saves": self.out_dir.is_some(), "wfe": self.wfe.is_some(),
-            "vectorize": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.vectorizes())).unwrap_or(false),
-            "svg_fit": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.fits_svg())).unwrap_or(false),
-            "upscale": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.upscale_variants())).unwrap_or_default().iter()
-                .map(|v| json!({"variant": v.id, "about": v.about, "scales": v.scales, "noise": v.noise})).collect::<Vec<_>>(),
-        })
+            "vectorize": vectorizes,
+            "svg_fit": fits_svg,
+            "upscale": upscale_variants.iter().map(|v| json!({"variant": v.id, "about": v.about, "scales": v.scales, "noise": v.noise})).collect::<Vec<_>>(),
+        });
+        *self.info_cache.lock().unwrap() = Some(v.clone());
+        v
     }
 
     fn file(&self, cx: &mut Cx, name: &str) {
