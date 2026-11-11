@@ -252,8 +252,14 @@ pub fn asked_mb(e: &str) -> Option<(u64, u64)> {
 /// What a card must have free, as the front door counts it (`front_free`: total less used), for a server that asked
 /// `need` MiB and found `had` free: the difference is its context and what the driver keeps (half a GiB at least: the
 /// sample may still count the server that ended), with a quarter GiB for the asking's rounding
-pub fn ask_mb(need: u64, had: u64, front_free: u64) -> u64 {
-    need + front_free.saturating_sub(had).max(512) + 256
+///
+/// A sample taken before the card's other work ended can make that difference most of a card: then it says nothing
+/// about the server, and the ask is the server's need with the half GiB. An ask past the card's whole memory can never
+/// be met and would keep the model off the card for good (YuE2: 3.9 GiB asked with 1 GiB free while the sample said
+/// 11 GiB, planned 15 GiB on a 12 GiB card from then on, 2026-11-10)
+pub fn ask_mb(need: u64, had: u64, front_free: u64, total: u64) -> u64 {
+    let ask = need + front_free.saturating_sub(had).max(512) + 256;
+    if ask > total { need + 512 + 256 } else { ask }
 }
 
 #[cfg(test)]
@@ -266,8 +272,13 @@ mod tests {
                  about 5.6 GiB on NVIDIA GeForce RTX 5070; 5.3 GiB are free): nextcuda audio logs";
         let (need, had) = asked_mb(e).unwrap();
         assert_eq!((need, had), (5734, 5427));
-        let ask = ask_mb(need, had, 6093);
+        let ask = ask_mb(need, had, 6093, 12227);
         assert!(ask > 6093, "{ask}");
+        // a stale sample (the card looked nearly empty while something else still held it) never makes an ask the
+        // card cannot hold
+        let (need, had) = asked_mb("yue2 needs about 3.8 GiB on NVIDIA GeForce RTX 5070; 1.0 GiB are free").unwrap();
+        let ask = ask_mb(need, had, 11282, 12227);
+        assert!(ask <= 12227 && ask >= need, "{ask}");
         assert_eq!(asked_mb("qwen3.8 needs about 30.1 GiB on X (28.0 GiB of weights); 22.5 GiB are free").map(|x| x.0), Some(30822));
         assert_eq!(asked_mb("nextcuda-audio-1 ended while loading"), None);
     }

@@ -984,7 +984,8 @@ impl Home {
     fn learn_ask(&self, id: &str, e: &str, gpu: usize, want: u64) -> bool {
         let Some((need, had)) = splace::asked_mb(e) else { return false };
         let cards = self.snapshot().cards;
-        let ask = splace::ask_mb(need, had, room::card_free(&cards, gpu));
+        let total = cards.iter().find(|c| c.index == gpu).map_or(u64::MAX, |c| c.total_mb);
+        let ask = splace::ask_mb(need, had, room::card_free(&cards, gpu), total);
         eprintln!("{id}: its server asked {need} MiB with {had} MiB free on GPU {gpu}; planned {want} MiB, from now {ask}");
         let mut a = self.asked.lock().unwrap();
         let more = ask > want && a.get(id).is_none_or(|x| ask > *x);
