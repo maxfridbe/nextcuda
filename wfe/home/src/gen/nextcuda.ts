@@ -630,8 +630,13 @@ export interface ImageDescribeReq {
    * @minimum 0
    */
   seed?: number | null;
-  /** the describer: a chat model that reads pictures (system.models: capability describe); none - the loaded chat model when it reads pictures (no swap), else the enabled one whose card takes the least memory */
+  /** with describer best, the chat model that describes: one that reads pictures (system.models: capability describe); none - the loaded chat model when it reads pictures (no swap), else the enabled one whose card takes the least memory */
   model?: string | null;
+  /**
+   * who describes: best (a chat model that reads pictures: model, else the loaded or smallest); native (the target's own text encoder - the target model's, or the family's enabled model with the smallest encoder; system.models: capability describe_native); or a describer's id from image.describers (a chat model, or an image model's text encoder: qwen3-vl-8b-instruct, qwen3-vl-4b-instruct), with any target
+   * @default "best"
+   */
+  describer?: string | null;
   /**
    * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
    * @minimum 0
@@ -642,6 +647,12 @@ export interface ImageDescribeReq {
    * @minimum 0
    */
   rsvp_s?: number;
+  /** other keys */
+  [key: string]: unknown;
+}
+
+/** What image.describers takes. */
+export interface ImageDescribersReq {
   /** other keys */
   [key: string]: unknown;
 }
@@ -2838,6 +2849,11 @@ export interface Methods {
    */
   "image.describe": { req: ImageDescribeReq; resp: any };
   /**
+   * The describers image.describe can use (its describer field): the chat models that read pictures and the image models' own text encoders that do - each with its id, name, base model, size and the image models that share it
+   * @tags image
+   */
+  "image.describers": { req: ImageDescribersReq; resp: any };
+  /**
    * A clip made bigger frame by frame by an upscaler (as image.upscale: the variant, scale, noise, tile), its sound copied as it was; an MP4 back. A job in the image queue (image.status, image.cancel)
    * @tags video
    * @example {"file":"h3_20261019_121939","model":"real-esrgan","scale":2,"variant":"realesr-animevideov3"}
@@ -3244,7 +3260,7 @@ export interface Methods {
 }
 
 /** The methods that take no parameters (their body may be left out). */
-export type NoParamMethods = "system.state" | "system.busy" | "system.ping" | "system.version" | "system.models" | "system.models.pulls" | "system.cards" | "system.config" | "system.drives" | "system.move.cancel" | "llm.requests" | "llm.models" | "image.queue.list" | "image.progress" | "image.history" | "audio.progress" | "audio.history" | "audio.queue.list" | "model3d.progress" | "model3d.history" | "model3d.queue.list" | "video.status" | "video.queue.list" | "video.projects.list" | "video.films.list" | "video.templates.list" | "video.canvases.list" | "video.summary";
+export type NoParamMethods = "system.state" | "system.busy" | "system.ping" | "system.version" | "system.models" | "system.models.pulls" | "system.cards" | "system.config" | "system.drives" | "system.move.cancel" | "llm.requests" | "llm.models" | "image.describers" | "image.queue.list" | "image.progress" | "image.history" | "audio.progress" | "audio.history" | "audio.queue.list" | "model3d.progress" | "model3d.history" | "model3d.queue.list" | "video.status" | "video.queue.list" | "video.projects.list" | "video.films.list" | "video.templates.list" | "video.canvases.list" | "video.summary";
 
 /** Every error's body, whatever the HTTP status: branch on `code`, never on the status (docs/RPC_RULES.md). */
 export interface RpcError {
@@ -3487,6 +3503,11 @@ export function client(post: Post, raw?: PostRaw) {
      * @example {"detail":"medium","image":"upload:up_1792400000_barn.png","label":"barn-prompt","target":"z-image-turbo"}
      */
     "image.describe": (req: ImageDescribeReq): Promise<any> => post("image.describe", req),
+    /**
+     * The describers image.describe can use (its describer field): the chat models that read pictures and the image models' own text encoders that do - each with its id, name, base model, size and the image models that share it
+     * @tags image
+     */
+    "image.describers": (req: ImageDescribersReq = {}): Promise<any> => post("image.describers", req),
     /**
      * A clip made bigger frame by frame by an upscaler (as image.upscale: the variant, scale, noise, tile), its sound copied as it was; an MP4 back. A job in the image queue (image.status, image.cancel)
      * @tags video

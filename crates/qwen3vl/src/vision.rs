@@ -27,6 +27,10 @@ const EPS: f32 = 1e-6;
 const THETA: f64 = 10000.0;
 /// the blocks after which the deepstack mergers read (Qwen3-VL 8B's deepstack_visual_indexes)
 const DEEP_AT: [usize; 3] = [8, 16, 24];
+/// ... and the 4B's (24 blocks, 1,024 wide: P-H3-Image's text encoder)
+const DEEP_AT_4B: [usize; 3] = [5, 11, 17];
+/// attention heads: 16 in every Qwen3-VL tower (72 features each at 1,152 wide, 64 at 1,024)
+const HEADS: usize = 16;
 
 struct Block {
     n1w: DevBuf,
@@ -237,11 +241,92 @@ impl Vision {
                 fc2: mat("mm.2.weight")?, fc2_b: vec("mm.2.bias")?,
             },
             hidden,
-            heads: hidden / 72,
+            heads: HEADS,
             ffn,
             out,
         };
         log(format!("qwen3vl vision: {n_blocks} blocks ({hidden} wide), deepstack after {:?}, on {} in {:.1} s", v.deep_at, gpu.name, t0.elapsed().as_secs_f64()));
+        Ok(v)
+    }
+
+    /// The tower from a file of transformers' names (`model.visual.*`, bf16 or float: P-H3-Image's text encoder GGUF
+    /// holds Qwen3-VL 4B's whole), made half on the card: the 27-block tower (deepstack after 8, 16, 24) or the 24-block
+    /// one (after 5, 11, 17)
+    pub fn load_hf(path: &Path, prefix: &str, gpu: &Arc<Gpu>, log: &mut dyn FnMut(String)) -> Result<Vision> {
+        let t0 = std::time::Instant::now();
+        let f = Gguf::open(path).map_err(ge)?;
+        let tensor = |n: &str| f.tensor(&format!("{prefix}{n}")).ok_or_else(|| Error(format!("{}: no tensor {prefix}{n}", path.display())));
+        let half = |v: &[f32]| -> Result<DevBuf> {
+            let raw: Vec<u8> = v.iter().flat_map(|x| f32_to_f16(*x).to_le_bytes()).collect();
+            let b = DevBuf::new(gpu, raw.len())?;
+            b.write(0, &raw)?;
+            Ok(b)
+        };
+        let mat = |n: &str| -> Result<DevBuf> { half(&host_f32(&f, tensor(n)?)?) };
+        let vec = |n: &str| -> Result<DevBuf> { DevBuf::from_f32(gpu, &host_f32(&f, tensor(n)?)?) };
+        let hidden = tensor("patch_embed.proj.bias")?.elements() as usize;
+        let ffn = tensor("blocks.0.mlp.linear_fc1.bias")?.elements() as usize;
+        let out = tensor("merger.linear_fc2.bias")?.elements() as usize;
+        let n_blocks = (0..).take_while(|i| f.tensor(&format!("{prefix}blocks.{i}.norm1.weight")).is_some()).count();
+        let deep_at: Vec<usize> = match n_blocks {
+            27 => DEEP_AT.to_vec(),
+            24 => DEEP_AT_4B.to_vec(),
+            n => return Err(Error(format!("the vision tower: {n} blocks - not Qwen3-VL's 27 or 24"))),
+        };
+        let mut blocks = Vec::with_capacity(n_blocks);
+        for i in 0..n_blocks {
+            let p = |s: &str| format!("blocks.{i}.{s}");
+            blocks.push(Block {
+                n1w: vec(&p("norm1.weight"))?, n1b: vec(&p("norm1.bias"))?,
+                qkv: mat(&p("attn.qkv.weight"))?, qkv_b: vec(&p("attn.qkv.bias"))?,
+                proj: mat(&p("attn.proj.weight"))?, proj_b: vec(&p("attn.proj.bias"))?,
+                n2w: vec(&p("norm2.weight"))?, n2b: vec(&p("norm2.bias"))?,
+                fc1: mat(&p("mlp.linear_fc1.weight"))?, fc1_b: vec(&p("mlp.linear_fc1.bias"))?,
+                fc2: mat(&p("mlp.linear_fc2.weight"))?, fc2_b: vec(&p("mlp.linear_fc2.bias"))?,
+            });
+        }
+        let merger = |p: &str, post: bool| -> Result<Merger> {
+            Ok(Merger {
+                nw: vec(&format!("{p}.norm.weight"))?, nb: vec(&format!("{p}.norm.bias"))?, post,
+                fc1: mat(&format!("{p}.linear_fc1.weight"))?, fc1_b: vec(&format!("{p}.linear_fc1.bias"))?,
+                fc2: mat(&format!("{p}.linear_fc2.weight"))?, fc2_b: vec(&format!("{p}.linear_fc2.bias"))?,
+            })
+        };
+        let deep = (0..deep_at.len()).map(|i| merger(&format!("deepstack_merger_list.{i}"), true)).collect::<Result<Vec<_>>>()?;
+        let pos = host_f32(&f, tensor("pos_embed.weight")?)?;
+        let side = ((pos.len() / hidden) as f64).sqrt() as usize;
+        // the patch kernel [hidden, 3, 2, 16, 16]: its two temporal slices summed (a picture is its own frame pair)
+        let pw = host_f32(&f, tensor("patch_embed.proj.weight")?)?;
+        if pw.len() != hidden * PATCH_IN * 2 {
+            return Err(Error(format!("the vision tower's patch kernel is {} values, not {hidden} x {PATCH_IN} x 2", pw.len())));
+        }
+        let px = PATCH * PATCH;
+        let mut eff = vec![0f32; hidden * PATCH_IN];
+        for o in 0..hidden {
+            for c in 0..3 {
+                for i in 0..px {
+                    let at = |t: usize| pw[((o * 3 + c) * 2 + t) * px + i];
+                    eff[(o * 3 + c) * px + i] = at(0) + at(1);
+                }
+            }
+        }
+        let v = Vision {
+            gpu: gpu.clone(),
+            patch: half(&eff)?,
+            patch_b: vec("patch_embed.proj.bias")?,
+            pos,
+            side,
+            blocks,
+            deep_at,
+            deep,
+            merger: merger("merger", false)?,
+            hidden,
+            heads: HEADS,
+            ffn,
+            out,
+        };
+        log(format!("qwen3vl vision ({prefix}*): {n_blocks} blocks ({hidden} wide), deepstack after {:?}, on {} in {:.1} s", v.deep_at, gpu.name,
+                    t0.elapsed().as_secs_f64()));
         Ok(v)
     }
 

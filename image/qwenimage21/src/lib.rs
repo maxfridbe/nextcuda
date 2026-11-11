@@ -11,6 +11,7 @@
 //! `NC_IMAGE_WORKER` (worker.py; default `python/worker.py` beside the program or in the source tree),
 //! `NC_SDCPP_EXTRA_ARGS`, `NC_QWEN21_ALPHA` (auto|native|rembg).
 
+pub mod describe;
 pub mod ffi;
 pub mod gguffix;
 pub mod native;

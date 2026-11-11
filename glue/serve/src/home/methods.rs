@@ -888,9 +888,13 @@ pub struct ImageDescribeBody {
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 0)]
     pub seed: Option<i64>,
-    /// the describer: a chat model that reads pictures (system.models: capability describe); none - the loaded chat model when it reads pictures (no swap), else the enabled one whose card takes the least memory
+    /// with describer best, the chat model that describes: one that reads pictures (system.models: capability describe); none - the loaded chat model when it reads pictures (no swap), else the enabled one whose card takes the least memory
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// who describes: best (a chat model that reads pictures: model, else the loaded or smallest); native (the target's own text encoder - the target model's, or the family's enabled model with the smallest encoder; system.models: capability describe_native); or a describer's id from image.describers (a chat model, or an image model's text encoder: qwen3-vl-8b-instruct, qwen3-vl-4b-instruct), with any target
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(default = "best")]
+    pub describer: Option<String>,
     /// what else the caller sent: passed on as it came
     #[serde(flatten)]
     pub rest: serde_json::Map<String, serde_json::Value>,
@@ -1321,6 +1325,15 @@ pub struct ImageProgressReq {
 #[derive(Deserialize, Serialize, Rpc)]
 #[allow(non_snake_case)]
 pub struct ImageHistoryReq {
+    /// what else the caller sent: passed on as it came
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What image.describers takes.
+#[derive(Deserialize, Serialize, Rpc)]
+#[allow(non_snake_case)]
+pub struct ImageDescribersReq {
     /// what else the caller sent: passed on as it came
     #[serde(flatten)]
     pub rest: serde_json::Map<String, serde_json::Value>,
@@ -2832,6 +2845,12 @@ fn image_history(h: &Arc<Home>, req: ImageHistoryReq) -> Answer {
     h.legacy("image.history", req)
 }
 
+/// The describers image.describe can use (its describer field): the chat models that read pictures and the image models' own text encoders that do - each with its id, name, base model, size and the image models that share it
+#[rpc(name = "image.describers", tags = "image", example = r#"{}"#)]
+fn image_describers(h: &Arc<Home>, req: ImageDescribersReq) -> Answer {
+    h.legacy("image.describers", req)
+}
+
 /// How to prompt the model, as Markdown
 #[rpc(name = "image.describePromptGuideMD", tags = "image", example = r#"{"model": "qwen-image-2.1-q8"}"#)]
 fn image_describe_prompt_guide_md(h: &Arc<Home>, req: ImageDescribePromptGuideMdReq) -> Answer {
@@ -3174,7 +3193,7 @@ rpcgen::rpc_methods![sync Arc<Home>, RpcFail;
     system_gpus, system_disable, system_load, system_unload, system_pin, system_unpin, system_eta, system_config, system_config_set,
     system_restart, system_maintenance, system_drives, system_drive_measure, system_move, system_move_cancel,
     llm_chat, llm_requests, llm_models, llm_describe_prompt_guide_md, image_generate, image_edit,
-    image_upscale, image_vectorize, image_svg_fit, image_svg_generate, image_remove_background, image_describe, video_upscale, image_ocr, image_info, image_status,
+    image_upscale, image_vectorize, image_svg_fit, image_svg_generate, image_remove_background, image_describe, image_describers, video_upscale, image_ocr, image_info, image_status,
     image_jobs, image_queue_list, image_queue_move, image_queue_pause, image_queue_resume, image_upload,
     image_cancel, image_canvases_list, image_progress, image_history, image_describe_prompt_guide_md, audio_generate,
     audio_speak, audio_transcribe, audio_voices_list, audio_voices_add, audio_voices_design, audio_voices_remove,

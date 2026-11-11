@@ -29,6 +29,8 @@ nextcuda image svg-fit PICTURE [--style iconography|pixelart|sketch|painting] [-
 nextcuda image svg-check REFERENCE_DIR [--only raster,udf,xing,sparse,live] [--gpu N]   (against reference/svgrender/ref.py's dumps)
 nextcuda image svg-selftest [--gpu N]   (the rasterizer's kernels against the host's float64 arithmetic: pixels and gradients)
 nextcuda image svg-bench [--sizes 240,512] [--paths 64,256] [--gpu N]   (a backward pass's time by canvas and path count)
+nextcuda image describe PICTURE [--model ID] [--system TEXT] [--prompt TEXT] [--max-tokens N] [--temp T] [--seed S] [--max-pixels N] [--gpu N]
+                        (an image model's own text encoder reading the picture and writing: image.describe's native describer)
 nextcuda image engines | selftest [--gpu N]";
 
 /// The image engines this program has (image/<arch>)
@@ -37,6 +39,53 @@ pub fn engines() -> Vec<nextcuda_image::ImageKind> {
          nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind(), nextcuda_image_upscale::kind(), nextcuda_image_flashvsr::kind(), nextcuda_image_rembg::kind(),
          nextcuda_image_starvector::kind(), nextcuda_image_mossimage::kind(), nextcuda_image_ph3image::kind(),
          nextcuda_image_zimage::kind(), nextcuda_image_svgrender::kind()]
+}
+
+/// The native describer of an image architecture: its text encoder reads pictures and writes (image.describe with
+/// describer "native"); None when it does not
+pub fn describer_for(arch: &str) -> Option<nextcuda_image::DescribeLoadFn> {
+    match arch {
+        nextcuda_image_qwenimage21::ARCH => Some(nextcuda_image_qwenimage21::describe::load),
+        nextcuda_image_ph3image::ARCH => Some(nextcuda_image_ph3image::describe::load),
+        _ => None,
+    }
+}
+
+/// `nextcuda image describe`: the native describer in this process (what the image server's /v1/images/describe runs)
+fn describe_cmd(cfg: &Config, args: &[String]) -> Result<(), String> {
+    let input = args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && (*i == 0 || !args[i - 1].starts_with("--"))).map(|(_, a)| a.clone())
+        .ok_or(USAGE)?;
+    nextcuda_core::use_kind("image");
+    let (m, files) = model(cfg, Some(opt(args, "--model").unwrap_or("qwen-image-2.1-turbo-q8")))?;
+    let arch = m["arch"].as_str().unwrap_or("");
+    let load = describer_for(arch).ok_or_else(|| format!("{}: its text encoder ({arch}) does not read pictures", m["id"].as_str().unwrap_or("?")))?;
+    let gs = gpus(args)?;
+    let mut log = |s: String| eprintln!("{s}");
+    let d = load(&files, &gs, &mut log).map_err(|e| e.0)?;
+    let pic = nextcuda_image::Picture::decode(&std::fs::read(&input).map_err(|e| format!("{input}: {e}"))?)?.rgb();
+    let max_px: u64 = opt(args, "--max-pixels").and_then(|v| v.parse().ok()).unwrap_or(1_048_576);
+    let px = pic.width as u64 * pic.height as u64;
+    let pic = if px > max_px {
+        let k = (max_px as f64 / px as f64).sqrt();
+        pic.resize_lanczos(((pic.width as f64 * k) as u32).max(1), ((pic.height as f64 * k) as u32).max(1))
+    } else {
+        pic
+    };
+    let req = nextcuda_image::DescribeRequest {
+        picture: pic,
+        system: opt(args, "--system").unwrap_or("You write prompts for a text-to-image model. Describe only what is visible. Answer in this shape and nothing else:\nPROMPT: <the prompt>").to_string(),
+        user: opt(args, "--prompt").unwrap_or("Write the prompt for this picture.").to_string(),
+        max_tokens: opt(args, "--max-tokens").and_then(|v| v.parse().ok()).unwrap_or(220),
+        temperature: opt(args, "--temp").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+        seed: opt(args, "--seed").and_then(|v| v.parse().ok()).unwrap_or(0),
+    };
+    let out = d.describe(&req, &mut |_| Ok(())).map_err(|e| e.0)?;
+    eprintln!("{}: {} prompt rows read in {:.2} s ({:.0}/s, the vision tower included; seen {}x{}), {} tokens written in {:.2} s ({:.1}/s), finish {}; \
+               loaded in {:.1} s, {} MiB held on {}", d.encoder(), out.prompt_tokens, out.read_seconds, out.prompt_tokens as f64 / out.read_seconds.max(1e-9),
+              out.seen.0, out.seen.1, out.generated, out.generate_seconds, out.generated as f64 / out.generate_seconds.max(1e-9), out.finish, d.load_seconds(),
+              out.held_mb, gs[0].name);
+    println!("{}", out.text);
+    Ok(())
 }
 
 /// `--gpu 0` or `--gpu 0,1` (an engine that splits over two cards takes the second too: olmOCR 2's vision tower)
@@ -919,6 +968,11 @@ fn serve_here(cfg: &Config, m: &Value, files: ModelFiles, args: &[String], out: 
             }
         }
     }
+    // the native describer, when the model's text encoder reads pictures (image.describe's describer "native")
+    let describe_load: Option<nextcuda_serve::image::DescribeLoader> = describer_for(&arch).map(|f| {
+        let (files, g) = (files.clone(), gs.clone());
+        Box::new(move |log: &mut dyn FnMut(String)| f(&files, &g, log).map_err(|e| e.0)) as nextcuda_serve::image::DescribeLoader
+    });
     let g = gs.clone();
     let loader: nextcuda_serve::image::Loader = Box::new(move |use_: &[LoraUse], log: &mut dyn FnMut(String)| {
         let mut o = base.clone();
@@ -933,9 +987,12 @@ fn serve_here(cfg: &Config, m: &Value, files: ModelFiles, args: &[String], out: 
     let wfe = args.iter().any(|a| a == "--wfe").then(|| cfg.dist.join("wfe"));
     let cors: Vec<String> = opt(args, "--cors").or(cfg.get("NS_CORS").as_deref()).map(|c| c.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
     let addr = format!("{}:{}", opt(args, "--host").unwrap_or("127.0.0.1"), opt(args, "--port").unwrap_or("8086"));
-    let mut srv = ImageServer::new(m["id"].as_str().unwrap_or("image").to_string(), gpu, loader, first.merge_loras, known, Some(out), wfe, cors)?;
+    // started for a describe (the front door's --describe-first): the pipeline waits for the first picture
+    let defer = describe_load.is_some() && args.iter().any(|a| a == "--describe-first");
+    let mut srv = ImageServer::new(m["id"].as_str().unwrap_or("image").to_string(), gpu, loader, first.merge_loras, known, Some(out), wfe, cors, defer)?;
     srv.idle = crate::served::idle_exit(args)?;
     srv.license = nextcuda_serve::page::licence_of(m);
+    srv.describe_load = describe_load;
     std::sync::Arc::new(srv).run(&addr)
 }
 
@@ -955,6 +1012,7 @@ pub fn cmd(cfg: &Config, args: &[String], selftest: impl Fn(&[String]) -> Result
         Some("upscale-check") => upscale_cmd(cfg, rest, true),
         Some("upscale-clip") => upscale_clip_cmd(cfg, rest),
         Some("vectorize") => vectorize_cmd(cfg, rest),
+        Some("describe") => describe_cmd(cfg, rest),
         Some("svg-fit") => svg_fit_cmd(rest),
         Some("svg-check") => svg_check_cmd(rest),
         Some("svg-selftest") => svg_selftest_cmd(rest),

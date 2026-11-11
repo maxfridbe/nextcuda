@@ -493,10 +493,12 @@ fn gpu(s: &ImageServer, _cx: &mut Cx) -> Result<Gpu, Fail> {
     Ok(s.gpu_json())
 }
 
-/// Whether the server answers: ok, or loading (HTTP 503) while its engine loads
+/// Whether the server answers: ok, or loading (HTTP 503) while its engine loads (a pipeline not loaded and not
+/// loading - deferred for a describe, or dropped for the describer - is ok: it loads with the first picture)
 #[route(get = "/health", tags = "page")]
 fn health(s: &ImageServer, cx: &mut Cx) -> Result<Sent<Health>, Fail> {
-    let loaded = s.engine.try_lock().map(|e| e.is_some()).unwrap_or(true);
+    let loading = s.progress.lock().map(|p| p["loading"] == true).unwrap_or(false);
+    let loaded = s.engine.try_lock().map(|e| e.is_some() || !loading).unwrap_or(true);
     cx.json(if loaded { 200 } else { 503 }, &json!(Health { status: if loaded { "ok" } else { "loading" }.into() }));
     Ok(Sent::new())
 }
@@ -598,13 +600,83 @@ fn upscale_video(s: &ImageServer, cx: &mut Cx, req: VideoUpscaleBody) -> Result<
     s.upscale_video(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?, &cx.base()).map(Checked::new)
 }
 
+/// What /v1/images/describe takes: the picture and the instruction (the front door's image.describe writes it)
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct ImageDescribeNativeBody {
+    /// the picture: PNG, JPEG or WebP as base64 or a data: URL, at the size the describer is to see it
+    pub image: String,
+    /// the instruction (the system turn)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    /// the user's words after the picture
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(default = "Write the prompt for this picture.")]
+    pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 1, max = 4096, default = 220)]
+    pub max_tokens: Option<i64>,
+    /// 0: greedy
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0, max = 2, default = 0)]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 0)]
+    pub seed: Option<i64>,
+    /// this server's model (another: 404)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// the front door's job id (POST /api/cancel {id} stops it)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
+/// A size in pixels
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct WidthHeight {
+    pub width: i64,
+    pub height: i64,
+}
+
+/// What the model's text encoder wrote
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct NativeDescribed {
+    /// the answer as written (the front door cuts it at PROMPT: / NEGATIVE:)
+    pub text: String,
+    /// the text encoder ("Qwen3-VL-8B-Instruct")
+    pub encoder: String,
+    pub model: String,
+    /// the prompt's rows, the picture's included
+    pub prompt_tokens: i64,
+    pub generated: i64,
+    /// stop or length
+    pub finish: String,
+    /// the vision tower and the prompt's pass
+    pub read_seconds: f64,
+    pub generate_seconds: f64,
+    /// the whole request, a load included
+    pub seconds: f64,
+    /// the describer loaded for this request (the pipeline dropped first): its load; null: it was loaded
+    pub load_seconds: Option<f64>,
+    /// the size the vision tower read (sides multiples of 32)
+    pub seen: WidthHeight,
+    /// the card's memory the describer held, MiB
+    pub held_mb: i64,
+    pub energy_wh: Option<f64>,
+}
+
+/// A picture described by the model's own text encoder (its vision tower and language model): image.describe's describer "native"
+#[route(post = "/v1/images/describe", tags = "openai")]
+fn describe(s: &ImageServer, _cx: &mut Cx, req: ImageDescribeNativeBody) -> Result<Checked<NativeDescribed>, Fail> {
+    s.describe(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?).map(Checked::new)
+}
+
 /// Pages read (an OCR model): pictures or PDFs, the text as the model writes it
 #[route(post = "/v1/ocr", tags = "openai")]
 fn ocr(s: &ImageServer, _cx: &mut Cx, req: ImageOcrReq) -> Result<Checked<Reading>, Fail> {
     s.ocr(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?).map(Checked::new)
 }
 
-routes![sync ImageServer, Cx, Fail; gpu, health, models, info, progress, history, cancel, file, generations, edits, vectorize, svg_fit, upscale, remove_background, upscale_video, ocr];
+routes![sync ImageServer, Cx, Fail; gpu, health, models, info, progress, history, cancel, file, generations, edits, vectorize, svg_fit, upscale, remove_background, upscale_video, ocr, describe];
 
 /// The table, made once
 pub fn table() -> &'static [rpcgen::SyncRoute<ImageServer, Cx, Fail>] {

@@ -476,6 +476,52 @@ pub trait ImageEngine: Send + Sync {
     }
 }
 
+/// image.describe with an image model's own text encoder (the "native" describer): the picture read by the encoder's
+/// vision tower and its language model writing the prompt, under the same instruction as the chat describer
+#[derive(Clone, Debug)]
+pub struct DescribeRequest {
+    /// the picture as the describer sees it (RGB, already at most the request's max_pixels)
+    pub picture: Picture,
+    /// the instruction (the system turn)
+    pub system: String,
+    /// the user's words after the picture
+    pub user: String,
+    pub max_tokens: usize,
+    /// 0: greedy
+    pub temperature: f32,
+    pub seed: u64,
+}
+
+/// What the encoder wrote
+#[derive(Clone, Debug, Default)]
+pub struct DescribeOutput {
+    pub text: String,
+    /// the whole prompt's rows, the picture's included
+    pub prompt_tokens: usize,
+    pub generated: usize,
+    /// the vision tower and the prompt's pass
+    pub read_seconds: f64,
+    pub generate_seconds: f64,
+    /// "stop" (a stop token) or "length" (max_tokens)
+    pub finish: String,
+    /// the size the vision tower read (sides multiples of 32)
+    pub seen: (u32, u32),
+    /// the card's memory the describer held, in MiB (weights, cache, buffers: the most of its samples after each stage)
+    pub held_mb: u64,
+}
+
+/// A text encoder that reads pictures and writes (an image model's, loaded in place of its pipeline)
+pub trait Describer: Send + Sync {
+    /// what it is, for the answer's `model` ("Qwen3-VL-8B-Instruct")
+    fn encoder(&self) -> String;
+    fn load_seconds(&self) -> f64;
+    /// the prompt written; `progress(tokens so far)` after each token (an error stops it: a cancel)
+    fn describe(&self, req: &DescribeRequest, progress: &mut dyn FnMut(usize) -> Result<()>) -> Result<DescribeOutput>;
+}
+
+/// How a describer loads: the image model's files, its GPU, a log
+pub type DescribeLoadFn = fn(&ModelFiles, &[Arc<Gpu>], &mut dyn FnMut(String)) -> Result<Box<dyn Describer>>;
+
 /// How an engine loads: its files, its GPUs, the options, a log
 pub type LoadFn = fn(&ModelFiles, &[Arc<Gpu>], &LoadOptions, &mut dyn FnMut(String)) -> Result<Box<dyn ImageEngine>>;
 

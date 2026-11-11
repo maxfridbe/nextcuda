@@ -19,6 +19,7 @@
 
 pub mod check;
 pub mod connector;
+pub mod describe;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

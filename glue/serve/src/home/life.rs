@@ -192,6 +192,11 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
             if m["env"]["NS_QI_SIGMAS"].is_string() {
                 c.push("few_step");
             }
+            // its text encoder reads pictures: image.describe's describer "native" (describe.rs NATIVES)
+            if super::describe::native_of(m).is_some() {
+                c.push("describe_native");
+                return (c, vec!["image.generate", "image.edit", "image.describe"]);
+            }
             (c, vec!["image.generate", "image.edit"])
         }
         "audio" if arch == "whisper" => (vec!["transcribe", "speech_to_text", "word_timestamps", "language_detection", "translate_to_english"], vec!["audio.transcribe"]),
@@ -1165,6 +1170,10 @@ impl Home {
         };
         let mut args = vec![kind.to_string(), "start".into(), id.into(), "--gpu".into(), on, "--port".into(), port.to_string(),
                             "--host".into(), self.o.serve_host.clone(), "--wfe".into(), "--slot".into(), slot.to_string()];
+        // a server started for a describe loads the text encoder only, its pipeline when a picture is drawn
+        if self.describe_first.lock().unwrap().get(id).is_some_and(|n| *n > 0) {
+            args.push("--describe-first".into());
+        }
         // (a pinned model's server does not end itself when idle)
         args.extend(idle_exit_args(self.o.idle_minutes, self.entry(id).is_ok_and(|m| registry::pinned(&m))));
         self.loading.lock().unwrap().insert(id.to_string(), now());
@@ -1423,9 +1432,14 @@ impl Home {
     /// The model a request is for: the one it names, else the kind's pick
     pub(crate) fn eta_model(&self, method: &str, b: &Value, all: &[Value]) -> String {
         let kind = super::jobs::kind_of_method(method);
-        // image.describe's model is the describer (a chat model), not an image model
+        // image.describe's model is the describer (a chat model, or the image model whose text encoder describes)
         if method == "image.describe" {
-            return self.describer(b, all, false).unwrap_or_default();
+            let Ok(ask) = super::describe::ask_of(b, all) else { return String::new() };
+            return match self.pick_describer(b, all, &ask, false) {
+                Ok(super::describe::Pick::Chat(id)) => id,
+                Ok(super::describe::Pick::Native { host, .. }) => host,
+                Err(_) => String::new(),
+            };
         }
         match b["model"].as_str().filter(|m| !m.is_empty()) {
             Some(m) => m.to_string(),

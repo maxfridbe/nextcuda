@@ -24,9 +24,10 @@ paths:
   /health:
     get:
       operationId: health
-      summary: 'Whether the server answers: ok, or loading (HTTP 503) while its engine loads'
+      summary: 'Whether the server answers: ok, or loading (HTTP 503) while its engine loads (a pipeline not loaded and not'
       tags:
       - page
+      description: 'Whether the server answers: ok, or loading (HTTP 503) while its engine loads (a pipeline not loaded and not loading - deferred for a describe, or dropped for the describer - is ok: it loads with the first picture)'
       responses:
         '200':
           description: ok
@@ -321,6 +322,27 @@ paths:
                 $ref: '#/components/schemas/Reading'
         default:
           description: 'an error: the body''s `error` says what'
+  /v1/images/describe:
+    post:
+      operationId: describe
+      summary: 'A picture described by the model''s own text encoder (its vision tower and language model): image.describe''s describer "native"'
+      tags:
+      - openai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageDescribeNativeBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NativeDescribed'
+        default:
+          description: 'an error: the body''s `error` says what'
 components:
   schemas:
     CancelReq:
@@ -589,6 +611,56 @@ components:
       - upscale-video
       - cutout
       description: 'What a history entry was: a picture made (none), or another kind of work'
+    ImageDescribeNativeBody:
+      type: object
+      properties:
+        image:
+          type: string
+          description: 'the picture: PNG, JPEG or WebP as base64 or a data: URL, at the size the describer is to see it'
+        system:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the instruction (the system turn)
+        user:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: Write the prompt for this picture.
+          description: the user's words after the picture
+        max_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 1
+          maximum: 4096
+          default: 220
+        temperature:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0
+          maximum: 2
+          default: 0
+          description: '0: greedy'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 0
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'this server''s model (another: 404)'
+        request_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the front door's job id (POST /api/cancel {id} stops it)
+      required:
+      - image
+      description: 'What /v1/images/describe takes: the picture and the instruction (the front door''s image.describe writes it)'
     ImageEditBody:
       type: object
       properties:
@@ -1226,6 +1298,61 @@ components:
       - object
       - data
       description: 'OpenAI''s list of models: the one this server serves'
+    NativeDescribed:
+      type: object
+      properties:
+        text:
+          type: string
+          description: 'the answer as written (the front door cuts it at PROMPT: / NEGATIVE:)'
+        encoder:
+          type: string
+          description: the text encoder ("Qwen3-VL-8B-Instruct")
+        model:
+          type: string
+        prompt_tokens:
+          type: integer
+          description: the prompt's rows, the picture's included
+        generated:
+          type: integer
+        finish:
+          type: string
+          description: stop or length
+        read_seconds:
+          type: number
+          description: the vision tower and the prompt's pass
+        generate_seconds:
+          type: number
+        seconds:
+          type: number
+          description: the whole request, a load included
+        load_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'the describer loaded for this request (the pipeline dropped first): its load; null: it was loaded'
+        seen:
+          $ref: '#/components/schemas/WidthHeight'
+          description: the size the vision tower read (sides multiples of 32)
+        held_mb:
+          type: integer
+          description: the card's memory the describer held, MiB
+        energy_wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - text
+      - encoder
+      - model
+      - prompt_tokens
+      - generated
+      - finish
+      - read_seconds
+      - generate_seconds
+      - seconds
+      - seen
+      - held_mb
+      description: What the model's text encoder wrote
     OcrPromptInfo:
       type: object
       properties:
@@ -1772,3 +1899,14 @@ components:
           description: 'the clip: MP4 / WebM / MOV ... as base64 or a data: URL'
       additionalProperties: true
       description: 'What video.upscale makes from: the body its kind''s server takes.'
+    WidthHeight:
+      type: object
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+      required:
+      - width
+      - height
+      description: A size in pixels

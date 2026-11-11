@@ -48,6 +48,9 @@ const FEATURES: &[&str] = &[
     "video.speed", "video.multi_guide", "jobs.title", "audio.yue2.plan_only", "audio.truncated",
     // 2026-11-11: a picture to the prompt that draws it (a chat model's vision tower); think_budget 0 on the chat routes
     "image.describe", "llm.think_budget",
+    // 2026-11-11: image.describe's describer (best, native or an id) and image.describers: the image models' own text
+    // encoders that read pictures (Qwen3-VL-8B from Qwen-Image 2.1's files, Qwen3-VL-4B from P-H3-Image's)
+    "image.describe.describer", "image.describers",
 ];
 
 /// Qwen-Image's sizes: its training buckets (multiples of 16) and the guide's defaults
@@ -116,6 +119,12 @@ pub(crate) fn rpc_error(method: &str, status: u16, code: Option<&str>, m: &str) 
         }
         return e;
     }
+    // a message that names its field whatever its first word (describe.rs: describer native's refusal starts "target ...")
+    if let Some((field, words)) = super::describe::field_untag(m) {
+        let mut e = rpc_error(method, status, code, words);
+        e["field"] = json!(field);
+        return e;
+    }
     let mut e = error_of(status, m);
     // a job refused with queue: false says "busy: ..." (as video's busy)
     let code = code.or_else(|| (status == 409 && m.starts_with("busy:")).then_some("busy"));
@@ -142,7 +151,7 @@ fn field_of(method: &str, m: &str) -> Option<String> {
 type Fail = (u16, String);
 
 /// A call to a kind's server whose failure keeps that server's status (a 400 stays a 400); 502 when it does not answer
-fn relay(t: &crate::http::Target, method: &str, path: &str, body: Option<&Value>, secs: u64) -> Result<Value, Fail> {
+pub(crate) fn relay(t: &crate::http::Target, method: &str, path: &str, body: Option<&Value>, secs: u64) -> Result<Value, Fail> {
     match http::call_status(t, method, path, body, secs) {
         Ok((200, v)) => Ok(v),
         Ok((st, v)) => Err((st, v["error"]["message"].as_str().or_else(|| v["error"].as_str()).unwrap_or("request failed").to_string())),
@@ -929,6 +938,7 @@ impl Home {
                 Ok(out)
             }
             ("image", "describe") => self.describe(b),
+            ("image", "describers") => Ok(self.describers_view(&all)),
             ("image", "remove_background") => {
                 let id = if b["model"].as_str().is_some_and(|x| !x.is_empty()) {
                     let id = self.pick("image", b, &all)?;

@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use nextcuda_core::Gpu;
-use nextcuda_image::{ImageEngine, ImageRequest, LoraUse, Sampler, Schedule};
+use nextcuda_image::{DescribeRequest, Describer, ImageEngine, ImageRequest, LoraUse, Sampler, Schedule};
 use serde_json::{json, Value};
 
 use crate::http::{self, Conn};
@@ -57,6 +57,9 @@ use crate::telemetry::Telemetry;
 
 /// Loads the engine with these LoRAs merged
 pub type Loader = Box<dyn Fn(&[LoraUse], &mut dyn FnMut(String)) -> Result<Box<dyn ImageEngine>, String> + Send + Sync>;
+
+/// Loads the model's native describer (its text encoder that reads pictures: image.describe's describer "native")
+pub type DescribeLoader = Box<dyn Fn(&mut dyn FnMut(String)) -> Result<Box<dyn Describer>, String> + Send + Sync>;
 
 /// The engine and the LoRAs merged into it
 type Loaded = (Box<dyn ImageEngine>, Vec<LoraUse>);
@@ -93,6 +96,10 @@ pub struct ImageServer {
     pub idle: Option<&'static crate::idle::Idle>,
     /// its registry entry's licence (`license`, `commercial`, `license_note`; null: none): /api/info says it
     pub license: Value,
+    /// the model's native describer, when its text encoder reads pictures (POST /v1/images/describe); it is loaded in
+    /// the pipeline's place - the pipeline dropped first, loaded again by the next request that draws
+    pub describe_load: Option<DescribeLoader>,
+    describer: Mutex<Option<Box<dyn Describer>>>,
 }
 
 fn now() -> u64 {
@@ -262,11 +269,12 @@ fn edit_body(req: &http::Request) -> Result<(Value, Vec<nextcuda_image::Picture>
 }
 
 impl ImageServer {
-    /// The server, its engine loaded first with `loras` merged
+    /// The server, its engine loaded first with `loras` merged (`defer`: not yet - a server started for a describe
+    /// loads its describer when asked, its pipeline when a picture is drawn)
     #[allow(clippy::too_many_arguments)]
     pub fn new(model: String, gpu: Arc<Gpu>, load: Loader, loras: Vec<LoraUse>, loras_known: Vec<KnownLora>, out_dir: Option<PathBuf>,
-               wfe: Option<PathBuf>, cors: Vec<String>) -> Result<ImageServer, String> {
-        let e = load(&loras, &mut |l| eprintln!("{l}"))?;
+               wfe: Option<PathBuf>, cors: Vec<String>, defer: bool) -> Result<ImageServer, String> {
+        let e = if defer { None } else { Some(load(&loras, &mut |l| eprintln!("{l}"))?) };
         if let Some(d) = &out_dir {
             std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
         }
@@ -277,8 +285,9 @@ impl ImageServer {
         }
         let tele = Telemetry::start(std::slice::from_ref(&gpu.pci));
         let history = Mutex::new(out_dir.as_deref().map(earlier).unwrap_or_default());
-        Ok(ImageServer { model, loras_known, out_dir, wfe, cors, gpu, tele, load, engine: Mutex::new(Some((e, loras))), progress: Mutex::new(json!({"busy": false})), info_cache: Mutex::new(None),
-                         idle: None, license: Value::Null, waiting: AtomicUsize::new(0), history, cancel: Default::default() })
+        Ok(ImageServer { model, loras_known, out_dir, wfe, cors, gpu, tele, load, engine: Mutex::new(e.map(|e| (e, loras))), progress: Mutex::new(json!({"busy": false})), info_cache: Mutex::new(None),
+                         idle: None, license: Value::Null, waiting: AtomicUsize::new(0), history, cancel: Default::default(), describe_load: None,
+                         describer: Mutex::new(None) })
     }
 
     /// Answers on `addr` until the process ends
@@ -390,7 +399,10 @@ impl ImageServer {
                                      e.ocr_prompts(), (e.grid(), e.transparent(), e.shift_schedules(), e.size_presets(), e.negative(), e.steps_free(), e.takes_loras(), e.sides(), e.ocr_takes())))
         }) {
             Some(x) => x,
-            None => return json!({"model": self.model, "loading": true}),
+            None if self.progress.lock().map(|p| p["loading"] == true).unwrap_or(false) => return json!({"model": self.model, "loading": true}),
+            // the pipeline not loaded (dropped for the describer, or deferred at start): what it said before - its
+            // capabilities are the same - or the model alone until a picture loads it
+            None => return self.info_cache.lock().unwrap().clone().unwrap_or_else(|| json!({"model": self.model})),
         };
         let max_pixels = g.as_ref().ok().and_then(|g| g.as_ref().map(|(e, _)| e.max_pixels())).flatten();
         let able = g.as_ref().ok().and_then(|g| g.as_ref().map(|(e, _)| (e.vectorizes(), e.fits_svg(), e.upscale_variants())));
@@ -511,7 +523,7 @@ impl ImageServer {
         };
         let n_pages = req.pages.len();
         self.waiting.fetch_add(1, Ordering::Relaxed);
-        let g = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        let g = self.locked();
         self.waiting.fetch_sub(1, Ordering::Relaxed);
         let (engine, _) = g.as_ref().ok_or((503, "the engine is not loaded".to_string()))?;
         if !engine.reads() {
@@ -581,7 +593,7 @@ impl ImageServer {
             return Err((404, format!("model {m} is not served here (this server: {})", self.model)));
         }
         self.waiting.fetch_add(1, Ordering::Relaxed);
-        let g = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        let g = self.locked();
         self.waiting.fetch_sub(1, Ordering::Relaxed);
         let (engine, _) = match g.as_ref() {
             None => return Err((503, "the engine is not loaded".into())),
@@ -665,7 +677,7 @@ impl ImageServer {
             return Err((404, format!("model {m} is not served here (this server: {})", self.model)));
         }
         self.waiting.fetch_add(1, Ordering::Relaxed);
-        let g = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        let g = self.locked();
         self.waiting.fetch_sub(1, Ordering::Relaxed);
         let (engine, _) = match g.as_ref() {
             None => return Err((503, "the engine is not loaded".into())),
@@ -722,6 +734,103 @@ impl ImageServer {
 
     /// POST /v1/images/remove-background: {image (base64 / data URL), model, mask, response_format}: the RGBA picture
     /// (straight alpha) and with mask the mask, kept and linked (url) or as base64 (b64_json, the default)
+    /// The engine's lock, the pipeline loaded again when the describer took its place
+    fn locked(&self) -> std::sync::MutexGuard<'_, Option<Loaded>> {
+        let mut g = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        if g.is_none() {
+            *self.progress.lock().unwrap() = json!({"busy": true, "loading": true, "prompt": format!("{} loading", self.model), "seconds": 0});
+            let _ = self.reload(&mut g);
+            *self.progress.lock().unwrap() = json!({"busy": false});
+        }
+        g
+    }
+
+    /// The plain pipeline loaded in the describer's place (the describer let go first: its memory is the pipeline's)
+    fn reload(&self, g: &mut Option<Loaded>) -> Result<(), (u16, String)> {
+        *self.describer.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        match (self.load)(&[], &mut |l| eprintln!("{l}")) {
+            Ok(e) => {
+                *g = Some((e, Vec::new()));
+                Ok(())
+            }
+            Err(e) => {
+                *self.progress.lock().unwrap() = json!({"busy": false});
+                Err((engine_fail_status(&e), format!("loading {} again after the describer: {e}", self.model)))
+            }
+        }
+    }
+
+    /// POST /v1/images/describe: {image (base64 / data URL), system, user, max_tokens, temperature, seed, request_id} -
+    /// the model's own text encoder reading the picture and writing (image.describe's describer "native"). The
+    /// pipeline is dropped for it (one or the other on the card) and loaded again by the next request that draws
+    pub(crate) fn describe(&self, b: &Value) -> Result<Value, (u16, String)> {
+        let bad = |m: String| (400u16, m);
+        let Some(load) = &self.describe_load else {
+            return Err(bad(format!("{}: its text encoder does not read pictures (describer native)", self.model)));
+        };
+        if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty() && *m != self.model) {
+            return Err((404, format!("model {m} is not served here (this server: {})", self.model)));
+        }
+        let raw = b["image"].as_str().filter(|v| !v.is_empty()).ok_or_else(|| bad("image: the picture (base64 or a data: URL) is required".into()))?;
+        let picture = init_picture(raw).map_err(bad)?.rgb();
+        let req = DescribeRequest {
+            picture,
+            system: b["system"].as_str().unwrap_or("").to_string(),
+            user: b["user"].as_str().unwrap_or("Write the prompt for this picture.").to_string(),
+            max_tokens: b["max_tokens"].as_u64().unwrap_or(220).clamp(1, 4096) as usize,
+            temperature: b["temperature"].as_f64().unwrap_or(0.0) as f32,
+            seed: b["seed"].as_u64().unwrap_or(0),
+        };
+        self.waiting.fetch_add(1, Ordering::Relaxed);
+        let mut g = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        self.waiting.fetch_sub(1, Ordering::Relaxed);
+        let Some(_running) = self.cancel.begin(b["request_id"].as_str()) else {
+            return Err((499, "cancelled".into()));
+        };
+        let t0 = Instant::now();
+        let j0 = self.tele.joules();
+        let mut d = self.describer.lock().unwrap_or_else(|p| p.into_inner());
+        let mut load_seconds = None;
+        if d.is_none() {
+            *self.progress.lock().unwrap() = json!({"busy": true, "loading": true, "prompt": "the describer (the text encoder) loading", "seconds": 0});
+            // the pipeline's memory first
+            *g = None;
+            match load(&mut |l| eprintln!("{l}")) {
+                Ok(x) => {
+                    load_seconds = Some(x.load_seconds());
+                    *d = Some(x);
+                }
+                Err(e) => {
+                    drop(d);
+                    // back to the pipeline, so the server keeps serving
+                    let _ = self.reload(&mut g);
+                    *self.progress.lock().unwrap() = json!({"busy": false});
+                    let m = nextcuda_image::tag_device_oom(&format!("loading {}'s describer: {e}", self.model), None);
+                    return Err((engine_fail_status(&m), m));
+                }
+            }
+        }
+        let describer = d.as_ref().expect("loaded above");
+        let p = &self.progress;
+        let out = describer.describe(&req, &mut |n| {
+            *p.lock().unwrap() = json!({"busy": true, "prompt": "describing the picture", "at": n, "of": req.max_tokens, "seconds": t0.elapsed().as_secs_f64()});
+            if self.cancel.stopping() {
+                return Err(nextcuda_core::Error("cancelled".into()));
+            }
+            Ok(())
+        });
+        *self.progress.lock().unwrap() = json!({"busy": false});
+        let stopped = self.cancel.stopping();
+        let out = out.map_err(|e| engine_fail(e, stopped))?;
+        let energy = self.tele.joules().zip(j0).map(|(a, b)| (a - b).max(0.0) / 3600.0);
+        Ok(json!({
+            "text": out.text, "encoder": describer.encoder(), "model": self.model,
+            "prompt_tokens": out.prompt_tokens, "generated": out.generated, "finish": out.finish,
+            "read_seconds": out.read_seconds, "generate_seconds": out.generate_seconds, "seconds": t0.elapsed().as_secs_f64(),
+            "load_seconds": load_seconds, "seen": {"width": out.seen.0, "height": out.seen.1}, "held_mb": out.held_mb, "energy_wh": energy,
+        }))
+    }
+
     fn remove_background(&self, b: &Value, base: &str) -> Result<Value, (u16, String)> {
         let bad = |m: String| (400u16, m);
         let raw = b["image"].as_str().filter(|v| !v.is_empty()).ok_or_else(|| bad("image: the picture (base64 or a data: URL) is required".into()))?;
@@ -735,7 +844,7 @@ impl ImageServer {
         }
         let want_mask = b["mask"].as_bool().unwrap_or(false);
         self.waiting.fetch_add(1, Ordering::Relaxed);
-        let g = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        let g = self.locked();
         self.waiting.fetch_sub(1, Ordering::Relaxed);
         let (engine, _) = match g.as_ref() {
             None => return Err((503, "the engine is not loaded".into())),
@@ -799,7 +908,7 @@ impl ImageServer {
             return Err((404, format!("model {m} is not served here (this server: {})", self.model)));
         }
         self.waiting.fetch_add(1, Ordering::Relaxed);
-        let g = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        let g = self.locked();
         self.waiting.fetch_sub(1, Ordering::Relaxed);
         match g.as_ref() {
             None => Err((503, "the engine is not loaded".into())),
@@ -1129,7 +1238,8 @@ impl ImageServer {
             return Err(bad("response_format url: this server keeps no files (start it with an output directory)".into()));
         }
         if req.edit.is_some() {
-            let edits = self.engine.lock().map(|g| g.as_ref().is_some_and(|(e, _)| e.edits())).unwrap_or(false);
+            // (a pipeline not loaded yet - dropped for the describer, deferred - is asked once it is)
+            let edits = self.engine.lock().map(|g| g.as_ref().is_none_or(|(e, _)| e.edits())).unwrap_or(false);
             if !edits {
                 return Err(bad(format!("{} does not take pictures (edits)", self.model)));
             }
@@ -1144,6 +1254,14 @@ impl ImageServer {
         };
         let t0 = Instant::now();
         let j0 = self.tele.joules();
+        // the pipeline dropped for the describer: the describer let go, the pipeline loaded again (with the LoRAs
+        // asked, below, when they are other than none)
+        if g.is_none() && want_loras.as_ref().is_none_or(|w| w.is_empty()) {
+            *self.progress.lock().unwrap() = json!({"busy": true, "loading": true, "prompt": prompt, "seconds": 0});
+            self.reload(&mut g)?;
+        } else if g.is_none() {
+            *self.describer.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        }
         // other LoRAs: the engine reloaded with them merged
         if let Some(want) = &want_loras {
             let same = g.as_ref().is_some_and(|(_, have)| have == want);

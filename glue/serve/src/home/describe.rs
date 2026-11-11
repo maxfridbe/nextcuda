@@ -11,8 +11,16 @@
 //!   describer loaded, or used as it is when loaded). The answer is streamed (/api/chat's lines), so a cancel closes
 //!   the stream within a second and the chat server stops at its next token (while the picture is read: after it).
 //!
+//! - `describer`: "best" (the default: the chat model above), "native" (the target's own text encoder: an exact target
+//!   model's, a family's enabled model with the smallest encoder), or a describer's id from image.describers - a chat
+//!   model that reads pictures, or an image model's text encoder that does (`NATIVES`: Qwen3-VL-8B-Instruct from
+//!   Qwen-Image 2.1's files, Qwen3-VL-4B-Instruct from P-H3-Image's), with any target. A text encoder describes in its
+//!   image model's own server (POST /v1/images/describe: the pipeline dropped for it, loaded again by the next picture),
+//!   reached as image.remove_background reaches its model: room planned, the lease, image.cancel through the server.
+//!
 //! What the answer carries: the prompt (and negative), the family and model it is for, the picture's size and the size
-//! the describer saw, the size to draw it at on the target's grid (`suggested_size`), the tokens and the speeds.
+//! the describer saw, the size to draw it at on the target's grid (`suggested_size`), the tokens and the speeds, which
+//! describer wrote it (`describer`).
 
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
@@ -334,6 +342,138 @@ pub fn reads_pictures(m: &Value) -> bool {
         && m["env"]["NS_Q35_VISION"] != "0"
 }
 
+/// An image model's text encoder that reads pictures and writes: a describer of its own (describer "native", or by id)
+#[derive(Debug, PartialEq)]
+pub struct NativeKind {
+    /// its id among the describers (image.describers)
+    pub id: &'static str,
+    /// short, for a menu
+    pub name: &'static str,
+    /// the model it is
+    pub base: &'static str,
+    /// whose it is, for a menu ("Qwen-Image's own")
+    pub own: &'static str,
+    /// the image architecture whose files hold it
+    pub arch: &'static str,
+    /// the file roles it reads
+    pub roles: &'static [&'static str],
+}
+
+/// The text encoders that describe: Qwen-Image 2.1's Qwen3-VL-8B-Instruct (the Q4_K_M GGUF and its projector) and
+/// P-H3-Image's Qwen3-VL-4B-Instruct (its encoder GGUF holds the language model whole - 36 layers, the final norm, the
+/// head tied to the embedding - and the vision tower; the tokenizer files beside it)
+pub const NATIVES: [NativeKind; 2] = [
+    NativeKind { id: "qwen3-vl-8b-instruct", name: "Qwen3-VL-8B", base: "Qwen3-VL-8B-Instruct", own: "Qwen-Image's own", arch: "qwen-image-2.1",
+                 roles: &["text-encoder", "llm-vision"] },
+    NativeKind { id: "qwen3-vl-4b-instruct", name: "Qwen3-VL-4B", base: "Qwen3-VL-4B-Instruct", own: "H3's own", arch: "p-h3-image",
+                 roles: &["text-encoder", "tokenizer"] },
+];
+
+/// A registered image model's own describer: its architecture's, when the entry has the files it reads
+pub fn native_of(m: &Value) -> Option<&'static NativeKind> {
+    if registry::kind_of(m) != "image" {
+        return None;
+    }
+    let arch = s(m, "arch");
+    NATIVES.iter().find(|k| k.arch == arch && k.roles.iter().all(|r| m["files"][*r].as_str().is_some_and(|f| !f.is_empty())))
+}
+
+/// What a model's (or a family's) text encoder is, for a refusal: why it cannot describe
+fn encoder_of(arch_or_family: &str) -> &'static str {
+    match arch_or_family {
+        "z-image" => "Qwen3-4B",
+        "qwen-image-2512" => "Qwen2.5-VL-7B, its vision projector not downloaded",
+        "qwen-image" => "Qwen2.5-VL-7B or Qwen3-VL-8B",
+        "moss-image" => "Qwen3.5-9B, its vision projector not downloaded",
+        "hunyuanimage" => "Qwen2.5-VL-7B and ByT5",
+        "ming-image" => "Ming's own",
+        "h3" | "minimax-h3" => "Qwen3-VL",
+        _ => "",
+    }
+}
+
+/// The bytes of an entry's files of `roles` (what a describer reads), from the drive
+pub fn files_bytes(m: &Value, roles: &[&str]) -> u64 {
+    roles.iter().filter_map(|r| m["files"][*r].as_str()).filter_map(|f| std::fs::metadata(f).ok()).map(|md| md.len()).sum()
+}
+
+/// A chat model's short name for a menu: "qwen3.8-27b-gsq-iq3s" -> "Qwen3.8-27B"
+pub fn chat_name(id: &str) -> String {
+    let parts: Vec<&str> = id.split('-').collect();
+    let n = parts.iter().position(|p| p.len() > 1 && p.ends_with('b') && p[..p.len() - 1].chars().all(|c| c.is_ascii_digit() || c == '.')).map_or(1, |i| i + 1);
+    let mut out = parts[..n.min(parts.len())].join("-");
+    if let Some(r) = out.strip_prefix("qwen") {
+        out = format!("Qwen{r}");
+    }
+    if out.ends_with('b') {
+        out.pop();
+        out.push('B');
+    }
+    out
+}
+
+/// A message whose field is `field` whatever its first word (api.rs reads the tag off: the error's `field`)
+pub fn with_field(field: &str, m: &str) -> String {
+    format!("{FIELD_TAG}{field}\u{1}{m}")
+}
+
+pub const FIELD_TAG: &str = "\u{1}field:";
+
+/// A message's field tag: (the field, the message without it)
+pub fn field_untag(m: &str) -> Option<(&str, &str)> {
+    m.strip_prefix(FIELD_TAG)?.split_once('\u{1}')
+}
+
+/// Who describes: a chat model (through the switcher), or an image model's text encoder (in that model's server)
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pick {
+    Chat(String),
+    Native { host: String, kind: &'static NativeKind },
+}
+
+/// The image model a native describer runs in: among `hosts` (its enabled models), a loaded one, else the one whose
+/// card takes the least
+fn host_of(hosts: &[&Value], loaded: &[String]) -> Option<String> {
+    let gib = |m: &Value| m["vram_gib"].as_f64().unwrap_or(f64::MAX);
+    hosts.iter().find(|m| loaded.iter().any(|l| m["id"] == l.as_str())).or_else(|| hosts.iter().min_by(|a, b| gib(a).total_cmp(&gib(b)))).map(|m| s(m, "id"))
+}
+
+/// describer "native": the target's own text encoder - the target model's when it names one, else its family's
+/// enabled model with the smallest encoder (a loaded one first among equals). Refused (invalid_params, field
+/// describer) when none reads pictures
+pub fn native_for(ask: &Ask, all: &[Value], loaded: &[String]) -> Result<Pick, Fail> {
+    let refuse = |what: &str, enc: &str| {
+        let enc = if enc.is_empty() { String::new() } else { format!(" ({enc})") };
+        Err((400, with_field("describer", &format!("target {what}: its text encoder{enc} does not read pictures; use describer best"))))
+    };
+    if let Some(t) = &ask.target_model {
+        let Some(m) = all.iter().find(|m| m["id"] == t.as_str()) else {
+            // a model not here (nextsycl's, or a card not downloaded: the caller checks that first)
+            return refuse(t, encoder_of(ask.family));
+        };
+        return match native_of(m) {
+            Some(k) if m["enabled"] != false => Ok(Pick::Native { host: t.clone(), kind: k }),
+            Some(_) => Err((409, format!("model {t} is disabled (system.enable {t})"))),
+            None => refuse(t, encoder_of(&s(m, "arch"))),
+        };
+    }
+    let fam: Vec<&Value> = all.iter().filter(|m| family_of_model(m) == Some(ask.family) && native_of(m).is_some()).collect();
+    let on: Vec<&Value> = fam.iter().copied().filter(|m| m["enabled"] != false).collect();
+    if on.is_empty() {
+        if let Some(m) = fam.first() {
+            return Err((409, format!("no {} model with a text encoder that reads pictures is enabled (system.enable {})", ask.family, s(m, "id"))));
+        }
+        return refuse(ask.family, encoder_of(ask.family));
+    }
+    // the smallest encoder (its files), then a loaded model, then the least memory
+    let size = |m: &Value| native_of(m).map_or(u64::MAX, |k| files_bytes(m, k.roles));
+    let least = on.iter().map(|m| size(m)).min().unwrap_or(0);
+    let smallest: Vec<&Value> = on.iter().copied().filter(|m| size(m) == least).collect();
+    let host = host_of(&smallest, loaded).expect("one at least");
+    let kind = native_of(smallest.iter().find(|m| m["id"] == host.as_str()).expect("chosen from them")).expect("filtered");
+    Ok(Pick::Native { host, kind })
+}
+
 /// The words of a prompt
 pub fn word_count(t: &str) -> usize {
     t.split_whitespace().count()
@@ -369,12 +509,80 @@ impl Home {
             .ok_or_else(|| (409, "no enabled chat model reads pictures (system.enable qwen3.8-27b-gsq-iq3s: a chat model with its vision tower)".to_string()))
     }
 
+    /// Who describes a request (`describer`: best, native or an id from image.describers). `block`: a model not
+    /// downloaded is fetched and waited for (NS_AUTO_PULL), else refused
+    pub(crate) fn pick_describer(&self, b: &Value, all: &[Value], ask: &Ask, block: bool) -> Result<Pick, Fail> {
+        let mode = b["describer"].as_str().map(str::trim).filter(|x| !x.is_empty()).unwrap_or("best");
+        match mode {
+            "best" => Ok(Pick::Chat(self.describer(b, all, block)?)),
+            "native" => {
+                // a target model a card offers and not downloaded: model_not_downloaded (fetched with NS_AUTO_PULL)
+                if let Some(t) = ask.target_model.as_deref().filter(|t| !all.iter().any(|m| m["id"] == *t)) {
+                    let kind = self.o.cfg.cards().iter().find(|c| c["id"] == t).and_then(|c| NATIVES.iter().find(|k| c["arch"] == k.arch));
+                    if let Some(kind) = kind.filter(|_| self.not_downloaded(t).is_some()) {
+                        self.need_downloaded(t, b["request_id"].as_str(), block)?;
+                        if !block {
+                            return Ok(Pick::Native { host: t.to_string(), kind });
+                        }
+                        return native_for(ask, &self.models(), &self.loaded_of("image"));
+                    }
+                }
+                native_for(ask, all, &self.loaded_of("image"))
+            }
+            id => {
+                if let Some(k) = NATIVES.iter().find(|k| k.id == id) {
+                    let hosts: Vec<&Value> = all.iter().filter(|m| native_of(m) == Some(k) && m["enabled"] != false).collect();
+                    return match host_of(&hosts, &self.loaded_of("image")) {
+                        Some(host) => Ok(Pick::Native { host, kind: k }),
+                        None => Err((409, format!("describer {id}: no enabled {} model here has its files (image.describers)", k.arch))),
+                    };
+                }
+                if all.iter().any(|m| m["id"] == id && reads_pictures(m)) {
+                    let mut b = b.clone();
+                    b["model"] = json!(id);
+                    return Ok(Pick::Chat(self.describer(&b, all, block)?));
+                }
+                Err((404, format!("describer {id}: no such describer here - best, native or an id from image.describers")))
+            }
+        }
+    }
+
+    /// image.describers: every describer this box has - the chat models that read pictures and the image models' text
+    /// encoders that do - with what it is, its size and the image models that share it; `default` is best's pick now
+    pub(crate) fn describers_view(&self, all: &[Value]) -> Value {
+        let best = self.describer(&json!({}), all, false).ok();
+        let gb = |b: u64| (b as f64 / 1e9 * 10.0).round() / 10.0;
+        let mut list: Vec<Value> = all.iter().filter(|m| reads_pictures(m)).map(|m| {
+            let id = s(m, "id");
+            let roles: Vec<&str> = m["files"].as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
+            json!({"id": id, "name": chat_name(&id), "base": chat_name(&id), "kind": "chat", "own": "a chat model",
+                   "size_gb": gb(files_bytes(m, &roles)), "models": [], "available": m["enabled"] != false,
+                   "why": if m["enabled"] == false { json!(format!("{id} is disabled (system.enable {id})")) } else { Value::Null },
+                   "default": best.as_deref() == Some(id.as_str())})
+        }).collect();
+        for k in &NATIVES {
+            let hosts: Vec<&Value> = all.iter().filter(|m| native_of(m) == Some(k)).collect();
+            let on: Vec<&Value> = hosts.iter().copied().filter(|m| m["enabled"] != false).collect();
+            let why = if hosts.is_empty() {
+                json!(format!("no {} model is downloaded here", k.arch))
+            } else if on.is_empty() {
+                json!(format!("its models are disabled (system.enable {})", s(hosts[0], "id")))
+            } else {
+                Value::Null
+            };
+            list.push(json!({"id": k.id, "name": k.name, "base": k.base, "kind": "native", "own": k.own,
+                             "size_gb": hosts.first().map(|m| gb(files_bytes(m, k.roles))), "models": hosts.iter().map(|m| s(m, "id")).collect::<Vec<_>>(),
+                             "available": !on.is_empty(), "why": why, "default": false}));
+        }
+        json!({"describers": list})
+    }
+
     /// image.describe as submitted: what would be refused when it runs, refused now (wait: false too)
     pub(crate) fn precheck_describe(&self, b: &Value, all: &[Value]) -> Result<(), Fail> {
-        ask_of(b, all)?;
+        let ask = ask_of(b, all)?;
         let bytes = crate::http::unbase64(s(b, "image").trim()).map_err(|e| (400, format!("image: not base64 or a data: URL ({e})")))?;
         picture_size(&bytes)?;
-        self.describer(b, all, false).map(|_| ())
+        self.pick_describer(b, all, &ask, false).map(|_| ())
     }
 
     /// image.describe's work (a job of the image queue: its request_id is the job's id)
@@ -382,27 +590,37 @@ impl Home {
         let t0 = Instant::now();
         let all = self.models();
         let ask = ask_of(b, &all)?;
-        let job = b["request_id"].as_str();
-        let id = self.describer(b, &all, true)?;
+        let pick = self.pick_describer(b, &all, &ask, true)?;
         let (w, h, sw, sh, png) = see(&s(b, "image"), ask.max_pixels)?;
+        let mode = b["describer"].as_str().map(str::trim).filter(|x| !x.is_empty()).unwrap_or("best").to_string();
+        let seen = (sw, sh);
+        let wrote = match &pick {
+            Pick::Chat(id) => self.describe_chat(b, &ask, id, &png, t0)?,
+            Pick::Native { host, kind } => self.describe_native(b, &ask, host, kind, &png, t0)?,
+        };
+        Ok(answer(&ask, wrote, &mode, (w, h), seen, t0))
+    }
+
+    /// A chat model writes it (through the switcher; the answer streamed)
+    fn describe_chat(&self, b: &Value, ask: &Ask, id: &str, png: &[u8], t0: Instant) -> Result<Wrote, Fail> {
+        let job = b["request_id"].as_str();
         let cancelled = || job.is_some_and(|j| self.job_cancelled(j));
         // the describer: room on its cards, then (through the switcher) loaded when another chat model is
         self.note(job, "loading", &format!("the describer {id}: room on its cards, then its load"));
-        let t = self.chat_target(Some(&id))?;
-        super::rsvp::note_start(&id, 0.0);
+        let t = self.chat_target(Some(id))?;
+        super::rsvp::note_start(id, 0.0);
         if cancelled() {
             return Err((499, "cancelled".into()));
         }
         self.note(job, "running", &format!("{id} reading the picture"));
-        let body = json!({
+        let mut body = json!({
             "model": id, "stream": true, "think_budget": 0, "max_tokens": ask.max_tokens, "temperature": ask.temperature,
             "messages": [
-                {"role": "system", "content": instruction(&ask)},
+                {"role": "system", "content": instruction(ask)},
                 {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", crate::http::base64(&png))}},
+                    {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", crate::http::base64(png))}},
                     {"type": "text", "text": "Write the prompt for this picture."}]}],
         });
-        let mut body = body;
         if let Some(seed) = ask.seed {
             body["seed"] = json!(seed);
         }
@@ -415,47 +633,109 @@ impl Home {
         })?;
         // rsvp_s: the describer stays loaded that long from the end of the answer (as llm.chat)
         if let Some(g) = super::rsvp::granted(super::rsvp::asked(), self.max_rsvp()) {
-            self.hold_after(&id, g);
+            self.hold_after(id, g);
             if g > 0.0 {
-                let until = self.held_s(&id) + super::now();
-                let _ = registry::update(&self.o.cfg, &id, |e| e["hold_until"] = json!(until));
+                let until = self.held_s(id) + super::now();
+                let _ = registry::update(&self.o.cfg, id, |e| e["hold_until"] = json!(until));
             }
         }
-        let (prompt, negative) = cut(&text, ask.negative);
-        let mut notes: Vec<String> = Vec::new();
-        if ask.negative_asked && !ask.negative {
-            notes.push(format!("{} takes no negative prompt (no guidance): none written", ask.family));
-        } else if ask.negative && negative.is_none() {
-            notes.push("the describer wrote no negative prompt".into());
-        }
-        let finish = match done["finish"].as_str() {
-            Some("length") => "length",
-            _ => "stop",
-        };
-        if finish == "length" {
-            notes.push(format!("max_tokens {} cut the answer short: raise max_tokens", ask.max_tokens));
-        }
-        if prompt.is_empty() {
-            notes.push("the describer wrote no prompt".into());
-        }
         let num = |k: &str| done[k].as_f64().unwrap_or(0.0);
-        let (n_prompt, reused, generated) = (num("prompt_tokens"), num("reused"), num("generated"));
-        let read_s = num("read_seconds") + num("vision_seconds");
-        let gen_s = num("generate_seconds");
-        let r3 = |x: f64| (x * 1000.0).round() / 1000.0;
-        let r1 = |x: f64| (x * 10.0).round() / 10.0;
-        let (gw, gh) = suggested_size(ask.family, w, h);
-        Ok(json!({
-            "prompt": prompt, "negative_prompt": negative, "target": ask.family, "target_model": ask.target_model, "model": id,
-            "detail": ask.detail, "language": ask.language, "words": word_count(&prompt),
-            "width": w, "height": h, "seen": {"width": sw, "height": sh},
-            "suggested_size": {"width": gw, "height": gh, "size": format!("{gw}x{gh}")},
-            "tokens": {"prompt": n_prompt as u64, "reused": reused as u64, "generated": generated as u64},
-            "timings": {"pp_tok_s": r1((n_prompt - reused).max(0.0) / read_s.max(1e-9)), "tg_tok_s": r1(generated / gen_s.max(1e-9)),
-                        "prompt_seconds": r3(read_s), "generate_seconds": r3(gen_s), "seconds": r3(t0.elapsed().as_secs_f64())},
-            "finish": finish, "energy_wh": done["energy_wh"].as_f64().map(|x| (x * 100.0).round() / 100.0), "notes": notes,
-        }))
+        Ok(Wrote {
+            text, model: id.to_string(), finish: done["finish"].as_str() == Some("length"),
+            prompt: num("prompt_tokens"), reused: num("reused"), generated: num("generated"),
+            read_s: num("read_seconds") + num("vision_seconds"), gen_s: num("generate_seconds"), energy: done["energy_wh"].as_f64(), held_mb: None,
+        })
     }
+
+    /// An image model's text encoder writes it, in that model's server (the pipeline dropped for it there)
+    fn describe_native(&self, b: &Value, ask: &Ask, host: &str, kind: &NativeKind, png: &[u8], _t0: Instant) -> Result<Wrote, Fail> {
+        let job = b["request_id"].as_str();
+        self.note(job, "loading", &format!("{host}'s text encoder ({}): room on its card, then its load", kind.base));
+        let mut body = json!({"model": host, "image": crate::http::base64(png), "system": instruction(ask), "user": "Write the prompt for this picture.",
+                              "max_tokens": ask.max_tokens, "temperature": ask.temperature, "seed": ask.seed.unwrap_or(0)});
+        if let Some(j) = job {
+            body["request_id"] = json!(j);
+        }
+        // a server started for this loads the text encoder alone (its pipeline when a picture is drawn)
+        *self.describe_first.lock().unwrap().entry(host.to_string()).or_insert(0) += 1;
+        struct Done<'a>(&'a Home, &'a str);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                let mut d = self.0.describe_first.lock().unwrap();
+                if let Some(n) = d.get_mut(self.1) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        d.remove(self.1);
+                    }
+                }
+            }
+        }
+        let _first = Done(self, host);
+        let out = self.relay_with_room(host, &|| {
+            let t = self.ensure_for(host, job)?;
+            self.sent(job);
+            super::api::relay(&t, "POST", "/v1/images/describe", Some(&body), MAX_DESCRIBE_S)
+        })?;
+        let num = |k: &str| out[k].as_f64().unwrap_or(0.0);
+        let enc = out["encoder"].as_str().filter(|e| !e.is_empty()).unwrap_or(kind.base);
+        Ok(Wrote {
+            text: s(&out, "text"), model: format!("{host} text encoder ({enc})"), finish: out["finish"] == "length",
+            prompt: num("prompt_tokens"), reused: 0.0, generated: num("generated"), read_s: num("read_seconds"), gen_s: num("generate_seconds"),
+            energy: out["energy_wh"].as_f64(), held_mb: out["held_mb"].as_u64(),
+        })
+    }
+}
+
+/// What a describer wrote, and its counts
+pub struct Wrote {
+    pub text: String,
+    /// the answer's `model`
+    pub model: String,
+    /// max_tokens cut it
+    pub finish: bool,
+    pub prompt: f64,
+    pub reused: f64,
+    pub generated: f64,
+    pub read_s: f64,
+    pub gen_s: f64,
+    pub energy: Option<f64>,
+    /// a text encoder's memory on its card, MiB
+    pub held_mb: Option<u64>,
+}
+
+/// The answer: the prompt cut out, the notes, the sizes, the counts
+fn answer(ask: &Ask, wr: Wrote, describer: &str, (w, h): (u32, u32), (sw, sh): (u32, u32), t0: Instant) -> Value {
+    let (prompt, negative) = cut(&wr.text, ask.negative);
+    let mut notes: Vec<String> = Vec::new();
+    if ask.negative_asked && !ask.negative {
+        notes.push(format!("{} takes no negative prompt (no guidance): none written", ask.family));
+    } else if ask.negative && negative.is_none() {
+        notes.push("the describer wrote no negative prompt".into());
+    }
+    let finish = if wr.finish { "length" } else { "stop" };
+    if wr.finish {
+        notes.push(format!("max_tokens {} cut the answer short: raise max_tokens", ask.max_tokens));
+    }
+    if prompt.is_empty() {
+        notes.push("the describer wrote no prompt".into());
+    }
+    let r3 = |x: f64| (x * 1000.0).round() / 1000.0;
+    let r1 = |x: f64| (x * 10.0).round() / 10.0;
+    let (gw, gh) = suggested_size(ask.family, w, h);
+    let mut v = json!({
+        "prompt": prompt, "negative_prompt": negative, "target": ask.family, "target_model": ask.target_model, "model": wr.model, "describer": describer,
+        "detail": ask.detail, "language": ask.language, "words": word_count(&prompt),
+        "width": w, "height": h, "seen": {"width": sw, "height": sh},
+        "suggested_size": {"width": gw, "height": gh, "size": format!("{gw}x{gh}")},
+        "tokens": {"prompt": wr.prompt as u64, "reused": wr.reused as u64, "generated": wr.generated as u64},
+        "timings": {"pp_tok_s": r1((wr.prompt - wr.reused).max(0.0) / wr.read_s.max(1e-9)), "tg_tok_s": r1(wr.generated / wr.gen_s.max(1e-9)),
+                    "prompt_seconds": r3(wr.read_s), "generate_seconds": r3(wr.gen_s), "seconds": r3(t0.elapsed().as_secs_f64())},
+        "finish": finish, "energy_wh": wr.energy.map(|x| (x * 100.0).round() / 100.0), "notes": notes,
+    });
+    if let Some(mb) = wr.held_mb {
+        v["memory_mb"] = json!(mb);
+    }
+    v
 }
 
 /// A chat request answered as JSON lines (/api/chat, stream): the content and the closing line. The read wakes every
@@ -680,6 +960,56 @@ mod tests {
         let seen = nextcuda_diffusion::picture::Picture::decode(&out).unwrap();
         assert_eq!((seen.channels, &seen.data[..3]), (3, &[255u8, 255, 255][..]));
         assert_eq!(see("not a picture", 1_048_576).unwrap_err().0, 400);
+    }
+
+    fn natives() -> Vec<Value> {
+        vec![
+            json!({"id": "qwen-image-2.1-q8", "kind": "image", "arch": "qwen-image-2.1", "vram_gib": 9.0, "files": {"text-encoder": "/te.gguf", "llm-vision": "/mm.gguf"}}),
+            json!({"id": "qwen-image-2.1-rrq4", "kind": "image", "arch": "qwen-image-2.1", "vram_gib": 7.5, "files": {"text-encoder": "/te.gguf", "llm-vision": "/mm.gguf"}}),
+            json!({"id": "qwen-image-2512-q4km", "kind": "image", "arch": "qwen-image-2512", "vram_gib": 9.0, "files": {"text-encoder": "/q25.gguf"}}),
+            json!({"id": "p-h3-image", "kind": "image", "arch": "p-h3-image", "vram_gib": 10.4, "files": {"text-encoder": "/h3te.gguf", "tokenizer": "/vocab.json"}}),
+            json!({"id": "z-image-turbo", "kind": "image", "arch": "z-image", "files": {"text-encoder": "/q3.gguf"}}),
+            json!({"id": "qwen3.8-27b-gsq-iq3s", "kind": "llm", "arch": "qwen35", "files": {"model": "/m.gguf", "mmproj": "/mm.gguf"}}),
+        ]
+    }
+
+    #[test]
+    fn native_is_the_targets_own_encoder() {
+        let all = natives();
+        let ask = |b: Value| ask_of(&b, &all).unwrap();
+        // an exact model: its own
+        let p = native_for(&ask(json!({"target": "qwen-image-2.1-q8"})), &all, &[]).unwrap();
+        assert_eq!(p, Pick::Native { host: "qwen-image-2.1-q8".into(), kind: &NATIVES[0] });
+        assert_eq!(native_for(&ask(json!({"target": "p-h3-image"})), &all, &[]).unwrap(), Pick::Native { host: "p-h3-image".into(), kind: &NATIVES[1] });
+        // a family: its enabled model with the smallest encoder - the same files here, so a loaded one, else the least memory
+        assert_eq!(native_for(&ask(json!({"target": "qwen-image"})), &all, &[]).unwrap(), Pick::Native { host: "qwen-image-2.1-rrq4".into(), kind: &NATIVES[0] });
+        assert_eq!(native_for(&ask(json!({"target": "qwen-image"})), &all, &["qwen-image-2.1-q8".into()]).unwrap(),
+                   Pick::Native { host: "qwen-image-2.1-q8".into(), kind: &NATIVES[0] });
+        // refused, field describer
+        let e = native_for(&ask(json!({"target": "z-image"})), &all, &[]).unwrap_err();
+        assert_eq!(e.0, 400);
+        assert_eq!(field_untag(&e.1), Some(("describer", "target z-image: its text encoder (Qwen3-4B) does not read pictures; use describer best")));
+        let e = native_for(&ask(json!({"target": "qwen-image-2512-q4km"})), &all, &[]).unwrap_err();
+        assert!(field_untag(&e.1).unwrap().1.starts_with("target qwen-image-2512-q4km: its text encoder (Qwen2.5-VL-7B"), "{}", e.1);
+        assert_eq!(native_for(&ask(json!({"target": "natural"})), &all, &[]).unwrap_err().0, 400);
+        // disabled: a conflict
+        let mut off = all.clone();
+        off[0]["enabled"] = json!(false);
+        assert_eq!(native_for(&ask(json!({"target": "qwen-image-2.1-q8"})), &off, &[]).unwrap_err().0, 409);
+    }
+
+    #[test]
+    fn a_native_needs_its_files_and_names_read_short() {
+        let all = natives();
+        assert_eq!(native_of(&all[0]), Some(&NATIVES[0]));
+        assert_eq!(native_of(&all[2]), None);
+        assert_eq!(native_of(&all[3]), Some(&NATIVES[1]));
+        assert_eq!(native_of(&json!({"id": "x", "kind": "image", "arch": "qwen-image-2.1", "files": {"text-encoder": "/te.gguf"}})), None);
+        assert_eq!(chat_name("qwen3.8-27b-gsq-iq3s"), "Qwen3.8-27B");
+        assert_eq!(chat_name("qwen3.8-27b-q4-describe"), "Qwen3.8-27B");
+        let t = with_field("describer", "target x: y");
+        assert_eq!(field_untag(&t), Some(("describer", "target x: y")));
+        assert_eq!(field_untag("target x: y"), None);
     }
 
     #[test]

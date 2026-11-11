@@ -121,6 +121,42 @@ export interface HistoryEntry {
 /** What a history entry was: a picture made (none), or another kind of work */
 export type HistoryKind = "ocr" | "vectorize" | "svg-fit" | "upscale" | "upscale-video" | "cutout";
 
+/** What /v1/images/describe takes: the picture and the instruction (the front door's image.describe writes it) */
+export interface ImageDescribeNativeBody {
+  /** the picture: PNG, JPEG or WebP as base64 or a data: URL, at the size the describer is to see it */
+  image: string;
+  /** the instruction (the system turn) */
+  system?: string | null;
+  /**
+   * the user's words after the picture
+   * @default "Write the prompt for this picture."
+   */
+  user?: string | null;
+  /**
+   *
+   * @minimum 1
+   * @maximum 4096
+   * @default 220
+   */
+  max_tokens?: number | null;
+  /**
+   * 0: greedy
+   * @minimum 0
+   * @maximum 2
+   * @default 0
+   */
+  temperature?: number | null;
+  /**
+   *
+   * @minimum 0
+   */
+  seed?: number | null;
+  /** this server's model (another: 404) */
+  model?: string | null;
+  /** the front door's job id (POST /api/cancel {id} stops it) */
+  request_id?: string | null;
+}
+
 /** What image.edit makes from: the body its kind's server takes. */
 export interface ImageEditBody {
   /** up to 8, base64, data: URLs or upload:<name> (image.upload) - PNG, JPEG, WebP; each at most 40 MP, the request at most 256 MiB; each is resized to about 1 MP, so 2048 px on the long side is plenty */
@@ -456,6 +492,32 @@ export interface ModelList {
   data: ModelEntry[];
 }
 
+/** What the model's text encoder wrote */
+export interface NativeDescribed {
+  /** the answer as written (the front door cuts it at PROMPT: / NEGATIVE:) */
+  text: string;
+  /** the text encoder ("Qwen3-VL-8B-Instruct") */
+  encoder: string;
+  model: string;
+  /** the prompt's rows, the picture's included */
+  prompt_tokens: number;
+  generated: number;
+  /** stop or length */
+  finish: string;
+  /** the vision tower and the prompt's pass */
+  read_seconds: number;
+  generate_seconds: number;
+  /** the whole request, a load included */
+  seconds: number;
+  /** the describer loaded for this request (the pipeline dropped first): its load; null: it was loaded */
+  load_seconds?: number | null;
+  /** the size the vision tower read (sides multiples of 32) */
+  seen: WidthHeight;
+  /** the card's memory the describer held, MiB */
+  held_mb: number;
+  energy_wh?: number | null;
+}
+
 /** An instruction an OCR model is trained on */
 export interface OcrPromptInfo {
   id: string;
@@ -689,6 +751,12 @@ export interface VideoUpscaleBody {
   [key: string]: unknown;
 }
 
+/** A size in pixels */
+export interface WidthHeight {
+  width: number;
+  height: number;
+}
+
 /** A route's failure: the words its body's `error` said, and the body. */
 export class RouteError extends Error {
   constructor(message: string, readonly body: unknown) {
@@ -756,7 +824,7 @@ export function routes(base = "", fetcher: typeof fetch = (u, i) => fetch(u, i))
      */
     gpu: (): Promise<Gpu> => r.json("GET", r.url("/api/gpu", {}, true), undefined, undefined, false),
     /**
-     * Whether the server answers: ok, or loading (HTTP 503) while its engine loads
+     * Whether the server answers: ok, or loading (HTTP 503) while its engine loads (a pipeline not loaded and not loading - deferred for a describe, or dropped for the describer - is ok: it loads with the first picture)
      * @route GET /health
      * @tags page
      */
@@ -850,5 +918,11 @@ export function routes(base = "", fetcher: typeof fetch = (u, i) => fetch(u, i))
      * @tags openai
      */
     ocr: (req: ImageOcrReq): Promise<Reading> => r.json("POST", r.url("/v1/ocr", req, false), JSON.stringify(req), "application/json", false),
+    /**
+     * A picture described by the model's own text encoder (its vision tower and language model): image.describe's describer "native"
+     * @route POST /v1/images/describe
+     * @tags openai
+     */
+    describe: (req: ImageDescribeNativeBody): Promise<NativeDescribed> => r.json("POST", r.url("/v1/images/describe", req, false), JSON.stringify(req), "application/json", false),
   };
 }

@@ -951,6 +951,8 @@ dependencies = [
  "nextcuda-gguf",
  "nextcuda-h3",
  "nextcuda-image",
+ "nextcuda-qwen3vl",
+ "nextcuda-tok",
 ]
 
 [[package]]
@@ -1186,6 +1188,7 @@ dependencies = [
  "nextcuda-core",
  "nextcuda-diffusion",
  "nextcuda-gguf",
+ "nextcuda-qwen35",
  "nextcuda-tok",
  "serde_json",
 ]
