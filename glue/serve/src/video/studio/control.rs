@@ -1,0 +1,443 @@
+//! `video.control`: a clip turned into the control video H3's Fun ControlNet-Union steers by (video.generate's
+//! `control_video`). The Union model was trained on canny, depth, HED, MLSD and pose frames (2.0 added scribble,
+//! layout and gray); the ones made here need no model:
+//!
+//! - **canny**: edges, white on black - a 5 x 5 Gaussian (sigma 1), Sobel gradients, thinning along the gradient and
+//!   two thresholds joined by hysteresis (OpenCV's Canny with its L2 gradient, so `low` / `high` mean what they mean
+//!   to cv2.Canny: 100 / 200 is the ControlNet annotators' default);
+//! - **gray**: the clip's brightness alone (BT.601 luma), for the 2.0 checkpoint's gray control (recolouring).
+//!
+//! The clip is read at 24 fps from `start_s`, scaled to cover the canvas and cut in the middle - what video.generate
+//! does to a control video itself (`frames_for`: Fit::Cover) - so the control video is the clip's own size and length
+//! and the thresholds act on the edges the denoiser will see. A clip shorter than `frames` holds its last frame, as
+//! the engine would. The result is a file beside the clips (`ref_<unix>_<stem>-<control>.mp4`), which
+//! video.generate's control_video takes by name and system.files.delete removes.
+
+use std::io::{Read, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use serde_json::{json, Value};
+
+/// What `control` makes here (`video.control.<kind>` in system.version's features)
+pub const KINDS: [&str; 2] = ["canny", "gray"];
+
+/// The canvas a control video is made at when none is asked: the source's aspect within the house size's pixels
+/// (768 x 576), sides multiples of 32 within the model's 256 - 1344
+pub const BUDGET: f64 = 768.0 * 576.0;
+pub const SIDE: (u32, u32) = (256, 1344);
+
+/// How a clip becomes a control video
+#[derive(Clone, Debug, PartialEq)]
+pub struct Settings {
+    pub control: String,
+    pub width: u32,
+    pub height: u32,
+    pub frames: u32,
+    pub start_s: f64,
+    /// canny's thresholds on the gradient's size (0-255 pictures, Sobel)
+    pub low: f32,
+    pub high: f32,
+}
+
+/// A side on the 32 grid within the model's sides
+fn side32(v: f64) -> u32 {
+    (((v / 32.0).round() as u32) * 32).clamp(SIDE.0, SIDE.1)
+}
+
+/// The canvas for a source of `w` x `h` when the request names none: its aspect, about BUDGET pixels
+pub fn default_canvas(w: u32, h: u32) -> (u32, u32) {
+    if w == 0 || h == 0 {
+        return (768, 576);
+    }
+    let k = (BUDGET / (w as f64 * h as f64)).sqrt();
+    (side32(w as f64 * k), side32(h as f64 * k))
+}
+
+/// The most frames (17k + 5, 22 - 362) a clip of `seconds` gives at 24 fps; None when it is shorter than 22 frames
+pub fn frames_in(seconds: f64) -> Option<u32> {
+    let n = (seconds * 24.0 + 1e-6).floor() as u32;
+    (super::queue::FRAMES.0 as u32..=n.min(super::queue::FRAMES.1 as u32)).rev().find(|f| f % 17 == 5)
+}
+
+/// BT.601 luma of an RGB picture, 0-255
+pub fn luma(rgb: &[u8]) -> Vec<f32> {
+    rgb.chunks_exact(3).map(|p| 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32).collect()
+}
+
+/// A 5 x 5 Gaussian (sigma 1), separable, edges repeated
+fn blur(g: &[f32], w: usize, h: usize) -> Vec<f32> {
+    const K: [f32; 5] = [0.054_488_685, 0.244_201_34, 0.402_619_93, 0.244_201_34, 0.054_488_685];
+    let mut t = vec![0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut a = 0.0;
+            for (i, k) in K.iter().enumerate() {
+                let xx = (x as isize + i as isize - 2).clamp(0, w as isize - 1) as usize;
+                a += k * g[y * w + xx];
+            }
+            t[y * w + x] = a;
+        }
+    }
+    let mut o = vec![0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut a = 0.0;
+            for (i, k) in K.iter().enumerate() {
+                let yy = (y as isize + i as isize - 2).clamp(0, h as isize - 1) as usize;
+                a += k * t[yy * w + x];
+            }
+            o[y * w + x] = a;
+        }
+    }
+    o
+}
+
+/// Canny's edges of a brightness picture (0-255): 255 on an edge, 0 elsewhere
+pub fn canny(g: &[f32], w: usize, h: usize, low: f32, high: f32) -> Vec<u8> {
+    let mut out = vec![0u8; w * h];
+    if w < 3 || h < 3 {
+        return out;
+    }
+    let b = blur(g, w, h);
+    let at = |x: usize, y: usize| b[y * w + x];
+    // Sobel: the gradient's size and its direction in four bins (0: across x, 1: 45 deg, 2: across y, 3: 135 deg)
+    let mut mag = vec![0f32; w * h];
+    let mut dir = vec![0u8; w * h];
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let gx = (at(x + 1, y - 1) + 2.0 * at(x + 1, y) + at(x + 1, y + 1)) - (at(x - 1, y - 1) + 2.0 * at(x - 1, y) + at(x - 1, y + 1));
+            let gy = (at(x - 1, y + 1) + 2.0 * at(x, y + 1) + at(x + 1, y + 1)) - (at(x - 1, y - 1) + 2.0 * at(x, y - 1) + at(x + 1, y - 1));
+            mag[y * w + x] = (gx * gx + gy * gy).sqrt();
+            // tan(22.5) = 0.4142, tan(67.5) = 2.4142
+            let (ax, ay) = (gx.abs(), gy.abs());
+            dir[y * w + x] = if ay <= ax * 0.414_213_56 {
+                0
+            } else if ay >= ax * 2.414_213_6 {
+                2
+            } else if (gx > 0.0) == (gy > 0.0) {
+                1
+            } else {
+                3
+            };
+        }
+    }
+    // thinning: a pixel stays where it is the largest along its gradient; 2 strong, 1 weak, 0 none
+    let mut keep = vec![0u8; w * h];
+    let mut stack = Vec::new();
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let i = y * w + x;
+            let m = mag[i];
+            if m <= low {
+                continue;
+            }
+            let (a, c) = match dir[i] {
+                0 => (mag[i - 1], mag[i + 1]),
+                2 => (mag[i - w], mag[i + w]),
+                // y grows downwards: gx and gy of one sign run from top-left to bottom-right
+                1 => (mag[i - w - 1], mag[i + w + 1]),
+                _ => (mag[i - w + 1], mag[i + w - 1]),
+            };
+            // OpenCV's rule: strictly above one neighbour, at least the other (a plateau keeps one pixel)
+            if m > a && m >= c {
+                keep[i] = if m > high { 2 } else { 1 };
+                if m > high {
+                    stack.push(i);
+                }
+            }
+        }
+    }
+    // hysteresis: weak pixels joined (8 ways) to a strong one are edges too
+    while let Some(i) = stack.pop() {
+        out[i] = 255;
+        let (x, y) = (i % w, i / w);
+        for dy in -1isize..=1 {
+            for dx in -1isize..=1 {
+                let (nx, ny) = (x as isize + dx, y as isize + dy);
+                if nx < 0 || ny < 0 || nx >= w as isize || ny >= h as isize {
+                    continue;
+                }
+                let j = ny as usize * w + nx as usize;
+                if keep[j] == 1 {
+                    keep[j] = 2;
+                    stack.push(j);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One frame's control picture, RGB
+pub fn frame(control: &str, rgb: &[u8], w: usize, h: usize, s: &Settings) -> Vec<u8> {
+    let g = luma(rgb);
+    let one: Vec<u8> = match control {
+        "canny" => canny(&g, w, h, s.low, s.high),
+        _ => g.iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect(),
+    };
+    one.iter().flat_map(|v| [*v, *v, *v]).collect()
+}
+
+/// The source's size and seconds (ffprobe); None when it has no video ffprobe reads
+pub fn probe(src: &Path) -> Option<(u32, u32, f64)> {
+    let o = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,duration:format=duration", "-of", "json"])
+        .arg(src)
+        .output()
+        .ok()?;
+    let v: Value = serde_json::from_slice(&o.stdout).ok()?;
+    let st = &v["streams"][0];
+    let (w, h) = (st["width"].as_u64()? as u32, st["height"].as_u64()? as u32);
+    let secs = |x: &Value| x.as_str().and_then(|t| t.parse::<f64>().ok()).or_else(|| x.as_f64());
+    // a WebM from a browser's MediaRecorder carries no stream duration, only the container's
+    let d = secs(&st["duration"]).or_else(|| secs(&v["format"]["duration"])).unwrap_or(0.0);
+    Some((w, h, d))
+}
+
+/// The control video of `src` written to `dst` (an mp4): frames read, made and written a batch at a time on every
+/// core; the frames written
+pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<u32, String> {
+    let (w, h, n) = (s.width as usize, s.height as usize, s.frames as usize);
+    let vf = format!("fps=24,scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,crop={w}:{h},tpad=stop_mode=clone:stop=-1,setsar=1");
+    let mut dec = Command::new("ffmpeg")
+        .args(["-v", "error", "-nostdin"])
+        .args(["-ss", &format!("{:.3}", s.start_s.max(0.0))])
+        .arg("-i")
+        .arg(src)
+        .args(["-an", "-vf", &vf, "-frames:v", &n.to_string(), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg: {e}"))?;
+    let part = dst.with_extension("mp4.part");
+    let mut enc = Command::new("ffmpeg")
+        .args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{w}x{h}"), "-r", "24", "-i", "-"])
+        // near-lossless: a control video's thin edges are what it carries
+        .args(["-c:v", "libx264", "-preset", "fast", "-crf", "12", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4"])
+        .arg(&part)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg: {e}"))?;
+    let r = (|| -> Result<u32, String> {
+        let mut input = dec.stdout.take().ok_or("ffmpeg's output")?;
+        let mut output = enc.stdin.take().ok_or("ffmpeg's input")?;
+        let size = w * h * 3;
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+        let mut done = 0u32;
+        loop {
+            let mut batch: Vec<Vec<u8>> = Vec::with_capacity(threads);
+            while batch.len() < threads {
+                let mut buf = vec![0u8; size];
+                match input.read_exact(&mut buf) {
+                    Ok(()) => batch.push(buf),
+                    Err(_) => break,
+                }
+            }
+            if batch.is_empty() {
+                break;
+            }
+            let made: Vec<Vec<u8>> = std::thread::scope(|sc| {
+                let hs: Vec<_> = batch.iter().map(|f| sc.spawn(move || frame(&s.control, f, w, h, s))).collect();
+                hs.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+            });
+            for f in made {
+                output.write_all(&f).map_err(|e| format!("writing to ffmpeg: {e}"))?;
+                done += 1;
+            }
+            if batch.len() < threads {
+                break;
+            }
+        }
+        Ok(done)
+    })();
+    let dec_err = {
+        let mut e = String::new();
+        if let Some(mut x) = dec.stderr.take() {
+            let _ = x.read_to_string(&mut e);
+        }
+        e
+    };
+    let _ = dec.wait();
+    let st = enc.wait().map_err(|e| format!("ffmpeg: {e}"))?;
+    let enc_err = {
+        let mut e = String::new();
+        if let Some(mut x) = enc.stderr.take() {
+            let _ = x.read_to_string(&mut e);
+        }
+        e
+    };
+    let done = r.inspect_err(|_| {
+        let _ = std::fs::remove_file(&part);
+    })?;
+    if done == 0 {
+        let _ = std::fs::remove_file(&part);
+        return Err(format!("no frames read from the clip{}", tail(&dec_err)));
+    }
+    if !st.success() {
+        let _ = std::fs::remove_file(&part);
+        return Err(format!("encoding the control video failed{}", tail(&enc_err)));
+    }
+    std::fs::rename(&part, dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+    Ok(done)
+}
+
+fn tail(e: &str) -> String {
+    let t = e.trim();
+    if t.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", t.chars().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect::<String>())
+    }
+}
+
+/// The request read against the source (`w` x `h`, `seconds` long): the settings, or what is wrong with it
+pub fn settings(p: &Value, (w, h, seconds): (u32, u32, f64)) -> Result<Settings, super::RpcError> {
+    use super::queue::num;
+    use super::RpcError;
+    let control = p["control"].as_str().unwrap_or("canny").trim().to_lowercase();
+    if !KINDS.contains(&control.as_str()) {
+        return Err(RpcError::param(&format!("control {control:?}: this box makes {} (depth and pose need an estimator it does not have)", KINDS.join(", "))));
+    }
+    let start_s = num(p, "start_s", 0.0, 0.0, 86_400.0, false)?.as_f64().unwrap_or(0.0);
+    let left = (seconds - start_s).max(0.0);
+    let (dw, dh) = default_canvas(w, h);
+    let side = |k: &str, d: u32| -> Result<u32, RpcError> {
+        let v = num(p, k, d as f64, SIDE.0 as f64, SIDE.1 as f64, true)?.as_u64().unwrap_or(d as u64) as u32;
+        if v % 32 != 0 {
+            return Err(RpcError::param(&format!("{k} {v}: a multiple of 32")));
+        }
+        Ok(v)
+    };
+    let (width, height) = (side("width", dw)?, side("height", dh)?);
+    let frames = match p.get("frames").filter(|v| !v.is_null()) {
+        Some(_) => super::queue::check_frames(num(p, "frames", 0.0, 0.0, 1e6, true)?.as_u64().unwrap_or(0))? as u32,
+        None => frames_in(left).ok_or_else(|| RpcError::param(&format!("the clip has {left:.2} s from start_s: a control video is 22 frames (0.92 s) at least")))?,
+    };
+    let low = num(p, "low", 100.0, 0.0, 1000.0, false)?.as_f64().unwrap_or(100.0) as f32;
+    let high = num(p, "high", 200.0, 0.0, 1000.0, false)?.as_f64().unwrap_or(200.0) as f32;
+    if high < low {
+        return Err(RpcError::param(&format!("high {high} is below low {low}")));
+    }
+    Ok(Settings { control, width, height, frames, start_s, low, high })
+}
+
+/// The answer's record of a control video made
+pub fn answer(name: &str, s: &Settings, made: u32, seconds: f64, took: f64) -> Value {
+    json!({"name": name, "file": format!("/out/{name}"), "control": s.control, "width": s.width, "height": s.height, "frames": s.frames,
+           "fps": 24, "seconds": s.frames as f64 / 24.0, "source_frames": made.min(s.frames), "source_seconds": seconds, "start_s": s.start_s,
+           "low": s.low, "high": s.high, "took_s": (took * 100.0).round() / 100.0})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_square_has_edges_on_its_border_alone() {
+        let (w, h) = (32, 32);
+        let g: Vec<f32> = (0..w * h).map(|i| if (8..24).contains(&(i % w)) && (8..24).contains(&(i / w)) { 255.0 } else { 0.0 }).collect();
+        let e = canny(&g, w, h, 100.0, 200.0);
+        // the middle and the far background are not edges; the border is, all the way round
+        assert_eq!(e[16 * w + 16], 0);
+        assert_eq!(e[2 * w + 2], 0);
+        for k in 10..22 {
+            let row: Vec<u8> = (5..11).map(|x| e[k * w + x]).collect();
+            assert!(row.contains(&255), "left edge at row {k}: {row:?}");
+            let col: Vec<u8> = (5..11).map(|y| e[y * w + k]).collect();
+            assert!(col.contains(&255), "top edge at column {k}: {col:?}");
+        }
+        // thin: one pixel across (the left border crossed at mid height)
+        let across: usize = (0..16).filter(|x| e[16 * w + x] == 255).count();
+        assert_eq!(across, 1, "{:?}", &e[16 * w..16 * w + 16]);
+    }
+
+    #[test]
+    fn a_flat_picture_and_faint_noise_have_none() {
+        let (w, h) = (24, 24);
+        assert!(canny(&vec![128.0; w * h], w, h, 100.0, 200.0).iter().all(|v| *v == 0));
+        let noise: Vec<f32> = (0..w * h).map(|i| 128.0 + ((i * 7919) % 13) as f32 - 6.0).collect();
+        assert!(canny(&noise, w, h, 100.0, 200.0).iter().all(|v| *v == 0));
+    }
+
+    #[test]
+    fn hysteresis_keeps_weak_edges_joined_to_strong_ones() {
+        // a step whose height fades along the edge from strong (255) to weak (60, a gradient of about 155): the weak
+        // end is kept through the strong one; the same weak step alone is dropped
+        let (w, h) = (20, 40);
+        let step = |y: usize| 255.0 - 195.0 * y as f32 / 39.0;
+        let g: Vec<f32> = (0..w * h).map(|i| if i % w >= 10 { step(i / w) } else { 0.0 }).collect();
+        let e = canny(&g, w, h, 100.0, 200.0);
+        let row_has = |y: usize| (7..13).any(|x| e[y * w + x] == 255);
+        assert!((2..38).all(row_has), "the edge all the way down");
+        let weak: Vec<f32> = (0..w * h).map(|i| if i % w >= 10 { 60.0 } else { 0.0 }).collect();
+        assert!(canny(&weak, w, h, 100.0, 200.0).iter().all(|v| *v == 0), "a weak edge alone");
+    }
+
+    #[test]
+    fn canvas_and_length_defaults() {
+        assert_eq!(default_canvas(1280, 720), (896, 512));
+        assert_eq!(default_canvas(640, 480), (768, 576));
+        assert_eq!(default_canvas(720, 1280), (512, 896));
+        assert_eq!(default_canvas(0, 0), (768, 576));
+        assert_eq!(frames_in(5.0), Some(107), "120 frames: 107 is the most 17k + 5 under it");
+        assert_eq!(frames_in(5.2), Some(124));
+        assert_eq!(frames_in(30.0), Some(362), "at most 15.08 s");
+        assert_eq!(frames_in(0.5), None);
+        assert_eq!(frames_in(22.0 / 24.0), Some(22));
+    }
+
+    #[test]
+    fn requests_are_read_against_the_source() {
+        let src = (1280, 720, 6.0);
+        let s = settings(&json!({}), src).unwrap();
+        assert_eq!((s.control.as_str(), s.width, s.height, s.frames, s.low, s.high), ("canny", 896, 512, 141, 100.0, 200.0));
+        let s = settings(&json!({"control": "Gray", "width": 768, "height": 576, "frames": 124, "start_s": 1}), src).unwrap();
+        assert_eq!((s.control.as_str(), s.width, s.height, s.frames, s.start_s), ("gray", 768, 576, 124, 1.0));
+        assert_eq!(settings(&json!({"start_s": 2}), src).unwrap().frames, 90, "4 s left");
+        let err = |p: Value| settings(&p, src).unwrap_err().message;
+        assert!(err(json!({"control": "depth"})).contains("canny, gray"));
+        assert!(err(json!({"width": 700})).contains("multiple of 32"));
+        assert!(err(json!({"frames": 120})).contains("nearest: 107 or 124"));
+        assert!(err(json!({"low": 150, "high": 100})).contains("below"));
+        assert!(err(json!({"start_s": 5.5})).contains("22 frames"));
+    }
+
+    #[test]
+    fn gray_is_luma() {
+        let s = Settings { control: "gray".into(), width: 2, height: 1, frames: 22, start_s: 0.0, low: 100.0, high: 200.0 };
+        assert_eq!(frame("gray", &[255, 0, 0, 0, 0, 255], 2, 1, &s), vec![76, 76, 76, 29, 29, 29]);
+    }
+
+    /// The whole path through ffmpeg (skipped where there is none): a moving square becomes its edges, as long as
+    /// asked (the source's last frame held)
+    #[test]
+    fn a_clip_becomes_its_control_video() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("nc-control-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.mp4");
+        let ok = Command::new("ffmpeg")
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=320x240:r=24:d=1.5", "-f", "lavfi", "-i", "color=c=white:s=80x80:r=24:d=1.5",
+                   "-filter_complex", "[0][1]overlay=x='40+t*60':y=80", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&src)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return;
+        }
+        let (w, h, secs) = probe(&src).unwrap();
+        assert_eq!((w, h), (320, 240));
+        let s = settings(&json!({"control": "canny", "width": 320, "height": 256, "frames": 56}), (w, h, secs)).unwrap();
+        let dst = dir.join("out.mp4");
+        let made = make(&src, &dst, &s).unwrap();
+        assert_eq!(made, 56, "36 frames of clip and its last one held");
+        let (ow, oh, _) = probe(&dst).unwrap();
+        assert_eq!((ow, oh), (320, 256));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -487,6 +487,9 @@ export interface AudioVoicesRemoveReq {
 /** How a clip carries on from the last: video | png | latent | none */
 export type ChainMode = "video" | "png" | "latent" | "none";
 
+/** A control signal H3's Fun ControlNet-Union steers by */
+export type ControlKind = "canny" | "gray" | "depth" | "pose";
+
 /** How long image.describe's prompt is: short | medium | long (~35 / ~90 / ~170 words; the tags family 12 / 25 / 45 tags) */
 export type DescribeDetail = "short" | "medium" | "long";
 
@@ -2143,6 +2146,54 @@ export interface VideoCanvasesListReq {
   [key: string]: unknown;
 }
 
+/** What video.control takes. */
+export interface VideoControlReq {
+  /** the clip to read: a file in the clips directory (video.upload it - MP4, WebM, MOV, MKV - or a finished clip's name) */
+  file: string;
+  /** what to make of it (default canny); the ones this box makes are its features video.control.<control> - the rest are refused (400) */
+  control?: ControlKind | null;
+  /**
+   * the canvas the clip will be made at (the source is scaled to cover it and cut in the middle, as video.generate does with a control video); none: the source's aspect at about 768 x 576
+   * @minimum 256
+   * @maximum 1344
+   */
+  width?: number | null;
+  /**
+   *
+   * @minimum 256
+   * @maximum 1344
+   */
+  height?: number | null;
+  /**
+   * the clip's length in frames at 24 fps (17k + 5, 22-362); none: the most the source has from start_s. A shorter source holds its last frame
+   * @minimum 22
+   * @maximum 362
+   */
+  frames?: number | null;
+  /**
+   * seconds into the source to start from
+   * @minimum 0
+   * @default 0
+   */
+  start_s?: number | null;
+  /**
+   * canny: the lower threshold on the gradient's size (cv2.Canny's, 0-255 pictures): weaker edges are dropped unless joined to a strong one
+   * @minimum 0
+   * @maximum 1000
+   * @default 100
+   */
+  low?: number | null;
+  /**
+   * canny: the upper threshold: stronger edges are always kept
+   * @minimum 0
+   * @maximum 1000
+   * @default 200
+   */
+  high?: number | null;
+  /** other keys */
+  [key: string]: unknown;
+}
+
 /** What video.describePromptGuideMD takes. */
 export interface VideoDescribePromptGuideMdReq {
   /** the model's registry id (system.models) */
@@ -3252,6 +3303,12 @@ export interface Methods {
    */
   "video.upload": { req: VideoUploadReq; resp: any };
   /**
+   * A clip turned into a ControlNet control video for video.generate's control_video: canny edges or its brightness (gray), at the clip's canvas and length (24 fps, scaled to cover, a short source's last frame held), made on the CPU while the call waits (seconds). The answer names the file beside the clips (control_video takes the name; system.files.delete removes it) and links it
+   * @tags video
+   * @example {"control":"canny","file":"ref_1792400000_take.webm","frames":124,"height":576,"width":768}
+   */
+  "video.control": { req: VideoControlReq; resp: any };
+  /**
    * How to prompt the model, as Markdown
    * @tags video
    * @example {"model":"minimax-h3"}
@@ -3906,6 +3963,12 @@ export function client(post: Post, raw?: PostRaw) {
      * @example {"data":"iVBORw0KGgo...","name":"fox.png"}
      */
     "video.upload": (req: VideoUploadReq): Promise<any> => post("video.upload", req),
+    /**
+     * A clip turned into a ControlNet control video for video.generate's control_video: canny edges or its brightness (gray), at the clip's canvas and length (24 fps, scaled to cover, a short source's last frame held), made on the CPU while the call waits (seconds). The answer names the file beside the clips (control_video takes the name; system.files.delete removes it) and links it
+     * @tags video
+     * @example {"control":"canny","file":"ref_1792400000_take.webm","frames":124,"height":576,"width":768}
+     */
+    "video.control": (req: VideoControlReq): Promise<any> => post("video.control", req),
     /**
      * How to prompt the model, as Markdown
      * @tags video

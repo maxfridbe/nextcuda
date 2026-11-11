@@ -95,6 +95,34 @@ export interface ClipRecord {
 /** Where a clip is */
 export type ClipState = "done" | "running" | "queued" | "held";
 
+/** A control signal H3's Fun ControlNet-Union steers by */
+export type ControlKind = "canny" | "gray" | "depth" | "pose";
+
+/** A control video made (video.control) */
+export interface Controlled {
+  /** its name in the clips directory: what video.generate's control_video takes */
+  name: string;
+  /** /out/<name> (the front door links it: /v1/video/files/<name>) */
+  file: string;
+  /** canny or gray */
+  control: string;
+  width: number;
+  height: number;
+  /** as asked (17k + 5) */
+  frames: number;
+  fps: number;
+  seconds: number;
+  /** the frames the source gave (fewer than frames: its last one held for the rest) */
+  source_frames: number;
+  /** the source's whole length */
+  source_seconds: number;
+  start_s: number;
+  low: number;
+  high: number;
+  /** seconds it took */
+  took_s: number;
+}
+
 /** The files deleted (a clip and every file of it) */
 export interface Deleted {
   deleted: string[];
@@ -629,6 +657,54 @@ export interface TimelineClip {
 /** The upscaler: esrgan-general | esrgan-anime | latent */
 export type Upscaler = "esrgan-general" | "esrgan-anime" | "latent";
 
+/** What video.control takes. */
+export interface VideoControlReq {
+  /** the clip to read: a file in the clips directory (video.upload it - MP4, WebM, MOV, MKV - or a finished clip's name) */
+  file: string;
+  /** what to make of it (default canny); the ones this box makes are its features video.control.<control> - the rest are refused (400) */
+  control?: ControlKind | null;
+  /**
+   * the canvas the clip will be made at (the source is scaled to cover it and cut in the middle, as video.generate does with a control video); none: the source's aspect at about 768 x 576
+   * @minimum 256
+   * @maximum 1344
+   */
+  width?: number | null;
+  /**
+   *
+   * @minimum 256
+   * @maximum 1344
+   */
+  height?: number | null;
+  /**
+   * the clip's length in frames at 24 fps (17k + 5, 22-362); none: the most the source has from start_s. A shorter source holds its last frame
+   * @minimum 22
+   * @maximum 362
+   */
+  frames?: number | null;
+  /**
+   * seconds into the source to start from
+   * @minimum 0
+   * @default 0
+   */
+  start_s?: number | null;
+  /**
+   * canny: the lower threshold on the gradient's size (cv2.Canny's, 0-255 pictures): weaker edges are dropped unless joined to a strong one
+   * @minimum 0
+   * @maximum 1000
+   * @default 100
+   */
+  low?: number | null;
+  /**
+   * canny: the upper threshold: stronger edges are always kept
+   * @minimum 0
+   * @maximum 1000
+   * @default 200
+   */
+  high?: number | null;
+  /** other keys */
+  [key: string]: unknown;
+}
+
 /** What video.generate takes. */
 export interface VideoGenerateReq {
   /**
@@ -976,6 +1052,8 @@ export interface Methods {
   "files.stat": { req: FileName; resp: FileStat };
   /** A finished clip and every file of it, or an upload (never the clip being made) */
   "files.delete": { req: FileName; resp: Deleted };
+  /** A clip turned into a ControlNet control video beside the clips (canny edges or its brightness), made while the call waits */
+  control: { req: VideoControlReq; resp: Controlled };
 }
 
 /** The methods that take no parameters (their body may be left out). */
@@ -1052,6 +1130,8 @@ export function client(post: Post, raw?: PostRaw) {
     "files.stat": (req: FileName): Promise<FileStat> => post("files.stat", req),
     /** A finished clip and every file of it, or an upload (never the clip being made) */
     "files.delete": (req: FileName): Promise<Deleted> => post("files.delete", req),
+    /** A clip turned into a ControlNet control video beside the clips (canny edges or its brightness), made while the call waits */
+    control: (req: VideoControlReq): Promise<Controlled> => post("control", req),
   };
 }
 

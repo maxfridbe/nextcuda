@@ -7,6 +7,7 @@
 //! State: the queue and holds (`queue.json`, `paused.json`) and the running job (`job.json`) in the studio's own
 //! directory; each finished clip's record (`<clip>.json`) beside its mp4 in the clips directory.
 
+pub mod control;
 pub mod http;
 pub mod library;
 pub mod llm;
@@ -456,6 +457,7 @@ impl Studio {
                 crate::files::stat(&self.out.join(&n)).map_err(|_| RpcError::not_found(&format!("no file {n}")))?
             }
             "files.delete" => self.delete(&ps("name"))?,
+            "control" => self.control(p)?,
             "jobs.get" => {
                 let n = queue::basename(&ps("name"));
                 let n = n.trim_end_matches(".mp4");
@@ -463,6 +465,22 @@ impl Studio {
             }
             other => return Err(RpcError::new("unknown_method", &format!("unknown method {other}"), 404)),
         })
+    }
+
+    /// A clip in the clips directory turned into a ControlNet control video beside it (control.rs): made here, on
+    /// the CPU, while the call waits
+    fn control(&self, p: &Value) -> Result<Value, RpcError> {
+        let file = p["file"].as_str().unwrap_or("").trim();
+        let n = crate::files::plain(file).ok_or_else(|| RpcError::param("file: a clip in the clips directory (video.upload, or a finished clip's name)"))?;
+        let src = [n.to_string(), format!("{n}.mp4")].into_iter().map(|f| self.out.join(f)).find(|f| f.is_file())
+            .ok_or_else(|| RpcError::not_found(&format!("no clip {n} in the clips directory")))?;
+        let (w, h, seconds) = control::probe(&src).ok_or_else(|| RpcError::param(&format!("{n}: not a clip ffprobe reads (no video stream)")))?;
+        let s = control::settings(p, (w, h, seconds))?;
+        let stem: String = n.trim_end_matches(".mp4").trim_start_matches("ref_").chars().filter(|c| c.is_ascii_alphanumeric() || "_-".contains(*c)).take(40).collect();
+        let name = format!("ref_{}_{stem}-{}.mp4", now() as u64, s.control);
+        let t0 = std::time::Instant::now();
+        let made = control::make(&src, &self.out.join(&name), &s).map_err(|e| RpcError::new("internal", &e, 500))?;
+        Ok(control::answer(&name, &s, made, seconds, t0.elapsed().as_secs_f64()))
     }
 
     /// A finished clip and every file of it (its record, last frame, latents, sound tail, still), or an upload;

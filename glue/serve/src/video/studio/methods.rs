@@ -8,7 +8,7 @@ use rpcgen::{rpc, BadPayload, Checked, Rpc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::home::methods::VideoGenerateReq;
+use crate::home::methods::{VideoControlReq, VideoGenerateReq};
 use super::routes::{Canvases, Clip, ClipRecord, Engines, FileName, Film, Gpu, LlmStatus, Plan, Project, ProjectRef, Scene,
                     SceneImport, Status, Summary, Template, Timeline, Imported, Cleared, Num};
 use super::{RpcError, Studio};
@@ -388,9 +388,41 @@ fn files_delete(s: &Studio, req: FileName) -> Answer<Deleted> {
     legacy(s, "files.delete", req)
 }
 
+/// A control video made (video.control)
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct Controlled {
+    /// its name in the clips directory: what video.generate's control_video takes
+    pub name: String,
+    /// /out/<name> (the front door links it: /v1/video/files/<name>)
+    pub file: String,
+    /// canny or gray
+    pub control: String,
+    pub width: i64,
+    pub height: i64,
+    /// as asked (17k + 5)
+    pub frames: i64,
+    pub fps: i64,
+    pub seconds: f64,
+    /// the frames the source gave (fewer than frames: its last one held for the rest)
+    pub source_frames: i64,
+    /// the source's whole length
+    pub source_seconds: f64,
+    pub start_s: f64,
+    pub low: f64,
+    pub high: f64,
+    /// seconds it took
+    pub took_s: f64,
+}
+
+/// A clip turned into a ControlNet control video beside the clips (canny edges or its brightness), made while the call waits
+#[rpc(name = "control")]
+fn control(s: &Studio, req: VideoControlReq) -> Answer<Controlled> {
+    legacy(s, "control", req)
+}
+
 rpcgen::rpc_methods![sync Studio, RpcError; status, wait, gpu, summary, engines_list, canvases_list, plan, templates_list, generate, queue_list,
                      queue_pause, queue_resume, queue_clear, cancel, queue_remove, queue_move, llm_mode, scene_export, scene_import, films_list,
-                     timeline, projects_list, jobs_list, jobs_get, files_stat, files_delete];
+                     timeline, projects_list, jobs_list, jobs_get, files_stat, files_delete, control];
 
 /// The table, made once
 pub fn table() -> &'static [rpcgen::SyncMethod<Studio, RpcError>] {

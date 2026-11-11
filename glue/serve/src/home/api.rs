@@ -46,6 +46,8 @@ const FEATURES: &[&str] = &[
     "system.drives", "system.move",
     // 2026-11-02: H3's `speed` (pika-flex); a job's `title`; YuE2: a plan-only run, `truncated` on the answer's run, seconds to 900
     "video.speed", "video.multi_guide", "jobs.title", "audio.yue2.plan_only", "audio.truncated",
+    // 2026-11-11: video.control - a clip turned into a ControlNet control video (canny edges, gray), for control_video
+    "video.control", "video.control.canny", "video.control.gray",
     // 2026-11-11: a picture to the prompt that draws it (a chat model's vision tower); think_budget 0 on the chat routes
     "image.describe", "llm.think_budget",
     // 2026-11-11: image.describe's describer (best, native or an id) and image.describers: the image models' own text

@@ -47,8 +47,11 @@ non_diegetic_music: <a score the people in the scene cannot hear, or "None.">
   `The dancer from <Picture 1> moves as in <Video 1>, speaking in the voice of <Audio 2>.`
 - Effects: `embedding:minimaxh3_bullet_time` (also art_is_explosion, blooming_flowers, dark_magic, fire_breath,
   four_seasons, kiss_camera, spiral_ascent, storm_magic, truman_show) where the effect should happen.
-- `control_video` (canny / depth / HED / MLSD / pose frames) the clip follows; `control_mask` + `control_source`
-  regenerate the white part of the mask: describe the whole result.
+- `control_video` (canny / depth / HED / MLSD / pose / gray frames) the clip follows; `control_mask` + `control_source`
+  regenerate the white part of the mask: describe the whole result. `video.control {file, control: canny | gray,
+  width, height, frames}` makes the control video from any clip (a phone or webcam take, `video.upload` it) at the
+  clip's canvas and length; `control_strength` 1 is the strongest (the published results), lower loosens it, and
+  `control_end` below 1 lets the last steps go their own way. The prompt still describes the whole clip.
 - Steps: 8 for a draft, 12-20 when dialogue or motion matter. Canvases: 768x576 is the house size; 4-15 s.
 - `soundtrack` + `soundtrack_start` (a song, `video.upload`): the clip's length of it from that second is held under
   the whole clip as an audio keyframe and the picture is made to it - describe someone singing it, with the lines

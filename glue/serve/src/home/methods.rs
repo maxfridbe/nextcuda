@@ -2516,6 +2516,57 @@ pub struct VideoUploadReq {
     pub rest: serde_json::Map<String, serde_json::Value>,
 }
 
+/// A control signal H3's Fun ControlNet-Union steers by
+#[derive(Deserialize, Serialize, Rpc, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ControlKind {
+    /// edges, white on black (OpenCV's Canny: thresholds low / high)
+    Canny,
+    /// the clip's brightness (the 2.0 checkpoint's gray control: recolouring)
+    Gray,
+    /// a depth map, near bright (an estimator's: Depth Anything)
+    Depth,
+    /// a body-pose skeleton (an estimator's: DWPose)
+    Pose,
+}
+
+/// What video.control takes.
+#[derive(Deserialize, Serialize, Rpc)]
+#[allow(non_snake_case)]
+pub struct VideoControlReq {
+    /// the clip to read: a file in the clips directory (video.upload it - MP4, WebM, MOV, MKV - or a finished clip's name)
+    pub file: String,
+    /// what to make of it (default canny); the ones this box makes are its features video.control.<control> - the rest are refused (400)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<ControlKind>,
+    /// the canvas the clip will be made at (the source is scaled to cover it and cut in the middle, as video.generate does with a control video); none: the source's aspect at about 768 x 576
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 256, max = 1344)]
+    pub width: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 256, max = 1344)]
+    pub height: Option<i64>,
+    /// the clip's length in frames at 24 fps (17k + 5, 22-362); none: the most the source has from start_s. A shorter source holds its last frame
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 22, max = 362)]
+    pub frames: Option<i64>,
+    /// seconds into the source to start from
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0, default = 0)]
+    pub start_s: Option<f64>,
+    /// canny: the lower threshold on the gradient's size (cv2.Canny's, 0-255 pictures): weaker edges are dropped unless joined to a strong one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0, max = 1000, default = 100)]
+    pub low: Option<f64>,
+    /// canny: the upper threshold: stronger edges are always kept
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0, max = 1000, default = 200)]
+    pub high: Option<f64>,
+    /// what else the caller sent: passed on as it came
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
 /// What video.describePromptGuideMD takes.
 #[derive(Deserialize, Serialize, Rpc)]
 #[allow(non_snake_case)]
@@ -3181,6 +3232,12 @@ fn video_upload(h: &Arc<Home>, req: VideoUploadReq) -> Answer {
     h.legacy("video.upload", req)
 }
 
+/// A clip turned into a ControlNet control video for video.generate's control_video: canny edges or its brightness (gray), at the clip's canvas and length (24 fps, scaled to cover, a short source's last frame held), made on the CPU while the call waits (seconds). The answer names the file beside the clips (control_video takes the name; system.files.delete removes it) and links it
+#[rpc(name = "video.control", tags = "video", example = r#"{"control": "canny", "file": "ref_1792400000_take.webm", "frames": 124, "height": 576, "width": 768}"#)]
+fn video_control(h: &Arc<Home>, req: VideoControlReq) -> Answer {
+    h.legacy("video.control", req)
+}
+
 /// How to prompt the model, as Markdown
 #[rpc(name = "video.describePromptGuideMD", tags = "video", example = r#"{"model": "minimax-h3"}"#)]
 fn video_describe_prompt_guide_md(h: &Arc<Home>, req: VideoDescribePromptGuideMdReq) -> Answer {
@@ -3204,7 +3261,7 @@ rpcgen::rpc_methods![sync Arc<Home>, RpcFail;
     model3d_upload, model3d_cancel, model3d_describe_prompt_guide_md, video_generate, video_status, video_wait,
     video_cancel, video_queue_list, video_queue_move, video_queue_remove, video_queue_pause, video_queue_resume,
     video_queue_clear, video_jobs_list, video_jobs_get, video_timeline, video_projects_list, video_films_list,
-    video_templates_list, video_engines_list, video_canvases_list, video_summary, video_upload, video_describe_prompt_guide_md,
+    video_templates_list, video_engines_list, video_canvases_list, video_summary, video_upload, video_control, video_describe_prompt_guide_md,
 ];
 
 #[cfg(test)]
