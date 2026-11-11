@@ -189,7 +189,7 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
         }
         "image" => {
             let mut c = vec!["generate", "edit", "compose", "img2img", "loras"];
-            if m["env"]["NS_QI_SIGMAS"].is_string() {
+            if m["env"]["NS_QI_SIGMAS"].is_string() || m["files"]["turbo-lora"].is_string() {
                 c.push("few_step");
             }
             // its text encoder reads pictures: image.describe's describer "native" (describe.rs NATIVES)

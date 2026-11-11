@@ -337,8 +337,9 @@ impl Blocks {
 
     /// All the blocks over several cards (nextcuda: a 12 GB pair holds what one 32 GB card did): the first card takes
     /// blocks while it has the room beyond `reserve[d]` bytes kept for the run's buffers, then the next. Fails when
-    /// they do not fit - nothing is streamed.
-    pub fn load_split(devs: &[Arc<Device>], ck: &Checkpoint, reserve: &[u64], threads: usize) -> Result<Blocks> {
+    /// they do not fit - nothing is streamed. `side[i]`: bytes that ride beside block `i` on its card once it is placed
+    /// (a LoRA's matrices; empty: none)
+    pub fn load_split(devs: &[Arc<Device>], ck: &Checkpoint, reserve: &[u64], side: &[u64], threads: usize) -> Result<Blocks> {
         let cfg = Config::from_checkpoint(ck)?;
         let n = cfg.blocks;
         if devs.len() < 2 {
@@ -353,7 +354,8 @@ impl Blocks {
         // the cards left the same room beside the blocks (each at least its reserve): filling the first card to its
         // reserve left the 5070 2 GiB for a clip's buffers (a 10 s pass at 384x288, 8,600 tokens, did not get them)
         // while the 3060 kept 6
-        let total: u64 = (0..n).map(|j| Self::block_bytes(ck, "blocks", j)).sum();
+        let bytes = |j: usize| Self::block_bytes(ck, "blocks", j) + side.get(j).copied().unwrap_or(0);
+        let total: u64 = (0..n).map(bytes).sum();
         let extra = room.iter().sum::<u64>().saturating_sub(total) / devs.len() as u64;
         let last = devs.len() - 1;
         for (di, r) in room.iter_mut().enumerate() {
@@ -364,12 +366,11 @@ impl Blocks {
         let mut dev_of = Vec::with_capacity(n);
         let mut d = 0;
         for i in 0..n {
-            let b = Self::block_bytes(ck, "blocks", i);
+            let b = bytes(i);
             while d < devs.len() && b > room[d] {
                 d += 1;
             }
             if d == devs.len() {
-                let total: u64 = (0..n).map(|j| Self::block_bytes(ck, "blocks", j)).sum();
                 return Err(Error(format!("the denoiser's blocks ({:.1} GiB) do not fit on {}: block {i} has no card (a smaller quantization, or fewer seconds)",
                                          total as f64 / 1073741824.0, devs.iter().map(|d| d.name()).collect::<Vec<_>>().join(" + "))));
             }

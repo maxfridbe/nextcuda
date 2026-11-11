@@ -16,6 +16,14 @@
 //! On two 12 GB cards (an RTX 5070 and an RTX 3060): the denoiser (vantagewithai's Q4_K_M GGUF of Pruna's weights)
 //! split over both, the text encoder (Q8_0) and the decoder (int8 ConvRot) resident on the second - every weight on a
 //! card, nothing streamed. The prompt upsampler (Qwen3.5-9B) is not run: prompts are rendered as written.
+//!
+//! A `turbo-lora` file (the card p-h3-image-pdmd2: pDMD's 2-NFE LoRA, rank 128 on every block's four linears and the
+//! text refiner's) rides beside the Q4_K blocks as low-rank side paths - `out += B (A x)`, bfloat16, resident on each
+//! block's card - rather than merged: a merge would expand each Q4_K matrix, add and quantize again, and 4-bit steps
+//! are coarser than most of the delta. With it the grid is the flow's shift 12 over N + 1 even levels (2 steps:
+//! 1, 0.923, 0), no guidance, about 1 MP. An edit's strength below 1 starts from the first picture, encoded and noised
+//! to that level (`(1 - s0) z + s0 noise`; pDMD's edit pass keeps the picture at s0 0.4 to 0.55), as a plain img2img
+//! (reference false) or with the pictures also the edit's references.
 
 pub mod check;
 pub mod connector;
@@ -30,9 +38,10 @@ use nextcuda_h3::device::{Device, Tensor};
 use nextcuda_h3::dtype::DType;
 use nextcuda_h3::gguf::{GType, Gguf};
 use nextcuda_h3::jobs;
+use nextcuda_h3::lora::{self, LoraSet};
 use nextcuda_h3::safetensors::Checkpoint;
 use nextcuda_h3::te::{Resident, TextEncoder};
-use nextcuda_h3::vision::{Frames, Piece};
+use nextcuda_h3::vision::{Frames, Piece, Presented};
 use nextcuda_image::{At, Defaults, EngineOption, Error, Gpu, ImageEngine, ImageKind, ImageRequest, LoadOptions, ModelFiles, Picture, Result, Sampler,
                      Schedule as Sched, SizePresets, Step};
 
@@ -75,6 +84,20 @@ const PIXELS: &[u32] = &[1_048_576, 4_194_304, 8_388_608];
 pub const MAX_PIXELS: u32 = 8_912_896;
 /// The steps: the checkpoint's grid has 8; another grid comes as `options.sigmas`
 pub const STEPS: u32 = 8;
+/// a few-step LoRA's file role (pDMD 2-NFE), resident beside the blocks
+pub const TURBO: &str = "turbo-lora";
+/// with it: the flow's shift, the default steps and the most a request may ask for (on the same grid)
+pub const TURBO_SHIFT: f32 = 12.0;
+pub const TURBO_STEPS: u32 = 2;
+pub const TURBO_MAX_STEPS: u32 = 8;
+/// with it: the canvas an edit takes when none is asked, and its pictures' size for the denoiser (about 1 MP: a live
+/// editor's frame)
+const TURBO_PIXELS: f64 = 1_048_576.0;
+/// conditionings and pictures kept for the next requests (a live editor sends the same picture with a prompt typed on)
+const KEEP_CONDS: usize = 16;
+/// with it: the room kept on each card beside the blocks (NC_PH3_RESERVE_GIB; 2 without it)
+const TURBO_RESERVE_GIB: f64 = 1.5;
+const KEEP_PICS: usize = 2;
 
 /// A request's options: another sampling grid than the checkpoint's
 pub const OPTIONS: &[EngineOption] = &[EngineOption {
@@ -101,6 +124,8 @@ pub fn kind() -> ImageKind {
 fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<Box<dyn ImageEngine>> {
     let reserve = match o.setting("NC_PH3_RESERVE_GIB") {
         Some(v) => v.trim().parse::<f64>().ok().filter(|g| (0.5..=8.0).contains(g)).ok_or_else(|| Error(format!("NC_PH3_RESERVE_GIB={v}: GiB, 0.5 to 8")))?,
+        // a turbo entry runs about 1 MP: less kept for the buffers, room for the LoRA beside the blocks
+        None if files.contains_key(TURBO) => TURBO_RESERVE_GIB,
         None => 2.0,
     };
     Ok(Box::new(PH3Image::load(files, gpus, (reserve * (1u64 << 30) as f64) as u64, log).map_err(ie)?))
@@ -166,6 +191,23 @@ pub fn edit_prompt(prompt: &str) -> String {
     if lead.starts_with("Edit <Picture 1>.") || lead.starts_with("subject_definitions:") { prompt.to_string() } else { format!("Edit <Picture 1>. {prompt}") }
 }
 
+/// The few-step grid: `steps` + 1 even levels of t from `top` down to 0 through the flow's shift (diffusers'
+/// set_shift(12), set_timesteps(steps + 1)); `top` is a level already shifted (1, or an img2img's start)
+pub fn shift_grid(steps: u32, shift: f32, top: f32) -> Vec<f32> {
+    let n = steps.max(1);
+    // the t whose shifted level is `top`
+    let t0 = top / (shift - (shift - 1.0) * top);
+    let mut s: Vec<f32> = (0..n).map(|i| denoiser::shifted(t0 * (1.0 - i as f32 / n as f32), shift)).collect();
+    s[0] = top;
+    s.push(0.0);
+    s
+}
+
+/// A grid started at `s0` (an img2img's strength): `s0`, then the grid's levels below it
+pub fn start_at(grid: &[f32], s0: f32) -> Vec<f32> {
+    std::iter::once(s0).chain(grid.iter().copied().filter(|s| *s < s0)).collect()
+}
+
 /// A request's own grid (`options.sigmas`): strictly decreasing, at most 1, ending at 0, used as written (as the
 /// scheduler takes given sigmas: no shift)
 pub fn parse_sigmas(v: &str) -> std::result::Result<Vec<f32>, String> {
@@ -206,8 +248,43 @@ pub struct PH3Image {
     loaded: Instant,
     load_s: f64,
     busy: Mutex<()>,
-    /// the last prompts' conditioning (text to image): [L, 5120]
-    conds: Mutex<Vec<(String, Arc<Vec<f32>>)>>,
+    /// the turbo LoRA's side paths on the blocks and the text refiner, resident (the `turbo-lora` file)
+    lora: Option<LoraSet>,
+    /// the last conditionings, newest last: by prompt (text to image) or pictures and prompt (an edit)
+    conds: Mutex<Vec<(String, Arc<Cond>)>>,
+    /// the last edits' pictures, newest last
+    pics: Mutex<Vec<Arc<PicSet>>>,
+}
+
+/// A prompt's conditioning: the connector's [L, 5120], the tokens' modality tags (with pictures in it) and, once a
+/// picture has been made from it, the text refiner's tokens (bfloat16 bytes [L, hidden]: the refiner is loaded only
+/// for a new prompt)
+struct Cond {
+    ctx: Vec<f32>,
+    tags: Option<Vec<i32>>,
+    refined: Mutex<Option<Arc<Vec<u8>>>>,
+}
+
+/// What an edit's pictures give every prompt about them: their latents for the denoiser, their presentation to the
+/// text encoder up to the instruction (the vision tower's tokens) and the canvas; an img2img's start, encoded once
+struct PicSet {
+    key: u64,
+    refs: Vec<Encoded>,
+    prefix: Option<Presented>,
+    canvas: (u32, u32),
+    start: Mutex<Option<Arc<Vec<f32>>>>,
+}
+
+/// The pictures of a request and what is asked of them, as one number
+fn pics_key(pics: &[&Picture], size: Option<(u32, u32)>, condition: bool) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (size, condition, pics.len()).hash(&mut h);
+    for p in pics {
+        (p.width, p.height, p.channels).hash(&mut h);
+        p.data.hash(&mut h);
+    }
+    h.finish()
 }
 
 /// The tensors of a GGUF under `prefix` that are stored as floats, as a safetensors-style table over the same file
@@ -263,21 +340,65 @@ impl PH3Image {
             return Err("the text connector's width is not the denoiser's text width".into());
         }
         e.reserve = reserve;
+        // the turbo LoRA's matrices are counted beside each block when the blocks are placed over the cards
+        let turbo = files.get(TURBO).map(|p| Checkpoint::open(p)).transpose()?;
+        if let Some(ck) = &turbo {
+            e.side = (0..e.cfg.blocks).map(|i| lora::block_bytes(ck, "blocks", i)).collect();
+        }
         let t1 = Instant::now();
         let b = e.blocks()?;
         let place: Vec<String> = devs.iter().enumerate().map(|(d, dev)| format!("{} on {}", b.dev_of.iter().filter(|x| **x == d).count(), dev.name())).collect();
         log(format!("blocks : {} ({:.2} GiB) in {:.1} s: {}", b.blocks.len(), gib(b.load_bytes), t1.elapsed().as_secs_f64(), place.join(", ")));
+        let lora = match &turbo {
+            Some(ck) => {
+                let t1 = Instant::now();
+                let l = LoraSet::load_placed(&b.devs, &|i| b.card_of(i), ck, 1.0, b.blocks.len(), 2)?;
+                let want = 4 * (b.blocks.len() + 2);
+                if l.layers != want {
+                    return Err(nextcuda_h3::Error(format!("{}: {} of the {want} layers it should hold (every block's and the text refiner's four linears)",
+                                                          ck.path.display(), l.layers)));
+                }
+                log(format!("lora   : {} ({} layers, rank {}, {:.2} GiB) in {:.1} s", ck.path.display(), l.layers, l.max_rank,
+                            gib(e.side.iter().sum()), t1.elapsed().as_secs_f64()));
+                Some(l)
+            }
+            None => None,
+        };
+        drop(b);
         for d in &devs {
             log(format!("memory : {} holds {:.2} GiB of its {:.2}", d.name(), gib(d.mem_used()), gib(d.mem_cap())));
         }
         Ok(PH3Image { e, te, resident, final_norm, connector, vae, vae_path, tower, tok, te_dev, loaded: Instant::now(), load_s: t0.elapsed().as_secs_f64(),
-                      busy: Mutex::new(()), conds: Mutex::new(Vec::new()) })
+                      busy: Mutex::new(()), lora, conds: Mutex::new(Vec::new()), pics: Mutex::new(Vec::new()) })
+    }
+
+    fn turbo(&self) -> bool {
+        self.lora.is_some()
+    }
+
+    /// A conditioning from the last few kept, else made by `make` and kept
+    fn cond_cached(&self, key: String, make: &mut dyn FnMut() -> nextcuda_h3::Result<(Vec<f32>, Option<Vec<i32>>)>) -> nextcuda_h3::Result<Arc<Cond>> {
+        if let Some((_, c)) = self.conds.lock().unwrap().iter().find(|(k, _)| *k == key) {
+            return Ok(c.clone());
+        }
+        let (ctx, tags) = make()?;
+        let c = Arc::new(Cond { ctx, tags, refined: Mutex::new(None) });
+        let mut list = self.conds.lock().unwrap();
+        list.push((key, c.clone()));
+        if list.len() > KEEP_CONDS {
+            list.remove(0);
+        }
+        Ok(c)
     }
 
     /// The prompt's pieces through the text encoder and the connector: the conditioning [L, 5120] and, with pictures in
     /// it, each token's modality tag (a vision block's tokens run on the video tables)
     fn condition(&self, pieces: &[Piece], log: &mut dyn FnMut(String)) -> nextcuda_h3::Result<(Vec<f32>, Option<Vec<i32>>)> {
         let presented = nextcuda_h3::vision::present_with(pieces, &self.tok, Some((&self.tower, "model.visual.")), None, self.e.dev.index, log)?;
+        self.encode(&presented)
+    }
+
+    fn encode(&self, presented: &Presented) -> nextcuda_h3::Result<(Vec<f32>, Option<Vec<i32>>)> {
         let taps = self.te.encode_resident_taps(&self.resident, &presented.ids, &presented.seen, &presented.embeds, &TAPS, Some(&self.final_norm),
                                                 &mut |_| Ok(()))?;
         let ctx = self.connector.forward(&taps)?;
@@ -285,42 +406,104 @@ impl PH3Image {
     }
 
     /// A text-to-image prompt's conditioning, from the last few kept
-    fn prompt_condition(&self, prompt: &str, log: &mut dyn FnMut(String)) -> nextcuda_h3::Result<Arc<Vec<f32>>> {
-        if let Some((_, c)) = self.conds.lock().unwrap().iter().find(|(p, _)| p == prompt) {
-            return Ok(c.clone());
+    fn prompt_condition(&self, prompt: &str, log: &mut dyn FnMut(String)) -> nextcuda_h3::Result<Arc<Cond>> {
+        self.cond_cached(format!("t2i\u{0}{prompt}"), &mut || self.condition(&[Piece::Text(prompt.to_string())], log))
+    }
+
+    /// An edit's conditioning: its pictures' presentation (kept) with the instruction's tokens after it - the encoder is
+    /// causal and the instruction comes last, so this is the whole prompt's presentation, the tower not run again
+    fn edit_condition(&self, set: &PicSet, prompt: &str) -> nextcuda_h3::Result<Arc<Cond>> {
+        let prefix = set.prefix.as_ref().ok_or("an edit's pictures were kept without their presentation")?;
+        self.cond_cached(format!("edit\u{0}{:x}\u{0}{prompt}", set.key), &mut || {
+            let ids = self.tok.encode(&edit_prompt(prompt))?;
+            let mut p = Presented { ids: prefix.ids.clone(), tags: prefix.tags.clone(), seen: Vec::new(), embeds: Vec::new() };
+            p.tags.extend(std::iter::repeat_n(1, ids.len()));
+            p.ids.extend(ids);
+            // the tower's tokens borrowed for the encode, not copied
+            let taps = self.te.encode_resident_taps(&self.resident, &p.ids, &prefix.seen, &prefix.embeds, &TAPS, Some(&self.final_norm), &mut |_| Ok(()))?;
+            Ok((self.connector.forward(&taps)?, Some(p.tags)))
+        })
+    }
+
+    /// An edit's pictures, from the last few kept, else encoded (and kept): with `condition` their latents as the
+    /// edit's references and their presentation; the canvas (`size`, else the first picture's)
+    fn pic_set(&self, pics: &[&Picture], size: Option<(u32, u32)>, condition: bool, log: &mut dyn FnMut(String)) -> nextcuda_h3::Result<Arc<PicSet>> {
+        let key = pics_key(pics, size, condition);
+        if let Some(s) = self.pics.lock().unwrap().iter().find(|s| s.key == key) {
+            log(format!("{ARCH}: the pictures as kept from the last request"));
+            return Ok(s.clone());
         }
-        let (c, _) = self.condition(&[Piece::Text(prompt.to_string())], log)?;
-        let c = Arc::new(c);
-        let mut list = self.conds.lock().unwrap();
-        list.push((prompt.to_string(), c.clone()));
-        if list.len() > 8 {
+        let set = Arc::new(match condition {
+            true => {
+                let (refs, mut pieces, canvas) = self.edit_inputs(pics, size, log)?;
+                pieces.pop();
+                let prefix = nextcuda_h3::vision::present_with(&pieces, &self.tok, Some((&self.tower, "model.visual.")), None, self.e.dev.index, log)?;
+                PicSet { key, refs, prefix: Some(prefix), canvas, start: Mutex::new(None) }
+            }
+            false => {
+                let canvas = size.unwrap_or_else(|| if self.turbo() { size_at_area(pics[0].width, pics[0].height, TURBO_PIXELS) }
+                                                     else { size_in_area_range(pics[0].width, pics[0].height, CANVAS_MIN, REF_MAX) });
+                PicSet { key, refs: Vec::new(), prefix: None, canvas, start: Mutex::new(None) }
+            }
+        });
+        let mut list = self.pics.lock().unwrap();
+        list.push(set.clone());
+        if list.len() > KEEP_PICS {
             list.remove(0);
         }
-        Ok(c)
+        Ok(set)
+    }
+
+    /// An img2img's start: the first picture's latents at the canvas (the first reference's when it is that size)
+    fn start_latent(&self, set: &PicSet, first: &Picture) -> nextcuda_h3::Result<Arc<Vec<f32>>> {
+        let mut s = set.start.lock().unwrap();
+        if let Some(z) = s.as_ref() {
+            return Ok(z.clone());
+        }
+        let (w, h) = set.canvas;
+        let z = match set.refs.first().filter(|r| (r.w * 16, r.h * 16) == (w as usize, h as usize)) {
+            Some(r) => r.latent.clone(),
+            None => {
+                let venc = nextcuda_h3::venc::VideoEncoder::load(&self.te_dev, &Checkpoint::open(&self.vae_path)?)?;
+                venc.encode_sampled(&pixels_at(first, (w, h)), h as usize, w as usize, ENCODE_SEED, &mut || Ok(()))?
+            }
+        };
+        let z = Arc::new(z);
+        *s = Some(z.clone());
+        Ok(z)
     }
 
     /// One picture: the denoiser over `refs` and the text, the starting noise and the references' augmentation from
     /// one torch generator seeded `seed` (as diffusers draws them: each reference's noise, then the picture's, then the
-    /// audio's), Euler over `sig`, the decoder. RGB float32 [3, H, W] in [0, 1].
+    /// audio's), Euler over `sig`, the decoder. RGB float32 [3, H, W] in [0, 1]. `start`: an img2img's latents, noised
+    /// to `sig[0]` with the picture's noise. `tick(Some(i))` after step i, `tick(None)` between blocks and stages (where
+    /// a cancel stops it).
     #[allow(clippy::too_many_arguments)]
-    fn picture(&self, ctx: &[f32], tags: Option<&Vec<i32>>, refs: &[Encoded], (w, h): (usize, usize), seed: u64, sig: &[f32],
-               step: &mut dyn FnMut(usize) -> Result<()>) -> nextcuda_h3::Result<Vec<f32>> {
+    fn picture(&self, cond: &Cond, refs: &[Encoded], (w, h): (usize, usize), seed: u64, sig: &[f32], start: Option<&[f32]>,
+               tick: &mut dyn FnMut(Option<usize>) -> Result<()>) -> nextcuda_h3::Result<Vec<f32>> {
         let e = &self.e;
         let model = e.blocks()?;
-        let l = ctx.len() / self.connector.out;
-        let text = {
-            let refiner = TextRefiner::load(&e.dev, &e.ck, e.threads)?;
-            let t = Tensor::from_bytes(&e.dev, DType::BF16, &[l, self.connector.out], &denoiser::bf16_bytes(ctx))?;
-            let r = refiner.run(&e.cfg, &t, None)?;
-            e.dev.wait()?;
-            r
+        let l = cond.ctx.len() / self.connector.out;
+        let refined = cond.refined.lock().unwrap().clone();
+        let text = match refined {
+            Some(b) => Tensor::from_bytes(&e.dev, DType::BF16, &[l, e.cfg.hidden], &b)?,
+            None => {
+                let refiner = TextRefiner::load(&e.dev, &e.ck, e.threads)?;
+                let t = Tensor::from_bytes(&e.dev, DType::BF16, &[l, self.connector.out], &denoiser::bf16_bytes(&cond.ctx))?;
+                let r = refiner.run(&e.cfg, &t, self.lora.as_ref().map(|x| x.refiner.as_slice()))?;
+                e.dev.wait()?;
+                *cond.refined.lock().unwrap() = Some(Arc::new(denoiser::bf16_bytes(&r.to_f32()?)));
+                r
+            }
         };
+        let ie = |x: Error| nextcuda_h3::Error(x.0);
+        tick(None).map_err(ie)?;
         let mut g = nextcuda_h3::noise::Mt19937::new(seed);
-        let mut cond = Conditions { seed, visual_aug: NOISE_AUG, mixed: true, ..Conditions::default() };
+        let mut c = Conditions { seed, visual_aug: NOISE_AUG, mixed: true, ..Conditions::default() };
         for r in refs {
             let n = g.randn(r.latent.len());
             let latent = r.latent.iter().zip(&n).map(|(z, n)| NOISE_AUG * z + (1.0 - NOISE_AUG) * n).collect();
-            cond.refs.push(RefIn::Image { latent, h: r.h, w: r.w });
+            c.refs.push(RefIn::Image { latent, h: r.h, w: r.w });
         }
         let shape = Shape { t: 1, h: h / 16, w: w / 16, audio_t: AUDIO_T };
         let noise_v = g.randn(24 * shape.h * shape.w);
@@ -328,31 +511,43 @@ impl PH3Image {
         let rows = g.randn(2 * AUDIO_T * e.outer.audio_c);
         let mut noise_a = vec![0f32; rows.len()];
         for r in 0..2 * AUDIO_T {
-            for c in 0..e.outer.audio_c {
-                noise_a[c * 2 * AUDIO_T + r] = rows[r * e.outer.audio_c + c];
+            for ch in 0..e.outer.audio_c {
+                noise_a[ch * 2 * AUDIO_T + r] = rows[r * e.outer.audio_c + ch];
             }
         }
         // the audio steps down the same grid as the picture, unscaled (diffusers' audio_scheduler, also unshifted)
         let schedule = Schedule { shift_video: 1.0, shift_audio: 1.0, audio_scale: 1.0 };
-        let mut d = Denoiser::new(&model, &e.outer, text, tags.cloned(), shape, schedule, &cond)?;
-        let (v, _) = denoiser::sample_masked(&mut d, &noise_v, &noise_a, sig, None, &mut |i, _, _| step(i).map_err(|x| nextcuda_h3::Error(x.0)),
-                                             &mut |_, _| Ok(()))?;
+        let mut d = Denoiser::new(&model, &e.outer, text, cond.tags.clone(), shape, schedule, &c)?;
+        d.lora = self.lora.as_ref();
+        let s0 = sig[0];
+        let xv: Vec<f32> = match start {
+            Some(z) if z.len() == noise_v.len() => z.iter().zip(&noise_v).map(|(z, n)| (1.0 - s0) * z + s0 * n).collect(),
+            Some(z) => return Err(nextcuda_h3::Error(format!("an img2img start of {} latents for a {w}x{h} canvas", z.len()))),
+            None => noise_v.iter().map(|n| n * s0).collect(),
+        };
+        let xa: Vec<f32> = noise_a.iter().map(|n| n * s0).collect();
+        let tick = std::cell::RefCell::new(tick);
+        let (v, _) = denoiser::sample_from(&mut d, xv, xa, &noise_v, sig, None, &mut |i, _, _| (tick.borrow_mut())(Some(i)).map_err(ie),
+                                           &mut |_, b| if b % 10 == 9 { (tick.borrow_mut())(None).map_err(ie) } else { Ok(()) })?;
         drop(d);
         drop(model);
+        (tick.borrow_mut())(None).map_err(ie)?;
         let (px, _) = self.vae.decode(&v, 1, shape.h, shape.w, &mut || Ok(()))?;
         Ok(px)
     }
 
     /// An edit's pictures: their latents for the denoiser (at their own sizes, sampled as diffusers encodes them) and
-    /// their prompt pieces for the text encoder; the canvas (`size`, else the first picture's at 4 to 8 MP)
+    /// their prompt pieces for the text encoder up to the instruction; the canvas (`size`, else the first picture's at
+    /// 4 to 8 MP - with the turbo LoRA about 1 MP, the pictures too)
     #[allow(clippy::type_complexity)]
-    fn edit_inputs(&self, pics: &[&Picture], prompt: &str, size: Option<(u32, u32)>, log: &mut dyn FnMut(String))
+    fn edit_inputs(&self, pics: &[&Picture], size: Option<(u32, u32)>, log: &mut dyn FnMut(String))
                    -> nextcuda_h3::Result<(Vec<Encoded>, Vec<Piece>, (u32, u32))> {
-        let mut ref_sizes: Vec<(u32, u32)> = pics.iter().map(|p| size_in_area_range(p.width, p.height, REF_MIN, REF_MAX)).collect();
+        let (lo, hi, canvas_lo) = if self.turbo() { (TURBO_PIXELS, TURBO_PIXELS, TURBO_PIXELS) } else { (REF_MIN, REF_MAX, CANVAS_MIN.max(REF_MIN)) };
+        let mut ref_sizes: Vec<(u32, u32)> = pics.iter().map(|p| size_in_area_range(p.width, p.height, lo, hi)).collect();
         let canvas = match size {
             Some(s) => s,
             None => {
-                ref_sizes[0] = size_in_area_range(pics[0].width, pics[0].height, CANVAS_MIN.max(REF_MIN), REF_MAX);
+                ref_sizes[0] = size_in_area_range(pics[0].width, pics[0].height, canvas_lo, hi);
                 ref_sizes[0]
             }
         };
@@ -368,7 +563,6 @@ impl PH3Image {
             pieces.push(Piece::Text(format!("<Picture {}>: ", i + 1)));
             pieces.push(Piece::Vision(Frames { frames: vec![pixels_at(p, vs)], w: vs.0 as usize, h: vs.1 as usize }));
         }
-        pieces.push(Piece::Text(edit_prompt(prompt)));
         Ok((refs, pieces, canvas))
     }
 }
@@ -378,7 +572,10 @@ impl ImageEngine for PH3Image {
         ARCH
     }
     fn defaults(&self) -> Defaults {
-        Defaults { width: 2912, height: 2912, steps: STEPS, cfg: 1.0, sampler: Sampler::Euler, schedule: Sched::Shift, shift: 1.0 }
+        match self.turbo() {
+            true => Defaults { width: 1024, height: 1024, steps: TURBO_STEPS, cfg: 1.0, sampler: Sampler::Euler, schedule: Sched::Shift, shift: TURBO_SHIFT },
+            false => Defaults { width: 2912, height: 2912, steps: STEPS, cfg: 1.0, sampler: Sampler::Euler, schedule: Sched::Shift, shift: 1.0 },
+        }
     }
     fn edits(&self) -> bool {
         true
@@ -417,18 +614,20 @@ impl ImageEngine for PH3Image {
     fn options(&self) -> &'static [EngineOption] {
         OPTIONS
     }
-    /// 8 steps (the checkpoint's grid); another count is refused, another grid comes as options.sigmas
+    /// 8 steps (the checkpoint's grid); another count is refused, another grid comes as options.sigmas. With the turbo
+    /// LoRA 1 to 8 on its shifted grid (2 by default)
     fn steps_free(&self) -> bool {
-        false
+        self.turbo()
     }
     fn rendered_prompt(&self, req: &ImageRequest) -> String {
-        match req.edit {
-            Some(_) => edit_prompt(&req.prompt),
-            None => req.prompt.clone(),
+        match &req.edit {
+            Some(ed) if ed.condition => edit_prompt(&req.prompt),
+            _ => req.prompt.clone(),
         }
     }
     fn steps_for(&self, req: &ImageRequest) -> u32 {
-        req.extra.get("sigmas").and_then(|v| parse_sigmas(v).ok()).map_or(STEPS, |s| s.len() as u32 - 1)
+        let own = if self.turbo() { req.steps.unwrap_or(TURBO_STEPS) } else { STEPS };
+        req.extra.get("sigmas").and_then(|v| parse_sigmas(v).ok()).map_or(own, |s| s.len() as u32 - 1)
     }
 
     fn generate(&self, req: &ImageRequest, progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Vec<Picture>> {
@@ -436,7 +635,7 @@ impl ImageEngine for PH3Image {
         let t0 = Instant::now();
         let d = self.defaults();
         if req.negative.is_some() {
-            return Err(Error(format!("{ARCH} takes no negative prompt: it is guidance-distilled (8 steps, one pass a step, no CFG)")));
+            return Err(Error(format!("{ARCH} takes no negative prompt: it is guidance-distilled (one pass a step, no CFG)")));
         }
         if req.cfg.is_some_and(|c| c != 1.0) {
             return Err(Error(format!("{ARCH} takes no cfg (guidance scale): it is guidance-distilled - leave cfg out, or 1")));
@@ -444,16 +643,32 @@ impl ImageEngine for PH3Image {
         if !req.loras.is_empty() {
             return Err(Error(format!("{ARCH} takes no LoRAs")));
         }
-        if req.steps.is_some_and(|s| s != STEPS) {
-            return Err(Error(format!("{ARCH} runs {STEPS} steps (the checkpoint's own sigmas); another grid goes in options.sigmas")));
+        match (self.turbo(), req.steps) {
+            (true, Some(s)) if !(1..=TURBO_MAX_STEPS).contains(&s) => {
+                return Err(Error(format!("{ARCH} with the pDMD LoRA runs 1 to {TURBO_MAX_STEPS} steps on its shift-{TURBO_SHIFT} grid (2 by default)")));
+            }
+            (false, Some(s)) if s != STEPS => {
+                return Err(Error(format!("{ARCH} runs {STEPS} steps (the checkpoint's own sigmas); another grid goes in options.sigmas")));
+            }
+            _ => {}
         }
         if req.sampler.is_some_and(|s| s != Sampler::Euler) {
             return Err(Error(format!("{ARCH} samples with euler only")));
         }
-        let sig = match req.extra.get("sigmas") {
-            Some(v) => parse_sigmas(v).map_err(Error)?,
-            None => SIGMAS.to_vec(),
+        let given = req.extra.get("sigmas").map(|v| parse_sigmas(v)).transpose().map_err(Error)?;
+        let steps = req.steps.unwrap_or(d.steps);
+        // an img2img's start: the edit's strength below 1
+        let s0 = req.edit.as_ref().map(|e| e.strength).filter(|s| *s < 1.0);
+        let sig = match (&given, s0) {
+            (Some(g), None) => g.clone(),
+            (Some(g), Some(s)) => start_at(g, s),
+            (None, s) if self.turbo() => shift_grid(steps, TURBO_SHIFT, s.unwrap_or(1.0)),
+            (None, None) => SIGMAS.to_vec(),
+            (None, Some(s)) => start_at(&SIGMAS, s),
         };
+        if sig.len() < 2 || sig[0] <= 0.0 {
+            return Err(Error(format!("strength {}: no step left on the grid below it", s0.unwrap_or(1.0))));
+        }
         let asked = match (req.width, req.height) {
             (Some(w), Some(h)) => Some(round_canvas(w, h)),
             (None, None) => None,
@@ -467,43 +682,57 @@ impl ImageEngine for PH3Image {
         }
         let of = (sig.len() - 1) as u32;
         let mut log = |l: String| eprintln!("{l}");
-        let (ctx, tags, refs, canvas) = match &req.edit {
-            None => {
-                let c = self.prompt_condition(&req.prompt, &mut log).map_err(ie)?;
-                ((*c).clone(), None, Vec::new(), asked.unwrap_or((d.width, d.height)))
-            }
+        // a cancel is seen between the stages, not only at the steps
+        progress(Step { picture: 0, at: 0, of, seconds: 0.0 })?;
+        let (cond, set) = match &req.edit {
+            None => (self.prompt_condition(&req.prompt, &mut log).map_err(ie)?, None),
             Some(ed) => {
                 if ed.mask.is_some() {
                     return Err(Error(format!("{ARCH} edits by instruction: it takes no mask")));
-                }
-                if ed.strength < 1.0 || !ed.condition {
-                    return Err(Error(format!("{ARCH} edits by instruction from the pictures as references: no img2img (strength below 1, reference false)")));
                 }
                 let pics: Vec<&Picture> = std::iter::once(&ed.image).chain(ed.refs.iter()).collect();
                 if pics.len() > MAX_PICTURES {
                     return Err(Error(format!("an edit takes at most {MAX_PICTURES} pictures, got {}", pics.len())));
                 }
-                let (refs, pieces, canvas) = self.edit_inputs(&pics, &req.prompt, asked, &mut log).map_err(ie)?;
-                let (c, tags) = self.condition(&pieces, &mut log).map_err(ie)?;
-                (c, tags, refs, canvas)
+                if !ed.condition && pics.len() > 1 {
+                    return Err(Error(format!("{ARCH}: a plain img2img (reference false) starts from one picture, got {}", pics.len())));
+                }
+                let set = self.pic_set(&pics, asked, ed.condition, &mut log).map_err(ie)?;
+                progress(Step { picture: 0, at: 0, of, seconds: t0.elapsed().as_secs_f64() })?;
+                let cond = match ed.condition {
+                    true => self.edit_condition(&set, &req.prompt).map_err(ie)?,
+                    false => self.prompt_condition(&req.prompt, &mut log).map_err(ie)?,
+                };
+                (cond, Some(set))
             }
         };
+        let start = match (&set, s0) {
+            (Some(set), Some(_)) => Some(self.start_latent(set, &req.edit.as_ref().ok_or("no edit")?.image).map_err(ie)?),
+            _ => None,
+        };
+        let refs: &[Encoded] = set.as_ref().map_or(&[], |s| s.refs.as_slice());
+        let canvas = set.as_ref().map(|s| s.canvas).or(asked).unwrap_or((d.width, d.height));
         let (w, h) = (canvas.0 as usize, canvas.1 as usize);
-        log(format!("{ARCH}: {w}x{h}, {} text tokens, {} picture(s), {} steps, conditioned in {:.1} s", ctx.len() / self.connector.out, refs.len(), of,
-                    t0.elapsed().as_secs_f64()));
+        log(format!("{ARCH}: {w}x{h}, {} text tokens, {} picture(s), {} steps on {:?}{}, conditioned in {:.2} s", cond.ctx.len() / self.connector.out,
+                    refs.len(), of, sig, if self.turbo() { " (pDMD LoRA)" } else { "" }, t0.elapsed().as_secs_f64()));
         let mut out = Vec::new();
         for p in 0..req.n.max(1) {
             progress(Step { picture: p, at: 0, of, seconds: t0.elapsed().as_secs_f64() })?;
             let tp = Instant::now();
             let mut times = Vec::new();
             let mut last = Instant::now();
-            let mut step = |i: usize| {
-                times.push(last.elapsed().as_secs_f64());
-                last = Instant::now();
-                progress(Step { picture: p, at: i as u32 + 1, of, seconds: t0.elapsed().as_secs_f64() })
+            let mut at = 0u32;
+            let mut tick = |i: Option<usize>| {
+                if let Some(i) = i {
+                    times.push(last.elapsed().as_secs_f64());
+                    last = Instant::now();
+                    at = i as u32 + 1;
+                }
+                progress(Step { picture: p, at, of, seconds: t0.elapsed().as_secs_f64() })
             };
-            let px = self.picture(&ctx, tags.as_ref(), &refs, (w, h), req.seed + p as u64, &sig, &mut step).map_err(|e| Error(nextcuda_image::tag_device_oom(&e.0, None)))?;
-            log(format!("{ARCH}: picture {} in {:.1} s (steps {})", p + 1, tp.elapsed().as_secs_f64(),
+            let px = self.picture(&cond, refs, (w, h), req.seed + p as u64, &sig, start.as_deref().map(|v| v.as_slice()), &mut tick)
+                .map_err(|e| Error(nextcuda_image::tag_device_oom(&e.0, None)))?;
+            log(format!("{ARCH}: picture {} in {:.2} s (steps {})", p + 1, tp.elapsed().as_secs_f64(),
                         times.iter().map(|s| format!("{s:.2}")).collect::<Vec<_>>().join(" ")));
             let plane = w * h;
             let mut data = vec![0u8; plane * 3];
@@ -561,6 +790,23 @@ mod tests {
         assert_eq!(round_canvas(1000, 1000), (992, 992));
         // Python rounds a half to the even neighbour: 2896 / 32 = 90.5 -> 90
         assert_eq!(round_canvas(2912, 2896), (2912, 2880));
+    }
+
+    #[test]
+    fn the_turbo_grid_is_pdmds_and_an_img2img_starts_at_its_strength() {
+        // diffusers' set_shift(12), set_timesteps(3): 1, 12 * 0.5 / (1 + 11 * 0.5), 0
+        let g = shift_grid(2, TURBO_SHIFT, 1.0);
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[0], 1.0);
+        assert!((g[1] - 12.0 / 13.0).abs() < 1e-6);
+        assert_eq!(g[2], 0.0);
+        // from 0.55: the same spacing in t below the start, two steps
+        let s = shift_grid(2, TURBO_SHIFT, 0.55);
+        assert_eq!(s[0], 0.55);
+        assert!(s[1] > 0.3 && s[1] < 0.4, "{s:?}");
+        assert_eq!(s.len(), 3);
+        // the checkpoint's grid from 0.55: 0.55, then its levels below
+        assert_eq!(start_at(&SIGMAS, 0.55), vec![0.55, 0.528718, 0.0]);
     }
 
     #[test]
