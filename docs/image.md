@@ -303,3 +303,44 @@ queue like image.upscale (label, reentrant_id, wait, image.status, image.cancel 
   (2.8 s), 110 written at 55 tok/s (2.0 s). Again (the prompt cached): 2.2 s. For h3, short: 3.2 s (632 / 51 tok/s).
   The describer holds 11.1 GB of the 5070 and 6.0 GB of the 3060 with the picture read. Drawn back with z-image-turbo
   at its suggested 1184 x 880: 12.3 s, the barn, the sign's "FARM", the sun and the hill where they were.
+
+### Who describes: `describer`
+
+`describer` is `best` (the default: the chat model above), `native` (the target's own text encoder) or the id of one
+of `image.describers` - with any target. image.describers lists every describer here: the chat models that read
+pictures and the image models' text encoders that do, each with its name, base model, size, the image models that
+share it, whether it is available (else why) and which one best picks now. Image models whose encoder reads pictures
+say `describe_native` in system.models.
+
+| describer | the files | runs in | on the box |
+|---|---|---|---|
+| `qwen3-vl-8b-instruct` (Qwen-Image's own) | Qwen-Image 2.1's `text-encoder` (Qwen3VL-8B-Instruct Q4_K_M) and `llm-vision` (its F16 mmproj): all four 2.1 cards share them | a 2.1 model's server: the loaded one, else the smallest | 4.35 GiB of weights + 1.1 GiB tower; 6.1 GiB held |
+| `qwen3-vl-4b-instruct` (H3's own) | P-H3-Image's `text-encoder` GGUF: Qwen3-VL-4B whole in transformers' names (36 layers, the final norm, the head tied to the embedding, the 24-block vision tower in bf16), the card's `tokenizer` files | p-h3-image's server | 3.98 GiB of Q8_0 + 0.8 GiB tower; 5.2 GiB held |
+
+- **native**: a target model's own encoder; a family's enabled model with the smallest encoder (a loaded one first,
+  then the least memory). None that reads pictures: invalid_params with field `describer` ("target z-image: its
+  text encoder (Qwen3-4B) does not read pictures; use describer best"); a target model a card offers and not
+  downloaded: model_not_downloaded.
+- **How it runs** (crates/qwen3vl `chat` and `reader`): the encoder's layers over the prompt (the picture's vision
+  tokens at its pads, deepstack, interleaved M-RoPE), keys and values into a half cache, then one row a token on
+  ggml-cuda's MMVQ from the stored blocks (crates/qwen35 `products`), the final norm and the head; the same
+  instruction as the chat describer, no thinking (Qwen3-VL Instruct has none). The image server loads it in place of
+  the pipeline (one or the other on a 12 GB card) and keeps it until the next picture is drawn, which loads the
+  pipeline again; a server the front door starts for a describe (`--describe-first`) loads no pipeline at all.
+  `nextcuda image describe PICTURE --model ID` runs one in a process.
+- **Measured** (2026-11-11, the blob portrait 640 x 352, target qwen-image, medium, the 5070): Qwen3-VL-8B - 436
+  rows read in 0.72 s (604/s with the tower), 115 tokens in 1.25 s (92 tok/s), loaded in 3.2 s; through the front
+  door 7.7 s cold (rrq4's server started), 1.5 s again. Qwen3-VL-4B - 0.57 s (765/s), 147 tokens at 97.5 tok/s,
+  loaded in 4.5 s. Best (Qwen3.8-27B over both cards) on the same picture: 595 rows at 293/s, 114 tokens at 50 tok/s,
+  27.5 s cold (its load), 11.1 + 6.0 GB held.
+
+The other encoders, not built:
+
+- **qwen-image-2512** (Qwen2.5-VL-7B): its card has the language model only; the projector
+  (mmproj-Qwen2.5-VL-7B-Instruct-f16, ~1.35 GB) is a download. Then: the Qwen2.5-VL vision tower moves from
+  image/olmocr2 into the foundation (its windowed attention, 2-D rope, merger), and `chat` takes Qwen2's layer (q/k/v
+  biases, no q/k norm, M-RoPE sections 16/24/24 side by side, theta 1e6, no deepstack); a NATIVES row with roles
+  text-encoder + llm-vision.
+- **moss-image** (Qwen3.5-9B on the qwen35 engine): the engine already writes and has a vision tower
+  (crates/qwen35 `vision`); it needs the 9B's mmproj (a download) and a Describer over Qwen35's session, picture and
+  step - no new decode loop.
