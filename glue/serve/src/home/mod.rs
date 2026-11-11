@@ -23,6 +23,7 @@
 
 mod api;
 mod config;
+mod describe;
 mod disks;
 mod jobs;
 pub(crate) mod life;

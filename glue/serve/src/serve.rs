@@ -7,7 +7,8 @@
 //! GET  /status                 {"busy": bool, "prompt_cache": ...}
 //! POST /v1/chat/completions    messages, max_tokens (none: --max-tokens, else the rest of the context),
 //!                              temperature, top_p, stream, reasoning_effort (or
-//!                              chat_template_kwargs.reasoning_effort): low | high | max; logprobs, top_logprobs
+//!                              chat_template_kwargs.reasoning_effort): low | high | max; think_budget: 0 (no
+//!                              thinking: closed before it starts, as enable_thinking false); logprobs, top_logprobs
 //!                              (the answer's tokens, as OpenAI's choices[0].logprobs.content); usage.energy_wh;
 //!                              logprob_chain: true - each entry also "chain": its logprob chained through the
 //!                              attention to this turn's own earlier tokens (see chain_entry), and each
@@ -16,7 +17,8 @@
 //!                              "effort"?, "max_tokens"?, "temperature"?, "top_p"?, "stream"? (default true)};
 //!                              streamed as JSON lines - {"thinking": text} and {"content": text} as they come,
 //!                              then {"done": true, "finish", "prompt_tokens", "reused", "generated",
-//!                              "read_seconds", "generate_seconds", "tok_s", "energy_wh"}; not streamed, one object
+//!                              "read_seconds", "vision_seconds" (the pictures through the vision tower, before
+//!                              the reading), "generate_seconds", "tok_s", "energy_wh"}; not streamed, one object
 //!                              with "content" and "thinking" beside those; "logprobs": true (+ "top_logprobs")
 //!                              adds the answer tokens' entries ("logprobs" on the lines, or all at the end)
 //! ```
@@ -738,7 +740,10 @@ impl Server {
         };
         // Qwen3.8's switch (llama.cpp's chat_template_kwargs, or the request's own): false answers without thinking
         let thinking = req["chat_template_kwargs"]["enable_thinking"].as_bool().or_else(|| req["enable_thinking"].as_bool());
-        let effort = if thinking == Some(false) { Effort::Off } else { effort };
+        // think_budget 0 (nextsycl's field, both APIs): the thinking closed before it starts (`<think>\n\n</think>\n\n`),
+        // as enable_thinking false; another number leaves the thinking as the effort says
+        let budget0 = req["think_budget"].as_f64().is_some_and(|b| b <= 0.0);
+        let effort = if thinking == Some(false) || budget0 { Effort::Off } else { effort };
         let chain = req["logprob_chain"].as_bool().or_else(|| req["LogProbChain"].as_bool()).unwrap_or(false);
         Ok(Ask { messages, pictures, tools, effort,
                  max: req["max_tokens"].as_u64().or_else(|| req["max_completion_tokens"].as_u64()).map(|n| n as usize),
@@ -1182,7 +1187,10 @@ impl Server {
         // Muse Glimmer's channels: the answer after `<|start|>assistant` is a to=self message, then the to=user one
         let channels = text.ends_with("<|start|>assistant");
         let ids = self.tok.encode(&text);
+        // the pictures through the vision tower (before the prompt is queued: its time is not in read_seconds)
+        let t_see = Instant::now();
         let ids = if ask.pictures.is_empty() { ids } else { self.place_pictures(ids, &ask.pictures)? };
+        let vision_s = if ask.pictures.is_empty() { 0.0 } else { t_see.elapsed().as_secs_f64() };
         if ids.len() + 16 > self.max_ctx {
             return Err(format!("the prompt is {} tokens; the context is {}", ids.len(), self.max_ctx));
         }
@@ -1403,7 +1411,7 @@ impl Server {
         }
         if api == Api::Lines {
             let mut end = json!({"done": true, "finish": finish, "model": self.name, "prompt_tokens": ids.len(), "reused": from, "generated": n,
-                                 "read_seconds": prefill, "generate_seconds": dt, "tok_s": n as f64 / dt.max(1e-9), "energy_wh": wh});
+                                 "read_seconds": prefill, "vision_seconds": vision_s, "generate_seconds": dt, "tok_s": n as f64 / dt.max(1e-9), "energy_wh": wh});
             if stream && !lp_pending.is_empty() {
                 end["logprobs"] = json!(lp_pending); // the answer's last tokens, when no text followed them
             }

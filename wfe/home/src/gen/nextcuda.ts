@@ -487,6 +487,9 @@ export interface AudioVoicesRemoveReq {
 /** How a clip carries on from the last: video | png | latent | none */
 export type ChainMode = "video" | "png" | "latent" | "none";
 
+/** How long image.describe's prompt is: short | medium | long (~35 / ~90 / ~170 words; the tags family 12 / 25 / 45 tags) */
+export type DescribeDetail = "short" | "medium" | "long";
+
 /** A file's kind (where it lives): image | audio | video | model3d */
 export type FileKind = "image" | "audio" | "video" | "model3d";
 
@@ -515,6 +518,130 @@ export interface ImageCanvasesListReq {
 export interface ImageDescribePromptGuideMdReq {
   /** the model's registry id (system.models) */
   model: string;
+  /** other keys */
+  [key: string]: unknown;
+}
+
+/** What image.describe takes. */
+export interface ImageDescribeReq {
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
+  batch?: string | null;
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
+  held?: boolean | null;
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
+  label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
+  priority?: number | null;
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
+  project?: string | null;
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
+  queue?: boolean | null;
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
+  reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /** the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload); at most 40 MP; transparency on white */
+  image: string;
+  /**
+   * the family the prompt is written for - natural, qwen-image, z-image, h3, hunyuanimage, moss-image, ming-image, tags - or an image model's id (z-image-turbo, p-h3-image, qwen-image-2.1-turbo-q8 ...: its family by architecture when registered, else by its id's prefix)
+   * @default "natural"
+   */
+  target?: string | null;
+  /**
+   * how long: short ~35, medium ~90, long ~170 words (tags: 12 / 25 / 45)
+   * @default "medium"
+   */
+  detail?: DescribeDetail | null;
+  /**
+   * about this many words instead of detail's
+   * @minimum 8
+   * @maximum 400
+   */
+  max_words?: number | null;
+  /**
+   * a negative prompt too, for a target that reads one (natural, qwen-image, hunyuanimage, moss-image, tags); for the others none is written and notes says so
+   * @default false
+   */
+  include_negative?: boolean | null;
+  /**
+   * the prompt's language, by name
+   * @default "English"
+   * @maxLength 40
+   */
+  language?: string | null;
+  /**
+   * more for the describer (what to stress, what to leave out)
+   * @maxLength 2000
+   */
+  instructions?: string | null;
+  /**
+   * the picture is shown to the describer at most this large (Lanczos, its aspect kept)
+   * @minimum 65536
+   * @maximum 4194304
+   * @default 1048576
+   */
+  max_pixels?: number | null;
+  /**
+   * the describer's tokens at most (default 2 x words + 40, + 80 with a negative)
+   * @minimum 16
+   * @maximum 4096
+   */
+  max_tokens?: number | null;
+  /**
+   * 0: greedy (the same picture, the same prompt); above 0 sampled, seed fixes it
+   * @minimum 0
+   * @maximum 2
+   * @default 0
+   */
+  temperature?: number | null;
+  /**
+   * the sampling's seed (temperature above 0)
+   * @minimum 0
+   */
+  seed?: number | null;
+  /** the describer: a chat model that reads pictures (system.models: capability describe); none - the loaded chat model when it reads pictures (no swap), else the enabled one whose card takes the least memory */
+  model?: string | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -2705,6 +2832,12 @@ export interface Methods {
    */
   "image.remove_background": { req: ImageRemoveBackgroundReq; resp: any };
   /**
+   * A picture to the prompt that would draw it: a chat model that reads pictures (Qwen3.8-27B's vision tower) writes it for an image model's family (target), without thinking; the answer cut at PROMPT: / NEGATIVE:, with the size to draw it at (suggested_size). A job in the image queue like image.upscale (label, reentrant_id, wait, image.status, image.cancel)
+   * @tags image
+   * @example {"detail":"medium","image":"upload:up_1792400000_barn.png","label":"barn-prompt","target":"z-image-turbo"}
+   */
+  "image.describe": { req: ImageDescribeReq; resp: any };
+  /**
    * A clip made bigger frame by frame by an upscaler (as image.upscale: the variant, scale, noise, tile), its sound copied as it was; an MP4 back. A job in the image queue (image.status, image.cancel)
    * @tags video
    * @example {"file":"h3_20261019_121939","model":"real-esrgan","scale":2,"variant":"realesr-animevideov3"}
@@ -3348,6 +3481,12 @@ export function client(post: Post, raw?: PostRaw) {
      * @example {"image":"upload:up_1792400000_chair.png","mask":true,"model":"birefnet"}
      */
     "image.remove_background": (req: ImageRemoveBackgroundReq): Promise<any> => post("image.remove_background", req),
+    /**
+     * A picture to the prompt that would draw it: a chat model that reads pictures (Qwen3.8-27B's vision tower) writes it for an image model's family (target), without thinking; the answer cut at PROMPT: / NEGATIVE:, with the size to draw it at (suggested_size). A job in the image queue like image.upscale (label, reentrant_id, wait, image.status, image.cancel)
+     * @tags image
+     * @example {"detail":"medium","image":"upload:up_1792400000_barn.png","label":"barn-prompt","target":"z-image-turbo"}
+     */
+    "image.describe": (req: ImageDescribeReq): Promise<any> => post("image.describe", req),
     /**
      * A clip made bigger frame by frame by an upscaler (as image.upscale: the variant, scale, noise, tile), its sound copied as it was; an MP4 back. A job in the image queue (image.status, image.cancel)
      * @tags video

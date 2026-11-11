@@ -27,7 +27,7 @@ use super::{now, Home};
 use crate::http::{call_for, Target};
 
 /// The methods that run as jobs
-pub const METHODS: [&str; 13] = ["image.generate", "image.edit", "image.upscale", "image.vectorize", "image.svg_fit", "image.svg_generate", "image.remove_background", "video.upscale", "audio.generate", "audio.speak",
+pub const METHODS: [&str; 14] = ["image.generate", "image.edit", "image.upscale", "image.vectorize", "image.svg_fit", "image.svg_generate", "image.remove_background", "image.describe", "video.upscale", "audio.generate", "audio.speak",
     "audio.transcribe", "model3d.generate", "model3d.rig"];
 
 /// The queue a method's jobs wait in: its prefix, but video.upscale runs on the image servers (an upscaler there) and
@@ -170,6 +170,15 @@ impl Jobs {
 /// A request's reentrant_id (reentrantid is read too)
 pub fn reentrant(b: &Value) -> Option<String> {
     ["reentrant_id", "reentrantid"].iter().find_map(|k| b[*k].as_str()).map(str::trim).filter(|r| !r.is_empty()).map(|r| r.chars().take(200).collect())
+}
+
+/// The id-like key a cancel names without a label or reentrant_id (id, job_id, request_id): refused, not taken as
+/// "whatever runs"
+pub fn bare_id(b: &Value) -> Option<&'static str> {
+    if !s(b, "label").is_empty() || reentrant(b).is_some() {
+        return None;
+    }
+    ["id", "job_id", "request_id"].into_iter().find(|k| b[*k].as_str().is_some_and(|v| !v.trim().is_empty()) || b[*k].is_number())
 }
 
 /// Where a new job of `priority` goes among the waiting (in run order): after the last of its priority or higher
@@ -453,6 +462,12 @@ impl Home {
                         stage = "running".into();
                     }
                     // started here, not yet on its server: the model loading, the room awaited, or another request first
+                    // run here, not on an image server (image.describe asks the chat server): running with what it does
+                    None if self.stages.lock().unwrap().get(&s(j, "id")).is_some_and(|(st, _)| st == "running") => {
+                        let why = self.stages.lock().unwrap().get(&s(j, "id")).map(|(_, w)| w.clone()).unwrap_or_default();
+                        v["progress"] = json!({"step": why});
+                        stage = "running".into();
+                    }
                     None => {
                         state = "queued".into();
                         let noted = self.stages.lock().unwrap().get(&s(j, "id")).cloned();
@@ -643,6 +658,10 @@ impl Home {
     /// a label whatever the kind's servers are making
     pub(crate) fn job_cancel(self: &Arc<Self>, kind: &str, b: &Value) -> Result<Value, Fail> {
         let label = s(b, "label");
+        // a job's id alone does not name it here (nextsycl's rule): not "everything", a 400
+        if let Some(k) = bare_id(b) {
+            return Err((400, format!("label: or reentrant_id - a job is cancelled by its label or reentrant_id, not by {k} alone ({kind}.jobs lists them)")));
+        }
         if label.is_empty() && reentrant(b).is_none() {
             let mut stopped = 0;
             for p in self.slots(kind) {
@@ -761,6 +780,18 @@ mod tests {
         assert!(clean_title(&json!({"title": "   "})).is_null());
         assert!(clean_title(&json!({"title": 5})).is_null());
         assert!(clean_title(&json!({})).is_null());
+    }
+
+    #[test]
+    fn a_cancel_names_a_job_by_label_or_reentrant_id_not_its_id() {
+        assert_eq!(bare_id(&json!({"id": "image-1794470000-3"})), Some("id"));
+        assert_eq!(bare_id(&json!({"job_id": "image-1"})), Some("job_id"));
+        assert_eq!(bare_id(&json!({"request_id": 4})), Some("request_id"));
+        // with a label or reentrant_id the id is ignored; nothing at all is "whatever runs" (not refused)
+        assert_eq!(bare_id(&json!({"id": "image-1", "label": "barn-prompt"})), None);
+        assert_eq!(bare_id(&json!({"id": "image-1", "reentrant_id": "r1"})), None);
+        assert_eq!(bare_id(&json!({})), None);
+        assert_eq!(bare_id(&json!({"id": ""})), None);
     }
 
     #[test]

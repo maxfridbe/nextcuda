@@ -163,6 +163,11 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
             if m["tools"] == true {
                 c.push("tools");
             }
+            // a vision tower beside it: it reads pictures, and image.describe writes prompts with it
+            if super::describe::reads_pictures(m) {
+                c.extend(["vision", "describe"]);
+                return (c, vec!["llm.chat", "image.describe"]);
+            }
             (c, vec!["llm.chat"])
         }
         "image" if arch.contains("ocr") => (vec!["ocr", "read_pages", "pdf"], vec!["image.ocr"]),
@@ -1418,6 +1423,10 @@ impl Home {
     /// The model a request is for: the one it names, else the kind's pick
     pub(crate) fn eta_model(&self, method: &str, b: &Value, all: &[Value]) -> String {
         let kind = super::jobs::kind_of_method(method);
+        // image.describe's model is the describer (a chat model), not an image model
+        if method == "image.describe" {
+            return self.describer(b, all, false).unwrap_or_default();
+        }
         match b["model"].as_str().filter(|m| !m.is_empty()) {
             Some(m) => m.to_string(),
             None => self.pick(kind, b, all).unwrap_or_default(),

@@ -44,6 +44,25 @@ const CUT_OUT: &str = r#"{"type": "object", "properties": {"created": {"type": "
     "width": {"type": "integer"}, "height": {"type": "integer"}, "model": {"type": "string"}}}},
   "nextsycl": {"type": "object", "properties": {"seconds": {"type": "number"}}}}}"#;
 
+/// image.describe's answer (nextsycl's, field for field)
+const DESCRIBED: &str = r#"{"type": "object", "required": ["prompt", "negative_prompt", "target", "model", "suggested_size"], "properties": {
+  "prompt": {"type": "string", "description": "the prompt: feed it to image.generate with suggested_size.size and the target model"},
+  "negative_prompt": {"type": "string", "nullable": true, "description": "with include_negative and a target that reads one (natural, qwen-image, hunyuanimage, moss-image, tags); else null"},
+  "target": {"type": "string", "enum": ["natural", "qwen-image", "z-image", "h3", "hunyuanimage", "moss-image", "ming-image", "tags"], "description": "the family it was written for"},
+  "target_model": {"type": "string", "nullable": true, "description": "the image model the request named as target, else null"},
+  "model": {"type": "string", "description": "the describer (a chat model that reads pictures)"}, "detail": {"type": "string", "enum": ["short", "medium", "long"]},
+  "language": {"type": "string"}, "words": {"type": "integer", "description": "the prompt's words"},
+  "width": {"type": "integer", "description": "the picture as sent"}, "height": {"type": "integer"},
+  "seen": {"type": "object", "description": "the size the describer saw (after max_pixels)", "properties": {"width": {"type": "integer"}, "height": {"type": "integer"}}},
+  "suggested_size": {"type": "object", "description": "the target's best area at the picture's aspect (clamped 1:4..4:1), sides on its grid: 1 MP / multiples of 16 (256-2048) for natural, qwen-image, z-image, moss-image, ming-image, tags; 4 MP / multiples of 32 for h3 (256-5024) and hunyuanimage (768-3072)",
+    "properties": {"width": {"type": "integer"}, "height": {"type": "integer"}, "size": {"type": "string", "description": "WxH, image.generate's size"}}},
+  "tokens": {"type": "object", "properties": {"prompt": {"type": "integer", "description": "the whole describer prompt, the picture's tokens included"}, "reused": {"type": "integer", "description": "of them, from the prompt cache"}, "generated": {"type": "integer"}}},
+  "timings": {"type": "object", "properties": {"pp_tok_s": {"type": "number", "description": "the prompt read, the vision tower included"}, "tg_tok_s": {"type": "number"},
+    "prompt_seconds": {"type": "number"}, "generate_seconds": {"type": "number"}, "seconds": {"type": "number", "description": "the whole describe (a swap included)"}}},
+  "finish": {"type": "string", "enum": ["stop", "length"], "description": "length: max_tokens cut it (a note says so)"},
+  "energy_wh": {"type": "number", "nullable": true}, "notes": {"type": "array", "items": {"type": "string"}},
+  "rsvp_granted_s": {"type": "number", "description": "when rsvp_s was asked"}}}"#;
+
 /// image.vectorize's answer
 const VECTORIZED: &str = r#"{"type": "object", "properties": {"created": {"type": "integer"},
   "data": {"type": "array", "items": {"type": "object", "properties": {"svg": {"type": "string", "description": "the SVG as the model wrote it (from <svg)"},
@@ -327,6 +346,8 @@ pub fn result(method: &str) -> Option<String> {
   {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (image.status {{label}}: its progress has the step, the loss and the SVG so far)"}}]}}"#),
         "image.remove_background" => format!(r#"{{"oneOf": [{{"allOf": [{CUT_OUT}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the cut-out picture (and mask), and the job"}},
   {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (image.status {{label}} for the rest)"}}]}}"#),
+        "image.describe" => format!(r#"{{"oneOf": [{{"allOf": [{DESCRIBED}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the prompt, and the job"}},
+  {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (image.status {{label}}: result once done)"}}]}}"#),
         "image.upscale" | "video.upscale" => format!(r#"{{"oneOf": [{{"allOf": [{UPSCALED}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the upscaled picture or clip, and the job"}},
   {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (image.status {{label}} for the rest)"}}]}}"#),
         "model3d.generate" | "model3d.rig" => format!(r#"{{"oneOf": [{{"allOf": [{}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the mesh, and the job"}},
@@ -480,6 +501,16 @@ pub fn errors(method: &str) -> &'static [(u16, &'static str, &'static str)] {
               (499, "cancelled", "stopped by <kind>.cancel"), (502, "unavailable", "the kind's server did not start or answer"),
               (503, "no_room", "the model's cards have no room for it (other work that is not idle holds them; idle models there are stopped for it at once). A job waits for the room up to 30 minutes first - stage waiting, waiting_for says who holds the card - then fails with this; image.ocr and voices.design wait 90 s. Retryable"),
               (504, "timeout", "wait: still running after an hour (the job goes on: <kind>.status {label})")],
+        "image.describe" => &[(400, "invalid_params", "no image; a picture that does not decode or is over 40 MP; a target that is neither a family nor an image model that draws (\"target ocr-model: it does not draw pictures from prompts\"); a value out of its range (\"max_words 3: from 8 to 400\"); a model that does not read pictures. Checked when submitted (wait: false too)"),
+              (404, "not_found", "model names no model; an upload:<name> that is not here"),
+              (409, "conflict", "no enabled chat model reads pictures; the model is disabled; the switcher will not swap away from a chat model in use"),
+              NOT_DOWNLOADED,
+              (409, "busy", "queue: false and it would not start now (retryable)"),
+              (499, "cancelled", "image.cancel {label} / {reentrant_id}: queued, at once; running, within a second (the stream to the chat server closed)"),
+              (502, "unavailable", "the chat server did not answer, or its stream ended early"),
+              (503, "no_room", "the describer's cards have no room (work that is not idle, a pinned or held model holds them): retryable"),
+              (503, "wait_too_long", "max_willing_to_wait_s passed"),
+              (504, "timeout", "wait: still running after an hour, or the describe ran over 30 minutes")],
         "llm.chat" => &[(400, "invalid_params", "the chat server refused the request"), NOT_DOWNLOADED, (502, "unavailable", "the chat server does not answer"),
                         (503, "no_room", "the model is not loaded and its cards have no room for it (work that is not idle holds them; idle picture, sound and video work is stopped for it at once): retryable")],
         "audio.voices.add" => &[(400, "invalid_params", "a bad name, a recording shorter than 3 s or not decodable"), (409, "conflict", "replace over a voice another owner has")],
@@ -489,7 +520,7 @@ pub fn errors(method: &str) -> &'static [(u16, &'static str, &'static str)] {
         | "model3d.queue.move" | "model3d.queue.pause" | "model3d.queue.resume" => &[(404, "not_found", "label / reentrant_id: no waiting job by it")],
         "model3d.tool" => &[(400, "invalid_params", "an op it does not know, faces missing for decimate, or a mesh that does not read"), (404, "not_found", "file: no GLB of that name here")],
         "image.upload" | "audio.upload" | "model3d.upload" => &[(400, "invalid_params", "a name of another type, data not base64, empty, or not a picture / recording / mesh that decodes (a picture over 40 MP)")],
-        "image.cancel" | "audio.cancel" | "model3d.cancel" => &[(404, "not_found", "no job with that label or reentrant_id at all (the message names which); an ended one answers 200 already_ended")],
+        "image.cancel" | "audio.cancel" | "model3d.cancel" => &[(400, "invalid_params", "only id, job_id or request_id named: a job is cancelled by its label or reentrant_id"), (404, "not_found", "no job with that label or reentrant_id at all (the message names which); an ended one answers 200 already_ended")],
         "system.files.stat" => &[(400, "invalid_params", "kind is not image, audio, video or model3d, or name is not a plain file name"), (404, "not_found", "no such file")],
         "system.files.delete" => &[(400, "invalid_params", "kind, or a name that is not a clip, upload, picture or sound"), (404, "not_found", "no such file"),
                                    (409, "busy", "video: the clip is being made (video.cancel first)")],
@@ -525,7 +556,7 @@ Every error has retryable: true for no_room, maintenance, unavailable, timeout a
 pub const LABELS: &str = "Video labels: \"<series> NN/MM: text\" (\"Harbour 03/12: the lamp\"). NN orders video.timeline (the edit order); \
 the series (the text before NN) is where the anchors prev / prev_cam / first / first_cam look, and the project when the request names none. \
 video.cancel, video.queue.move and video.queue.remove name clips by label.\n\n\
-Jobs: image.generate, image.edit, image.upscale, image.vectorize, image.svg_fit, image.svg_generate, image.remove_background, video.upscale (in the image queue), audio.generate, audio.speak and audio.transcribe run as jobs here - the call can drop and the job goes on; \
+Jobs: image.generate, image.edit, image.upscale, image.vectorize, image.svg_fit, image.svg_generate, image.remove_background, image.describe, video.upscale (in the image queue), audio.generate, audio.speak and audio.transcribe run as jobs here - the call can drop and the job goes on; \
 label one (else its id is its label), read it with <kind>.status {label} (stage and waiting_for say what it waits for), list them with <kind>.jobs, \
 stop it with <kind>.cancel {label}; wait: false answers at once. A kind makes as many jobs at once as it has servers (one a card); the rest wait \
 in a queue as video's: priority, held, project and batch on submit, <kind>.queue.list / move / pause / resume. \

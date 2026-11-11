@@ -822,6 +822,80 @@ pub struct ImageRemoveBackgroundBody {
     pub rest: serde_json::Map<String, serde_json::Value>,
 }
 
+/// How long image.describe's prompt is: short | medium | long (~35 / ~90 / ~170 words; the tags family 12 / 25 / 45 tags)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Rpc)]
+pub enum DescribeDetail {
+    #[serde(rename = "short")]
+    Short,
+    #[serde(rename = "medium")]
+    Medium,
+    #[serde(rename = "long")]
+    Long,
+}
+
+/// What image.describe takes.
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct ImageDescribeReq {
+    #[serde(flatten)]
+    pub job: JobOpts,
+    #[serde(flatten)]
+    pub body: ImageDescribeBody,
+}
+
+/// What image.describe reads: the picture, the image model (or family) the prompt is for, how long and in what language.
+#[derive(Deserialize, Serialize, Rpc)]
+#[allow(non_snake_case)]
+pub struct ImageDescribeBody {
+    /// the picture: PNG, JPEG or WebP as base64, a data: URL or upload:<name> (image.upload); at most 40 MP; transparency on white
+    pub image: String,
+    /// the family the prompt is written for - natural, qwen-image, z-image, h3, hunyuanimage, moss-image, ming-image, tags - or an image model's id (z-image-turbo, p-h3-image, qwen-image-2.1-turbo-q8 ...: its family by architecture when registered, else by its id's prefix)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(default = "natural")]
+    pub target: Option<String>,
+    /// how long: short ~35, medium ~90, long ~170 words (tags: 12 / 25 / 45)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(default = "medium")]
+    pub detail: Option<DescribeDetail>,
+    /// about this many words instead of detail's
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 8, max = 400)]
+    pub max_words: Option<i64>,
+    /// a negative prompt too, for a target that reads one (natural, qwen-image, hunyuanimage, moss-image, tags); for the others none is written and notes says so
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(default = false)]
+    pub include_negative: Option<bool>,
+    /// the prompt's language, by name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_length = 40, default = "English")]
+    pub language: Option<String>,
+    /// more for the describer (what to stress, what to leave out)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_length = 2000)]
+    pub instructions: Option<String>,
+    /// the picture is shown to the describer at most this large (Lanczos, its aspect kept)
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 65536, max = 4194304, default = 1048576)]
+    pub max_pixels: Option<i64>,
+    /// the describer's tokens at most (default 2 x words + 40, + 80 with a negative)
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 16, max = 4096)]
+    pub max_tokens: Option<i64>,
+    /// 0: greedy (the same picture, the same prompt); above 0 sampled, seed fixes it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0, max = 2, default = 0)]
+    pub temperature: Option<f64>,
+    /// the sampling's seed (temperature above 0)
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 0)]
+    pub seed: Option<i64>,
+    /// the describer: a chat model that reads pictures (system.models: capability describe); none - the loaded chat model when it reads pictures (no swap), else the enabled one whose card takes the least memory
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// what else the caller sent: passed on as it came
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
 /// What image.vectorize takes.
 #[derive(Deserialize, Serialize, Rpc)]
 pub struct ImageVectorizeReq {
@@ -2668,6 +2742,12 @@ fn image_remove_background(h: &Arc<Home>, req: ImageRemoveBackgroundReq) -> Answ
     h.legacy("image.remove_background", req)
 }
 
+/// A picture to the prompt that would draw it: a chat model that reads pictures (Qwen3.8-27B's vision tower) writes it for an image model's family (target), without thinking; the answer cut at PROMPT: / NEGATIVE:, with the size to draw it at (suggested_size). A job in the image queue like image.upscale (label, reentrant_id, wait, image.status, image.cancel)
+#[rpc(name = "image.describe", tags = "image", example = r#"{"detail": "medium", "image": "upload:up_1792400000_barn.png", "label": "barn-prompt", "target": "z-image-turbo"}"#)]
+fn image_describe(h: &Arc<Home>, req: ImageDescribeReq) -> Answer {
+    h.legacy("image.describe", req)
+}
+
 /// A clip made bigger frame by frame by an upscaler (as image.upscale: the variant, scale, noise, tile), its sound copied as it was; an MP4 back. A job in the image queue (image.status, image.cancel)
 #[rpc(name = "video.upscale", tags = "video", example = r#"{"file": "h3_20261019_121939", "model": "real-esrgan", "scale": 2, "variant": "realesr-animevideov3"}"#)]
 fn video_upscale(h: &Arc<Home>, req: VideoUpscaleReq) -> Answer {
@@ -3094,7 +3174,7 @@ rpcgen::rpc_methods![sync Arc<Home>, RpcFail;
     system_gpus, system_disable, system_load, system_unload, system_pin, system_unpin, system_eta, system_config, system_config_set,
     system_restart, system_maintenance, system_drives, system_drive_measure, system_move, system_move_cancel,
     llm_chat, llm_requests, llm_models, llm_describe_prompt_guide_md, image_generate, image_edit,
-    image_upscale, image_vectorize, image_svg_fit, image_svg_generate, image_remove_background, video_upscale, image_ocr, image_info, image_status,
+    image_upscale, image_vectorize, image_svg_fit, image_svg_generate, image_remove_background, image_describe, video_upscale, image_ocr, image_info, image_status,
     image_jobs, image_queue_list, image_queue_move, image_queue_pause, image_queue_resume, image_upload,
     image_cancel, image_canvases_list, image_progress, image_history, image_describe_prompt_guide_md, audio_generate,
     audio_speak, audio_transcribe, audio_voices_list, audio_voices_add, audio_voices_design, audio_voices_remove,

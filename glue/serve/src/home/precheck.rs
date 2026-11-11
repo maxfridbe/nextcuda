@@ -95,6 +95,7 @@ impl Home {
         match name {
             "image.generate" | "image.edit" => self.precheck_image(name == "image.edit", b, all),
             "audio.speak" => self.precheck_speak(b, all),
+            "image.describe" => self.precheck_describe(b, all),
             "audio.generate" => {
                 // the most any song engine takes (YuE2's, by the model's context); each engine refuses what is past its own
                 number(b, "seconds", 1.0, 900.0)?;

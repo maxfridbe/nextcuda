@@ -46,6 +46,8 @@ const FEATURES: &[&str] = &[
     "system.drives", "system.move",
     // 2026-11-02: H3's `speed` (pika-flex); a job's `title`; YuE2: a plan-only run, `truncated` on the answer's run, seconds to 900
     "video.speed", "video.multi_guide", "jobs.title", "audio.yue2.plan_only", "audio.truncated",
+    // 2026-11-11: a picture to the prompt that draws it (a chat model's vision tower); think_budget 0 on the chat routes
+    "image.describe", "llm.think_budget",
 ];
 
 /// Qwen-Image's sizes: its training buckets (multiples of 16) and the guide's defaults
@@ -926,6 +928,7 @@ impl Home {
                                         "seconds": pics["nextsycl"]["seconds"]});
                 Ok(out)
             }
+            ("image", "describe") => self.describe(b),
             ("image", "remove_background") => {
                 let id = if b["model"].as_str().is_some_and(|x| !x.is_empty()) {
                     let id = self.pick("image", b, &all)?;
@@ -1256,7 +1259,7 @@ impl Home {
             "audio.generate" => ("audio", &[("audio", false)]),
             "audio.voices.add" => ("audio", &[("sample", false)]),
             "model3d.generate" => ("model3d", &[("image", false), ("images", true)]),
-            "image.upscale" | "image.vectorize" | "image.remove_background" | "image.svg_fit" => ("image", &[("image", false)]),
+            "image.upscale" | "image.vectorize" | "image.remove_background" | "image.svg_fit" | "image.describe" => ("image", &[("image", false)]),
             "model3d.rig" | "model3d.tool" => ("model3d", &[("mesh", false)]),
             _ => ("", &[]),
         }

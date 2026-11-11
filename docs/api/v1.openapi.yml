@@ -726,6 +726,12 @@ components:
           - type: object
           - type: 'null'
           description: 'llama.cpp''s: enable_thinking (false answers without thinking), reasoning_effort'
+        think_budget:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 0
+          description: '0: no thinking - closed before it starts (`<think>\n\n</think>\n\n`), as enable_thinking false (nextsycl''s field); another number leaves the thinking as the effort says'
       required:
       - messages
       additionalProperties: true

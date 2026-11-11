@@ -284,6 +284,10 @@ pub struct ChatBody {
     /// llama.cpp's: enable_thinking (false answers without thinking), reasoning_effort
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_template_kwargs: Option<Map<String, Value>>,
+    /// 0: no thinking - closed before it starts (`<think>\n\n</think>\n\n`), as enable_thinking false (nextsycl's field); another number leaves the thinking as the effort says
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 0)]
+    pub think_budget: Option<i64>,
     /// what else the caller sent (seed, logprobs, logprob_chain ...): read as it came
     #[serde(flatten)]
     pub rest: Map<String, Value>,
