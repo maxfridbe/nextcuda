@@ -853,9 +853,25 @@ pub fn sample_masked(
     between: &mut dyn FnMut(usize, usize) -> Result<()>,
 ) -> Result<(Vec<f32>, Vec<f32>)> {
     let s0 = sigmas[0];
+    let xv: Vec<f32> = noise_v.iter().map(|n| n * s0).collect();
+    let xa: Vec<f32> = noise_a.iter().map(|n| n * s0).collect();
+    sample_from(d, xv, xa, noise_v, sigmas, inpaint, on_step, between)
+}
+
+/// `sample_masked` from a given start at `sigmas[0]` rather than noise alone: an img2img's `(1 - s0) x + s0 noise`
+/// (the audio in the sampler's space, as the noise is)
+#[allow(clippy::too_many_arguments)]
+pub fn sample_from(
+    d: &mut Denoiser,
+    mut xv: Vec<f32>,
+    mut xa: Vec<f32>,
+    noise_v: &[f32],
+    sigmas: &[f32],
+    inpaint: Option<&Inpaint>,
+    on_step: OnStep,
+    between: &mut dyn FnMut(usize, usize) -> Result<()>,
+) -> Result<(Vec<f32>, Vec<f32>)> {
     let scale = d.schedule.audio_scale;
-    let mut xv: Vec<f32> = noise_v.iter().map(|n| n * s0).collect();
-    let mut xa: Vec<f32> = noise_a.iter().map(|n| n * s0).collect();
     for i in 0..sigmas.len() - 1 {
         let (s, next) = (sigmas[i], sigmas[i + 1]);
         let (dv, da) = estimate(d, &xv, &xa, s, inpaint, noise_v, &mut |b| between(i, b))?;

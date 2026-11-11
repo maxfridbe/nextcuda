@@ -42,6 +42,9 @@ pub struct Engine {
     /// room kept on each card beside its blocks for a run's buffers (the stream, the scratch, the tables): 2 GiB for a
     /// clip; P-H3-Image sets its own
     pub reserve: u64,
+    /// bytes that ride beside each block on its card (a resident LoRA's matrices, `lora::block_bytes`), counted when the
+    /// blocks are placed over the cards; empty: none
+    pub side: Vec<u64>,
 }
 
 impl Engine {
@@ -64,7 +67,7 @@ impl Engine {
         let mut cfg = dit::Config::from_checkpoint(&ck)?;
         cfg.blocks = count.unwrap_or(cfg.blocks).min(cfg.blocks);
         denoiser::check_fits(&cfg, &outer)?;
-        let e = Engine { dev, devs, ck, cfg, model: std::sync::Mutex::new(None), count, outer, threads, reserve: 2u64 << 30 };
+        let e = Engine { dev, devs, ck, cfg, model: std::sync::Mutex::new(None), count, outer, threads, reserve: 2u64 << 30, side: Vec::new() };
         if e.devs.len() == 1 {
             let m = e.blocks()?;
             log(format!("blocks : {} loaded, {:.2} GiB in {:.1} s", m.blocks.len(), gib(m.load_bytes), m.load_seconds));
@@ -80,7 +83,7 @@ impl Engine {
         }
         let b = if self.devs.len() > 1 {
             let reserve: Vec<u64> = self.devs.iter().map(|_| self.reserve).collect();
-            dit::Blocks::load_split(&self.devs, &self.ck, &reserve, self.threads)?
+            dit::Blocks::load_split(&self.devs, &self.ck, &reserve, &self.side, self.threads)?
         } else {
             dit::Blocks::load(&self.dev, &self.ck, self.count, self.threads)?
         };

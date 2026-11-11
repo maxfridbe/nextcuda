@@ -27,6 +27,25 @@ pub struct LoraSet {
     pub layers: usize,
 }
 
+/// A one-value tensor (a LoRA's alpha): a float, or an integer as some converters write it (pDMD's ComfyUI file: int64)
+fn scalar(ck: &Checkpoint, name: &str) -> Result<f32> {
+    let e = ck.get(name)?;
+    let b = ck.read(name)?;
+    let v = match e.dtype {
+        DType::I64 if b.len() >= 8 => i64::from_le_bytes(b[..8].try_into().unwrap_or_default()) as f32,
+        DType::I32 if b.len() >= 4 => i32::from_le_bytes(b[..4].try_into().unwrap_or_default()) as f32,
+        _ => host(ck, name)?.first().copied().ok_or_else(|| Error(format!("{name}: an empty alpha")))?,
+    };
+    Ok(v)
+}
+
+/// The bytes block `i` of `prefix` ("blocks") takes on a card for a LoRA in `ck` (its A and B, bfloat16): what the
+/// denoiser's placement keeps beside the block's own matrices
+pub fn block_bytes(ck: &Checkpoint, prefix: &str, i: usize) -> u64 {
+    LINEARS.iter().flat_map(|l| ["lora_A", "lora_B"].map(|ab| format!("diffusion_model.{prefix}.{i}.{l}.{ab}.weight")))
+        .filter_map(|n| ck.get(&n).ok().map(|e| e.shape.iter().product::<usize>() as u64 * 2)).sum()
+}
+
 fn bf16(dev: &Arc<Device>, shape: &[usize], v: &[f32]) -> Result<Tensor> {
     Tensor::from_bytes(dev, DType::BF16, shape, &crate::denoiser::bf16_bytes(v))
 }
@@ -60,7 +79,7 @@ impl LoraSet {
                         return Err(Error(format!("{p}: lora_A rank {r}, lora_B {:?}", sb)));
                     }
                     let alpha = match ck.entries.contains_key(&format!("{p}.alpha")) {
-                        true => host(ck, &format!("{p}.alpha"))?[0] / r as f32,
+                        true => scalar(ck, &format!("{p}.alpha"))? / r as f32,
                         false => 1.0,
                     };
                     let scale = strength * alpha;
