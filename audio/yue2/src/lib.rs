@@ -68,6 +68,7 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "cot", env: "NS_YUE2_COT", value: "full|melody|off", help: "what the model writes before the music: a score of melody and chords (full, the default), a melody alone (melody: covers), or none (off)", at: At::Both },
     EngineOption { name: "abc", env: "", value: "TEXT", help: "a score (ABC) to sing over instead of one drawn (cot melody or full): a cover's melody, or the score of an earlier song (its `score`) to sing it again with new words - same seed and style", at: At::Request },
     EngineOption { name: "int8", env: "NS_YUE2_INT8", value: "0|1", help: "the flow's (NAR path's) matrices as int8 ConvRot rows on the int8 tensor cores (on; 0: as stored, Q8_0)", at: At::Load },
+    EngineOption { name: "instrumental", env: "", value: "true|false", help: "a cover played, not sung: the recording's lead stays where an instrument plays it (SheetSage2's Ins voice), the voice YuE2 sings is left all rests and the lyrics are the score's sections, empty - no words needed; the style is the arrangement. Needs a recording (source)", at: At::Request },
     EngineOption { name: "sing-lead", env: "", value: "1|0", help: "a cover of an instrumental recording: its lead line (SheetSage2's Ins voice) moved to the voice YuE2 sings (on; 0: the score as transcribed - an instrumental cover)", at: At::Request },
     EngineOption { name: "score-tokens", env: "", value: "4096", help: "the most tokens the score may take (32 to 12288; 4096 by default, about 6 minutes of song: a longer score is cut and closed and the song ends with it; the prompt, score and codes must fit the model's context)", at: At::Request },
     EngineOption { name: "plan-only", env: "", value: "true|false", help: "a new song (cot melody or full, no recording): only the score the model plans from the style and lyrics comes back (the answer's score, no song): its sections and how long each runs, to see the structure before the song is made. It takes the score's draw alone, about a minute", at: At::Request },
@@ -124,6 +125,8 @@ pub struct Song {
     pub steps: usize,
     /// stop after the score is drawn: no codes, no audio (the `plan-only` option)
     pub plan_only: bool,
+    /// a cover played, not sung (the `instrumental` option): the lead left in the Ins voice, the lyrics bare sections
+    pub instrumental: bool,
 }
 
 /// What the stages made (the check and the score read it)
@@ -234,7 +237,15 @@ impl Yue2 {
         if style.is_empty() {
             return Err(Error("the style (instructions) is empty: genre, mood, voice, instruments".into()));
         }
-        let lyrics = req.lyrics.clone().unwrap_or_default();
+        let instrumental = self.opt(req, "instrumental", "").is_some_and(|v| matches!(v.trim(), "true" | "1" | "on"));
+        if instrumental && req.source.is_none() {
+            return Err(Error("instrumental: a cover's (a recording, source, whose lead YuE2 plays); a new song from a style alone is sung - give it lyrics".into()));
+        }
+        if instrumental && self.opt(req, "sing-lead", "").is_some_and(|v| matches!(v.trim(), "1" | "true" | "on")) {
+            return Err(Error("instrumental and sing-lead: an instrumental cover leaves the lead where an instrument plays it".into()));
+        }
+        // an instrumental cover's lyrics are the score's sections, written once it is transcribed
+        let lyrics = if instrumental { String::new() } else { req.lyrics.clone().unwrap_or_default() };
         let seconds = req.seconds.unwrap_or(DEFAULT_SECONDS);
         if !(1.0..=MAX_SECONDS).contains(&seconds) {
             return Err(Error(format!("{seconds} s: from 1 to {MAX_SECONDS} s (the song may end sooner: the model decides; the context decides what fits)")));
@@ -252,7 +263,7 @@ impl Yue2 {
             return Err(Error(format!("cfg {cfg}: 0 to 20")));
         }
         Ok(Song { cot, style, lyrics, abc, seed: req.seed, cfg, max_codes: ((seconds * FPS).ceil() as usize).clamp(1, CONTEXT), max_score,
-                  steps: req.steps.unwrap_or(ODE_STEPS).clamp(1, 200) as usize, plan_only })
+                  steps: req.steps.unwrap_or(ODE_STEPS).clamp(1, 200) as usize, plan_only, instrumental })
     }
 
     /// The score's draw from the first phase's prompt in `c` (its last row's logits given): its tokens
@@ -508,7 +519,17 @@ impl AudioEngine for Yue2 {
             let abc = s.abc.clone().ok_or_else(|| Error(format!("the recording's score: {}", s.error.as_deref().unwrap_or("none was made"))))?;
             // an instrumental recording's tune is in the Ins voice: moved to the Vocal voice, the one YuE2 sings (else it
             // makes an instrumental: measured on a bluegrass Jingle Bells, Whisper heard no words in any of three styles)
-            let abc = if self.opt(req, "sing-lead", "").is_some_and(|v| matches!(v.trim(), "0" | "false" | "off")) { abc } else { prompt::sung_lead(&abc).0 };
+            // (an instrumental cover: the lead where an instrument plays it, the Vocal voice all rests, the lyrics the
+            // score's sections without words)
+            let abc = if song.instrumental {
+                let played = prompt::played_lead(&abc);
+                song.lyrics = prompt::bare_sections(&played);
+                played
+            } else if self.opt(req, "sing-lead", "").is_some_and(|v| matches!(v.trim(), "0" | "false" | "off")) {
+                abc
+            } else {
+                prompt::sung_lead(&abc).0
+            };
             *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Some(abc.clone());
             if self.opt(req, "score-only", "").is_some_and(|v| v.trim() == "true" || v.trim() == "1") {
                 return Ok(Audio { rate: RATE, channels: 2, samples: Vec::new() });
