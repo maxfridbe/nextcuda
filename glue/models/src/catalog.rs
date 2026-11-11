@@ -470,7 +470,7 @@ fn entry(m: &Value, paths: &BTreeMap<String, PathBuf>, local: &BTreeMap<String, 
         "files": files, "gpus": m.get("gpus").cloned().unwrap_or(json!("0")), "env": env, "enabled": true,
         "catalog": m["id"],
     });
-    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "does", "silo", "vram_gib", "headroom_gib", "streams", "split", "concurrency", "coexistence"].iter().chain(LICENSE_KEYS) {
+    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "does", "silo", "vram_gib", "headroom_gib", "streams", "split", "split_vram_gib", "concurrency", "coexistence"].iter().chain(LICENSE_KEYS) {
         if let Some(v) = m.get(k) {
             e[k] = v.clone();
         }

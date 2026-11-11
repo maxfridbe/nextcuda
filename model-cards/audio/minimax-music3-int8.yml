@@ -12,6 +12,7 @@ gpus: '0,1'
 split: true                      # nextcuda: the language model on the first card, the flow stage and the decoder on the second
 vram_gib: 10.6                   # its memory on the first card (the language model in int8 and a six-minute song's cache;
                                  # the second holds about 7.2 GiB: on a B70, all of it on one card, 15.5)
+split_vram_gib: 7.2              # the second card's: the flow stage and the decoder (the engine asks 6.8 GiB free there)
 headroom_gib: 3.0
 defaults:
   seconds: 60.0

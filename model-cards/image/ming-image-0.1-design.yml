@@ -12,6 +12,7 @@ about: 'inclusionAI''s Ming-Image-0.1-Design (MIT): Z-Image''s 6B single-stream 
 gpus: '0,1'
 split: true                      # nextcuda: the DiT and the VAE on the first card, the text encoder (9.2 GiB of Q4_K) on the second
 vram_gib: 10.5                   # the first card's at 2048 x 2048 (weights 7.3, activations and the VAE's); the second's ~9.5
+split_vram_gib: 9.5              # the second card's: the text encoder (9.2 GiB of Q4_K)
 defaults:
   steps: 12
   cfg: 1.0

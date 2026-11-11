@@ -12,6 +12,7 @@ about: 'MOSS-Image-SFT with lodestones'' MOSS-Image-SFT-8-steps-dmd LoRA (Apache
 gpus: '0,1'
 split: true                      # as moss-image-sft-q8: the DiT and the VAE on the first card, the text encoder on the second
 vram_gib: 7.0
+split_vram_gib: 10.5             # as moss-image-sft-q8: the text encoder
 defaults:
   steps: 8
   cfg: 1.0

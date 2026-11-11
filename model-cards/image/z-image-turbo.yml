@@ -15,6 +15,7 @@ about: 'Tongyi-MAI''s Z-Image-Turbo (Apache-2.0): Z-Image''s 6B single-stream Di
 gpus: '0,1'
 split: true                      # nextcuda: the DiT and the VAE on the first card, the text encoder on the second
 vram_gib: 10.7                   # the first card's at 1536 x 1536, the largest (9.3 at 1024 x 1024: the DiT's 6.7 and its activations); the second's 3.8
+split_vram_gib: 3.8              # the second card's: the text encoder
 defaults:
   steps: 8
   cfg: 1.0

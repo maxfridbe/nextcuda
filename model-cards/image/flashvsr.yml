@@ -13,6 +13,7 @@ about: 'OpenImagingLab''s FlashVSR v1.1: Wan 2.1 T2V-1.3B distilled to one step,
 gpus: '0,1'
 split: true                      # nextcuda: the LQ projection, the DiT's blocks 0-11 and the decoder on the first card, blocks 12-29 on the second
 vram_gib: 9.5                    # measured (nvidia-smi, the process): the first card (LQ projection, blocks 0-11, decoder) at 1728 x 960 out (1792 x 1024 inside); the second (blocks 12-29) 7.0
+split_vram_gib: 7.0              # the second card's: blocks 12-29 (measured)
 defaults: {}
 env: {}
 files:

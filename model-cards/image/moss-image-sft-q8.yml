@@ -12,6 +12,7 @@ about: 'OpenMOSS''s MOSS-Image-SFT (Apache-2.0): a 5.1B single-stream DiT over Q
 gpus: '0,1'
 split: true                      # nextcuda: the DiT and the VAE on the first card, the text encoder (Qwen3.5-9B Q8_0) on the second
 vram_gib: 7.0                    # the first card's at 1024 x 1024 (6.6 GiB measured: weights 5.5, activations, the VAE's); the second's ~10.5
+split_vram_gib: 10.5             # the second card's: the text encoder (Qwen3.5-9B Q8_0)
 defaults:
   steps: 50
   cfg: 3.0
