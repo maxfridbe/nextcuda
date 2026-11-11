@@ -256,24 +256,42 @@ fn rested(line: &str) -> String {
 
 /// A cover's score as an instrumental: the lead where an instrument plays it (SheetSage2's `Ins` voice) and the `Vocal`
 /// voice YuE2 sings all rests - the score as SheetSage2 writes an instrumental recording, which YuE2 plays (measured on
-/// a Jingle Bells band recording: jazz, metal and synthwave with no words Whisper heard). A lead in Vocal alone moves to
-/// Ins; with a line in both (a sung song over a played one) the Vocal voice's notes become rests of the same length.
+/// a Jingle Bells band recording: jazz, metal and synthwave with no words Whisper heard). Passage by passage (each
+/// Vocal block with the Ins block after it): a lead in Vocal alone moves to Ins, so the tune is kept where SheetSage2
+/// heard it as sung (a violin's line, 2026-11-11: some passages of a Paganini caprice); with a line in both the Vocal
+/// notes become rests of the same length.
 pub fn played_lead(abc: &str) -> String {
-    let (s, moved) = moved_lead(abc, "Vocal", "Ins");
-    if moved {
-        return s;
-    }
-    let lines: Vec<&str> = s.lines().collect();
+    let lines: Vec<&str> = abc.lines().collect();
     let blocks = voice_blocks(&lines);
-    let vocal: Vec<&str> = blocks.iter().filter(|b| b.2 == "Vocal").flat_map(|b| lines[b.0..b.1].iter().copied()).collect();
-    if !has_notes(&vocal) {
-        return s;
-    }
+    let vocal: Vec<&(usize, usize, &str)> = blocks.iter().filter(|b| b.2 == "Vocal").collect();
+    let ins: Vec<&(usize, usize, &str)> = blocks.iter().filter(|b| b.2 == "Ins").collect();
+    let notes = |b: &(usize, usize, &str)| has_notes(&lines[b.0..b.1]);
+    let own = |b: &(usize, usize, &str)| lines[b.0..b.1].iter().map(|l| l.to_string()).collect::<Vec<_>>();
+    let rest = |b: &(usize, usize, &str)| lines[b.0..b.1].iter().map(|l| rested(l)).collect::<Vec<_>>();
     let mut body = std::collections::BTreeMap::new();
-    for b in blocks.iter().filter(|b| b.2 == "Vocal") {
-        body.insert(b.0, (b.1, lines[b.0..b.1].iter().map(|l| rested(l)).collect()));
+    if vocal.len() == ins.len() {
+        for (v, n) in vocal.iter().zip(&ins) {
+            if !notes(v) {
+                continue;
+            }
+            if notes(n) {
+                body.insert(v.0, (v.1, rest(v)));
+            } else {
+                // the bars match (the voices' durations are the same): the lines exchanged
+                body.insert(v.0, (v.1, own(n)));
+                body.insert(n.0, (n.1, own(v)));
+            }
+        }
+    } else {
+        // blocks that do not pair up: nothing moved, every Vocal note a rest
+        for v in vocal.iter().filter(|v| notes(v)) {
+            body.insert(v.0, (v.1, rest(v)));
+        }
     }
-    rewrite(&s, &lines, &body)
+    if body.is_empty() {
+        return abc.to_string();
+    }
+    rewrite(abc, &lines, &body)
 }
 
 /// The lyrics of an instrumental cover: the score's sections (its "% intro", "% verse" ... lines, in order) as empty
@@ -333,6 +351,9 @@ mod tests {
         // a line in both: the Vocal voice's notes rests of the same length, its chord symbols kept
         let both = "K:C\n% verse\nV: Vocal\n\"Am\"^c'2-c/2 [ceg]4 _B,3/2|\nV: Ins\nE8|\n";
         assert_eq!(played_lead(both), "K:C\n% verse\nV: Vocal\n\"Am\"z2z/2 z4 z3/2|\nV: Ins\nE8|\n");
+        // passage by passage: the lead in Ins in one, in Vocal alone in the next (moved, not lost), in both in a third
+        let mixed = "K:Dm\n% intro\nV: Vocal\nZ2|\nV: Ins\nD4F4|A8|\n% verse\nV: Vocal\nd4f4|a8|\nV: Ins\nZ2|\n% outro\nV: Vocal\nA8|\nV: Ins\nD8|\n";
+        assert_eq!(played_lead(mixed), "K:Dm\n% intro\nV: Vocal\nZ2|\nV: Ins\nD4F4|A8|\n% verse\nV: Vocal\nZ2|\nV: Ins\nd4f4|a8|\n% outro\nV: Vocal\nz8|\nV: Ins\nD8|\n");
         assert!(!has_notes(&["\"Am\"z2z/2 z4 z3/2|"]));
     }
 
