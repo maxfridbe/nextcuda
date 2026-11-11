@@ -475,12 +475,15 @@ impl Studio {
         let src = [n.to_string(), format!("{n}.mp4")].into_iter().map(|f| self.out.join(f)).find(|f| f.is_file())
             .ok_or_else(|| RpcError::not_found(&format!("no clip {n} in the clips directory")))?;
         let (w, h, seconds) = control::probe(&src).ok_or_else(|| RpcError::param(&format!("{n}: not a clip ffprobe reads (no video stream)")))?;
-        let s = control::settings(p, (w, h, seconds))?;
+        let mut s = control::settings(p, (w, h, seconds))?;
+        if s.control == "canny" && s.normalize {
+            s.levels = control::levels(&src, s.start_s, s.frames as f64 / 24.0);
+        }
         let stem: String = n.trim_end_matches(".mp4").trim_start_matches("ref_").chars().filter(|c| c.is_ascii_alphanumeric() || "_-".contains(*c)).take(40).collect();
         let name = format!("ref_{}_{stem}-{}.mp4", now() as u64, s.control);
         let t0 = std::time::Instant::now();
-        let made = control::make(&src, &self.out.join(&name), &s).map_err(|e| RpcError::new("internal", &e, 500))?;
-        Ok(control::answer(&name, &s, made, seconds, t0.elapsed().as_secs_f64()))
+        let (_, given) = control::make(&src, &self.out.join(&name), &s).map_err(|e| RpcError::new("internal", &e, 500))?;
+        Ok(control::answer(&name, &s, given, seconds, t0.elapsed().as_secs_f64()))
     }
 
     /// A finished clip and every file of it (its record, last frame, latents, sound tail, still), or an upload;

@@ -2190,6 +2190,11 @@ export interface VideoControlReq {
    * @default 200
    */
   high?: number | null;
+  /**
+   * canny: stretch the clip's brightness (its 1st to 99th percentile) to the full range first, so a dim room's edges pass the thresholds
+   * @default true
+   */
+  normalize?: boolean | null;
   /** other keys */
   [key: string]: unknown;
 }

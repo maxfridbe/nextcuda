@@ -458,7 +458,8 @@ pub fn result(method: &str) -> Option<String> {
   "file": {"type": "string", "description": "its URL (GET /v1/video/files/<name>)"}, "control": {"type": "string"}, "width": {"type": "integer"}, "height": {"type": "integer"},
   "frames": {"type": "integer", "description": "as asked: 17k + 5 at 24 fps"}, "fps": {"type": "integer"}, "seconds": {"type": "number"},
   "source_frames": {"type": "integer", "description": "the frames the source gave; fewer than frames: its last one held"}, "source_seconds": {"type": "number"},
-  "start_s": {"type": "number"}, "low": {"type": "number"}, "high": {"type": "number"}, "took_s": {"type": "number"}}}"#.into(),
+  "start_s": {"type": "number"}, "low": {"type": "number"}, "high": {"type": "number"},
+  "levels": {"type": "array", "nullable": true, "items": {"type": "number"}, "description": "canny, normalized: the brightness stretched to 0 and 255"}, "took_s": {"type": "number"}}}"#.into(),
         "video.engines.list" => r#"{"type": "object", "properties": {"engines": {"type": "array", "items": {"type": "object", "properties": {
   "quant": {"type": "string", "description": "the name video.generate's engine takes: INT8, Q6_K, Q4_K_M, REF2VA (H3), ltx2, ltx2_upscale (LTX-2.5)"},
   "engine": {"type": "string", "description": "which engine the row is: minimax_h3, ltx2 or ltx2_upscale"}, "stage": {"type": "string", "description": "shots (a clip from a prompt) or upscale (a finished clip, bigger)"},

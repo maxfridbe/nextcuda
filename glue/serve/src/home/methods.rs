@@ -2562,6 +2562,10 @@ pub struct VideoControlReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(min = 0, max = 1000, default = 200)]
     pub high: Option<f64>,
+    /// canny: stretch the clip's brightness (its 1st to 99th percentile) to the full range first, so a dim room's edges pass the thresholds
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(default = true)]
+    pub normalize: Option<bool>,
     /// what else the caller sent: passed on as it came
     #[serde(flatten)]
     pub rest: serde_json::Map<String, serde_json::Value>,

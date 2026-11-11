@@ -410,6 +410,9 @@ pub struct Controlled {
     pub start_s: f64,
     pub low: f64,
     pub high: f64,
+    /// canny, normalized: the brightness stretched to 0 and 255 (null: as it was)
+    #[serde(default)]
+    pub levels: Option<Vec<f64>>,
     /// seconds it took
     pub took_s: f64,
 }

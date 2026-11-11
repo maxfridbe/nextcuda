@@ -38,6 +38,10 @@ pub struct Settings {
     /// canny's thresholds on the gradient's size (0-255 pictures, Sobel)
     pub low: f32,
     pub high: f32,
+    /// canny: stretch the clip's brightness to the full range first (`levels`)
+    pub normalize: bool,
+    /// the brightness that becomes 0 and 255 (the clip's 1st and 99th percentiles), when normalized
+    pub levels: Option<(f32, f32)>,
 }
 
 /// A side on the 32 grid within the model's sides
@@ -171,7 +175,11 @@ pub fn canny(g: &[f32], w: usize, h: usize, low: f32, high: f32) -> Vec<u8> {
 
 /// One frame's control picture, RGB
 pub fn frame(control: &str, rgb: &[u8], w: usize, h: usize, s: &Settings) -> Vec<u8> {
-    let g = luma(rgb);
+    let mut g = luma(rgb);
+    if let (Some((lo, hi)), "canny") = (s.levels, control) {
+        let k = 255.0 / (hi - lo).max(1.0);
+        g.iter_mut().for_each(|v| *v = ((*v - lo) * k).clamp(0.0, 255.0));
+    }
     let one: Vec<u8> = match control {
         "canny" => canny(&g, w, h, s.low, s.high),
         _ => g.iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect(),
@@ -195,11 +203,42 @@ pub fn probe(src: &Path) -> Option<(u32, u32, f64)> {
     Some((w, h, d))
 }
 
+/// The brightness at a share of a histogram's count (0-1)
+fn percentile(hist: &[u64; 256], share: f64) -> f32 {
+    let total: u64 = hist.iter().sum();
+    let want = (total as f64 * share).ceil().max(1.0) as u64;
+    let mut seen = 0;
+    for (v, n) in hist.iter().enumerate() {
+        seen += n;
+        if seen >= want {
+            return v as f32;
+        }
+    }
+    255.0
+}
+
+/// The clip's brightness range (its 1st and 99th percentiles) from two small frames a second of the part used; None
+/// when it is flat (nothing to stretch) or unreadable. A dim webcam take spans little of 0-255, and its edges fall
+/// under fixed thresholds: canny reads it stretched.
+pub fn levels(src: &Path, start_s: f64, seconds: f64) -> Option<(f32, f32)> {
+    let o = Command::new("ffmpeg")
+        .args(["-v", "error", "-nostdin", "-ss", &format!("{:.3}", start_s.max(0.0))])
+        .arg("-i")
+        .arg(src)
+        .args(["-t", &format!("{:.3}", seconds.max(0.1)), "-an", "-vf", "fps=2,scale=160:-2", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+        .output()
+        .ok()?;
+    let mut hist = [0u64; 256];
+    o.stdout.iter().for_each(|v| hist[*v as usize] += 1);
+    let (lo, hi) = (percentile(&hist, 0.01), percentile(&hist, 0.99));
+    (o.stdout.len() > 64 && hi - lo >= 16.0).then_some((lo, hi))
+}
+
 /// The control video of `src` written to `dst` (an mp4): frames read, made and written a batch at a time on every
-/// core; the frames written
-pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<u32, String> {
+/// core, a short source's last one held to `frames`; (frames written, frames the source gave)
+pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<(u32, u32), String> {
     let (w, h, n) = (s.width as usize, s.height as usize, s.frames as usize);
-    let vf = format!("fps=24,scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,crop={w}:{h},tpad=stop_mode=clone:stop=-1,setsar=1");
+    let vf = format!("fps=24,scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,crop={w}:{h},setsar=1");
     let mut dec = Command::new("ffmpeg")
         .args(["-v", "error", "-nostdin"])
         .args(["-ss", &format!("{:.3}", s.start_s.max(0.0))])
@@ -220,12 +259,13 @@ pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<u32, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("ffmpeg: {e}"))?;
-    let r = (|| -> Result<u32, String> {
+    let r = (|| -> Result<(u32, u32), String> {
         let mut input = dec.stdout.take().ok_or("ffmpeg's output")?;
         let mut output = enc.stdin.take().ok_or("ffmpeg's input")?;
         let size = w * h * 3;
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
         let mut done = 0u32;
+        let mut last: Vec<u8> = Vec::new();
         loop {
             let mut batch: Vec<Vec<u8>> = Vec::with_capacity(threads);
             while batch.len() < threads {
@@ -245,12 +285,19 @@ pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<u32, String> {
             for f in made {
                 output.write_all(&f).map_err(|e| format!("writing to ffmpeg: {e}"))?;
                 done += 1;
+                last = f;
             }
             if batch.len() < threads {
                 break;
             }
         }
-        Ok(done)
+        // the source ended first: its last frame held, as video.generate would hold it
+        let given = done;
+        while done > 0 && (done as usize) < n {
+            output.write_all(&last).map_err(|e| format!("writing to ffmpeg: {e}"))?;
+            done += 1;
+        }
+        Ok((done, given))
     })();
     let dec_err = {
         let mut e = String::new();
@@ -268,7 +315,7 @@ pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<u32, String> {
         }
         e
     };
-    let done = r.inspect_err(|_| {
+    let (done, given) = r.inspect_err(|_| {
         let _ = std::fs::remove_file(&part);
     })?;
     if done == 0 {
@@ -280,7 +327,7 @@ pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<u32, String> {
         return Err(format!("encoding the control video failed{}", tail(&enc_err)));
     }
     std::fs::rename(&part, dst).map_err(|e| format!("{}: {e}", dst.display()))?;
-    Ok(done)
+    Ok((done, given))
 }
 
 fn tail(e: &str) -> String {
@@ -320,14 +367,15 @@ pub fn settings(p: &Value, (w, h, seconds): (u32, u32, f64)) -> Result<Settings,
     if high < low {
         return Err(RpcError::param(&format!("high {high} is below low {low}")));
     }
-    Ok(Settings { control, width, height, frames, start_s, low, high })
+    let normalize = p.get("normalize").and_then(Value::as_bool).unwrap_or(true);
+    Ok(Settings { control, width, height, frames, start_s, low, high, normalize, levels: None })
 }
 
-/// The answer's record of a control video made
-pub fn answer(name: &str, s: &Settings, made: u32, seconds: f64, took: f64) -> Value {
+/// The answer's record of a control video made (`given`: the frames the source gave)
+pub fn answer(name: &str, s: &Settings, given: u32, seconds: f64, took: f64) -> Value {
     json!({"name": name, "file": format!("/out/{name}"), "control": s.control, "width": s.width, "height": s.height, "frames": s.frames,
-           "fps": 24, "seconds": s.frames as f64 / 24.0, "source_frames": made.min(s.frames), "source_seconds": seconds, "start_s": s.start_s,
-           "low": s.low, "high": s.high, "took_s": (took * 100.0).round() / 100.0})
+           "fps": 24, "seconds": s.frames as f64 / 24.0, "source_frames": given.min(s.frames), "source_seconds": seconds, "start_s": s.start_s,
+           "low": s.low, "high": s.high, "levels": s.levels.map(|(a, b)| json!([a, b])), "took_s": (took * 100.0).round() / 100.0})
 }
 
 #[cfg(test)]
@@ -376,6 +424,24 @@ mod tests {
     }
 
     #[test]
+    fn a_dim_clip_is_stretched_before_its_edges_are_found() {
+        // a square 30 levels brighter than its ground: under the thresholds as it is, an edge once stretched
+        let (w, h) = (32, 32);
+        let rgb: Vec<u8> = (0..w * h).flat_map(|i| {
+            let v = if (8..24).contains(&(i % w)) && (8..24).contains(&(i / w)) { 50u8 } else { 20 };
+            [v, v, v]
+        }).collect();
+        let mut s = Settings { control: "canny".into(), width: 32, height: 32, frames: 22, start_s: 0.0, low: 100.0, high: 200.0, normalize: true, levels: None };
+        assert!(frame("canny", &rgb, w, h, &s).iter().all(|v| *v == 0));
+        s.levels = Some((20.0, 50.0));
+        assert!(frame("canny", &rgb, w, h, &s).contains(&255));
+        let mut hist = [0u64; 256];
+        hist[20] = 99;
+        hist[200] = 1;
+        assert_eq!((percentile(&hist, 0.01), percentile(&hist, 0.99), percentile(&hist, 1.0)), (20.0, 20.0, 200.0));
+    }
+
+    #[test]
     fn canvas_and_length_defaults() {
         assert_eq!(default_canvas(1280, 720), (896, 512));
         assert_eq!(default_canvas(640, 480), (768, 576));
@@ -406,8 +472,8 @@ mod tests {
 
     #[test]
     fn gray_is_luma() {
-        let s = Settings { control: "gray".into(), width: 2, height: 1, frames: 22, start_s: 0.0, low: 100.0, high: 200.0 };
-        assert_eq!(frame("gray", &[255, 0, 0, 0, 0, 255], 2, 1, &s), vec![76, 76, 76, 29, 29, 29]);
+        let s = Settings { control: "gray".into(), width: 2, height: 1, frames: 22, start_s: 0.0, low: 100.0, high: 200.0, normalize: true, levels: Some((20.0, 60.0)) };
+        assert_eq!(frame("gray", &[255, 0, 0, 0, 0, 255], 2, 1, &s), vec![76, 76, 76, 29, 29, 29], "gray is never stretched");
     }
 
     /// The whole path through ffmpeg (skipped where there is none): a moving square becomes its edges, as long as
@@ -435,7 +501,8 @@ mod tests {
         let s = settings(&json!({"control": "canny", "width": 320, "height": 256, "frames": 56}), (w, h, secs)).unwrap();
         let dst = dir.join("out.mp4");
         let made = make(&src, &dst, &s).unwrap();
-        assert_eq!(made, 56, "36 frames of clip and its last one held");
+        assert_eq!(made, (56, 36), "36 frames of clip and its last one held");
+        assert_eq!(levels(&src, 0.0, 1.5), Some((0.0, 255.0)), "black and white");
         let (ow, oh, _) = probe(&dst).unwrap();
         assert_eq!((ow, oh), (320, 256));
         let _ = std::fs::remove_dir_all(&dir);
