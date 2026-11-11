@@ -146,10 +146,13 @@ pub fn expand(blocks: &Tensor, kind: GType, shape: &[usize], dt: DType) -> Resul
 }
 
 /// A low-rank addition to a layer (a LoRA): `out += B (A x)`, A [r, K], B [N, r] in the activations' type, the
-/// strength folded into B.
+/// strength folded into B. `parts` > 1: B is block-diagonal - output rows `i * N / parts ..` read only ranks
+/// `i * r / parts ..` (a fused q/k/v's LoRA made of three) - and is kept compact, [N, r / parts]: each part is its own
+/// thin product into its columns of `out`, a third of the memory.
 pub struct Lora {
     pub a: Tensor,
     pub b: Tensor,
+    pub parts: usize,
 }
 
 impl Lora {
@@ -161,16 +164,30 @@ impl Lora {
     pub fn apply(&self, x: &Tensor, tmp: &Tensor, out: &Tensor) -> Result<()> {
         let (r, k, n) = (self.rank(), self.a.shape[1], self.b.shape[0]);
         let m = x.elements() / k;
-        if x.dtype != self.a.dtype || out.dtype != x.dtype || tmp.dtype != x.dtype || tmp.elements() < m * r || out.elements() != m * n {
-            return Err(Error(format!("lora: x {:?} {:?}, out {:?} {:?}, A {:?}, B {:?}", x.dtype, x.shape, out.dtype, out.shape, self.a.shape, self.b.shape)));
+        let p = self.parts.max(1);
+        if x.dtype != self.a.dtype || out.dtype != x.dtype || tmp.dtype != x.dtype || tmp.elements() < m * r || out.elements() != m * n
+            || r % p != 0 || n % p != 0 || self.b.shape[1] * p != r {
+            return Err(Error(format!("lora: x {:?} {:?}, out {:?} {:?}, A {:?}, B {:?} in {p} part(s)", x.dtype, x.shape, out.dtype, out.shape, self.a.shape, self.b.shape)));
         }
         let dev = x.buf.device();
         let code = x.dtype.kernel_code()?;
-        // SAFETY: device buffers of this device, sizes checked above.
-        let rc = unsafe { (dev.api.linear)(dev.ctx, x.buf.ptr(), code, m as i64, k as i64, self.a.buf.ptr(), r as i64, std::ptr::null(), tmp.buf.ptr(), code) };
-        dev.check(rc)?;
-        let rc = unsafe { (dev.api.linear_acc)(dev.ctx, tmp.buf.ptr(), code, m as i64, r as i64, self.b.buf.ptr(), n as i64, std::ptr::null(), out.buf.ptr(), 0) };
-        dev.check(rc)
+        let es = x.dtype.size();
+        let (rp, np) = (r / p, n / p);
+        for i in 0..p {
+            // SAFETY: device buffers of this device, sizes checked above; each part's offsets stay inside A, B and out
+            // (out's rows are n wide: part i writes columns i * np .. (i + 1) * np of each, ldo n).
+            let rc = unsafe {
+                (dev.api.linear)(dev.ctx, x.buf.ptr(), code, m as i64, k as i64, self.a.buf.ptr().cast::<u8>().add(i * rp * k * es).cast(), rp as i64,
+                                 std::ptr::null(), tmp.buf.ptr(), code)
+            };
+            dev.check(rc)?;
+            let rc = unsafe {
+                (dev.api.linear_acc)(dev.ctx, tmp.buf.ptr(), code, m as i64, rp as i64, self.b.buf.ptr().cast::<u8>().add(i * np * rp * es).cast(),
+                                     np as i64, std::ptr::null(), out.buf.ptr().cast::<u8>().add(i * np * es).cast(), if p == 1 { 0 } else { n as i64 })
+            };
+            dev.check(rc)?;
+        }
+        Ok(())
     }
 }
 

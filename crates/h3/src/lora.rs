@@ -27,6 +27,22 @@ pub struct LoraSet {
     pub layers: usize,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_block_diagonal_b_is_found_and_kept_compact() {
+        // n 6, r 3, three parts: row pairs read one rank each
+        let b = [1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 6.0];
+        assert!(block_diagonal(&b, 6, 3, 3));
+        assert_eq!(compact(&b, 6, 3, 3), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut full = b;
+        full[1] = 0.5;
+        assert!(!block_diagonal(&full, 6, 3, 3));
+    }
+}
+
 /// A one-value tensor (a LoRA's alpha): a float, or an integer as some converters write it (pDMD's ComfyUI file: int64)
 fn scalar(ck: &Checkpoint, name: &str) -> Result<f32> {
     let e = ck.get(name)?;
@@ -41,9 +57,27 @@ fn scalar(ck: &Checkpoint, name: &str) -> Result<f32> {
 
 /// The bytes block `i` of `prefix` ("blocks") takes on a card for a LoRA in `ck` (its A and B, bfloat16): what the
 /// denoiser's placement keeps beside the block's own matrices
+/// (a fused q/k/v's B counted compact, a third: `load_placed` keeps it so when it is block-diagonal, as a q/k/v LoRA
+/// converted to the fused layout is)
 pub fn block_bytes(ck: &Checkpoint, prefix: &str, i: usize) -> u64 {
-    LINEARS.iter().flat_map(|l| ["lora_A", "lora_B"].map(|ab| format!("diffusion_model.{prefix}.{i}.{l}.{ab}.weight")))
-        .filter_map(|n| ck.get(&n).ok().map(|e| e.shape.iter().product::<usize>() as u64 * 2)).sum()
+    LINEARS.iter().enumerate().flat_map(|(j, l)| ["lora_A", "lora_B"].map(move |ab| (j == 0 && ab == "lora_B", format!("diffusion_model.{prefix}.{i}.{l}.{ab}.weight"))))
+        .filter_map(|(fused_b, n)| ck.get(&n).ok().map(|e| e.shape.iter().product::<usize>() as u64 * 2 / if fused_b && e.shape[1] % 3 == 0 { 3 } else { 1 }))
+        .sum()
+}
+
+/// Whether B [n, r] is `parts` blocks on its diagonal: output rows `i * n / parts ..` use only ranks `i * r / parts ..`
+fn block_diagonal(b: &[f32], n: usize, r: usize, parts: usize) -> bool {
+    if n % parts != 0 || r % parts != 0 || r < parts {
+        return false;
+    }
+    let (np, rp) = (n / parts, r / parts);
+    (0..n).all(|row| (0..r).all(|c| c / rp == row / np || b[row * r + c] == 0.0))
+}
+
+/// A block-diagonal B [n, r] as [n, r / parts]: each row's own part's ranks
+fn compact(b: &[f32], n: usize, r: usize, parts: usize) -> Vec<f32> {
+    let (np, rp) = (n / parts, r / parts);
+    (0..n).flat_map(|row| { let i = row / np; b[row * r + i * rp..row * r + (i + 1) * rp].to_vec() }).collect()
 }
 
 fn bf16(dev: &Arc<Device>, shape: &[usize], v: &[f32]) -> Result<Tensor> {
@@ -84,7 +118,10 @@ impl LoraSet {
                     };
                     let scale = strength * alpha;
                     b.iter_mut().for_each(|v| *v *= scale);
-                    bl[j].push(Lora { a: bf16(dev, &sa, &a)?, b: bf16(dev, &sb, &b)? });
+                    // a fused q/k/v's LoRA that is three side by side (B block-diagonal): kept compact
+                    let parts = if j == 0 && block_diagonal(&b, sb[0], r, 3) { 3 } else { 1 };
+                    let (b, sb) = if parts > 1 { (compact(&b, sb[0], r, parts), vec![sb[0], r / parts]) } else { (b, sb) };
+                    bl[j].push(Lora { a: bf16(dev, &sa, &a)?, b: bf16(dev, &sb, &b)?, parts });
                     max_rank = max_rank.max(r);
                     layers += 1;
                 }

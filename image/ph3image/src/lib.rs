@@ -94,6 +94,8 @@ pub const TURBO_MAX_STEPS: u32 = 8;
 const TURBO_PIXELS: f64 = 1_048_576.0;
 /// conditionings and pictures kept for the next requests (a live editor sends the same picture with a prompt typed on)
 const KEEP_CONDS: usize = 16;
+/// with it: the room kept on each card beside the blocks (NC_PH3_RESERVE_GIB; 2 without it)
+const TURBO_RESERVE_GIB: f64 = 1.5;
 const KEEP_PICS: usize = 2;
 
 /// A request's options: another sampling grid than the checkpoint's
@@ -121,6 +123,8 @@ pub fn kind() -> ImageKind {
 fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<Box<dyn ImageEngine>> {
     let reserve = match o.setting("NC_PH3_RESERVE_GIB") {
         Some(v) => v.trim().parse::<f64>().ok().filter(|g| (0.5..=8.0).contains(g)).ok_or_else(|| Error(format!("NC_PH3_RESERVE_GIB={v}: GiB, 0.5 to 8")))?,
+        // a turbo entry runs about 1 MP: less kept for the buffers, room for the LoRA beside the blocks
+        None if files.contains_key(TURBO) => TURBO_RESERVE_GIB,
         None => 2.0,
     };
     Ok(Box::new(PH3Image::load(files, gpus, (reserve * (1u64 << 30) as f64) as u64, log).map_err(ie)?))
