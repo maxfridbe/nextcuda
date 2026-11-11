@@ -88,6 +88,11 @@ fn listening(port: u16) -> bool {
 }
 
 /// An image, audio or 3D model: it loads whole on one card (the first of its cards with room)
+/// The key a split model's ask on its other cards is learned under (beside its own id's, for the card it starts on)
+fn rest_key(id: &str) -> String {
+    format!("{id}@rest")
+}
+
 fn one_card(m: &Value) -> bool {
     matches!(registry::kind_of(m), "image" | "audio" | "model3d")
 }
@@ -923,8 +928,13 @@ impl Home {
         let _g = self.kind_lock[kind].lock().unwrap();
         let card_mb = |c: &Value| c["vram_total_mb"].as_u64().unwrap_or(0);
         let (need, _) = self.vouched_mb(m, self.cards.lock().unwrap().get(info.gpus[0]).map_or(32768, card_mb));
-        let asked = self.asked.lock().unwrap().get(id).copied().unwrap_or(0);
-        Ok(match splace::place(&Sched(self), &PlaceReq { model: &info, job, need_mb: &need, asked_mb: asked })? {
+        let rest = self.split_rest_mb(m, &info);
+        let (asked, asked_rest) = {
+            let a = self.asked.lock().unwrap();
+            (a.get(id).copied().unwrap_or(0), a.get(&rest_key(id)).copied().unwrap_or(0))
+        };
+        let req = PlaceReq { model: &info, job, need_mb: &need, rest_mb: &rest, asked_mb: asked, asked_rest_mb: asked_rest };
+        Ok(match splace::place(&Sched(self), &req)? {
             Outcome::Placed { port, .. } => Ok(self.lease(port)),
             Outcome::NotYet(why) => Err(why),
         })
@@ -932,7 +942,26 @@ impl Home {
 
     /// The scheduler's view of a registry entry
     pub(crate) fn model_info(&self, m: &Value) -> ModelInfo {
-        ModelInfo { id: s(m, "id"), kind: registry::kind_of(m).to_string(), enabled: m["enabled"] != false, gpus: self.gpus_of(m), profile: self.profile_of(m) }
+        let gpus = self.gpus_of(m);
+        let split = m["split"] == true && gpus.len() > 1;
+        ModelInfo { id: s(m, "id"), kind: registry::kind_of(m).to_string(), enabled: m["enabled"] != false, gpus, profile: self.profile_of(m), split }
+    }
+
+    /// A split model's memory on each of its cards but the one its server starts on, MiB: its entry's or its model card's
+    /// `split_vram_gib` (MiniMax Music 3's flow stage and decoder: 7.2 GiB). None given: empty - planned as on the first.
+    fn split_rest_mb(&self, m: &Value, info: &ModelInfo) -> BTreeMap<usize, u64> {
+        if !info.split {
+            return BTreeMap::new();
+        }
+        let gib = m["split_vram_gib"].as_f64().or_else(|| {
+            self.card_cache().iter().find(|c| [s(m, "catalog"), s(m, "id")].iter().any(|i| !i.is_empty() && c["id"] == i.as_str()))
+                .and_then(|c| c["split_vram_gib"].as_f64())
+        });
+        // never more than the card may be asked for beside the margin (as `vouched_mb`): a share that fills a card (Moss
+        // Image's text encoder, ~10.5 GiB) needs that card empty, not more than it has
+        let cards = self.cards.lock().unwrap().clone();
+        let cap = |i: usize| cards.get(i).and_then(|c| c["vram_total_mb"].as_u64()).map_or(u64::MAX, |t| t.saturating_sub(MARGIN_MB + 512));
+        gib.filter(|g| *g > 0.0).map(|g| info.gpus.iter().map(|i| (*i, ((g * 1024.0) as u64).min(cap(*i)))).collect()).unwrap_or_default()
     }
 
     /// The box as the scheduler sees it, now: the cards and their processes, the servers, the models, pins and holds
@@ -991,16 +1020,18 @@ impl Home {
     /// A server's refusal to load for want of memory (its "needs about X GiB ...; Y GiB are free", in `e`) on card
     /// `gpu`, planned for `want` MiB: what it asks, as the front door counts free memory, kept for `id`. Whether that
     /// is more than was planned (another try may then succeed).
-    fn learn_ask(&self, id: &str, e: &str, gpu: usize, want: u64) -> bool {
+    fn learn_ask(&self, id: &str, e: &str, gpu: usize, want: u64, rest: bool) -> bool {
         let Some((need, had)) = splace::asked_mb(e) else { return false };
         let cards = self.snapshot().cards;
         let total = cards.iter().find(|c| c.index == gpu).map_or(u64::MAX, |c| c.total_mb);
         let ask = splace::ask_mb(need, had, room::card_free(&cards, gpu), total);
-        eprintln!("{id}: its server asked {need} MiB with {had} MiB free on GPU {gpu}; planned {want} MiB, from now {ask}");
+        eprintln!("{id}: its server asked {need} MiB with {had} MiB free on GPU {gpu}{}; planned {want} MiB, from now {ask}",
+                  if rest { " (its split's other card)" } else { "" });
         let mut a = self.asked.lock().unwrap();
-        let more = ask > want && a.get(id).is_none_or(|x| ask > *x);
+        let key = if rest { rest_key(id) } else { id.to_string() };
+        let more = ask > want && a.get(&key).is_none_or(|x| ask > *x);
         if more {
-            a.insert(id.to_string(), ask);
+            a.insert(key, ask);
         }
         more
     }
@@ -1168,6 +1199,8 @@ impl Home {
             }
             _ => gpu.to_string(),
         };
+        // (the log names every card the server takes: a split model's failure on its second card is not "GPU 0"'s)
+        let on_label = on.clone();
         let mut args = vec![kind.to_string(), "start".into(), id.into(), "--gpu".into(), on, "--port".into(), port.to_string(),
                             "--host".into(), self.o.serve_host.clone(), "--wfe".into(), "--slot".into(), slot.to_string()];
         // a server started for a describe loads the text encoder only, its pipeline when a picture is drawn
@@ -1178,7 +1211,7 @@ impl Home {
         args.extend(idle_exit_args(self.o.idle_minutes, self.entry(id).is_ok_and(|m| registry::pinned(&m))));
         self.loading.lock().unwrap().insert(id.to_string(), now());
         self.started_on.lock().unwrap().insert(port, gpu);
-        let r = self.exec(format!("{kind} start {id} on GPU {gpu}{}", if slot > 0 { format!(" (server {})", slot + 1) } else { String::new() }), &args);
+        let r = self.exec(format!("{kind} start {id} on GPU {on_label}{}", if slot > 0 { format!(" (server {})", slot + 1) } else { String::new() }), &args);
         self.loading.lock().unwrap().remove(id);
         r.map_err(|e| (502, e))?;
         self.wait_up(port, id)
@@ -1571,8 +1604,8 @@ impl Host for Sched<'_> {
     fn cancelled(&self, job: &str) -> bool {
         self.0.job_cancelled(job)
     }
-    fn learn_ask(&self, id: &str, err: &str, gpu: usize, want: u64) -> bool {
-        self.0.learn_ask(id, err, gpu, want)
+    fn learn_ask(&self, id: &str, err: &str, gpu: usize, want: u64, rest: bool) -> bool {
+        self.0.learn_ask(id, err, gpu, want, rest)
     }
 }
 

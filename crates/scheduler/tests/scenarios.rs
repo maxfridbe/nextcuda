@@ -17,6 +17,9 @@ use serde_json::{json, Value};
 
 const CARD: u64 = 12288;
 
+/// No split model's other cards
+static NONE: BTreeMap<usize, u64> = BTreeMap::new();
+
 fn profile(v: Value) -> Profile {
     Profile::from_card(&v).unwrap()
 }
@@ -36,7 +39,7 @@ fn box1(slots: usize) -> FakeHost {
 
 /// The request for model `m` that needs `mb` on each of its cards
 fn req<'a>(m: &'a ModelInfo, needs: &'a BTreeMap<usize, u64>) -> PlaceReq<'a> {
-    PlaceReq { model: m, job: None, need_mb: needs, asked_mb: 0 }
+    PlaceReq { model: m, job: None, need_mb: needs, rest_mb: &NONE, asked_mb: 0, asked_rest_mb: 0 }
 }
 
 fn needs(m: &ModelInfo, mb: u64) -> BTreeMap<usize, u64> {
@@ -252,7 +255,7 @@ fn s15_a_cancel_ends_a_jobs_wait() {
     h.pin("a", true);
     h.cancel("job-1");
     let n = needs(&b, 7000);
-    let r = PlaceReq { model: &b, job: Some("job-1"), need_mb: &n, asked_mb: 0 };
+    let r = PlaceReq { model: &b, job: Some("job-1"), need_mb: &n, rest_mb: &NONE, asked_mb: 0, asked_rest_mb: 0 };
     let e = ensure(&h, &r, Duration::from_secs(1800), None, &json!({})).unwrap_err();
     assert_eq!(e.0, 499);
 }
@@ -418,4 +421,104 @@ fn s25_a_clip_that_cannot_fit_even_with_every_server_gone_is_refused_at_once() {
     // no estimate: nothing is refused for size, idle servers still go
     let n = BTreeMap::new();
     assert_eq!(room_for_video(&h, &VideoReq { model: &v, gpu: None, need_mb: &n }), Ok(Some(0)));
+}
+
+/// brainiac-nvidia on 2026-11-11: the 5070 (card 0) with Breeze TTS idle on it, the 3060 (card 1) with ACE-Step rendering a
+/// song, two audio servers, and MiniMax Music 3 int8 - split: its language model on the card it is started on, its flow
+/// stage on the other. Planned for 10179 MiB vouched (+ the margin) first and 7372 (7.2 GiB) on the other card.
+fn the_eleventh() -> (FakeHost, ModelInfo, BTreeMap<usize, u64>, BTreeMap<usize, u64>) {
+    let h = FakeHost::new(&[12227, CARD], &[("audio", 2)]);
+    let breeze = h.add("breeze-tts-2", "audio", 5900, &[0], plain());
+    let ace = h.add("acestep-1.5", "audio", 10854, &[1], plain());
+    ask(&h, &breeze, 5900, 90).unwrap();
+    ask(&h, &ace, 10000, 90).unwrap();
+    h.busy("acestep-1.5", 600.0, 0);
+    let mm = h.add_split("minimax-music3-int8", "audio", 7000, 6963, &[0, 1]);
+    (h, mm, BTreeMap::from([(0, 10179), (1, 10179)]), BTreeMap::from([(0, 7372), (1, 7372)]))
+}
+
+fn split_req<'a>(m: &'a ModelInfo, need: &'a BTreeMap<usize, u64>, rest: &'a BTreeMap<usize, u64>) -> PlaceReq<'a> {
+    PlaceReq { model: m, job: None, need_mb: need, rest_mb: rest, asked_mb: 0, asked_rest_mb: 0 }
+}
+
+#[test]
+fn s26_a_split_model_waits_for_the_song_on_its_other_card_and_starts_nothing_meanwhile() {
+    // the song's server pinned (it cannot be made to go): card 0 would have the room with Breeze stopped, but the flow
+    // stage's card is held - not yet, nothing stopped, nothing started (on the box: Breeze stopped, then 36 starts that
+    // died on the 3060), and a request's wait ends in no_room (503, retryable) with nothing stopped
+    let (h, mm, need, rest) = the_eleventh();
+    h.pin("acestep-1.5", true);
+    match place(&h, &split_req(&mm, &need, &rest)).unwrap() {
+        backplane_scheduler::place::Outcome::NotYet(why) => assert!(why.contains("each other"), "{why}"),
+        o => panic!("{o:?}"),
+    }
+    assert_eq!(ensure(&h, &split_req(&mm, &need, &rest), Duration::from_secs(90), None, &json!({})).unwrap_err().0, 503);
+    assert_eq!(h.count("stop"), 0, "{:?}", h.log());
+    assert_eq!(h.count("minimax"), 0, "{:?}", h.log());
+    // not pinned: the song is waited for (the kind's busy server on its card goes after its requests), then the idle
+    // ones go and it loads, the first time
+    let (h, mm, need, rest) = the_eleventh();
+    let t0 = h.now();
+    ensure(&h, &split_req(&mm, &need, &rest), Duration::from_secs(1800), None, &json!({})).unwrap();
+    assert!(h.now() - t0 >= 600.0, "it waited for the song");
+    assert_eq!(h.count("refused"), 0, "{:?}", h.log());
+    assert_eq!(h.count("start audio minimax-music3-int8"), 1, "{:?}", h.log());
+    assert!(h.loaded("audio").contains(&Some("minimax-music3-int8".to_string())));
+}
+
+#[test]
+fn s27_a_split_model_loads_at_once_when_both_cards_have_the_room() {
+    let h = FakeHost::new(&[12227, CARD], &[("audio", 2)]);
+    let mm = h.add_split("mm", "audio", 7000, 6963, &[0, 1]);
+    let (need, rest) = (BTreeMap::from([(0, 10179), (1, 10179)]), BTreeMap::from([(0, 7372), (1, 7372)]));
+    ensure(&h, &split_req(&mm, &need, &rest), Duration::from_secs(90), None, &json!({})).unwrap();
+    assert_eq!(h.log(), vec!["start audio mm slot 0 gpu 0"]);
+    // and an idle model of another kind's card on its other card goes for it (the plan covers every card it takes)
+    let h = FakeHost::new(&[12227, CARD], &[("audio", 1), ("image", 1)]);
+    let mm = h.add_split("mm", "audio", 7000, 6963, &[0, 1]);
+    let q = h.add("q", "image", 9000, &[1], plain());
+    ask(&h, &q, 9000, 90).unwrap();
+    ensure(&h, &split_req(&mm, &need, &rest), Duration::from_secs(90), None, &json!({})).unwrap();
+    assert_eq!(h.count("stop image slot 0"), 1, "{:?}", h.log());
+    assert_eq!(h.count("refused"), 0, "{:?}", h.log());
+}
+
+#[test]
+fn s28_a_start_refused_for_memory_the_snapshot_did_not_show_waits_and_loads_after() {
+    let h = box1(1);
+    let a = h.add("a", "audio", 7000, &[0], plain());
+    // another program took 6 GiB a moment ago; the sample does not show it yet, and it lets go 20 s on
+    h.hide(0, 6000, 20.0);
+    ask(&h, &a, 7000, 90).unwrap();
+    // (the fake learns nothing from a refusal, so it tries again every 3 s until the memory is back; the box's host raises
+    // its plan by the ask and waits without starting)
+    assert!(h.count("refused audio a") >= 1, "{:?}", h.log());
+    assert_eq!(h.count("refused audio a"), h.count("learn a gpu 0"), "{:?}", h.log());
+    assert_eq!(h.loaded("audio"), vec![Some("a".to_string())]);
+    // longer than the wait: no_room (503, retryable), never the start's failure
+    let h = box1(1);
+    let a = h.add("a", "audio", 7000, &[0], plain());
+    h.hide(0, 6000, 600.0);
+    assert_eq!(ask(&h, &a, 7000, 30).unwrap_err().0, 503);
+}
+
+#[test]
+fn s29_a_refusal_on_a_split_models_other_card_is_learned_for_that_card() {
+    let h = FakeHost::new(&[12227, CARD], &[("audio", 1)]);
+    let mm = h.add_split("mm", "audio", 7000, 6963, &[0, 1]);
+    h.hide(1, 8000, 10.0);
+    let (need, rest) = (BTreeMap::from([(0, 7000), (1, 7000)]), BTreeMap::from([(0, 7000), (1, 7000)]));
+    ensure(&h, &split_req(&mm, &need, &rest), Duration::from_secs(90), None, &json!({})).unwrap();
+    assert!(h.count("learn mm gpu 1 (rest)") >= 1, "{:?}", h.log());
+    assert_eq!(h.count("learn mm gpu 0"), 0, "the first card was not short: {:?}", h.log());
+}
+
+#[test]
+fn s30_a_model_bigger_than_its_card_is_still_a_failure_at_once() {
+    let h = box1(1);
+    let a = h.add("a", "audio", 20000, &[0], plain());
+    // vouched too low: planned, started, refused for more than the card holds - waiting would never help
+    let (code, msg) = ask(&h, &a, 4000, 1800).unwrap_err();
+    assert_eq!(code, 502, "{msg}");
+    assert_eq!(h.count("refused"), 1);
 }

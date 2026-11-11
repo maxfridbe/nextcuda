@@ -70,6 +70,20 @@ pub struct ModelInfo {
     /// the cards it may use
     pub gpus: Vec<usize>,
     pub profile: Profile,
+    /// one server takes every card of `gpus`, the one it is started on first (its model card's `split: true`: MiniMax
+    /// Music 3's language model on one card, its flow stage on the other) - each of them must have the room
+    pub split: bool,
+}
+
+impl ModelInfo {
+    /// The cards a server of it started on card `g` takes: `g`, and after it, for a split model, its other cards
+    pub fn cards_taken(&self, g: usize) -> Vec<usize> {
+        let mut v = vec![g];
+        if self.split {
+            v.extend(self.gpus.iter().copied().filter(|o| *o != g));
+        }
+        v
+    }
 }
 
 /// One consistent view of the box

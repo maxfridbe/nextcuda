@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::host::Host;
-use crate::room::{card_free, idle_servers, card_of, card_of_port, extra_copy_allowed, no_room, pick_card, room_plan, Free, Holder, ModelInfo, Server, JOB_ROOM_WAIT_S, MARGIN_MB, TIE_MB};
+use crate::room::{card_free, idle_servers, card_of, extra_copy_allowed, no_room, pick_card, room_plan, Card, Free, Holder, ModelInfo, Server, JOB_ROOM_WAIT_S, MARGIN_MB, TIE_MB};
 use crate::Fail;
 
 /// What to place
@@ -12,10 +12,14 @@ pub struct PlaceReq<'a> {
     pub model: &'a ModelInfo,
     /// the job asking (its stage is noted, a cancel ends a wait)
     pub job: Option<&'a str>,
-    /// the memory the model is vouched for on each card, MiB
+    /// the memory the model is vouched for on each card, MiB (a split model's: on the card its server is started on)
     pub need_mb: &'a BTreeMap<usize, u64>,
+    /// a split model's memory on each of its other cards, MiB (a card without an entry: its `need_mb`)
+    pub rest_mb: &'a BTreeMap<usize, u64>,
     /// MiB a server once refused for (learned): at least this is planned for
     pub asked_mb: u64,
+    /// MiB a split model's server once refused for on one of its other cards (learned)
+    pub asked_rest_mb: u64,
 }
 
 /// The answer of one try
@@ -123,6 +127,27 @@ pub fn place(host: &dyn Host, req: &PlaceReq) -> Result<Outcome, Fail> {
         return Ok(Outcome::Placed { slot: x.slot, port: x.port });
     }
     let want = |g: usize| (req.need_mb.get(&g).copied().unwrap_or(0) + MARGIN_MB).max(req.asked_mb);
+    let want_rest = |g: usize| (req.rest_mb.get(&g).or(req.need_mb.get(&g)).copied().unwrap_or(0) + MARGIN_MB).max(req.asked_rest_mb);
+    // what each card a server started on `g` takes must have free: `g` its share, a split model's other cards theirs
+    // (2026-11-11: MiniMax Music 3 was planned on the 5070 alone - its idle TTS stopped for it - and started there with
+    // its flow stage on the 3060, which ACE-Step's song held: 36 starts died "needs about 6.8 GiB on RTX 3060")
+    let wants = |g: usize| -> Vec<(usize, u64)> {
+        m.cards_taken(g).into_iter().enumerate().map(|(i, c)| (c, if i == 0 { want(c) } else { want_rest(c) })).collect()
+    };
+    // the idle holders to stop so that every card a start on `g` takes has its room (each less what `less` gives back
+    // there), or no way now
+    let plan_on = |g: usize, light: bool, less: &dyn Fn(usize) -> u64| -> Option<Vec<Holder>> {
+        let mut all: Vec<Holder> = Vec::new();
+        for (c, w) in wants(g) {
+            for h in room_plan(&snap, host, c, w.saturating_sub(less(c)), kind, light, Some(m))? {
+                if !all.iter().any(|a| a.what == h.what) {
+                    all.push(h);
+                }
+            }
+        }
+        Some(all)
+    };
+    let nothing = |_: usize| 0;
     let cards = &snap.cards;
     // a server that holds another model and could go now
     let idle_other = |x: &&Server| x.model.is_some() && x.model.as_deref() != Some(id) && !kept(x) && x.idle();
@@ -135,17 +160,17 @@ pub fn place(host: &dyn Host, req: &PlaceReq) -> Result<Outcome, Fail> {
         let per_card = m.profile.concurrency.recommended_copies.min(m.profile.concurrency.max_copies_per_card) as usize;
         let spare = sv.iter().find(|x| x.model.is_none()).or_else(|| sv.iter().find(idle_other));
         let plan = pick_card(gpus.iter().copied().filter(|g| extra_copy_allowed(&on, *g, per_card))
-            .map(|g| (g, card_free(cards, g), room_plan(&snap, host, g, want(g), kind, true, Some(m)))));
+            .map(|g| (g, card_free(cards, g), plan_on(g, true, &nothing))));
         if let (Some(x), Some((gpu, plan))) = (spare, plan) {
             // (a plan another request's lock stands in the way of: no copy now, the requests share the first)
             let started = free_plan(host, &plan, kind, id).and_then(|_| {
                 stop_slot(host, kind, x, id)?;
-                if !wait_room(host, gpu, want(gpu)) {
+                if !wants(gpu).into_iter().all(|(c, w)| wait_room(host, c, w)) {
                     return Err((503, format!("GPU {gpu} did not free the room")));
                 }
-                host.note(job, "loading", &format!("a second copy of {id} loading on GPU {gpu} (server {})", x.slot + 1));
+                host.note(job, "loading", &format!("a second copy of {id} loading on {} (server {})", on_cards(&m.cards_taken(gpu)), x.slot + 1));
                 host.start(kind, id, x.slot, x.port, gpu).inspect_err(|(_, e)| {
-                    host.learn_ask(id, e, gpu, want(gpu));
+                    short_of_room(host, cards, m, gpu, e, &wants(gpu));
                 })
             });
             match started {
@@ -162,24 +187,30 @@ pub fn place(host: &dyn Host, req: &PlaceReq) -> Result<Outcome, Fail> {
     }
     // not loaded: a card of its with the room now (the one with the most free), else the first that has it once idle
     // models there go (picture and sound servers, an idle video worker, a chat model not kept); a slot no server holds,
-    // else one an idle model holds, else one a busy model of the kind holds, after its requests
-    let plan = pick_card(gpus.iter().map(|&g| (g, card_free(cards, g), room_plan(&snap, host, g, want(g), kind, false, Some(m)))));
+    // else one an idle model holds, else one a busy model of the kind holds, after its requests. A split model's other
+    // cards must have their room too, or the card is no choice.
+    let plan = pick_card(gpus.iter().map(|&g| (g, card_free(cards, g), plan_on(g, false, &nothing))));
     let empty = sv.iter().find(|x| x.model.is_none());
     let idle = sv.iter().filter(idle_other).min_by_key(|x| card_of(cards, x).is_none_or(|g| Some(g) != plan.as_ref().map(|p| p.0)));
     let on_mine = |x: &&Server| x.model.is_some() && !kept(x) && card_of(cards, x).is_some_and(|g| gpus.contains(&g));
+    let no_room_now = || {
+        let mut why = no_room(&snap, gpus, m, want(gpus[0]));
+        if m.split {
+            why += &format!(" on the first of its cards and ~{:.1} GiB on each other (its stages split over them)", want_rest(gpus[gpus.len() - 1]) as f64 / 1024.0);
+        }
+        why
+    };
     let Some((gpu, plan)) = plan else {
         // no room even then: a busy server of another model of the kind on a card of its goes after its requests (it
         // holds the room), then the next try loads it
-        let held = |x: &Server| card_of(cards, x).map(|g| {
-            let mb = cards.iter().find(|c| c.index == g).into_iter().flat_map(|c| c.procs.iter()).filter(|p| p.port == Some(x.port)).map(|p| p.mb).sum::<u64>();
-            (g, mb)
-        });
-        let frees = |x: &&Server| held(x).is_some_and(|(g, mb)| room_plan(&snap, host, g, want(g).saturating_sub(mb), kind, false, Some(m)).is_some());
+        let held = |x: &Server, c: usize| cards.iter().find(|k| k.index == c).into_iter().flat_map(|k| k.procs.iter())
+            .filter(|p| p.port == Some(x.port)).map(|p| p.mb).sum::<u64>();
+        let frees = |x: &&Server| card_of(cards, x).is_some_and(|g| plan_on(g, false, &|c| held(x, c)).is_some());
         if let Some(x) = sv.iter().filter(on_mine).filter(frees).min_by_key(|x| x.inflight) {
             drain(host, x, kind, id, job)?;
             return Ok(Outcome::NotYet(format!("server {} stopped for {id}", x.slot + 1)));
         }
-        return Ok(Outcome::NotYet(no_room(&snap, gpus, m, want(gpus[0]))));
+        return Ok(Outcome::NotYet(no_room_now()));
     };
     let x = match (empty, idle) {
         (Some(e), _) => e,
@@ -188,7 +219,7 @@ pub fn place(host: &dyn Host, req: &PlaceReq) -> Result<Outcome, Fail> {
         _ => {
             // (a kept model's server is never the one: every server kept, no room)
             let Some(x) = sv.iter().filter(|x| x.model.is_some() && !kept(x)).min_by_key(|x| (!on_mine(x) as u8, x.inflight)) else {
-                return Ok(Outcome::NotYet(no_room(&snap, gpus, m, want(gpus[0]))));
+                return Ok(Outcome::NotYet(no_room_now()));
             };
             drain(host, x, kind, id, job)?;
             x
@@ -201,18 +232,56 @@ pub fn place(host: &dyn Host, req: &PlaceReq) -> Result<Outcome, Fail> {
     }
     // what was stopped has let go of the room before the load (a holder that took work meanwhile is not stopped: the next
     // try plans again)
-    if !wait_room(host, gpu, want(gpu)) {
-        return Ok(Outcome::NotYet(format!("GPU {gpu} has not freed {:.1} GiB for {id} yet", want(gpu) as f64 / 1024.0)));
+    for (c, w) in wants(gpu) {
+        if !wait_room(host, c, w) {
+            return Ok(Outcome::NotYet(format!("GPU {c} has not freed {:.1} GiB for {id} yet", w as f64 / 1024.0)));
+        }
     }
-    host.note(job, "loading", &format!("{id} loading on GPU {gpu} (server {})", x.slot + 1));
+    host.note(job, "loading", &format!("{id} loading on {} (server {})", on_cards(&m.cards_taken(gpu)), x.slot + 1));
     if let Err((code, e)) = host.start(kind, id, x.slot, x.port, gpu) {
-        // the server asked more than was planned for: the next try plans for that (stopping idle work for it)
-        if host.learn_ask(id, &e, gpu, want(gpu)) {
-            return Ok(Outcome::NotYet(format!("{id} needed more room on GPU {gpu} than planned ({e}); planned again")));
+        // a refusal for memory is a wait, not a failure: what it asked is learned and the next try plans for it
+        if let Some(why) = short_of_room(host, cards, m, gpu, &e, &wants(gpu)) {
+            return Ok(Outcome::NotYet(why));
         }
         return Err((code, e));
     }
     Ok(Outcome::Placed { slot: x.slot, port: x.port })
+}
+
+/// "GPU 0", or a split model's "GPUs 0 and 1"
+fn on_cards(cs: &[usize]) -> String {
+    match cs {
+        [g] => format!("GPU {g}"),
+        _ => format!("GPUs {}", cs.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" and ")),
+    }
+}
+
+/// The card a refusal for memory names ("needs about X GiB on <card name>; ..."), of the cards `among` (the ones the
+/// start took): by its name, the one with the least free when two share it. None: no card named, or none of them.
+pub fn refused_card(cards: &[Card], e: &str, among: &[usize]) -> Option<usize> {
+    let name = e.split(" GiB on ").nth(1)?.split(';').next()?.trim();
+    cards.iter().filter(|c| among.contains(&c.index) && c.name == name).min_by_key(|c| c.free()).map(|c| c.index)
+}
+
+/// A start of `m` on `gpu` that failed (`e`), when it was a refusal for memory on one of the cards it took (`wants`: each
+/// with what was planned there): the ask learned for that card (the host's `learn_ask`; `rest`: a split model's other
+/// card) and why the request waits - the next try plans for the ask, so it waits for busy work there or stops idle work.
+/// None: another failure, or a need past the card's whole memory (it would never load there).
+pub fn short_of_room(host: &dyn Host, cards: &[Card], m: &ModelInfo, gpu: usize, e: &str, wants: &[(usize, u64)]) -> Option<String> {
+    let (need, _) = asked_mb(e)?;
+    let taken: Vec<usize> = wants.iter().map(|w| w.0).collect();
+    let card = refused_card(cards, e, &taken).unwrap_or(gpu);
+    let planned = wants.iter().find(|w| w.0 == card).map_or(0, |w| w.1);
+    let more = host.learn_ask(&m.id, e, card, planned, card != gpu);
+    let total = cards.iter().find(|c| c.index == card).map_or(u64::MAX, |c| c.total_mb);
+    if need > total {
+        return None;
+    }
+    Some(if more {
+        format!("{} needed more room on GPU {card} than planned ({e}); planned again", m.id)
+    } else {
+        format!("GPU {card} was short of the room {} asked ({e}); it waits for the room there", m.id)
+    })
 }
 
 /// The loop around [`place`]: tries again every 3 s until a server is found, a cancel (499), the wait runs out (503 no_room:
@@ -281,6 +350,31 @@ mod tests {
         assert!(ask <= 12227 && ask >= need, "{ask}");
         assert_eq!(asked_mb("qwen3.8 needs about 30.1 GiB on X (28.0 GiB of weights); 22.5 GiB are free").map(|x| x.0), Some(30822));
         assert_eq!(asked_mb("nextcuda-audio-1 ended while loading"), None);
+    }
+
+    #[test]
+    fn a_refusal_is_put_on_the_card_it_names_not_the_one_started_on() {
+        let card = |index: usize, name: &str, used_mb: u64| Card { index, name: name.into(), total_mb: 12227, used_mb, procs: vec![] };
+        let cards = vec![card(0, "NVIDIA GeForce RTX 5070", 300), card(1, "NVIDIA GeForce RTX 3060", 10900)];
+        // 2026-11-11: MiniMax Music 3 started on GPU 0, its flow stage refused on the 3060 (GPU 1)
+        let e = "audio start minimax-music3-int8 on GPU 0 (server 2): nextcuda: nextcuda-audio-1 ended while loading (nextcuda: \
+                 minimax-music3 needs about 6.8 GiB on NVIDIA GeForce RTX 3060; 1.2 GiB are free): nextcuda audio logs";
+        assert_eq!(refused_card(&cards, e, &[0, 1]), Some(1));
+        assert_eq!(refused_card(&cards, e, &[0]), None, "only the cards the start took");
+        assert_eq!(refused_card(&cards, "the server ended while loading", &[0, 1]), None);
+        // two cards of one name: the fuller one
+        let twins = vec![card(0, "B70", 9000), card(1, "B70", 300)];
+        assert_eq!(refused_card(&twins, "x needs about 6.0 GiB on B70; 2.0 GiB are free", &[0, 1]), Some(0));
+    }
+
+    #[test]
+    fn a_split_model_takes_its_other_cards_after_the_one_it_starts_on() {
+        let m = |split| ModelInfo { id: "m".into(), kind: "audio".into(), enabled: true, gpus: vec![0, 1], profile: Default::default(), split };
+        assert_eq!(m(true).cards_taken(0), vec![0, 1]);
+        assert_eq!(m(true).cards_taken(1), vec![1, 0]);
+        assert_eq!(m(false).cards_taken(1), vec![1]);
+        assert_eq!(on_cards(&[0, 1]), "GPUs 0 and 1");
+        assert_eq!(on_cards(&[1]), "GPU 1");
     }
 }
 

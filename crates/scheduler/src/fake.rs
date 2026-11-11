@@ -34,6 +34,11 @@ struct State {
     servers: Vec<FakeServer>,
     models: BTreeMap<String, ModelInfo>,
     vram_mb: BTreeMap<String, u64>,
+    /// a split model's memory on each of its cards but the first
+    rest_mb: BTreeMap<String, u64>,
+    /// memory taken on a card that no snapshot shows, until a time on the clock: (card, MiB, until) - another program
+    /// that grew between the sample and a start
+    hidden: Vec<(usize, u64, f64)>,
     pinned: BTreeSet<String>,
     holds: BTreeMap<String, Hold>,
     cancelled: BTreeSet<String>,
@@ -67,18 +72,35 @@ impl FakeHost {
             }
         }
         FakeHost { st: Mutex::new(State {
-            now: 1000.0, cards: cards_mb.to_vec(), servers: v, models: BTreeMap::new(), vram_mb: BTreeMap::new(), pinned: BTreeSet::new(), holds: BTreeMap::new(),
+            now: 1000.0, cards: cards_mb.to_vec(), servers: v, models: BTreeMap::new(), vram_mb: BTreeMap::new(), rest_mb: BTreeMap::new(), hidden: Vec::new(), pinned: BTreeSet::new(), holds: BTreeMap::new(),
             cancelled: BTreeSet::new(), video_idle: true, chat: None, chat_idle: true, locked: BTreeSet::new(), load_s: 10.0, unseen: false, log: Vec::new(), notes: Vec::new(),
         }) }
     }
 
     /// A model of `kind` that takes `vram_mb` on a card, allowed on `gpus`, with a profile
     pub fn add(&self, id: &str, kind: &str, vram_mb: u64, gpus: &[usize], profile: Profile) -> ModelInfo {
-        let m = ModelInfo { id: id.into(), kind: kind.into(), enabled: true, gpus: gpus.to_vec(), profile };
+        let m = ModelInfo { id: id.into(), kind: kind.into(), enabled: true, gpus: gpus.to_vec(), profile, split: false };
         let mut st = self.st.lock().unwrap();
         st.models.insert(id.into(), m.clone());
         st.vram_mb.insert(id.into(), vram_mb);
         m
+    }
+
+    /// A split model: one server takes all of `gpus`, `first_mb` on the card it is started on and `rest_mb` on each other
+    pub fn add_split(&self, id: &str, kind: &str, first_mb: u64, rest_mb: u64, gpus: &[usize]) -> ModelInfo {
+        let mut m = self.add(id, kind, first_mb, gpus, Profile::default());
+        m.split = true;
+        let mut st = self.st.lock().unwrap();
+        st.models.insert(id.into(), m.clone());
+        st.rest_mb.insert(id.into(), rest_mb);
+        m
+    }
+
+    /// `mb` taken on card `g` for `secs` that no snapshot shows (a start there finds it)
+    pub fn hide(&self, g: usize, mb: u64, secs: f64) {
+        let mut st = self.st.lock().unwrap();
+        let until = st.now + secs;
+        st.hidden.push((g, mb, until));
     }
 
     pub fn set_profile(&self, id: &str, p: Profile) {
@@ -162,9 +184,26 @@ impl FakeHost {
         rsvp::left(st.holds.get(id), st.now)
     }
 
+    /// What server `s` holds on card `g`: its model on the card it was started on, a split model's share on its others
+    fn held_on(st: &State, s: &FakeServer, g: usize) -> u64 {
+        let Some(m) = s.model.as_ref().filter(|_| !s.unseen) else { return 0 };
+        if s.gpu == g {
+            return st.vram_mb.get(m).copied().unwrap_or(0);
+        }
+        match (st.rest_mb.get(m), st.models.get(m)) {
+            (Some(mb), Some(info)) if info.gpus.contains(&g) => *mb,
+            _ => 0,
+        }
+    }
+
+    /// What a start on card `g` finds taken: what a snapshot shows and the hidden memory not run out
+    fn used_really(st: &State, g: usize) -> u64 {
+        FakeHost::used(st, g) + st.hidden.iter().filter(|h| h.0 == g && h.2 > st.now).map(|h| h.1).sum::<u64>()
+    }
+
     fn used(st: &State, g: usize) -> u64 {
         BASE_USED_MB
-            + st.servers.iter().filter(|s| s.gpu == g && !s.unseen).filter_map(|s| s.model.as_ref()).map(|m| st.vram_mb.get(m).copied().unwrap_or(0)).sum::<u64>()
+            + st.servers.iter().map(|s| FakeHost::held_on(st, s, g)).sum::<u64>()
             + st.chat.as_ref().filter(|c| c.2 == g).map_or(0, |c| c.1)
     }
 
@@ -199,9 +238,10 @@ impl Host for FakeHost {
         let mut snap = Snapshot::default();
         for (g, total) in st.cards.iter().enumerate() {
             let mut procs = Vec::new();
-            for s in st.servers.iter().filter(|s| s.gpu == g && !s.unseen) {
-                if let Some(m) = &s.model {
-                    procs.push(Proc { kind: Some(s.kind.clone()), model: m.clone(), port: Some(s.port), mb: st.vram_mb.get(m).copied().unwrap_or(0) });
+            for s in &st.servers {
+                let mb = FakeHost::held_on(&st, s, g);
+                if let (Some(m), true) = (&s.model, mb > 0 || (s.gpu == g && !s.unseen)) {
+                    procs.push(Proc { kind: Some(s.kind.clone()), model: m.clone(), port: Some(s.port), mb });
                 }
             }
             if let Some((id, mb, cg)) = &st.chat {
@@ -228,10 +268,15 @@ impl Host for FakeHost {
 
     fn start(&self, kind: &str, id: &str, slot: usize, _port: u16, gpu: usize) -> Result<(), Fail> {
         let mut st = self.st.lock().unwrap();
-        let need = st.vram_mb.get(id).copied().unwrap_or(0);
-        let free = st.cards[gpu].saturating_sub(FakeHost::used(&st, gpu));
-        if free < need {
-            return Err((502, format!("{id} needs about {:.1} GiB on card {gpu}; {:.1} GiB are free", need as f64 / 1024.0, free as f64 / 1024.0)));
+        // each card it takes (a split model's: all of its own, `gpu` first) must have its share free, as a real engine checks
+        let taken = st.models.get(id).map_or(vec![gpu], |m| m.cards_taken(gpu));
+        for (i, g) in taken.into_iter().enumerate() {
+            let need = if i == 0 { st.vram_mb.get(id) } else { st.rest_mb.get(id) }.copied().unwrap_or(0);
+            let free = st.cards[g].saturating_sub(FakeHost::used_really(&st, g));
+            if free < need {
+                st.log.push(format!("refused {kind} {id} gpu {gpu}: short on card {g}"));
+                return Err((502, format!("{id} needs about {:.1} GiB on card {g}; {:.1} GiB are free", need as f64 / 1024.0, free as f64 / 1024.0)));
+            }
         }
         let load = st.load_s;
         let unseen = st.unseen;
@@ -288,7 +333,8 @@ impl Host for FakeHost {
         self.st.lock().unwrap().cancelled.contains(job)
     }
 
-    fn learn_ask(&self, _id: &str, _err: &str, _gpu: usize, _want: u64) -> bool {
+    fn learn_ask(&self, id: &str, _err: &str, gpu: usize, _want: u64, rest: bool) -> bool {
+        self.st.lock().unwrap().log.push(format!("learn {id} gpu {gpu}{}", if rest { " (rest)" } else { "" }));
         false
     }
 }

@@ -45,6 +45,7 @@ pub trait Host: Idleness {
     fn note(&self, job: Option<&str>, stage: &str, why: &str);
     /// Whether a cancel was asked for the job
     fn cancelled(&self, job: &str) -> bool;
-    /// A server refused to load for want of memory on `gpu`, planned for `want` MiB: remembered; whether it is more than planned
-    fn learn_ask(&self, id: &str, err: &str, gpu: usize, want: u64) -> bool;
+    /// A server refused to load for want of memory on `gpu` (the card its refusal names), planned for `want` MiB there:
+    /// remembered - `rest`: for a split model's other cards, not the one it was started on; whether it is more than planned
+    fn learn_ask(&self, id: &str, err: &str, gpu: usize, want: u64, rest: bool) -> bool;
 }

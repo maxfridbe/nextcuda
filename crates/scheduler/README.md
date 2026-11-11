@@ -54,7 +54,7 @@ same or close - check by grep):
 | `try_lock_kind` | the per-kind lock, `None` if taken (the guard is dropped to release it) | `Home::kind_lock[kind].try_lock()` |
 | `wait_loaded(port, id)` | wait until a loading server answers as `id` | `Home::wait_up` |
 | `note(job, stage, why)`, `cancelled(job)` | a job's stage / waiting-for words; the cancel flag | `Home::note`, `Home::job_cancelled` |
-| `learn_ask(id, err, gpu, want)` | remember what a server refused for; true if more than planned | `Home::learn_ask` |
+| `learn_ask(id, err, gpu, want, rest)` | remember what a server refused for on the card its refusal names (`rest`: a split model's other card); true if more than planned | `Home::learn_ask` |
 
 Also the host's own, outside the traits: the **history storage** (`history::FileStorage::new(dir)`, or your own
 `Storage`), the **jobs** it hands to `eta::ahead_s` as `JobView`s, and the **registry** it turns into `ModelInfo`
