@@ -16,6 +16,11 @@ curl -s http://127.0.0.1:8000/v1/chat/completions -H "authorization: Bearer $TOK
           "chat_template_kwargs": {"enable_thinking": false}}'
 ```
 
+`"think_budget": 0` (nextsycl's field, on `/v1/chat/completions` and `/api/chat`) does the same: the thinking is
+closed in the prompt before it starts (`<think>\n\n</think>\n\n`); another number leaves it as the effort says.
+`/api/chat`'s last line carries `vision_seconds`, the pictures' time through the tower (it comes before the reading,
+so `read_seconds` does not have it). `image.describe` ([image.md](image.md)) is this model reading a picture.
+
 Measured on the box against llama.cpp (b11112, its `qwen3.8-vision` / `-text` presets: q8_0 cache, flash attention,
 MTP drafts) on the same prompts, greedy:
 

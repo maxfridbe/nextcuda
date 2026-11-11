@@ -277,3 +277,29 @@ The port, its checks and what it leaves out: [ports/SVGRENDER.md](ports/SVGRENDE
   1.1 ms at 512 px, 2.0 ms at 512 px with 512 paths (RTX 5070; the 3060 1.4-2.6x that). The default fit (128 paths,
   2000 steps, 384 px) takes ~1.2 s; upstream LIVE's 1600 steps took 245 s on the CPU. Memory: ~0.2 GB.
 - **Text to SVG**: 12 s of drawing (1024 x 1024, 8 steps) and ~2 s of fitting for 96 paths.
+
+## Describing a picture: image.describe
+
+`image.describe` (nextsycl's contract, field for field): a picture to the prompt that would draw it, for an image
+model's family - `target` is `natural`, `qwen-image`, `z-image`, `h3`, `hunyuanimage`, `moss-image`, `ming-image`,
+`tags`, or a model's id (z-image-turbo, p-h3-image, nextsycl's minimax-h3-image ...: its family by architecture when
+registered here, else by its id's prefix). The answer has the prompt (and with `include_negative` a negative prompt
+for the families that read one), `suggested_size` - the target's best area at the picture's aspect on its grid: 1 MP
+on multiples of 16, 4 MP on multiples of 32 for h3 and hunyuanimage - and the tokens and speeds. A job in the image
+queue like image.upscale (label, reentrant_id, wait, image.status, image.cancel by label or reentrant_id).
+
+- **The describer**: a chat model that reads pictures - Qwen3.8-27B GSQ IQ3_S with its vision tower (the mmproj beside
+  it; [llm.md](llm.md)), the card already served for chat: no new engine, no other card. A chat model whose entry has
+  an `mmproj` file lists `vision` and `describe` in system.models. Unnamed, the loaded chat model is used when it reads
+  pictures (no swap), else the enabled one whose card takes the least memory. It is not split differently for this: a
+  smaller-context card would save ~1 GB of cache, but the 27B over both cards cannot sit beside a picture model
+  either way, and a second chat entry would swap with the chat model the platform uses.
+- **How**: the picture flattened on white and shown at most `max_pixels` (1 MP, Lanczos); one instruction per family
+  (nextsycl's table) in the system turn; `think_budget: 0` (no thinking), greedy at temperature 0; the answer streamed
+  from `/api/chat` through the switcher and cut at `PROMPT:` / `NEGATIVE:`. A cancel closes the stream: the job ended
+  0.47 s after image.cancel.
+- **Measured** (2026-11-11, a 1024 x 768 flat illustration, for z-image-turbo, medium): cold - z-image-turbo stopped
+  for it, the describer loaded in ~12 s - 18.3 s in all; the prompt 1,154 tokens read at 415 tok/s with the tower
+  (2.8 s), 110 written at 55 tok/s (2.0 s). Again (the prompt cached): 2.2 s. For h3, short: 3.2 s (632 / 51 tok/s).
+  The describer holds 11.1 GB of the 5070 and 6.0 GB of the 3060 with the picture read. Drawn back with z-image-turbo
+  at its suggested 1184 x 880: 12.3 s, the barn, the sign's "FARM", the sun and the hill where they were.
