@@ -273,7 +273,14 @@ pub fn cut(answer: &str, negative: bool) -> (String, Option<String>) {
         Some((s0, s1)) => (s0, Some(s1)),
         None => (a.len(), None),
     };
-    let p_from = marker(&a[..p_end], "PROMPT:").map_or(0, |(_, s1)| s1);
+    // the prompt is what follows the first PROMPT: up to the next one - except when the describer wrote the prompt
+    // first with no label and then started it again after one (the blob portrait, 2026-11-11: a whole prompt, then
+    // "PROMPT: " and the same words until max_tokens): then the unlabelled one before it, which is whole
+    let (p_from, p_end) = match marker(&a[..p_end], "PROMPT:") {
+        Some((s0, _)) if tidy(&a[..s0]).split_whitespace().count() >= 8 => (0, s0),
+        Some((_, s1)) => (s1, marker(&a[s1..p_end], "PROMPT:").map_or(p_end, |(s0, _)| s1 + s0)),
+        None => (0, p_end),
+    };
     let prompt = tidy(&a[p_from..p_end]);
     let neg = n_from.filter(|_| negative).map(|i| tidy(&a[i..])).filter(|n| !n.is_empty());
     (prompt, neg)
@@ -635,6 +642,11 @@ mod tests {
         assert_eq!(cut("PROMPT: A sign reading \"OPEN\" on a door.", false).0, "A sign reading \"OPEN\" on a door.");
         // asked, not written
         assert_eq!(cut("PROMPT: A barn.", true).1, None);
+        // a prompt written first with no label, then begun again after one: the whole first one
+        let twice = "A glossy green slime figure on a suburban lawn at dusk under a purple sky. PROMPT: A glossy green slime figure on a sub";
+        assert_eq!(cut(twice, false).0, "A glossy green slime figure on a suburban lawn at dusk under a purple sky.");
+        // a label written twice: only what the first one starts
+        assert_eq!(cut("PROMPT: A red barn in a field.\nPROMPT: A red barn in", false).0, "A red barn in a field.");
     }
 
     #[test]
