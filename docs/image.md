@@ -102,6 +102,16 @@ video engine runs too.
   19.4, a 3-step polish from 0.5 46 / 54; the base card's 8 steps 17. A grid-free picture (1.0) sent through an
   img2img at strength 0.05, one step, comes back at 142 with either eta, and at strength 0.3, 2 steps, at 247 / 313:
   the texture comes with the latent path (the VAE encoder, the decoder, or the denoiser near t 0), not the sampler.
+  `nextcuda image vae-roundtrip PICTURE --vae ph3=FILE --vae h3=FILE` (the denoiser skipped; each encoder through each
+  decoder) narrows it: the encoders do not matter (P-H3's int8 and H3's fp16 encodes decode to the same score: the
+  latent space is shared), and both decoders put a faint 16-pixel grid on a grid-free picture - a smooth gradient
+  1.4 -> 11.7 (P-H3's int8 picture decoder) / 39 (H3's fp16 video decoder), a noisy one 1.0 -> 146 / 80, the 2-step
+  fox 20.8 -> 23.7 / 32 - at about a quarter of a level RMS on flat areas, invisible by eye. The decoder is a ViT whose
+  last linear writes each token's 16 x 16 pixels with nothing blending neighbours (ComfyUI's `ldm/minimax/vae.py`
+  unpatchifies the same way: (C, T, pt, H, p, W, p)), and ours matched the reference's decode within one level on
+  99.2 % of bytes (above). So the grid is the decoder architecture's, not a porting bug, and H3's full fp16 video
+  decoder is no way out: blockier on flat areas and colour-shifted (pinker) on the fox. What makes it visible is what
+  the denoiser leaves in the latents at 2 - 4 steps and after an img2img start (0.3: 247 - 313).
   Times are the same for both: 4.2 s a 2-step picture, 7.1 s 4 steps, 5.7 s a 3-step polish (pictures cached).
 
 | picture | per step | total | peak (5070 / 3060) |
