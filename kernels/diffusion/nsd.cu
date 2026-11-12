@@ -628,8 +628,11 @@ int nsd_int8_linear(void* ctx, const void* x, int x_dt, int64_t M, int64_t K, co
     CU(cudaSetDevice(c->dev));
     if (K % 4 || N % 4) return fail("nsd_int8_linear: K and N must be multiples of 4");
     if (group && K % group) return fail("nsd_int8_linear: group does not divide K");
-    // rows a pass: the int32 accumulators under ~256 MiB
+    // rows a pass: the int32 accumulators under ~256 MiB; a rotated pass also its half copies (the rotation's input
+    // and output, 2 bytes a value each) under ~128 MiB each - a 13824-wide fc2 over a clip's 11,600 rows took 640 MiB
+    // of them in one pass, which a 12 GB card beside H3's blocks and the ControlNet's did not have (2026-11-11)
     int64_t rows = std::max<int64_t>(64, std::min<int64_t>(M, ((256ll << 20) / 4) / N));
+    if (group) rows = std::min<int64_t>(rows, std::max<int64_t>(64, (128ll << 20) / (K * 2)));
     rows = std::min(rows, M);
     // (rows rounded up to 4: the int8 product wants every dimension a multiple of 4; the extra rows are zeros)
     int8_t* xq = (int8_t*) scratch(c, 5, (size_t) (rows + 4) * K);

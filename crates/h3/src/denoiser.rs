@@ -422,8 +422,6 @@ struct ControlRun<'a> {
     audio: Vec<(usize, usize)>,
     zeros: Vec<Option<Tensor>>,
     stream: Vec<Option<Tensor>>,
-    c: Tensor,
-    skip: Vec<Option<Tensor>>,
 }
 
 /// A tensor's bytes into another of the same size on another card (through host memory)
@@ -585,8 +583,6 @@ impl<'a> Denoiser<'a> {
             audio,
             zeros: on(&|d| Tensor::from_bytes(d, DType::BF16, &[longest, hidden], &vec![0u8; longest * hidden * 2]))?,
             stream: on(&|d| Tensor::new(d, DType::BF16, &[s, hidden]))?,
-            c: Tensor::new(&dev, DType::BF16, &[s, hidden])?,
-            skip: on(&|d| Tensor::new(d, DType::BF16, &[s, hidden]))?,
         });
         Ok(())
     }
@@ -732,12 +728,14 @@ impl<'a> Denoiser<'a> {
                         ccard = kc;
                     }
                     let stream = pick(&c.stream, kc)?;
+                    // the control card's scratch: its projection buffer is free between blocks, so it holds start's
+                    // copy and each block's addition (a 12 GB card has no room for two more streams' worth)
+                    let ksc = if kc == 0 { &self.scratch } else { &self.tail[kc - 1].1 };
                     if k == 0 {
                         let rows: Vec<(usize, &Tensor)> = c.rows.iter().map(|(a, t)| (*a, t)).collect();
-                        c.net.start(stream, &c.c, &rows)?;
+                        c.net.start(stream, &ksc.proj, &rows)?;
                     }
-                    let ksc = if kc == 0 { &self.scratch } else { &self.tail[kc - 1].1 };
-                    let skip = pick(&c.skip, kc)?;
+                    let skip = &ksc.proj;
                     c.net.addition(k, stream, skip, cs, ksc, (&c.audio, pick(&c.zeros, kc)?))?;
                     // added where the denoiser's stream is: this card, or the other through host memory (its scratch's
                     // projection, free between blocks)
