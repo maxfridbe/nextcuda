@@ -2540,7 +2540,7 @@ pub enum ControlKind {
     Canny,
     /// the clip's brightness (the 2.0 checkpoint's gray control: recolouring)
     Gray,
-    /// a depth map, near bright (an estimator's: Depth Anything)
+    /// a depth map, near bright (a depth model's: Depth Anything V2 - an image-queue job)
     Depth,
     /// a body-pose skeleton (an estimator's: DWPose)
     Pose,
@@ -2550,11 +2550,17 @@ pub enum ControlKind {
 #[derive(Deserialize, Serialize, Rpc)]
 #[allow(non_snake_case)]
 pub struct VideoControlReq {
+    /// depth only (a job of the image queue): wait, label, reentrant_id ... as video.upscale's; canny and gray answer while the call waits
+    #[serde(flatten)]
+    pub job: JobOpts,
     /// the clip to read: a file in the clips directory (video.upload it - MP4, WebM, MOV, MKV - or a finished clip's name)
     pub file: String,
-    /// what to make of it (default canny); the ones this box makes are its features video.control.<control> - the rest are refused (400)
+    /// what to make of it (default canny); the ones this box makes are its features video.control.<control> - the rest are refused (400). depth needs a depth model enabled (409 otherwise)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control: Option<ControlKind>,
+    /// depth: the depth model's id; none: the loaded one, else the first enabled (capability depth)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// the canvas the clip will be made at (the source is scaled to cover it and cut in the middle, as video.generate does with a control video); none: the source's aspect at about 768 x 576
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
     #[schema(min = 256, max = 1344)]
@@ -3252,7 +3258,7 @@ fn video_upload(h: &Arc<Home>, req: VideoUploadReq) -> Answer {
     h.legacy("video.upload", req)
 }
 
-/// A clip turned into a ControlNet control video for video.generate's control_video: canny edges or its brightness (gray), at the clip's canvas and length (24 fps, scaled to cover, a short source's last frame held), made on the CPU while the call waits (seconds). The answer names the file beside the clips (control_video takes the name; system.files.delete removes it) and links it
+/// A clip turned into a ControlNet control video for video.generate's control_video: canny edges or its brightness (gray), made on the CPU while the call waits (seconds), or its depth (near bright; the clip scaled by one range), a depth model's job in the image queue (image.status / image.cancel; wait false answers with the job) - at the clip's canvas and length (24 fps, scaled to cover, a short source's last frame held). The answer names the file beside the clips (control_video takes the name; system.files.delete removes it) and links it
 #[rpc(name = "video.control", tags = "video", example = r#"{"control": "canny", "file": "ref_1792400000_take.webm", "frames": 124, "height": 576, "width": 768}"#)]
 fn video_control(h: &Arc<Home>, req: VideoControlReq) -> Answer {
     h.legacy("video.control", req)

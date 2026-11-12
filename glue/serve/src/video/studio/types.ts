@@ -661,10 +661,59 @@ export type Upscaler = "esrgan-general" | "esrgan-anime" | "latent";
 
 /** What video.control takes. */
 export interface VideoControlReq {
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
+  batch?: string | null;
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
+  held?: boolean | null;
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
+  label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
+  priority?: number | null;
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
+  project?: string | null;
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
+  queue?: boolean | null;
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
+  reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
   /** the clip to read: a file in the clips directory (video.upload it - MP4, WebM, MOV, MKV - or a finished clip's name) */
   file: string;
-  /** what to make of it (default canny); the ones this box makes are its features video.control.<control> - the rest are refused (400) */
+  /** what to make of it (default canny); the ones this box makes are its features video.control.<control> - the rest are refused (400). depth needs a depth model enabled (409 otherwise) */
   control?: ControlKind | null;
+  /** depth: the depth model's id; none: the loaded one, else the first enabled (capability depth) */
+  model?: string | null;
   /**
    * the canvas the clip will be made at (the source is scaled to cover it and cut in the middle, as video.generate does with a control video); none: the source's aspect at about 768 x 576
    * @minimum 256

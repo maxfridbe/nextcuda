@@ -23,6 +23,7 @@
 
 mod api;
 mod config;
+mod control;
 mod describe;
 mod disks;
 mod jobs;

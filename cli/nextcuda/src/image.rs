@@ -31,6 +31,10 @@ nextcuda image svg-selftest [--gpu N]   (the rasterizer's kernels against the ho
 nextcuda image svg-bench [--sizes 240,512] [--paths 64,256] [--gpu N]   (a backward pass's time by canvas and path count)
 nextcuda image describe PICTURE [--model ID] [--system TEXT] [--prompt TEXT] [--max-tokens N] [--temp T] [--seed S] [--max-pixels N] [--gpu N]
                         (an image model's own text encoder reading the picture and writing: image.describe's native describer)
+nextcuda image depth PICTURE... [--model ID | --file model.safetensors] [--out DIR] [--runs N] [--gpu N]
+                     (Depth Anything V2: each picture's depth as a grey PNG and the network's own output, <stem>.<w>x<h>.f32; --runs: clocked)
+nextcuda image depth-clip SRC.mp4 DST.mp4 [--width W --height H] [--frames N] [--start S] [--model ID | --file F] [--gpu N]
+                     (a clip made a depth control video in this process: what video.control's depth runs on an image server)
 nextcuda image engines | selftest [--gpu N]";
 
 /// The image engines this program has (image/<arch>)
@@ -38,7 +42,7 @@ pub fn engines() -> Vec<nextcuda_image::ImageKind> {
     vec![nextcuda_image_qwenimage21::kind(), nextcuda_image_qwenimage21::kind_2512(), nextcuda_image_unlimitedocr::kind(), nextcuda_image_paddleocrvl::kind(),
          nextcuda_image_olmocr2::kind(), nextcuda_image_mingimage::kind(), nextcuda_image_upscale::kind(), nextcuda_image_flashvsr::kind(), nextcuda_image_rembg::kind(),
          nextcuda_image_starvector::kind(), nextcuda_image_mossimage::kind(), nextcuda_image_ph3image::kind(),
-         nextcuda_image_zimage::kind(), nextcuda_image_svgrender::kind()]
+         nextcuda_image_zimage::kind(), nextcuda_image_svgrender::kind(), nextcuda_image_depthanything::kind()]
 }
 
 /// The native describer of an image architecture: its text encoder reads pictures and writes (image.describe with
@@ -1018,6 +1022,8 @@ pub fn cmd(cfg: &Config, args: &[String], selftest: impl Fn(&[String]) -> Result
         Some("svg-selftest") => svg_selftest_cmd(rest),
         Some("svg-bench") => svg_bench_cmd(rest),
         Some("bench") => crate::imagebench::run(cfg, rest),
+        Some("depth") => crate::imagedepth::depth_cmd(cfg, rest),
+        Some("depth-clip") => crate::imagedepth::depth_clip_cmd(cfg, rest),
         Some("ocr") => ocr(cfg, rest),
         Some("serve") => serve(cfg, rest),
         Some("start") => SERVED.start(cfg, rest, |d| run(cfg, rest, d)),

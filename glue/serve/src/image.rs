@@ -1171,6 +1171,85 @@ impl ImageServer {
         Ok(json!({"created": now(), "data": [item], "nextsycl": {"seconds": seconds, "frames": n, "fps_done": n as f64 / seconds.max(1e-9), "wh": wh}}))
     }
 
+    /// POST /v1/videos/depth: {path (a clip on this machine: the clips directory's), name (the control video's, written
+    /// beside it), width, height, frames, start_s} - the front door's video.control with control depth. The clip read
+    /// as the studio reads a control video's source, every frame's depth from the engine, the clip scaled by one range
+    /// (video/studio/control.rs make_depth)
+    fn depth_video(&self, b: &Value) -> Result<Value, (u16, String)> {
+        use crate::video::studio::control;
+        let bad = |m: String| (400u16, m);
+        if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty() && *m != self.model) {
+            return Err((404, format!("model {m} is not served here (this server: {})", self.model)));
+        }
+        let src = PathBuf::from(b["path"].as_str().unwrap_or(""));
+        if !src.is_file() {
+            return Err((404, format!("path {}: no such clip", src.display())));
+        }
+        // the result beside its source, by a control video's name: nothing else is written
+        let name = b["name"].as_str().unwrap_or("");
+        if crate::files::plain(name) != Some(name) || !name.starts_with("ref_") || !name.ends_with("-depth.mp4") {
+            return Err(bad(format!("name {name:?}: a control video's name (ref_<unix>_<stem>-depth.mp4)")));
+        }
+        let dst = src.with_file_name(name);
+        if dst.exists() {
+            return Err((409, format!("{name} exists already")));
+        }
+        let (w, h, seconds) = control::probe(&src).ok_or_else(|| bad(format!("{}: not a clip ffprobe reads (no video stream)", src.display())))?;
+        let mut p = b.clone();
+        p["control"] = json!("depth");
+        let s = control::settings(&p, (w, h, seconds)).map_err(|e| (e.http, e.message))?;
+        self.waiting.fetch_add(1, Ordering::Relaxed);
+        let g = self.locked();
+        self.waiting.fetch_sub(1, Ordering::Relaxed);
+        let (engine, _) = match g.as_ref() {
+            None => return Err((503, "the engine is not loaded".into())),
+            Some((e, _)) if !e.estimates_depth() => return Err(bad(format!("{} does not estimate depth (depth-anything-v2-small does)", self.model))),
+            Some(x) => x,
+        };
+        let Some(_running) = self.cancel.begin(b["request_id"].as_str()) else {
+            return Err((499, "cancelled".into()));
+        };
+        let t0 = Instant::now();
+        let j0 = self.tele.joules();
+        let prog = &self.progress;
+        let what = format!("depth of a clip {}x{}", s.width, s.height);
+        let mut net_s = 0.0;
+        let r = control::make_depth(&src, &dst, &s, &mut |rgb| {
+            let t = Instant::now();
+            let pic = nextcuda_image::Picture { width: s.width, height: s.height, channels: 3, data: rgb.to_vec() };
+            let d = engine.depth(&pic).map_err(|e| engine_fail(e, false).1);
+            net_s += t.elapsed().as_secs_f64();
+            d
+        }, &mut |n| {
+            *prog.lock().unwrap() = json!({"busy": true, "prompt": what, "at": n, "of": s.frames, "phase": "frames", "seconds": t0.elapsed().as_secs_f64()});
+            if self.cancel.stopping() {
+                return Err("cancelled".into());
+            }
+            Ok(())
+        });
+        *prog.lock().unwrap() = json!({"busy": false});
+        let (made, range) = r.map_err(|e| {
+            if e == "cancelled" || self.cancel.stopping() {
+                (499, "cancelled".to_string())
+            } else if nextcuda_image::untag_no_room(&e).is_some() {
+                (503, e)
+            } else {
+                (500, e)
+            }
+        })?;
+        let secs = t0.elapsed().as_secs_f64();
+        let wh = match (j0, self.tele.joules()) {
+            (Some(a), Some(b)) if b >= a => Some((b - a) / 3600.0),
+            _ => None,
+        };
+        let mut hist = self.history.lock().unwrap();
+        hist.push_front(json!({"kind": "depth-video", "prompt": format!("{name}: {made} frames"), "width": s.width, "height": s.height, "seconds": secs,
+                               "wh": wh, "created": now()}));
+        hist.truncate(200);
+        Ok(json!({"name": name, "frames": made, "range": [range.0, range.1], "seconds": secs, "frame_seconds": net_s / made.max(1) as f64,
+                  "model": self.model, "wh": wh}))
+    }
+
     fn generate(&self, b: &Value, base: &str, pics: Vec<nextcuda_image::Picture>) -> Result<Value, (u16, String)> {
         let bad = |m: String| (400u16, m);
         if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty() && *m != self.model && *m != "dall-e-3" && *m != "dall-e-2" && *m != "gpt-image-1") {

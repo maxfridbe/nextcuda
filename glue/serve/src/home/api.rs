@@ -48,6 +48,8 @@ const FEATURES: &[&str] = &[
     "video.speed", "video.multi_guide", "jobs.title", "audio.yue2.plan_only", "audio.truncated",
     // 2026-11-11: video.control - a clip turned into a ControlNet control video (canny edges, gray), for control_video
     "video.control", "video.control.canny", "video.control.gray",
+    // 2026-11-11: video.control's depth - a depth model's job in the image queue (Depth Anything V2 Small)
+    "video.control.depth",
     // 2026-11-11: a picture to the prompt that draws it (a chat model's vision tower); think_budget 0 on the chat routes
     "image.describe", "llm.think_budget",
     // 2026-11-11: image.describe's describer (best, native or an id) and image.describers: the image models' own text
@@ -434,8 +436,11 @@ impl Home {
     /// A studio method (video.*, but upload and the guide): the studio's answer as it gave it - its status and error
     /// code (busy, not_running ...) - with the files it names as URLs through here
     fn studio_rpc(&self, name: &str, b: &Value, host: &str) -> Option<(u16, Value)> {
-        // video.upscale is the image servers' (an upscaler's job), not the studio's
+        // video.upscale is the image servers' (an upscaler's job), not the studio's; so is video.control's depth
         let method = name.strip_prefix("video.").filter(|m| !matches!(*m, "upload" | "describePromptGuideMD" | "upscale"))?;
+        if super::control::by_model(name, b) {
+            return None;
+        }
         let all = self.models();
         let envelope = |st: u16, m: String| (st, json!({"ok": false, "error": rpc_error(name, st, None, &m)}));
         if let Err((st, m)) = self.checked(name, b, &all) {
@@ -612,7 +617,7 @@ impl Home {
         let resolved = self.uploads_in(name, b)?;
         let b = resolved.as_ref().unwrap_or(b);
         // pictures, songs and speech run as jobs (jobs.rs), which call work
-        if super::jobs::METHODS.contains(&name) {
+        if super::jobs::runs_as_job(name, b) {
             let all = self.models();
             self.checked(name, b, &all)?;
             // what the server would refuse, refused now (wait: false would answer OK, then fail)
@@ -630,7 +635,7 @@ impl Home {
     pub(super) fn work(self: &Arc<Self>, name: &str, b: &Value) -> Result<Value, Fail> {
         let _rsvp = super::rsvp::scope(b);
         // a request that is not a job: its wait against the ETA first (jobs were checked on arrival), its end in the history
-        let runs_model = super::rsvp::takes(name) && !super::jobs::METHODS.contains(&name);
+        let runs_model = super::rsvp::takes(name) && !super::jobs::runs_as_job(name, b);
         if runs_model {
             if let Some(max) = super::rsvp::max_wait() {
                 self.check_wait(name, b, max)?;
@@ -822,7 +827,8 @@ impl Home {
                     self.pick("image", b, &all)?
                 } else {
                     // no model named: the loaded or first enabled one that draws (not a reader, not an upscaler)
-                    let draws = |m: &Value| !s(m, "arch").contains("ocr") && !upscales(m) && !vectorizes(m) && !removes_background(m) && !fits_svg(m);
+                    let draws = |m: &Value| !s(m, "arch").contains("ocr") && !upscales(m) && !vectorizes(m) && !removes_background(m) && !fits_svg(m)
+                        && !super::control::estimates_depth(m);
                     let on: Vec<&Value> = all.iter().filter(|m| registry::kind_of(m) == "image" && m["enabled"] != false && draws(m)).collect();
                     self.loaded_of("image").into_iter().find(|l| on.iter().any(|m| m["id"] == l.as_str())).or_else(|| on.first().map(|m| s(m, "id")))
                         .ok_or_else(|| (409, "no image model that draws is enabled (system.enable qwen-image-2.1-q8)".to_string()))?
@@ -882,7 +888,7 @@ impl Home {
                 // picture fitted with paths by the fitter - two servers, one after the other, under the one job
                 let fitter = self.svg_fitter(b, &all)?;
                 let draws = |m: &Value| registry::kind_of(m) == "image" && !s(m, "arch").contains("ocr") && !upscales(m) && !vectorizes(m)
-                    && !removes_background(m) && !fits_svg(m);
+                    && !removes_background(m) && !fits_svg(m) && !super::control::estimates_depth(m);
                 let draw = match b["draw_model"].as_str().filter(|x| !x.is_empty()) {
                     Some(d) => {
                         let m = all.iter().find(|m| m["id"] == d).ok_or_else(|| (404, format!("draw_model {d}: no such model")))?;
@@ -983,9 +989,7 @@ impl Home {
                 if let Some(f) = b["file"].as_str().filter(|f| !f.is_empty()) {
                     let plain = crate::files::plain(f.rsplit('/').next().unwrap_or(f)).ok_or_else(|| (400, format!("file {f}: a clip's name")))?;
                     let name = if plain.ends_with(".mp4") { plain.to_string() } else { format!("{plain}.mp4") };
-                    let dir = self.o.cfg.get("NS_VIDEO_OUT").filter(|d| !d.is_empty())
-                        .unwrap_or_else(|| format!("{}/.local/share/nextcuda/video", std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())));
-                    let path = std::path::Path::new(&dir).join(&name);
+                    let path = self.clips_dir().join(&name);
                     if !path.is_file() {
                         return Err((404, format!("file {f}: no clip {name} here (video.list)")));
                     }
@@ -1136,6 +1140,7 @@ impl Home {
                 let r = self.studio_upload(&s(b, "name"), &data)?;
                 Ok(r)
             }
+            ("video", "control") if super::control::by_model(name, b) => self.control_by_model(b, &all),
             ("video", method) => {
                 self.video_ensure()?;
                 let v = call_for(&t, "POST", &format!("/rpc/{method}"), Some(b), 120).map_err(|e| (502, e))?;

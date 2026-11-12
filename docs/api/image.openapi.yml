@@ -301,6 +301,28 @@ paths:
                 $ref: '#/components/schemas/Upscaled'
         default:
           description: 'an error: the body''s `error` says what'
+  /v1/videos/depth:
+    post:
+      operationId: depthVideo
+      summary: 'A clip made a depth control video beside it (a depth model: Depth Anything V2) - every frame''s depth, the clip'
+      tags:
+      - openai
+      description: 'A clip made a depth control video beside it (a depth model: Depth Anything V2) - every frame''s depth, the clip scaled by one range, near bright'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoDepthBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepthVideo'
+        default:
+          description: 'an error: the body''s `error` says what'
   /v1/ocr:
     post:
       operationId: ocr
@@ -451,6 +473,39 @@ components:
       - schedule
       - shift
       description: The engine's own defaults (a request's absent fields)
+    DepthVideo:
+      type: object
+      properties:
+        name:
+          type: string
+          description: its name beside the source
+        frames:
+          type: integer
+          description: frames written
+        range:
+          type: array
+          items:
+            type: number
+          description: 'the clip''s depth range that became black to white (the model''s relative inverse depth: the 0.5th and 99.5th percentiles of every frame''s values)'
+        seconds:
+          type: number
+        frame_seconds:
+          type: number
+          description: the depth's seconds a frame (the network and the host's resizes; decoding and encoding apart)
+        model:
+          type: string
+        wh:
+          anyOf:
+          - type: number
+          - type: 'null'
+      required:
+      - name
+      - frames
+      - range
+      - seconds
+      - frame_seconds
+      - model
+      description: A depth control video made
     EngineOptionInfo:
       type: object
       properties:
@@ -1874,6 +1929,53 @@ components:
       - data
       - nextsycl
       description: A picture written as SVG
+    VideoDepthBody:
+      type: object
+      properties:
+        path:
+          type: string
+          description: 'the source clip: a path on this machine (a file of the clips directory)'
+        name:
+          type: string
+          description: 'the control video''s name, written beside the source: ref_<unix>_<stem>-depth.mp4'
+        width:
+          type: integer
+          minimum: 256
+          maximum: 1344
+          description: 'the canvas (multiples of 32, 256-1344): the source scaled to cover it and cut in the middle'
+        height:
+          type: integer
+          minimum: 256
+          maximum: 1344
+        frames:
+          type: integer
+          minimum: 22
+          maximum: 362
+          description: frames at 24 fps (17k + 5); a shorter source holds its last frame
+        start_s:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0
+          default: 0
+          description: seconds into the source
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'this server''s model (another: 404)'
+        request_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: the front door's job id (POST /api/cancel {id} stops it)
+      required:
+      - path
+      - name
+      - width
+      - height
+      - frames
+      description: 'What /v1/videos/depth takes: a clip on this machine and the depth control video to make of it beside it (the front door''s video.control with control depth sends it)'
     VideoUpscaleBody:
       type: object
       properties:

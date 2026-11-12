@@ -21,6 +21,7 @@ mod model3d;
 mod host;
 mod image;
 mod imagebench;
+mod imagedepth;
 mod video;
 mod service;
 mod served;

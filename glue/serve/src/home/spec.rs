@@ -458,8 +458,10 @@ pub fn result(method: &str) -> Option<String> {
   "file": {"type": "string", "description": "its URL (GET /v1/video/files/<name>)"}, "control": {"type": "string"}, "width": {"type": "integer"}, "height": {"type": "integer"},
   "frames": {"type": "integer", "description": "as asked: 17k + 5 at 24 fps"}, "fps": {"type": "integer"}, "seconds": {"type": "number"},
   "source_frames": {"type": "integer", "description": "the frames the source gave; fewer than frames: its last one held"}, "source_seconds": {"type": "number"},
-  "start_s": {"type": "number"}, "low": {"type": "number"}, "high": {"type": "number"},
-  "levels": {"type": "array", "nullable": true, "items": {"type": "number"}, "description": "canny, normalized: the brightness stretched to 0 and 255"}, "took_s": {"type": "number"}}}"#.into(),
+  "start_s": {"type": "number"}, "low": {"type": "number"}, "high": {"type": "number"}, "took_s": {"type": "number"},
+  "levels": {"type": "array", "nullable": true, "items": {"type": "number"}, "description": "canny, normalized: the brightness stretched to 0 and 255"},
+  "model": {"type": "string", "description": "depth: the depth model that made it"}, "range": {"type": "array", "items": {"type": "number"}, "description": "depth: the clip's relative inverse depth made black to white (the 0.5th and 99.5th percentiles of every frame's values; one range for the clip, so the grey does not pump)"},
+  "frame_seconds": {"type": "number", "description": "depth: the model's seconds a frame"}, "job": {"type": "object", "description": "depth: the image-queue job it ran as"}}}"#.into(),
         "video.engines.list" => r#"{"type": "object", "properties": {"engines": {"type": "array", "items": {"type": "object", "properties": {
   "quant": {"type": "string", "description": "the name video.generate's engine takes: INT8, Q6_K, Q4_K_M, REF2VA (H3), ltx2, ltx2_upscale (LTX-2.5)"},
   "engine": {"type": "string", "description": "which engine the row is: minimax_h3, ltx2 or ltx2_upscale"}, "stage": {"type": "string", "description": "shots (a clip from a prompt) or upscale (a finished clip, bigger)"},
@@ -496,8 +498,11 @@ pub fn errors(method: &str) -> &'static [(u16, &'static str, &'static str)] {
         "video.queue.move" | "video.queue.remove" => &[(404, "not_found", "no queued clip with that label")],
         "video.jobs.get" => &[(404, "not_found", "no record of that clip")],
         "video.upload" => &[(400, "invalid_params", "not a picture, clip or sound (png jpg jpeg webp mp4 mov webm mkv wav mp3 flac m4a ogg), or empty")],
-        "video.control" => &[(400, "invalid_params", "a control this box does not make (its features video.control.<control> say which), a side not a multiple of 32, frames not 17k + 5, a source shorter than 22 frames from start_s, or not a clip"),
-                             (404, "not_found", "file is not in the clips directory")],
+        "video.control" => &[(400, "invalid_params", "a control this box does not make (its features video.control.<control> say which), a side not a multiple of 32, frames not 17k + 5, a source shorter than 22 frames from start_s, or not a clip; depth: a model named that does not estimate depth"),
+                             (404, "not_found", "file is not in the clips directory"),
+                             (409, "conflict", "depth: no depth model is enabled (system.enable depth-anything-v2-small)"),
+                             (499, "cancelled", "depth: stopped by image.cancel"), (502, "unavailable", "the studio (canny, gray) or the depth model's server did not answer"),
+                             (503, "no_room", "depth: the depth model's card has no room for it now (retryable)")],
         "system.pin" => &[(404, "not_found", "no such model"), (409, "conflict", "the model is disabled (system.enable first) or its files are moving")],
         "system.load" => &[(404, "not_found", "no such model"), (503, "no_room", "its cards are held by other models now (retryable)")],
         "system.enable" | "system.disable" | "system.unload" | "system.unpin" | "system.gpus" => &[(404, "not_found", "no such model"), (409, "conflict", "enable: the model's files are moving (system.move)")],
@@ -573,7 +578,7 @@ Every error has retryable: true for no_room, maintenance, unavailable, timeout a
 pub const LABELS: &str = "Video labels: \"<series> NN/MM: text\" (\"Harbour 03/12: the lamp\"). NN orders video.timeline (the edit order); \
 the series (the text before NN) is where the anchors prev / prev_cam / first / first_cam look, and the project when the request names none. \
 video.cancel, video.queue.move and video.queue.remove name clips by label.\n\n\
-Jobs: image.generate, image.edit, image.upscale, image.vectorize, image.svg_fit, image.svg_generate, image.remove_background, image.describe, video.upscale (in the image queue), audio.generate, audio.speak and audio.transcribe run as jobs here - the call can drop and the job goes on; \
+Jobs: image.generate, image.edit, image.upscale, image.vectorize, image.svg_fit, image.svg_generate, image.remove_background, image.describe, video.upscale and video.control with control depth (in the image queue), audio.generate, audio.speak and audio.transcribe run as jobs here - the call can drop and the job goes on; \
 label one (else its id is its label), read it with <kind>.status {label} (stage and waiting_for say what it waits for), list them with <kind>.jobs, \
 stop it with <kind>.cancel {label}; wait: false answers at once. A kind makes as many jobs at once as it has servers (one a card); the rest wait \
 in a queue as video's: priority, held, project and batch on submit, <kind>.queue.list / move / pause / resume. \

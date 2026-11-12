@@ -182,6 +182,8 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
         "image" if arch == "starvector" => (vec!["vectorize", "svg"], vec!["image.vectorize"]),
         "image" if arch == "svgrender" => (vec!["svg_fit", "svg", "svg_generate"], vec!["image.svg_fit", "image.svg_generate"]),
         "image" if arch == "birefnet" || arch == "isnet" => (vec!["remove_background", "mask", "rgba"], vec!["image.remove_background"]),
+        // a depth estimator: video.control's depth control video
+        "image" if arch == "depth-anything-v2" => (vec!["depth"], vec!["video.control"]),
         // text to image alone: no edits, references or starting picture (MOSS merges LoRAs at load; a turbo entry's
         // is a few-step distillation)
         "image" if arch == "ming-image" => (vec!["generate"], vec!["image.generate"]),
@@ -1473,6 +1475,10 @@ impl Home {
                 Ok(super::describe::Pick::Native { host, .. }) => host,
                 Err(_) => String::new(),
             };
+        }
+        // video.control's depth: the depth model
+        if super::control::by_model(method, b) {
+            return self.depth_model(b, all).unwrap_or_default();
         }
         match b["model"].as_str().filter(|m| !m.is_empty()) {
             Some(m) => m.to_string(),

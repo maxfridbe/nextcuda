@@ -53,6 +53,21 @@ export interface Defaults {
   shift: number;
 }
 
+/** A depth control video made */
+export interface DepthVideo {
+  /** its name beside the source */
+  name: string;
+  /** frames written */
+  frames: number;
+  /** the clip's depth range that became black to white (the model's relative inverse depth: the 0.5th and 99.5th percentiles of every frame's values) */
+  range: number[];
+  seconds: number;
+  /** the depth's seconds a frame (the network and the host's resizes; decoding and encoding apart) */
+  frame_seconds: number;
+  model: string;
+  wh?: number | null;
+}
+
 /** An option of the engine's own (a request sends it in `options`) */
 export interface EngineOptionInfo {
   name: string;
@@ -746,6 +761,42 @@ export interface Vectorized {
   nextsycl: VectorizeRun;
 }
 
+/** What /v1/videos/depth takes: a clip on this machine and the depth control video to make of it beside it (the front door's video.control with control depth sends it) */
+export interface VideoDepthBody {
+  /** the source clip: a path on this machine (a file of the clips directory) */
+  path: string;
+  /** the control video's name, written beside the source: ref_<unix>_<stem>-depth.mp4 */
+  name: string;
+  /**
+   * the canvas (multiples of 32, 256-1344): the source scaled to cover it and cut in the middle
+   * @minimum 256
+   * @maximum 1344
+   */
+  width: number;
+  /**
+   *
+   * @minimum 256
+   * @maximum 1344
+   */
+  height: number;
+  /**
+   * frames at 24 fps (17k + 5); a shorter source holds its last frame
+   * @minimum 22
+   * @maximum 362
+   */
+  frames: number;
+  /**
+   * seconds into the source
+   * @minimum 0
+   * @default 0
+   */
+  start_s?: number | null;
+  /** this server's model (another: 404) */
+  model?: string | null;
+  /** the front door's job id (POST /api/cancel {id} stops it) */
+  request_id?: string | null;
+}
+
 /** What video.upscale makes from: the body its kind's server takes. */
 export interface VideoUpscaleBody {
   /**
@@ -936,6 +987,12 @@ export function routes(base = "", fetcher: typeof fetch = (u, i) => fetch(u, i))
      * @tags openai
      */
     upscaleVideo: (req: VideoUpscaleBody = {}): Promise<Upscaled> => r.json("POST", r.url("/v1/videos/upscale", req, false), JSON.stringify(req), "application/json", false),
+    /**
+     * A clip made a depth control video beside it (a depth model: Depth Anything V2) - every frame's depth, the clip scaled by one range, near bright
+     * @route POST /v1/videos/depth
+     * @tags openai
+     */
+    depthVideo: (req: VideoDepthBody): Promise<DepthVideo> => r.json("POST", r.url("/v1/videos/depth", req, false), JSON.stringify(req), "application/json", false),
     /**
      * Pages read (an OCR model): pictures or PDFs, the text as the model writes it
      * @route POST /v1/ocr

@@ -75,7 +75,7 @@ pub fn family_of_model(m: &Value) -> Option<&'static str> {
         return None;
     }
     let arch = s(m, "arch");
-    let draws_not = arch.contains("ocr") || matches!(arch.as_str(), "realesrgan" | "waifu2x" | "flashvsr" | "seedvr2" | "starvector" | "svgrender" | "birefnet" | "isnet");
+    let draws_not = arch.contains("ocr") || matches!(arch.as_str(), "realesrgan" | "waifu2x" | "flashvsr" | "seedvr2" | "starvector" | "svgrender" | "birefnet" | "isnet" | "depth-anything-v2");
     if draws_not {
         return None;
     }

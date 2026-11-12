@@ -600,6 +600,61 @@ fn upscale_video(s: &ImageServer, cx: &mut Cx, req: VideoUpscaleBody) -> Result<
     s.upscale_video(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?, &cx.base()).map(Checked::new)
 }
 
+/// What /v1/videos/depth takes: a clip on this machine and the depth control video to make of it beside it (the front
+/// door's video.control with control depth sends it)
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct VideoDepthBody {
+    /// the source clip: a path on this machine (a file of the clips directory)
+    pub path: String,
+    /// the control video's name, written beside the source: ref_<unix>_<stem>-depth.mp4
+    pub name: String,
+    /// the canvas (multiples of 32, 256-1344): the source scaled to cover it and cut in the middle
+    #[serde(deserialize_with = "rpcgen::de::int")]
+    #[schema(min = 256, max = 1344)]
+    pub width: i64,
+    #[serde(deserialize_with = "rpcgen::de::int")]
+    #[schema(min = 256, max = 1344)]
+    pub height: i64,
+    /// frames at 24 fps (17k + 5); a shorter source holds its last frame
+    #[serde(deserialize_with = "rpcgen::de::int")]
+    #[schema(min = 22, max = 362)]
+    pub frames: i64,
+    /// seconds into the source
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0, default = 0)]
+    pub start_s: Option<f64>,
+    /// this server's model (another: 404)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// the front door's job id (POST /api/cancel {id} stops it)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
+/// A depth control video made
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct DepthVideo {
+    /// its name beside the source
+    pub name: String,
+    /// frames written
+    pub frames: i64,
+    /// the clip's depth range that became black to white (the model's relative inverse depth: the 0.5th and 99.5th
+    /// percentiles of every frame's values)
+    pub range: Vec<f64>,
+    pub seconds: f64,
+    /// the depth's seconds a frame (the network and the host's resizes; decoding and encoding apart)
+    pub frame_seconds: f64,
+    pub model: String,
+    pub wh: Option<f64>,
+}
+
+/// A clip made a depth control video beside it (a depth model: Depth Anything V2) - every frame's depth, the clip
+/// scaled by one range, near bright
+#[route(post = "/v1/videos/depth", tags = "openai")]
+fn depth_video(s: &ImageServer, _cx: &mut Cx, req: VideoDepthBody) -> Result<Checked<DepthVideo>, Fail> {
+    s.depth_video(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?).map(Checked::new)
+}
+
 /// What /v1/images/describe takes: the picture and the instruction (the front door's image.describe writes it)
 #[derive(Serialize, Deserialize, Rpc)]
 pub struct ImageDescribeNativeBody {
@@ -676,7 +731,7 @@ fn ocr(s: &ImageServer, _cx: &mut Cx, req: ImageOcrReq) -> Result<Checked<Readin
     s.ocr(&serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?).map(Checked::new)
 }
 
-routes![sync ImageServer, Cx, Fail; gpu, health, models, info, progress, history, cancel, file, generations, edits, vectorize, svg_fit, upscale, remove_background, upscale_video, ocr, describe];
+routes![sync ImageServer, Cx, Fail; gpu, health, models, info, progress, history, cancel, file, generations, edits, vectorize, svg_fit, upscale, remove_background, upscale_video, depth_video, ocr, describe];
 
 /// The table, made once
 pub fn table() -> &'static [rpcgen::SyncRoute<ImageServer, Cx, Fail>] {
