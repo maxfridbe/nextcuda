@@ -311,6 +311,21 @@ pub struct PicturesRun {
     pub loras: Vec<String>,
     /// the card's energy, watt-hours
     pub wh: Option<f64>,
+    /// P-H3-Image: the sampler run (lcm or euler)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler: Option<String>,
+    /// P-H3-Image: the sampler's eta
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta: Option<f64>,
+    /// P-H3-Image: the fresh noise's scale
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s_noise: Option<f64>,
+    /// P-H3-Image: the deblock filter after the decoder, on or off
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deblock: Option<String>,
+    /// P-H3-Image: the deblock filter's strength, when on
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deblock_strength: Option<f64>,
 }
 
 /// OpenAI's images answer, with how they were made (`nextsycl`: the key nextsycl's contract names it; the front

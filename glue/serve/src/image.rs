@@ -1310,10 +1310,11 @@ impl ImageServer {
             extra: Default::default(),
         };
         // the engine's own options for this request ("options": {NAME: value}), checked against what it declares; the
-        // sampler's eta and s_noise may also come as fields of their own (an engine that takes none refuses them)
+        // sampler's eta and s_noise, and the deblock filter's deblock and deblock_strength, may also come as fields of
+        // their own (an engine that takes none refuses them)
         let mut given: nextcuda_core::options::Given = b["options"].as_object().into_iter().flatten()
             .map(|(k, v)| (k.clone(), v.as_str().map_or_else(|| v.to_string(), str::to_string))).collect();
-        for k in ["eta", "s_noise"] {
+        for k in ["eta", "s_noise", "deblock_strength"] {
             match &b[k] {
                 Value::Null => {}
                 Value::Number(x) => {
@@ -1321,6 +1322,13 @@ impl ImageServer {
                 }
                 v => return Err(bad(format!("{k} {v}: a number"))),
             }
+        }
+        match &b["deblock"] {
+            Value::Null => {}
+            Value::Bool(on) => {
+                given.entry("deblock".to_string()).or_insert_with(|| on.to_string());
+            }
+            v => return Err(bad(format!("deblock {v}: true or false"))),
         }
         let url = b["response_format"].as_str() == Some("url");
         if url && self.out_dir.is_none() {

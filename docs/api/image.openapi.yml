@@ -719,6 +719,18 @@ components:
     ImageEditBody:
       type: object
       properties:
+        deblock:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'p-h3-image-pdmd2 and p-h3-image: the deblock filter after the decoder (default true) - takes out the 16-pixel grid the H3 decoder leaves (each latent token''s 16 x 16 tile written on its own): the fixed pattern every tile shares, estimated from the picture and subtracted at each tile''s own amplitude, then a flatness-gated pass over the tile boundaries (H.264''s edge test: off across real edges and texture). No blur. false: the decoder''s pixels as they are. Other models refuse it'
+        deblock_strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0
+          maximum: 1
+          description: 'with deblock: how much of the correction is applied, 0 to 1 (default 1; 0 is off). Clamped'
         eta:
           anyOf:
           - type: number
@@ -791,6 +803,18 @@ components:
           - type: number
           - type: 'null'
           description: true guidance (needs negative_prompt)
+        deblock:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 'p-h3-image-pdmd2 and p-h3-image: the deblock filter after the decoder (default true) - takes out the 16-pixel grid the H3 decoder leaves (each latent token''s 16 x 16 tile written on its own): the fixed pattern every tile shares, estimated from the picture and subtracted at each tile''s own amplitude, then a flatness-gated pass over the tile boundaries (H.264''s edge test: off across real edges and texture). No blur. false: the decoder''s pixels as they are. Other models refuse it'
+        deblock_strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0
+          maximum: 1
+          description: 'with deblock: how much of the correction is applied, 0 to 1 (default 1; 0 is off). Clamped'
         eta:
           anyOf:
           - type: number
@@ -1512,6 +1536,31 @@ components:
           - type: number
           - type: 'null'
           description: the card's energy, watt-hours
+        sampler:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'P-H3-Image: the sampler run (lcm or euler)'
+        eta:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'P-H3-Image: the sampler''s eta'
+        s_noise:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'P-H3-Image: the fresh noise''s scale'
+        deblock:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'P-H3-Image: the deblock filter after the decoder, on or off'
+        deblock_strength:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: 'P-H3-Image: the deblock filter''s strength, when on'
       required:
       - seconds
       - steps

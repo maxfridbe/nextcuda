@@ -17,6 +17,7 @@ nextcuda image start [serve's options] [--slot N]   (in the background; slot N: 
 nextcuda image ocr PICTURE|PDF... [--one-pass] [--no-columns] [--model ID|FILE.gguf] [--prompt TEXT] [--no-tiles] [--no-figures] [--max N] [--temp T] [--out FILE] [--gpu N] [--dump-views DIR]
 nextcuda image check <dump dir> [--model ID|FILE.gguf] [--stages te,dit,steps,vae] [--lora NAME[:SCALE]]... [--tokens N] [--gpu N]
 nextcuda image vae-roundtrip PICTURE --vae NAME=FILE.safetensors... [--out DIR] [--gpu N]   (H3 / P-H3-Image: each VAE's encoder through each one's decoder, no denoiser)
+nextcuda image deblock PICTURE OUT.png [--strength S] [--gpu N] [--runs N]   (P-H3-Image's deblock filter on a picture: the GPU's, timed, against the host reference)
 nextcuda image bench [--models ID,...] [--sizes WxH,...] [--steps N] [--runs N] [--gpu N] [--out DIR] [--note TEXT]
 nextcuda image upscale PICTURE [--model real-esrgan|waifu2x | --dir NCNN_DIR] [--variant V] [--scale N] [--noise N] [--tile N] [--out FILE] [--gpu N]
 nextcuda image upscale-check PICTURE REFERENCE.png [upscale's options]   (against realesrgan- / waifu2x-ncnn-vulkan's output: PSNR, worst pixel)
@@ -723,6 +724,52 @@ fn vae_roundtrip_cmd(args: &[String]) -> Result<(), String> {
     nextcuda_image_ph3image::check::vae_roundtrip(gpu, &vaes, &pic, out, &mut |s| eprintln!("{s}")).map_err(|e| e.0)
 }
 
+/// `image deblock PICTURE OUT.png`: P-H3-Image's deblock filter on a picture (the GPU kernels), timed, and how far its
+/// pixels are from the host reference's
+fn deblock_cmd(args: &[String]) -> Result<(), String> {
+    use nextcuda_image_ph3image::deblock;
+    let pos: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
+    let [input, out] = pos[..] else { return Err("deblock PICTURE OUT.png [--strength S] [--gpu N] [--runs N]".into()) };
+    let strength: f32 = opt(args, "--strength").map(|v| v.parse().map_err(|_| format!("--strength {v}"))).transpose()?.unwrap_or(1.0);
+    let gpu_i: usize = opt(args, "--gpu").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let runs: usize = opt(args, "--runs").and_then(|v| v.parse().ok()).unwrap_or(5).max(1);
+    let pic = nextcuda_image::Picture::decode(&std::fs::read(input).map_err(|e| format!("{input}: {e}"))?)?;
+    let (w, h) = (pic.width as usize, pic.height as usize);
+    let (plane, ch) = (w * h, pic.channels as usize);
+    let mut px = vec![0f32; 3 * plane];
+    for i in 0..plane {
+        for c in 0..3 {
+            px[c * plane + i] = pic.data[i * ch + c] as f32 / 255.0;
+        }
+    }
+    nextcuda_core::use_kind("image");
+    let gpu = nextcuda_image::Gpu::open(gpu_i).map_err(|e| e.0)?;
+    let mut ours = px.clone();
+    let mut times = Vec::new();
+    let mut rep = deblock::Report::default();
+    for _ in 0..runs {
+        ours.copy_from_slice(&px);
+        let t = std::time::Instant::now();
+        rep = deblock::gpu(&gpu, &mut ours, w, h, strength).map_err(|e| e.0)?;
+        times.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    let mut host = px.clone();
+    let th = std::time::Instant::now();
+    deblock::host(&mut host, w, h, strength);
+    let host_ms = th.elapsed().as_secs_f64() * 1e3;
+    let worst = ours.iter().zip(&host).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max) * 255.0;
+    let moved = (ours.iter().zip(&px).map(|(a, b)| (a - b) * (a - b)).sum::<f32>() / ours.len() as f32).sqrt() * 255.0;
+    times.sort_by(f64::total_cmp);
+    let mp = plane as f64 / 1e6;
+    println!("{input}: {w}x{h} ({mp:.2} MP), strength {strength}: GPU {:.1} ms (best of {runs}; {:.1} ms a megapixel, the copies in), host reference {host_ms:.0} ms",
+             times[0], times[0] / mp);
+    println!("  pattern RMS {:.2} {:.2} {:.2} levels; the picture moved {moved:.2} levels RMS; GPU against host: worst {worst:.3} levels",
+             rep.pattern_rms[0] * 255.0, rep.pattern_rms[1] * 255.0, rep.pattern_rms[2] * 255.0);
+    let data = (0..plane * 3).map(|i| (ours[(i % 3) * plane + i / 3] * 255.0).round().clamp(0.0, 255.0) as u8).collect();
+    nextcuda_image::Picture { width: w as u32, height: h as u32, channels: 3, data }.write_png(Path::new(out.as_str()), &[("deblock_strength", strength.to_string())])?;
+    Ok(())
+}
+
 /// `image svg-check DIR`: svgrender against ref.py's DiffVG and LIVE dumps
 fn svg_check_cmd(args: &[String]) -> Result<(), String> {
     let dir = args.first().filter(|a| !a.starts_with("--")).ok_or(USAGE)?;
@@ -1040,6 +1087,7 @@ pub fn cmd(cfg: &Config, args: &[String], selftest: impl Fn(&[String]) -> Result
         Some("upscale") => upscale_cmd(cfg, rest, false),
         Some("upscale-check") => upscale_cmd(cfg, rest, true),
         Some("vae-roundtrip") => vae_roundtrip_cmd(rest),
+        Some("deblock") => deblock_cmd(rest),
         Some("upscale-clip") => upscale_clip_cmd(cfg, rest),
         Some("vectorize") => vectorize_cmd(cfg, rest),
         Some("describe") => describe_cmd(cfg, rest),

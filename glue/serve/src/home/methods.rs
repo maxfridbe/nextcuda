@@ -666,6 +666,13 @@ pub struct ImageGenerateBody {
     /// true guidance (needs negative_prompt)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cfg: Option<f64>,
+    /// p-h3-image-pdmd2 and p-h3-image: the deblock filter after the decoder (default true) - takes out the 16-pixel grid the H3 decoder leaves (each latent token's 16 x 16 tile written on its own): the fixed pattern every tile shares, estimated from the picture and subtracted at each tile's own amplitude, then a flatness-gated pass over the tile boundaries (H.264's edge test: off across real edges and texture). No blur. false: the decoder's pixels as they are. Other models refuse it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deblock: Option<bool>,
+    /// with deblock: how much of the correction is applied, 0 to 1 (default 1; 0 is off). Clamped
+    #[serde(rename = "deblock_strength", default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0, max = 1)]
+    pub deblock_strength: Option<f64>,
     /// p-h3-image-pdmd2 (and p-h3-image): the sampler's eta - how much of each step's noise is fresh. 1 (the pDMD model's default; sampler lcm): each step lands x0, then the next level starts from it under new noise from the seed, the sampler the distillation was trained for (ComfyUI's SamplerLCM); 0 (sampler euler; the base model's default): deterministic flow Euler; between: the two noises mixed. Above 1 is 1. Other models refuse it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(min = 0, max = 1)]
@@ -727,6 +734,13 @@ pub struct ImageEditReq {
 #[derive(Deserialize, Serialize, Rpc)]
 #[allow(non_snake_case)]
 pub struct ImageEditBody {
+    /// p-h3-image-pdmd2 and p-h3-image: the deblock filter after the decoder (default true) - takes out the 16-pixel grid the H3 decoder leaves (each latent token's 16 x 16 tile written on its own): the fixed pattern every tile shares, estimated from the picture and subtracted at each tile's own amplitude, then a flatness-gated pass over the tile boundaries (H.264's edge test: off across real edges and texture). No blur. false: the decoder's pixels as they are. Other models refuse it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deblock: Option<bool>,
+    /// with deblock: how much of the correction is applied, 0 to 1 (default 1; 0 is off). Clamped
+    #[serde(rename = "deblock_strength", default, skip_serializing_if = "Option::is_none")]
+    #[schema(min = 0, max = 1)]
+    pub deblock_strength: Option<f64>,
     /// p-h3-image-pdmd2 (and p-h3-image): the sampler's eta - how much of each step's noise is fresh. 1 (the pDMD model's default; sampler lcm): each step lands x0, then the next level starts from it under new noise from the seed, the sampler the distillation was trained for (ComfyUI's SamplerLCM); 0 (sampler euler; the base model's default): deterministic flow Euler; between: the two noises mixed. Above 1 is 1. Other models refuse it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(min = 0, max = 1)]

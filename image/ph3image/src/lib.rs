@@ -27,6 +27,7 @@
 
 pub mod check;
 pub mod connector;
+pub mod deblock;
 pub mod describe;
 pub mod sampler;
 
@@ -128,7 +129,42 @@ pub const OPTIONS: &[EngineOption] = &[
         help: "the fresh noise's scale (1 by default; ComfyUI's s_noise); clamped to 0..2",
         at: At::Request,
     },
+    EngineOption {
+        name: "deblock",
+        env: "",
+        value: "true|false",
+        help: "the deblock filter after the decoder (deblock.rs; on by default): the decoder's 16-pixel tile pattern subtracted, then a flatness-gated pass over the tile boundaries",
+        at: At::Request,
+    },
+    EngineOption {
+        name: "deblock_strength",
+        env: "",
+        value: "0..1",
+        help: "how much of the deblock filter's correction is applied (1 by default; 0 is off); clamped to 0..1",
+        at: At::Request,
+    },
 ];
+
+/// The deblock filter's strength when a request names none and leaves it on (deblock.rs)
+pub const DEBLOCK_STRENGTH: f32 = 1.0;
+
+/// A request's deblock filter: its strength, or None when off. `deblock` true / false (also 1 / 0, on / off), and
+/// `deblock_strength` 0..1 (clamped; 0 is off; given alone it turns the filter on); neither: `default_on`.
+pub fn deblock_setting(get: &dyn Fn(&str) -> Option<String>, default_on: bool) -> std::result::Result<Option<f32>, String> {
+    let on = match get("deblock").map(|v| v.trim().to_ascii_lowercase()) {
+        None => None,
+        Some(v) => Some(match v.as_str() {
+            "true" | "1" | "on" | "yes" => true,
+            "false" | "0" | "off" | "no" => false,
+            _ => return Err(format!("deblock {v:?}: true or false")),
+        }),
+    };
+    let strength = get("deblock_strength")
+        .map(|v| v.trim().parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 1.0)).ok_or(format!("deblock_strength {v:?}: a number")))
+        .transpose()?;
+    let on = on.unwrap_or(strength.is_some() || default_on);
+    Ok(Some(strength.unwrap_or(DEBLOCK_STRENGTH)).filter(|s| on && *s > 0.0))
+}
 
 /// The text encoder's taps after these layers, the last through its final norm (connector::TAPS)
 const TE_LAYERS: usize = 36;
@@ -267,6 +303,8 @@ pub struct PH3Image {
     tok: nextcuda_h3::tokenizer::Tokenizer,
     /// the card the text encoder, the connector and the decoder are on
     te_dev: Arc<Device>,
+    /// the same card, for the deblock filter's kernels (deblock.rs)
+    px_gpu: Arc<Gpu>,
     loaded: Instant,
     load_s: f64,
     busy: Mutex<()>,
@@ -390,7 +428,11 @@ impl PH3Image {
         for d in &devs {
             log(format!("memory : {} holds {:.2} GiB of its {:.2}", d.name(), gib(d.mem_used()), gib(d.mem_cap())));
         }
-        Ok(PH3Image { e, te, resident, final_norm, connector, vae, vae_path, tower, tok, te_dev, loaded: Instant::now(), load_s: t0.elapsed().as_secs_f64(),
+        let px_gpu = match gpus.last() {
+            Some(g) => g.clone(),
+            None => Gpu::open(te_dev.index).map_err(|e| nextcuda_h3::Error(e.0))?,
+        };
+        Ok(PH3Image { e, te, resident, final_norm, connector, vae, vae_path, tower, tok, te_dev, px_gpu, loaded: Instant::now(), load_s: t0.elapsed().as_secs_f64(),
                       busy: Mutex::new(()), lora, conds: Mutex::new(Vec::new()), pics: Mutex::new(Vec::new()) })
     }
 
@@ -409,6 +451,11 @@ impl PH3Image {
             (None, None) => 0.0,
         };
         Ok((sampler::clamp_eta(eta), sampler::clamp_s_noise(num("s_noise")?.unwrap_or(1.0))))
+    }
+
+    /// A request's deblock strength, or None when off (`deblock_setting`; on by default)
+    fn deblock_for(&self, req: &ImageRequest) -> std::result::Result<Option<f32>, String> {
+        deblock_setting(&|k| req.extra.get(k).cloned(), true)
     }
 
     fn turbo(&self) -> bool {
@@ -687,10 +734,16 @@ impl ImageEngine for PH3Image {
         req.extra.get("sigmas").and_then(|v| parse_sigmas(v).ok()).map_or(own, |s| s.len() as u32 - 1)
     }
     fn run_info(&self, req: &ImageRequest) -> Vec<(&'static str, String)> {
-        match self.eta_for(req) {
+        let mut v = match self.eta_for(req) {
             Ok((eta, s_noise)) => vec![("sampler", if eta > 0.0 { "lcm" } else { "euler" }.into()), ("eta", eta.to_string()), ("s_noise", s_noise.to_string())],
             Err(_) => Vec::new(),
+        };
+        match self.deblock_for(req) {
+            Ok(Some(s)) => v.extend([("deblock", "on".to_string()), ("deblock_strength", s.to_string())]),
+            Ok(None) => v.push(("deblock", "off".to_string())),
+            Err(_) => {}
         }
+        v
     }
 
     fn generate(&self, req: &ImageRequest, progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Vec<Picture>> {
@@ -716,6 +769,7 @@ impl ImageEngine for PH3Image {
             _ => {}
         }
         let noise = self.eta_for(req).map_err(Error)?;
+        let deblock = self.deblock_for(req).map_err(Error)?;
         let given = req.extra.get("sigmas").map(|v| parse_sigmas(v)).transpose().map_err(Error)?;
         let steps = req.steps.unwrap_or(d.steps);
         // an img2img's start: the edit's strength below 1
@@ -792,8 +846,14 @@ impl ImageEngine for PH3Image {
                 }
                 progress(Step { picture: p, at, of, seconds: t0.elapsed().as_secs_f64() })
             };
-            let px = self.picture(&cond, refs, (w, h), req.seed + p as u64, &sig, start.as_deref().map(|v| v.as_slice()), noise, &mut tick)
+            let mut px = self.picture(&cond, refs, (w, h), req.seed + p as u64, &sig, start.as_deref().map(|v| v.as_slice()), noise, &mut tick)
                 .map_err(|e| Error(nextcuda_image::tag_device_oom(&e.0, None)))?;
+            if let Some(strength) = deblock {
+                let td = Instant::now();
+                let rep = deblock::gpu(&self.px_gpu, &mut px, w, h, strength).map_err(|e| Error(nextcuda_image::tag_device_oom(&e.0, None)))?;
+                log(format!("{ARCH}: deblock {strength} in {:.1} ms (the tile pattern's RMS {:.2} {:.2} {:.2} levels)", td.elapsed().as_secs_f64() * 1e3,
+                            rep.pattern_rms[0] * 255.0, rep.pattern_rms[1] * 255.0, rep.pattern_rms[2] * 255.0));
+            }
             log(format!("{ARCH}: picture {} in {:.2} s (steps {})", p + 1, tp.elapsed().as_secs_f64(),
                         times.iter().map(|s| format!("{s:.2}")).collect::<Vec<_>>().join(" ")));
             let plane = w * h;
@@ -821,6 +881,25 @@ impl ImageEngine for PH3Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deblock_is_on_by_default_and_off_skips_it() {
+        let ask = |pairs: &[(&str, &str)]| {
+            let m: std::collections::BTreeMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            deblock_setting(&|k| m.get(k).cloned(), true)
+        };
+        assert_eq!(ask(&[]), Ok(Some(DEBLOCK_STRENGTH)));
+        // off: None, so generate hands the decoder's pixels on untouched (bit-identical to before the filter)
+        assert_eq!(ask(&[("deblock", "false")]), Ok(None));
+        assert_eq!(ask(&[("deblock", "0")]), Ok(None));
+        assert_eq!(ask(&[("deblock", "true"), ("deblock_strength", "0")]), Ok(None));
+        assert_eq!(ask(&[("deblock_strength", "0.5")]), Ok(Some(0.5)));
+        assert_eq!(ask(&[("deblock", "true"), ("deblock_strength", "3")]), Ok(Some(1.0)));
+        assert_eq!(ask(&[("deblock", "false"), ("deblock_strength", "0.5")]), Ok(None));
+        assert!(ask(&[("deblock", "maybe")]).is_err());
+        assert!(ask(&[("deblock_strength", "x")]).is_err());
+        assert_eq!(deblock_setting(&|_| None, false), Ok(None));
+    }
 
     #[test]
     fn sizes_follow_diffusers() {

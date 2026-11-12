@@ -113,6 +113,32 @@ video engine runs too.
   decoder is no way out: blockier on flat areas and colour-shifted (pinker) on the fox. What makes it visible is what
   the denoiser leaves in the latents at 2 - 4 steps and after an img2img start (0.3: 247 - 313).
   Times are the same for both: 4.2 s a 2-step picture, 7.1 s 4 steps, 5.7 s a 3-step polish (pictures cached).
+- **The deblock filter (`deblock`, on by default; `image/ph3image/src/deblock.rs`, kernels `kernels/image/ph3image`):**
+  run on the decoded picture before it is quantized. What the grid is, measured: not a step at the tile boundaries
+  (the pixel differences across them are no larger than inside) but one fixed 16 x 16 pattern every tile carries -
+  brighter top rows, darker bottom ones, a fine dot texture - whose mean in one half of a picture correlates 0.87 -
+  1.0 with the other half's, its strength following the content (faint on sky, several levels in fur). So the filter
+  (1) estimates that pattern from the picture itself (the high-pass's mean at each of the 256 positions over all
+  tiles, a busy tile weighing less, each position shrunk by a Wiener factor so a grid-free picture's comes out near
+  0), and subtracts it at each tile's own amplitude (its projection, averaged over the 5 x 5 tiles around it, 0 to 3),
+  then (2) runs H.264's edge test across each boundary (the luma's step against 8 levels, each side's activity
+  against 3) and, where both are small, spreads the step left beyond the sides' slopes over 4 pixels each side. No
+  low-pass anywhere: edges and fur keep their pixels. Requests: `deblock` (true / false) and `deblock_strength` (0 to
+  1, default 1; 0 is off) as fields of image.generate / image.edit, or in `options`; the answer's `run` and the PNG's
+  text say `deblock` (on / off) and `deblock_strength`. `deblock: false` hands the decoder's pixels on as before (the
+  filter is not run). `nextcuda image deblock PICTURE OUT.png` runs it on a saved picture (the GPU's, timed, against the
+  host reference).
+  Measured 2026-11-11 (1024 x 1024, seed 3; the grid score as above, a camera photo 1.1), off -> on: pDMD 2 steps
+  18.2 -> 1.1, 4 steps 19.4 -> 1.1, a portrait photo prompt 20.4 -> 0.7, an instruction edit 19.4 -> 2.0, the 3-step
+  polish from 0.5 53.9 -> 1.6, an img2img at 0.3 313 -> 1.6; the base card's 8 steps 17.1 -> 2.8 and 20.6 -> 2.6
+  (`deblock_strength` 0.5: 7.4). The VAE round trips (filtered from their 8-bit PNGs): the 2-step fox 23.8 -> 1.3
+  (P-H3's decoder) / 32.4 -> 1.1 (H3's), the noisy synthetic 146 -> 9.7 / 80 -> 6.6, the smooth gradient 11.8 -> 7.1
+  / 39 -> 8.9 (a pattern under half a level, partly the 8-bit rounding's). A grid-free picture is left alone (a
+  rescaled render: its pattern comes out 0, the picture moves 0.08 levels RMS). The pixels it moves are the pattern's
+  (1.4 - 3.5 levels RMS on renders); fur, wrinkles and edges stay as sharp (3x crops checked). With `deblock: false`
+  the pictures are byte-identical to before. Time: 19 ms a 1 MP picture, 154 ms at 8.5 MP (18 ms a megapixel, the
+  copies to and from the card included; the host reference 160 ms a megapixel); the GPU's pixels equal the host
+  reference's.
 
 | picture | per step | total | peak (5070 / 3060) |
 |---|---:|---:|---:|
