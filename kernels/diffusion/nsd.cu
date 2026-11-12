@@ -28,9 +28,9 @@ struct Ctx {
     // scratch buffers (grown, kept): 0 = score table, 1 = probabilities, 2 = im2col / reordered weights,
     // 3 = a slice of dequantized weights, 4 = the rotated activations, 5 = int8 activations, 6 = int32 accumulators,
     // 7 = cublasLt's workspace, 8 = gemm_nt's float32 staging (float32 inputs, a 16-bit output: cuBLAS has no such
-    // product)
-    void* buf[9] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
-    size_t cap[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    // product), 9 = bfloat16 activations as half for a rotation (`half_rows`)
+    void* buf[10] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    size_t cap[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     // the normalized Hadamard matrix of each group size (16, 64, 256), half, on the card
     void* had[3] = {nullptr, nullptr, nullptr};
     // a context of its own (nsd_open / nsd_open_gpu, H3's way in) rather than around an ns_gpu (nsd_create): its
@@ -444,6 +444,25 @@ int attention(Ctx* c, const void* q, int64_t Sq, int64_t qs, const void* k, cons
 }
 
 // the Hadamard matrix of `group` (16, 64 or 256) on the card, made once
+// bfloat16 rows as half, clamped to half's range
+__global__ void bf16_half_k(const __nv_bfloat16* x, __half* y, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = __float2half_rn(fminf(fmaxf(__bfloat162float(x[i]), -65504.0f), 65504.0f));
+}
+
+// The rotation's operand: half rows as they are; bfloat16 rows (a bfloat16 stream through int8 ConvRot layers - H3's
+// Fun ControlNet beside a k-quant denoiser, whose stream is bfloat16) converted into scratch 9 first. Null on another
+// type or no memory.
+const void* half_rows(Ctx* c, const void* x, int dt, int64_t n) {
+    if (dt == NSD_F16) return x;
+    if (dt != NSD_BF16) return nullptr;
+    __half* h = (__half*) scratch(c, 9, (size_t) n * 2);
+    if (!h) return nullptr;
+    bf16_half_k<<<nb(n), 256, 0, c->s>>>((const __nv_bfloat16*) x, h, n);
+    if (cudaGetLastError() != cudaSuccess) return nullptr;
+    return h;
+}
+
 void* hadamard(Ctx* c, int group) {
     const int k = group == 16 ? 0 : group == 64 ? 1 : group == 256 ? 2 : -1;
     if (k < 0) return nullptr;
@@ -632,9 +651,10 @@ int nsd_int8_linear(void* ctx, const void* x, int x_dt, int64_t M, int64_t K, co
         const void* src = xr;
         int sdt = x_dt;
         if (group) {
-            if (x_dt != NSD_F16) return fail("nsd_int8_linear: the rotation takes half activations");
+            const void* xh = half_rows(c, xr, x_dt, r * K);
+            if (!xh) return fail("nsd_int8_linear: the rotation takes half or bfloat16 activations (or its half copy did not fit in memory)");
             // (r * K / group) rows of `group` times H
-            if (int rc = gemm_nt(c, xr, NSD_F16, r * K / group, group, hmat, NSD_F16, group, rot, NSD_F16, 0.0f)) return rc;
+            if (int rc = gemm_nt(c, xh, NSD_F16, r * K / group, group, hmat, NSD_F16, group, rot, NSD_F16, 0.0f)) return rc;
             src = rot;
             sdt = NSD_F16;
         }
@@ -673,8 +693,9 @@ int nsd_int8_product(void* ctx, const void* x, int x_dt, int64_t M, int64_t K, c
         const void* src = xr;
         int sdt = x_dt;
         if (group) {
-            if (x_dt != NSD_F16) return fail("nsd_int8_product: the rotation takes half activations");
-            if (int rc = gemm_nt(c, xr, NSD_F16, r * K / group, group, hmat, NSD_F16, group, rot, NSD_F16, 0.0f)) return rc;
+            const void* xh = half_rows(c, xr, x_dt, r * K);
+            if (!xh) return fail("nsd_int8_product: the rotation takes half or bfloat16 activations (or its half copy did not fit in memory)");
+            if (int rc = gemm_nt(c, xh, NSD_F16, r * K / group, group, hmat, NSD_F16, group, rot, NSD_F16, 0.0f)) return rc;
             src = rot;
             sdt = NSD_F16;
         }
