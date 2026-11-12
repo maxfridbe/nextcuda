@@ -16,6 +16,7 @@ nextcuda image serve [MODEL] [--port 8086] [--host 127.0.0.1] [--gpu N] [--lora 
 nextcuda image start [serve's options] [--slot N]   (in the background; slot N: another server beside the first) | ps | logs [-f] | stop  [--slot N]
 nextcuda image ocr PICTURE|PDF... [--one-pass] [--no-columns] [--model ID|FILE.gguf] [--prompt TEXT] [--no-tiles] [--no-figures] [--max N] [--temp T] [--out FILE] [--gpu N] [--dump-views DIR]
 nextcuda image check <dump dir> [--model ID|FILE.gguf] [--stages te,dit,steps,vae] [--lora NAME[:SCALE]]... [--tokens N] [--gpu N]
+nextcuda image vae-roundtrip PICTURE --vae NAME=FILE.safetensors... [--out DIR] [--gpu N]   (H3 / P-H3-Image: each VAE's encoder through each one's decoder, no denoiser)
 nextcuda image bench [--models ID,...] [--sizes WxH,...] [--steps N] [--runs N] [--gpu N] [--out DIR] [--note TEXT]
 nextcuda image upscale PICTURE [--model real-esrgan|waifu2x | --dir NCNN_DIR] [--variant V] [--scale N] [--noise N] [--tile N] [--out FILE] [--gpu N]
 nextcuda image upscale-check PICTURE REFERENCE.png [upscale's options]   (against realesrgan- / waifu2x-ncnn-vulkan's output: PSNR, worst pixel)
@@ -694,6 +695,30 @@ fn svg_fit_cmd(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `image vae-roundtrip`: a picture through H3-family VAE encoders and decoders, the denoiser skipped
+fn vae_roundtrip_cmd(args: &[String]) -> Result<(), String> {
+    let input = args.first().filter(|a| !a.starts_with("--")).ok_or("vae-roundtrip PICTURE --vae NAME=FILE ...")?;
+    let mut vaes = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--vae" {
+            let v = args.get(i + 1).ok_or("--vae NAME=FILE")?;
+            let (n, f) = v.split_once('=').ok_or("--vae NAME=FILE")?;
+            vaes.push((n.to_string(), std::path::PathBuf::from(f)));
+            i += 1;
+        }
+        i += 1;
+    }
+    if vaes.is_empty() {
+        return Err("vae-roundtrip: at least one --vae NAME=FILE".into());
+    }
+    let out = Path::new(opt(args, "--out").unwrap_or("."));
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let gpu: usize = opt(args, "--gpu").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let pic = nextcuda_image::Picture::decode(&std::fs::read(input).map_err(|e| format!("{input}: {e}"))?)?;
+    nextcuda_image_ph3image::check::vae_roundtrip(gpu, &vaes, &pic, out, &mut |s| eprintln!("{s}")).map_err(|e| e.0)
+}
+
 /// `image svg-check DIR`: svgrender against ref.py's DiffVG and LIVE dumps
 fn svg_check_cmd(args: &[String]) -> Result<(), String> {
     let dir = args.first().filter(|a| !a.starts_with("--")).ok_or(USAGE)?;
@@ -1010,6 +1035,7 @@ pub fn cmd(cfg: &Config, args: &[String], selftest: impl Fn(&[String]) -> Result
         Some("check") => check(cfg, rest),
         Some("upscale") => upscale_cmd(cfg, rest, false),
         Some("upscale-check") => upscale_cmd(cfg, rest, true),
+        Some("vae-roundtrip") => vae_roundtrip_cmd(rest),
         Some("upscale-clip") => upscale_clip_cmd(cfg, rest),
         Some("vectorize") => vectorize_cmd(cfg, rest),
         Some("describe") => describe_cmd(cfg, rest),

@@ -271,3 +271,36 @@ pub fn run_denoiser(denoiser: &Path, gpus: &[usize], reserve: u64, dir: &Path, s
     let out = e.ck.get("condition_proj.weight").map_err(he)?.shape[1];
     dit_stages(&e, out, dir, stages, log)
 }
+
+/// A picture through each VAE file's encoder and each one's decoder, the denoiser skipped (`nextcuda image
+/// vae-roundtrip`): `<enc>-<dec>-<mean|sampled>.png` in `out`. Which stage makes a texture: the encoder (one file's
+/// encode decoded by another's decoder), the decoder, or neither. Files load one at a time on `gpu`.
+pub fn vae_roundtrip(gpu: usize, vaes: &[(String, std::path::PathBuf)], pic: &Picture, out: &Path, log: &mut dyn FnMut(String)) -> Result<()> {
+    use nextcuda_h3::safetensors::Checkpoint;
+    let dev = nextcuda_h3::device::Device::open_index(gpu).map_err(he)?;
+    let (w, h) = crate::round_canvas(pic.width, pic.height);
+    let px = crate::pixels_at(pic, (w, h));
+    let (lh, lw) = (h as usize / 16, w as usize / 16);
+    let mut lats: Vec<(String, Vec<f32>)> = Vec::new();
+    for (name, path) in vaes {
+        let venc = nextcuda_h3::venc::VideoEncoder::load(&dev, &Checkpoint::open(path).map_err(he)?).map_err(he)?;
+        let (mean, _) = venc.encode(&px, 1, h as usize, w as usize, &mut || Ok(())).map_err(he)?;
+        let sampled = venc.encode_sampled(&px, h as usize, w as usize, crate::ENCODE_SEED, &mut || Ok(())).map_err(he)?;
+        log(format!("{name}: encoded {w}x{h} -> {lw}x{lh} latents"));
+        lats.push((format!("{name}-mean"), mean));
+        lats.push((format!("{name}-sampled"), sampled));
+    }
+    for (name, path) in vaes {
+        let vae = nextcuda_h3::vae::VideoDecoder::load(&dev, &Checkpoint::open(path).map_err(he)?, 8).map_err(he)?;
+        for (enc, z) in &lats {
+            let (px, _) = vae.decode(z, 1, lh, lw, &mut || Ok(())).map_err(he)?;
+            let plane = (w * h) as usize;
+            let data = (0..plane * 3).map(|i| (px[(i % 3) * plane + i / 3] * 255.0).round().clamp(0.0, 255.0) as u8).collect();
+            let (e, kind) = enc.rsplit_once('-').unwrap_or((enc, ""));
+            let file = out.join(format!("{e}-{name}-{kind}.png"));
+            Picture { width: w, height: h, channels: 3, data }.write_png(&file, &[]).map_err(Error)?;
+            log(format!("{}", file.display()));
+        }
+    }
+    Ok(())
+}
