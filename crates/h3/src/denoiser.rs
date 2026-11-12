@@ -414,16 +414,21 @@ pub struct Denoiser<'a> {
     control: Option<ControlRun<'a>>,
 }
 
-/// A ControlNet's per-clip state: its hint rows per video-like segment, the audio rows it leaves alone, and the
-/// buffers of its stream
+/// A ControlNet's per-clip state: its hint rows per video-like segment (on control block 0's card), the audio rows it
+/// leaves alone, and the buffers of its stream - on each card a control block is on (`None` on the others)
 struct ControlRun<'a> {
     net: &'a crate::control::Control,
     rows: Vec<(usize, Tensor)>,
     audio: Vec<(usize, usize)>,
-    zeros: Tensor,
-    stream: Tensor,
+    zeros: Vec<Option<Tensor>>,
+    stream: Vec<Option<Tensor>>,
     c: Tensor,
-    skip: Tensor,
+    skip: Vec<Option<Tensor>>,
+}
+
+/// A tensor's bytes into another of the same size on another card (through host memory)
+fn across(src: &Tensor, dst: &Tensor) -> Result<()> {
+    dst.buf.write(0, &src.to_bytes()?)
 }
 
 impl<'a> Denoiser<'a> {
@@ -545,7 +550,12 @@ impl<'a> Denoiser<'a> {
             return Err(Error(format!("a control hint of {} values, {channels} channels, for a {} x {} x {} latent (at most {})", hint.len(), sh.t, sh.h, sh.w,
                                      net.in_dim)));
         }
-        let dev = self.x.buf.device().clone();
+        // the denoiser's cards (one, unless split); the control blocks are placed among them
+        let devs: Vec<Arc<Device>> = if self.blocks.devs.len() > 1 { self.blocks.devs.clone() } else { vec![self.x.buf.device().clone()] };
+        if net.dev_of.iter().any(|d| *d >= devs.len()) {
+            return Err(Error(format!("the control blocks' cards {:?} are not among the denoiser's {}", net.dev_of, devs.len())));
+        }
+        let dev = devs[net.card_of(0)].clone();
         let cols = net.in_dim * 4;
         let mut rows = Vec::new();
         for seg in self.layout.segments.iter().filter(|s| matches!(s.kind, Kind::Cond | Kind::RefImg | Kind::Video)) {
@@ -566,14 +576,17 @@ impl<'a> Denoiser<'a> {
         let longest = audio.iter().map(|a| a.1).max().unwrap_or(1).max(1);
         let hidden = self.blocks.cfg.hidden;
         let s = self.layout.tokens();
+        let on = |f: &dyn Fn(&Arc<Device>) -> Result<Tensor>| -> Result<Vec<Option<Tensor>>> {
+            devs.iter().enumerate().map(|(d, dv)| if net.dev_of.contains(&d) { f(dv).map(Some) } else { Ok(None) }).collect()
+        };
         self.control = Some(ControlRun {
             net,
             rows,
             audio,
-            zeros: Tensor::from_bytes(&dev, DType::BF16, &[longest, hidden], &vec![0u8; longest * hidden * 2])?,
-            stream: Tensor::new(&dev, DType::BF16, &[s, hidden])?,
+            zeros: on(&|d| Tensor::from_bytes(d, DType::BF16, &[longest, hidden], &vec![0u8; longest * hidden * 2]))?,
+            stream: on(&|d| Tensor::new(d, DType::BF16, &[s, hidden]))?,
             c: Tensor::new(&dev, DType::BF16, &[s, hidden])?,
-            skip: Tensor::new(&dev, DType::BF16, &[s, hidden])?,
+            skip: on(&|d| Tensor::new(d, DType::BF16, &[s, hidden]))?,
         });
         Ok(())
     }
@@ -678,14 +691,19 @@ impl<'a> Denoiser<'a> {
         let control = self.control.as_ref().filter(|c| c.net.active(sigma));
         let cstep = match control {
             Some(c) => {
-                c.stream.copy_rows(0, &self.x, 0, self.layout.tokens())?; // the stream before block 0
+                // the stream before block 0, onto control block 0's card
+                let first = c.stream[c.net.card_of(0)].as_ref().ok_or("no control stream on control block 0's card")?;
+                if c.net.card_of(0) == 0 {
+                    first.copy_rows(0, &self.x, 0, self.layout.tokens())?;
+                } else {
+                    across(&self.x, first)?;
+                }
                 Some(Step::new(&dev, &c.net.blocks, &ts.rows, &self.layout.positions, &o.inv_freq, &t_emb)?)
             }
             None => None,
         };
-        if !self.tail.is_empty() && control.is_some() {
-            return Err(Error("the ControlNet runs on a denoiser on one card only (this one is split over the cards)".into()));
-        }
+        // the card the control stream is on now
+        let mut ccard = control.map_or(0, |c| c.net.card_of(0));
         // the stream to card `to` from card `from` (through host memory: a step's rows, twice a step when split)
         let move_to = |from: usize, to: usize, x0: &Tensor, tail: &[(Tensor, Scratch)]| -> Result<()> {
             let src = if from == 0 { x0 } else { &tail[from - 1].0 };
@@ -705,11 +723,30 @@ impl<'a> Denoiser<'a> {
             self.blocks.block(i, x, &step, sc, lora, None)?;
             if let (Some(c), Some(cs)) = (control, cstep.as_ref()) {
                 if let Some(k) = c.net.at.iter().position(|l| *l == i) {
+                    let kc = c.net.card_of(k);
+                    fn pick(v: &[Option<Tensor>], d: usize) -> Result<&Tensor> {
+                        v[d].as_ref().ok_or_else(|| Error(format!("no control buffer on card {d}")))
+                    }
+                    if kc != ccard {
+                        across(pick(&c.stream, ccard)?, pick(&c.stream, kc)?)?;
+                        ccard = kc;
+                    }
+                    let stream = pick(&c.stream, kc)?;
                     if k == 0 {
                         let rows: Vec<(usize, &Tensor)> = c.rows.iter().map(|(a, t)| (*a, t)).collect();
-                        c.net.start(&c.stream, &c.c, &rows)?;
+                        c.net.start(stream, &c.c, &rows)?;
                     }
-                    c.net.step(k, &c.stream, &self.x, &c.skip, cs, &self.scratch, (&c.audio, &c.zeros))?;
+                    let ksc = if kc == 0 { &self.scratch } else { &self.tail[kc - 1].1 };
+                    let skip = pick(&c.skip, kc)?;
+                    c.net.addition(k, stream, skip, cs, ksc, (&c.audio, pick(&c.zeros, kc)?))?;
+                    // added where the denoiser's stream is: this card, or the other through host memory (its scratch's
+                    // projection, free between blocks)
+                    if kc == card {
+                        ops::add(x, skip)?;
+                    } else {
+                        across(skip, &sc.proj)?;
+                        ops::add(x, &sc.proj)?;
+                    }
                 }
             }
         }

@@ -14,6 +14,11 @@
 //!
 //! Version 2.0 (`control_blocks_places` in the file's metadata): ten blocks, after layers 0, 5, 10 ... 45; the blocks
 //! are int8 ConvRot like the denoiser's and their tables come from the same timestep curve.
+//!
+//! On a denoiser split over two 12 GB cards (nextcuda's Q4_K_M: 10.6 GiB of blocks) the 4.2 GiB of control blocks do
+//! not fit on one card beside its half: each control block goes beside the denoiser block it follows when that card
+//! has the room ([`placement`]), and the control stream moves with them - once a step at most, through host memory, as
+//! the denoiser's own stream does; a block's addition is moved to the card the denoiser's stream is on.
 
 use std::sync::Arc;
 
@@ -26,6 +31,8 @@ use crate::{Error, Result};
 
 pub struct Control {
     pub blocks: Blocks,
+    /// each control block's card (an index into `blocks.devs`)
+    pub dev_of: Vec<usize>,
     /// the denoiser layers after which each control block runs
     pub at: Vec<usize>,
     /// hint channels a latent pixel (49)
@@ -52,9 +59,9 @@ fn bf16_linear(dev: &Arc<Device>, ck: &Checkpoint, name: &str, s: f32) -> Result
 }
 
 impl Control {
-    /// The patch, its blocks shaped as the denoiser's (`main`); `strength` (1.0), and where it acts (`sigmas`: from,
-    /// to - the whole schedule is (1, 0))
-    pub fn load(dev: &Arc<Device>, ck: &Checkpoint, main: Config, strength: f32, sigmas: (f32, f32), threads: usize) -> Result<Control> {
+    /// The patch's control blocks and the denoiser layers they follow, read from the file (`main`: the denoiser's
+    /// shape)
+    pub fn places(ck: &Checkpoint, main: &Config) -> Result<Vec<usize>> {
         let n = (0..).take_while(|i| ck.get(&format!("control_blocks.{i}.after_proj.weight")).is_ok()).count();
         if n == 0 {
             return Err(Error(format!("{}: not a MiniMax H3 Fun ControlNet (no control_blocks)", ck.path.display())));
@@ -66,11 +73,27 @@ impl Control {
         if at.len() != n || at.first() != Some(&0) || at.windows(2).any(|w| w[0] >= w[1]) || at.iter().any(|l| *l >= main.blocks) {
             return Err(Error(format!("control blocks after layers {at:?}: {n} blocks, from layer 0, increasing, within the denoiser's {}", main.blocks)));
         }
+        Ok(at)
+    }
+
+    /// The patch on one card: its blocks shaped as the denoiser's (`main`); `strength` (1.0), and where it acts
+    /// (`sigmas`: from, to - the whole schedule is (1, 0))
+    pub fn load(dev: &Arc<Device>, ck: &Checkpoint, main: Config, strength: f32, sigmas: (f32, f32), threads: usize) -> Result<Control> {
+        let n = Self::places(ck, &main)?.len();
+        Self::load_placed(std::slice::from_ref(dev), vec![0; n], ck, main, strength, sigmas, threads)
+    }
+
+    /// The patch over the denoiser's cards, control block `k` on `devs[dev_of[k]]` ([`placement`])
+    pub fn load_placed(devs: &[Arc<Device>], dev_of: Vec<usize>, ck: &Checkpoint, main: Config, strength: f32, sigmas: (f32, f32), threads: usize) -> Result<Control> {
+        let at = Self::places(ck, &main)?;
+        let n = at.len();
         let td = ck.get("control_blocks.0.adaln_proj.linear.weight")?.shape[1];
         if td != main.t_dim {
             return Err(Error(format!("the ControlNet's timestep tables are {td} wide, the denoiser's {}: another adaln form (convert one to match)", main.t_dim)));
         }
-        let blocks = Blocks::load_from(dev, ck, "control_blocks", Config { blocks: n, ..main }, threads)?;
+        let blocks = Blocks::load_placed(devs, ck, "control_blocks", Config { blocks: n, ..main }, dev_of.clone(), threads)?;
+        // the projection in and before_proj run with block 0 (`start`), each after_proj with its block
+        let dev = &devs[dev_of[0]];
         let pw = ck.get("control_proj_in.weight")?.shape.clone(); // [hidden, in_dim * 4]
         let proj_in = Linear {
             weight: f32_tensor(dev, &crate::dit::host(ck, "control_proj_in.weight")?, &pw)?,
@@ -78,13 +101,19 @@ impl Control {
         };
         Ok(Control {
             blocks,
+            dev_of: dev_of.clone(),
             at,
             in_dim: pw[1] / 4,
             proj_in,
             before: bf16_linear(dev, ck, "control_blocks.0.before_proj", 1.0)?,
-            after: (0..n).map(|i| bf16_linear(dev, ck, &format!("control_blocks.{i}.after_proj"), strength)).collect::<Result<_>>()?,
+            after: (0..n).map(|i| bf16_linear(&devs[dev_of[i]], ck, &format!("control_blocks.{i}.after_proj"), strength)).collect::<Result<_>>()?,
             sigmas,
         })
+    }
+
+    /// Control block `k`'s card (an index into the denoiser's cards)
+    pub fn card_of(&self, k: usize) -> usize {
+        self.dev_of.get(k).copied().unwrap_or(0)
     }
 
     pub fn active(&self, sigma: f32) -> bool {
@@ -110,13 +139,44 @@ impl Control {
     #[allow(clippy::too_many_arguments)]
     pub fn step(&self, k: usize, c: &Tensor, x: &Tensor, skip: &Tensor, step: &crate::dit::Step, s: &crate::dit::Scratch,
                 audio: (&[(usize, usize)], &Tensor)) -> Result<()> {
+        self.addition(k, c, skip, step, s, audio)?;
+        crate::ops::add(x, skip)
+    }
+
+    /// Control block `k` on the stream `c` (on its card) and what it adds to the denoiser's stream, in `skip` (on the
+    /// same card); the caller adds it where the denoiser's stream is
+    pub fn addition(&self, k: usize, c: &Tensor, skip: &Tensor, step: &crate::dit::Step, s: &crate::dit::Scratch, audio: (&[(usize, usize)], &Tensor)) -> Result<()> {
         self.blocks.block(k, c, step, s, None, None)?;
         self.after[k].forward(c, skip)?;
         for (at, n) in audio.0 {
             skip.copy_rows(*at, audio.1, 0, *n)?;
         }
-        crate::ops::add(x, skip)
+        Ok(())
     }
+}
+
+/// Where each control block goes over the denoiser's cards: beside the denoiser block it follows (`home[k]`, that
+/// block's card) while that card has `bytes[k]` to spare beyond `keep[card]` (a clip's buffers), else on the card with
+/// the most room left; None when one has no card at all. `free[card]`: the bytes free on each card now.
+pub fn placement(bytes: &[u64], home: &[usize], free: &[u64], keep: &[u64]) -> Option<Vec<usize>> {
+    let mut room: Vec<i128> = free.iter().zip(keep).map(|(f, k)| *f as i128 - *k as i128).collect();
+    let mut out = Vec::with_capacity(bytes.len());
+    for (k, b) in bytes.iter().enumerate() {
+        let b = *b as i128;
+        let h = home.get(k).copied().unwrap_or(0).min(room.len().saturating_sub(1));
+        let d = if room[h] >= b {
+            h
+        } else {
+            let (d, r) = room.iter().enumerate().max_by_key(|(_, r)| **r)?;
+            if *r < b {
+                return None;
+            }
+            d
+        };
+        room[d] -= b;
+        out.push(d);
+    }
+    Some(out)
 }
 
 /// Linear resampling of one axis with half-pixel centres (PyTorch's align_corners=False): `n_in` -> `n_out`
@@ -164,6 +224,23 @@ pub fn trilinear(v: &[f32], (f, h, w): (usize, usize, usize), (t, lh, lw): (usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_blocks_go_beside_the_layers_they_follow() {
+        let gib = 1u64 << 30;
+        // a split denoiser: layers 0-24 on the 5070, 25-49 on the 3060; ten 0.42 GiB control blocks after 0, 5 ... 45
+        let home: Vec<usize> = (0..10).map(|k| usize::from(k * 5 >= 25)).collect();
+        let bytes = vec![450 << 20; 10];
+        let p = placement(&bytes, &home, &[5 * gib, 5 * gib], &[2 * gib, 2 * gib]).unwrap();
+        assert_eq!(p, home, "each beside its layer");
+        // the first card short of room: the rest of its blocks go to the other
+        let p = placement(&bytes, &home, &[3 * gib, 6 * gib], &[2 * gib, 2 * gib]).unwrap();
+        assert_eq!(p, vec![0, 0, 1, 1, 1, 1, 1, 1, 1, 1]);
+        // no room anywhere: refused, not squeezed
+        assert!(placement(&bytes, &home, &[2 * gib, 3 * gib], &[2 * gib, 2 * gib]).is_none());
+        // one card: everything on it
+        assert_eq!(placement(&bytes[..2], &[0, 0], &[8 * gib], &[2 * gib]).unwrap(), vec![0, 0]);
+    }
 
     #[test]
     fn trilinear_matches_pytorch() {

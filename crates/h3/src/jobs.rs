@@ -1486,10 +1486,25 @@ pub fn generate(e: &Engine, c: &ClipSpec, out: &Path, ctl: &mut Ctl) -> Result<V
                     f => s * (1.0 - f) / (1.0 + (s - 1.0) * (1.0 - f)),
                 }
             };
-            let net = crate::control::Control::load(&e.dev, &Checkpoint::open(p)?, e.cfg, c.inputs.control_strength,
-                                                    (at(c.inputs.control_range.0), at(c.inputs.control_range.1)), e.threads)?;
-            ctl.say(format!("control: {} blocks after layers {:?}, strength {}, loaded in {:.1} s", net.at.len(), net.at, c.inputs.control_strength,
-                            t0.elapsed().as_secs_f64()));
+            let ck = Checkpoint::open(p)?;
+            // over the denoiser's cards: each control block beside the layer it follows while that card keeps a
+            // clip's room (a split Q4_K_M leaves neither card the room for all 4.2 GiB of them)
+            let places = crate::control::Control::places(&ck, &e.cfg)?;
+            let devs = model.devs.clone();
+            let bytes: Vec<u64> = (0..places.len()).map(|k| crate::dit::Blocks::block_bytes(&ck, "control_blocks", k) + (64 << 20)).collect();
+            let home: Vec<usize> = places.iter().map(|l| model.card_of(*l)).collect();
+            let free: Vec<u64> = devs.iter().map(|d| d.mem_cap().saturating_sub(d.mem_used())).collect();
+            let keep: Vec<u64> = devs.iter().map(|_| e.reserve).collect();
+            let dev_of = crate::control::placement(&bytes, &home, &free, &keep).ok_or_else(|| Error(format!(
+                "the ControlNet's blocks ({:.1} GiB) do not fit beside the denoiser on {} ({} GiB free, {:.1} GiB kept on each for the clip): a smaller canvas or fewer seconds, or a smaller denoiser",
+                bytes.iter().sum::<u64>() as f64 / 1073741824.0, devs.iter().map(|d| d.name()).collect::<Vec<_>>().join(" + "),
+                free.iter().map(|f| format!("{:.1}", *f as f64 / 1073741824.0)).collect::<Vec<_>>().join(" + "), e.reserve as f64 / 1073741824.0)))?;
+            let net = crate::control::Control::load_placed(&devs, dev_of, &ck, e.cfg, c.inputs.control_strength,
+                                                           (at(c.inputs.control_range.0), at(c.inputs.control_range.1)), e.threads)?;
+            let on: Vec<String> = devs.iter().enumerate().map(|(d, dv)| format!("{} on {}", net.dev_of.iter().filter(|x| **x == d).count(), dv.name()))
+                .filter(|t| !t.starts_with("0 ")).collect();
+            ctl.say(format!("control: {} blocks after layers {:?} ({}), strength {}, loaded in {:.1} s", net.at.len(), net.at, on.join(", "),
+                            c.inputs.control_strength, t0.elapsed().as_secs_f64()));
             Some(net)
         }
     };

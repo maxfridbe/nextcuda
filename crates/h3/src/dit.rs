@@ -330,7 +330,7 @@ impl Blocks {
     }
 
     /// The bytes of block `i`'s matrices in the checkpoint
-    fn block_bytes(ck: &Checkpoint, prefix: &str, i: usize) -> u64 {
+    pub fn block_bytes(ck: &Checkpoint, prefix: &str, i: usize) -> u64 {
         LINEARS.iter().flat_map(|l| [format!("{prefix}.{i}.{l}.weight"), format!("{prefix}.{i}.{l}.weight_scale")])
             .filter_map(|n| ck.get(&n).ok().map(|e| e.bytes as u64)).sum()
     }
@@ -377,6 +377,18 @@ impl Blocks {
             room[d] -= b;
             dev_of.push(d);
         }
+        Self::load_placed(devs, ck, "blocks", cfg, dev_of, threads)
+    }
+
+    /// `cfg.blocks` blocks under `prefix` over several cards, block `i` on `devs[dev_of[i]]` (the split denoiser's
+    /// placement; a ControlNet's blocks beside the denoiser blocks they follow)
+    pub fn load_placed(devs: &[Arc<Device>], ck: &Checkpoint, prefix: &str, cfg: Config, dev_of: Vec<usize>, threads: usize) -> Result<Blocks> {
+        let n = cfg.blocks;
+        if dev_of.len() != n || dev_of.iter().any(|d| *d >= devs.len()) {
+            return Err(Error(format!("{prefix}: a card for each of the {n} blocks among {}", devs.len())));
+        }
+        let kquant = ck.kquant_of(&format!("{prefix}.0.mlp.fc1.weight"));
+        let lead = format!("{prefix}.");
         let mut blocks: Vec<Option<Block>> = (0..n).map(|_| None).collect();
         let (mut seconds, mut bytes) = (0f64, 0u64);
         for (di, dev) in devs.iter().enumerate() {
@@ -385,15 +397,15 @@ impl Blocks {
                 continue;
             }
             let wanted = |name: &str| -> bool {
-                let Some(rest) = name.strip_prefix("blocks.") else { return false };
+                let Some(rest) = name.strip_prefix(lead.as_str()) else { return false };
                 let Some((idx, tail)) = rest.split_once('.') else { return false };
                 idx.parse::<usize>().is_ok_and(|i| mine.contains(&i)) && LINEARS.iter().any(|l| tail == format!("{l}.weight") || tail == format!("{l}.weight_scale"))
             };
-            let mut loaded = load::load(dev, ck, threads, wanted).ctx(format!("loading the denoiser's blocks onto {}", dev.name()))?;
+            let mut loaded = load::load(dev, ck, threads, wanted).ctx(format!("loading the {prefix} onto {}", dev.name()))?;
             seconds += loaded.seconds;
             bytes += loaded.bytes;
             for i in &mine {
-                blocks[*i] = Some(Block::assemble(dev, ck, "blocks", *i, &mut loaded.tensors).ctx(format!("block {i}"))?);
+                blocks[*i] = Some(Block::assemble(dev, ck, prefix, *i, &mut loaded.tensors).ctx(format!("block {i}"))?);
             }
         }
         let blocks: Vec<Block> = blocks.into_iter().map(|b| b.ok_or("a block was not placed")).collect::<std::result::Result<_, _>>()?;
