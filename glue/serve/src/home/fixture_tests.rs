@@ -938,3 +938,48 @@ fn a_server_short_of_room_for_its_own_cached_buffers_is_restarted_but_not_for_it
     assert!(m.starts_with("flashvsr: 1280 x 704"), "{m}");
     assert_eq!(w.count("audio stop"), 1, "{}", w.log());
 }
+
+#[test]
+fn video_control_depth_needs_a_depth_model_and_is_an_image_job() {
+    // a clip in the clips directory (skipped where there is no ffmpeg)
+    let mut video = model("ltx2", "video", 20.0);
+    video["arch"] = json!("ltx2");
+    let mut drawer = model("sdxl", "image", 4.0);
+    drawer["arch"] = json!("qwen-image");
+    let w = world("control-depth", vec![video, drawer]);
+    let clips = w.dir.join("clips");
+    std::fs::create_dir_all(&clips).unwrap();
+    let made = std::process::Command::new("ffmpeg").args(["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x240:r=24:d=1.2", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+        .arg(clips.join("take.mp4")).status().is_ok_and(|s| s.success());
+    if !made {
+        return;
+    }
+    w.mem.settings.lock().unwrap().insert("NS_VIDEO_OUT".into(), clips.to_string_lossy().into_owned());
+    let ask = json!({"file": "take", "control": "depth", "width": 320, "height": 256, "frames": 22, "wait": false});
+    // no depth model enabled: refused when submitted, nothing queued
+    let (st, m) = w.home.rpc_inner("video.control", &ask).unwrap_err();
+    assert_eq!(st, 409, "{m}");
+    assert!(m.contains("no depth model is enabled"), "{m}");
+    // a model named that does not estimate depth: 400
+    let mut named = ask.clone();
+    named["model"] = json!("sdxl");
+    let (st, m) = w.home.rpc_inner("video.control", &named).unwrap_err();
+    assert_eq!(st, 400, "{m}");
+    assert!(m.contains("does not estimate depth"), "{m}");
+    // the source and settings are checked first, as the studio checks them for canny
+    let mut bad = ask.clone();
+    bad["width"] = json!(300);
+    assert_eq!(w.home.rpc_inner("video.control", &bad).unwrap_err().0, 400);
+    let mut gone = ask.clone();
+    gone["file"] = json!("nothing-here");
+    assert_eq!(w.home.rpc_inner("video.control", &gone).unwrap_err().0, 404);
+    // with a depth model: a job of the image queue (wait false answers with it)
+    let mut depth = model("depth-anything-v2-small", "image", 1.0);
+    depth["arch"] = json!("depth-anything-v2");
+    w.mem.models.lock().unwrap().push(depth);
+    let job = w.home.rpc_inner("video.control", &ask).unwrap();
+    assert_eq!((job["kind"].as_str(), job["method"].as_str()), (Some("image"), Some("video.control")), "{job}");
+    assert_eq!(super::jobs::kind_of_method("video.control"), "image");
+    let caps = super::life::capabilities(&w.entry("depth-anything-v2-small"));
+    assert_eq!((caps.0, caps.1), (vec!["depth"], vec!["video.control"]));
+}
