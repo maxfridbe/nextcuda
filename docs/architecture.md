@@ -332,10 +332,14 @@ CONTRIBUTING.md walks through a port step by step; each kind's template (`<kind>
   kernels (the diffusion GEMMs without TF32, norms, GELU, attention; the vision im2col and resizes) - no kernels of
   its own; one arena for a pass's temporaries, sized by the first. The preparation is DPTImageProcessor's (the side
   nearest 518 that keeps the aspect on the 14 grid, Pillow's bicubic, ImageNet's normalization), the position table
-  resized bicubically to the patches as Dinov2Embeddings does. Checked against transformers on the CPU
-  (reference/depthanything: ref.py, compare.py). The clip path is the glue's (video/studio/control.rs `make_depth`):
-  every frame's depth kept in 16 bits, then the clip scaled by one range (the 0.5th-99.5th percentile of all frames'
-  values) and encoded grey, near bright.
+  resized bicubically to the patches as Dinov2Embeddings does. Checked against transformers 4.57.3 on the CPU
+  (reference/depthanything: ref.py, compare.py; 7 pictures, 518 x 518 to 924 x 518): the input identical to 5e-7,
+  the depth within 1.5e-5 of its range (largest 1.0e-4 on a 0-6.8 map). RTX 5070: 768 x 576 (686 x 518 in) 33.5 ms a
+  picture (network 25.9, preparation 7.2, resize 0.4), 518 x 518 19 ms of network; RTX 3060 60.6 ms of network; about
+  0.8 GiB on the card at 686 x 518 (1.05 GiB at 924 x 518), the context included. The clip path is the glue's
+  (video/studio/control.rs `make_depth`): every frame's depth kept in 16 bits, then the clip scaled by one range (the
+  0.5th-99.5th percentile of all frames' values) and encoded grey, near bright - 124 frames of 768 x 576 in 5.1 s on
+  the 5070.
 
 ## The audio engines
 

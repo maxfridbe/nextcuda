@@ -9,7 +9,7 @@ commercial: true
 title: 'Depth Anything V2 Small (depth: video.control''s depth control videos)'
 about: 'Depth Anything V2 Small (24.8 M parameters): a picture''s relative inverse depth, near bright - DINOv2 ViT-S/14 and the DPT head at the side nearest 518 on the 14 grid, float32 on one card. video.control with control depth makes a clip''s depth control video with it (one range for the clip), an image-queue job'
 gpus: '0'
-vram_gib: 1.0
+vram_gib: 1.1
 defaults: {}
 env: {}
 files:
