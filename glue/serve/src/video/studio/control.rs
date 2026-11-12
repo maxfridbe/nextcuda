@@ -7,6 +7,12 @@
 //!   to cv2.Canny: 100 / 200 is the ControlNet annotators' default);
 //! - **gray**: the clip's brightness alone (BT.601 luma), for the 2.0 checkpoint's gray control (recolouring).
 //!
+//! - **depth** needs a model: a depth estimator (Depth Anything V2) on the image servers runs it as an image-queue
+//!   job (the front door's `control_depth`, the image server's POST /v1/videos/depth) through `make_depth` here -
+//!   each frame's relative inverse depth, kept until the clip ends, then the whole clip scaled by one range (the 0.5th
+//!   to 99.5th percentile of every frame's values: `depth_range`), near bright. One range for the clip, not a frame's
+//!   own min / max, so the grey of a wall does not pump as something comes close.
+//!
 //! The clip is read at 24 fps from `start_s`, scaled to cover the canvas and cut in the middle - what video.generate
 //! does to a control video itself (`frames_for`: Fit::Cover) - so the control video is the clip's own size and length
 //! and the thresholds act on the edges the denoiser will see. A clip shorter than `frames` holds its last frame, as
@@ -15,12 +21,14 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use serde_json::{json, Value};
 
-/// What `control` makes here (`video.control.<kind>` in system.version's features)
+/// What `control` makes here, on the CPU (`video.control.<kind>` in system.version's features)
 pub const KINDS: [&str; 2] = ["canny", "gray"];
+/// What a model makes (an image server's job): depth, by a depth estimator
+pub const MODEL_KINDS: [&str; 1] = ["depth"];
 
 /// The canvas a control video is made at when none is asked: the source's aspect within the house size's pixels
 /// (768 x 576), sides multiples of 32 within the model's 256 - 1344
@@ -179,6 +187,23 @@ pub fn frame(control: &str, rgb: &[u8], w: usize, h: usize, s: &Settings) -> Vec
     one.iter().flat_map(|v| [*v, *v, *v]).collect()
 }
 
+/// The request's `file` in the clips directory `dir` (as named, or with .mp4): its path and plain name
+pub fn source(dir: &Path, p: &Value) -> Result<(std::path::PathBuf, String), super::RpcError> {
+    use super::RpcError;
+    let file = p["file"].as_str().unwrap_or("").trim();
+    let n = crate::files::plain(file).ok_or_else(|| RpcError::param("file: a clip in the clips directory (video.upload, or a finished clip's name)"))?;
+    let src = [n.to_string(), format!("{n}.mp4")].into_iter().map(|f| dir.join(f)).find(|f| f.is_file())
+        .ok_or_else(|| RpcError::not_found(&format!("no clip {n} in the clips directory")))?;
+    Ok((src, n.to_string()))
+}
+
+/// The control video's name beside its source `n`: ref_<unix>_<stem>-<control>.mp4 (the stem's plain characters, 40 at
+/// most)
+pub fn output_name(n: &str, control: &str, unix: u64) -> String {
+    let stem: String = n.trim_end_matches(".mp4").trim_start_matches("ref_").chars().filter(|c| c.is_ascii_alphanumeric() || "_-".contains(*c)).take(40).collect();
+    format!("ref_{unix}_{stem}-{control}.mp4")
+}
+
 /// The source's size and seconds (ffprobe); None when it has no video ffprobe reads
 pub fn probe(src: &Path) -> Option<(u32, u32, f64)> {
     let o = Command::new("ffprobe")
@@ -198,28 +223,10 @@ pub fn probe(src: &Path) -> Option<(u32, u32, f64)> {
 /// The control video of `src` written to `dst` (an mp4): frames read, made and written a batch at a time on every
 /// core; the frames written
 pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<u32, String> {
-    let (w, h, n) = (s.width as usize, s.height as usize, s.frames as usize);
-    let vf = format!("fps=24,scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,crop={w}:{h},tpad=stop_mode=clone:stop=-1,setsar=1");
-    let mut dec = Command::new("ffmpeg")
-        .args(["-v", "error", "-nostdin"])
-        .args(["-ss", &format!("{:.3}", s.start_s.max(0.0))])
-        .arg("-i")
-        .arg(src)
-        .args(["-an", "-vf", &vf, "-frames:v", &n.to_string(), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("ffmpeg: {e}"))?;
+    let (w, h) = (s.width as usize, s.height as usize);
+    let mut dec = decoder(src, s)?;
     let part = dst.with_extension("mp4.part");
-    let mut enc = Command::new("ffmpeg")
-        .args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{w}x{h}"), "-r", "24", "-i", "-"])
-        // near-lossless: a control video's thin edges are what it carries
-        .args(["-c:v", "libx264", "-preset", "fast", "-crf", "12", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4"])
-        .arg(&part)
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("ffmpeg: {e}"))?;
+    let mut enc = encoder(&part, s, "rgb24")?;
     let r = (|| -> Result<u32, String> {
         let mut input = dec.stdout.take().ok_or("ffmpeg's output")?;
         let mut output = enc.stdin.take().ok_or("ffmpeg's input")?;
@@ -252,6 +259,44 @@ pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<u32, String> {
         }
         Ok(done)
     })();
+    finish(dec, enc, r, &part, dst)
+}
+
+/// The decoder of a control video's frames: the source from `start_s` at 24 fps, scaled to cover the canvas and cut
+/// in the middle, its last frame held to `frames` - RGB bytes on its output
+pub fn decoder(src: &Path, s: &Settings) -> Result<Child, String> {
+    let (w, h) = (s.width, s.height);
+    let vf = format!("fps=24,scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,crop={w}:{h},tpad=stop_mode=clone:stop=-1,setsar=1");
+    Command::new("ffmpeg")
+        .args(["-v", "error", "-nostdin"])
+        .args(["-ss", &format!("{:.3}", s.start_s.max(0.0))])
+        .arg("-i")
+        .arg(src)
+        .args(["-an", "-vf", &vf, "-frames:v", &s.frames.to_string(), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg: {e}"))
+}
+
+/// The encoder of a control video: raw frames of `pix_fmt` (rgb24, gray) on its input, H.264 at 24 fps into `part`
+pub fn encoder(part: &Path, s: &Settings, pix_fmt: &str) -> Result<Child, String> {
+    Command::new("ffmpeg")
+        .args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", pix_fmt, "-s", &format!("{}x{}", s.width, s.height), "-r", "24", "-i", "-"])
+        // near-lossless: a control video's thin edges (and a depth map's smooth ramps) are what it carries
+        .args(["-c:v", "libx264", "-preset", "fast", "-crf", "12", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4"])
+        .arg(part)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg: {e}"))
+}
+
+/// Both ffmpegs waited for, the encoded part moved into place: the frames written, or why not (the part removed)
+fn finish(mut dec: Child, mut enc: Child, r: Result<u32, String>, part: &Path, dst: &Path) -> Result<u32, String> {
+    if r.is_err() {
+        let _ = dec.kill();
+    }
     let dec_err = {
         let mut e = String::new();
         if let Some(mut x) = dec.stderr.take() {
@@ -260,6 +305,7 @@ pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<u32, String> {
         e
     };
     let _ = dec.wait();
+    drop(enc.stdin.take());
     let st = enc.wait().map_err(|e| format!("ffmpeg: {e}"))?;
     let enc_err = {
         let mut e = String::new();
@@ -269,18 +315,127 @@ pub fn make(src: &Path, dst: &Path, s: &Settings) -> Result<u32, String> {
         e
     };
     let done = r.inspect_err(|_| {
-        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(part);
     })?;
     if done == 0 {
-        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(part);
         return Err(format!("no frames read from the clip{}", tail(&dec_err)));
     }
     if !st.success() {
-        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(part);
         return Err(format!("encoding the control video failed{}", tail(&enc_err)));
     }
-    std::fs::rename(&part, dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+    std::fs::rename(part, dst).map_err(|e| format!("{}: {e}", dst.display()))?;
     Ok(done)
+}
+
+/// One frame's depth kept until the clip's range is known: 16 bits against the frame's own range (finer than the
+/// 8-bit video by far, half a float's memory)
+pub struct Packed {
+    lo: f32,
+    step: f32,
+    q: Vec<u16>,
+}
+
+impl Packed {
+    pub fn of(d: &[f32]) -> Packed {
+        let (lo, hi) = d.iter().filter(|v| v.is_finite()).fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
+        let (lo, hi) = if lo <= hi { (lo, hi) } else { (0.0, 0.0) };
+        let step = if hi > lo { (hi - lo) / 65535.0 } else { 1.0 };
+        let q = d.iter().map(|&v| if v.is_finite() { ((v - lo) / step).round().clamp(0.0, 65535.0) as u16 } else { 0 }).collect();
+        Packed { lo, step, q }
+    }
+    pub fn get(&self, i: usize) -> f32 {
+        self.lo + self.q[i] as f32 * self.step
+    }
+    pub fn len(&self) -> usize {
+        self.q.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.q.is_empty()
+    }
+}
+
+/// Values of every frame the clip's range is read from (evenly spread over the frame)
+const RANGE_SAMPLES: usize = 4096;
+/// The range's ends: these fractions of the clip's values (a few stray pixels - a specular glint read as near - do not
+/// stretch it)
+pub const RANGE_LO: f64 = 0.005;
+pub const RANGE_HI: f64 = 0.995;
+
+/// The clip's depth range: the RANGE_LO and RANGE_HI quantiles of `samples` (every frame's share); (0, 1) for none
+pub fn depth_range(samples: &mut [f32]) -> (f32, f32) {
+    if samples.is_empty() {
+        return (0.0, 1.0);
+    }
+    let n = samples.len();
+    let at = |q: f64| ((n - 1) as f64 * q).round() as usize;
+    let (i, j) = (at(RANGE_LO), at(RANGE_HI));
+    let lo = *samples.select_nth_unstable_by(i, f32::total_cmp).1;
+    let hi = *samples.select_nth_unstable_by(j, f32::total_cmp).1;
+    (lo, hi)
+}
+
+/// A depth value as the control video's grey: the clip's range to 0-255, near (large inverse depth) bright
+pub fn depth_byte(v: f32, lo: f32, hi: f32) -> u8 {
+    if hi <= lo {
+        return 0;
+    }
+    ((v - lo) / (hi - lo) * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// The depth control video of `src` written to `dst`: each frame (RGB bytes at the canvas) through `depth` (its
+/// relative inverse depth at the canvas, a value a pixel), `progress` told the frames done (an error from either stops
+/// it: a cancel); when the clip has ended, every frame scaled by the clip's range and encoded. The frames written and
+/// the range
+pub fn make_depth(src: &Path, dst: &Path, s: &Settings, depth: &mut dyn FnMut(&[u8]) -> Result<Vec<f32>, String>,
+                  progress: &mut dyn FnMut(u32) -> Result<(), String>) -> Result<(u32, (f32, f32)), String> {
+    let (w, h, n) = (s.width as usize, s.height as usize, s.frames as usize);
+    let mut dec = decoder(src, s)?;
+    let part = dst.with_extension("mp4.part");
+    let mut range = (0.0, 1.0);
+    let r = (|| -> Result<Vec<Packed>, String> {
+        let mut input = dec.stdout.take().ok_or("ffmpeg's output")?;
+        let mut frames: Vec<Packed> = Vec::with_capacity(n);
+        let mut buf = vec![0u8; w * h * 3];
+        while frames.len() < n && input.read_exact(&mut buf).is_ok() {
+            let d = depth(&buf)?;
+            if d.len() != w * h {
+                return Err(format!("the depth model answered {} values for a {w} x {h} frame", d.len()));
+            }
+            frames.push(Packed::of(&d));
+            progress(frames.len() as u32)?;
+        }
+        Ok(frames)
+    })();
+    // the encoder only now: nothing is written until the range is known
+    let enc = encoder(&part, s, "gray");
+    let (r, enc) = match (r, enc) {
+        (Ok(frames), Ok(mut enc)) => {
+            let wrote = (|| -> Result<u32, String> {
+                let stride = (w * h / RANGE_SAMPLES).max(1);
+                let mut samples: Vec<f32> = frames.iter().flat_map(|f| (0..f.len()).step_by(stride).map(|i| f.get(i))).collect();
+                range = depth_range(&mut samples);
+                let mut output = enc.stdin.take().ok_or("ffmpeg's input")?;
+                let mut grey = vec![0u8; w * h];
+                for f in &frames {
+                    for (i, g) in grey.iter_mut().enumerate() {
+                        *g = depth_byte(f.get(i), range.0, range.1);
+                    }
+                    output.write_all(&grey).map_err(|e| format!("writing to ffmpeg: {e}"))?;
+                }
+                Ok(frames.len() as u32)
+            })();
+            (wrote, enc)
+        }
+        (Err(e), Ok(enc)) => (Err(e), enc),
+        (_, Err(e)) => {
+            let _ = dec.kill();
+            let _ = dec.wait();
+            return Err(e);
+        }
+    };
+    finish(dec, enc, r, &part, dst).map(|done| (done, range))
 }
 
 fn tail(e: &str) -> String {
@@ -297,8 +452,9 @@ pub fn settings(p: &Value, (w, h, seconds): (u32, u32, f64)) -> Result<Settings,
     use super::queue::num;
     use super::RpcError;
     let control = p["control"].as_str().unwrap_or("canny").trim().to_lowercase();
-    if !KINDS.contains(&control.as_str()) {
-        return Err(RpcError::param(&format!("control {control:?}: this box makes {} (depth and pose need an estimator it does not have)", KINDS.join(", "))));
+    if !KINDS.contains(&control.as_str()) && !MODEL_KINDS.contains(&control.as_str()) {
+        return Err(RpcError::param(&format!("control {control:?}: this box makes {}, {} (pose needs an estimator it does not have)", KINDS.join(", "),
+                                            MODEL_KINDS.join(", "))));
     }
     let start_s = num(p, "start_s", 0.0, 0.0, 86_400.0, false)?.as_f64().unwrap_or(0.0);
     let left = (seconds - start_s).max(0.0);
@@ -397,11 +553,74 @@ mod tests {
         assert_eq!((s.control.as_str(), s.width, s.height, s.frames, s.start_s), ("gray", 768, 576, 124, 1.0));
         assert_eq!(settings(&json!({"start_s": 2}), src).unwrap().frames, 90, "4 s left");
         let err = |p: Value| settings(&p, src).unwrap_err().message;
-        assert!(err(json!({"control": "depth"})).contains("canny, gray"));
+        assert!(err(json!({"control": "pose"})).contains("canny, gray, depth"));
+        assert_eq!(settings(&json!({"control": "depth"}), src).unwrap().control, "depth", "a model's: the front door routes it");
         assert!(err(json!({"width": 700})).contains("multiple of 32"));
         assert!(err(json!({"frames": 120})).contains("nearest: 107 or 124"));
         assert!(err(json!({"low": 150, "high": 100})).contains("below"));
         assert!(err(json!({"start_s": 5.5})).contains("22 frames"));
+    }
+
+    #[test]
+    fn depth_is_kept_finely_and_scaled_by_the_clips_range() {
+        // 16 bits against the frame's own range: well inside an 8-bit step of any range
+        let d: Vec<f32> = (0..1000).map(|i| 0.37 + i as f32 * 0.0123).collect();
+        let p = Packed::of(&d);
+        // the range 12.3 in 65535 steps: within half a step (an 8-bit step of it is 0.048)
+        assert!((0..1000).all(|i| (p.get(i) - d[i]).abs() < 2e-4), "packed");
+        assert_eq!(p.len(), 1000);
+        let flat = Packed::of(&[2.5; 4]);
+        assert_eq!(flat.get(3), 2.5);
+        // the range: quantiles, so a stray far value and a stray near one do not stretch it
+        let mut v: Vec<f32> = (0..1000).map(|i| i as f32 / 999.0).collect();
+        v[10] = -50.0;
+        v[20] = 80.0;
+        let (lo, hi) = depth_range(&mut v);
+        assert!((0.0..0.02).contains(&lo) && (0.98..1.0).contains(&hi), "{lo} {hi}");
+        assert_eq!(depth_range(&mut []), (0.0, 1.0));
+        // near (large) bright, clamped outside the range
+        assert_eq!((depth_byte(0.0, 0.0, 1.0), depth_byte(1.0, 0.0, 1.0), depth_byte(0.5, 0.0, 1.0)), (0, 255, 128));
+        assert_eq!((depth_byte(-3.0, 0.0, 1.0), depth_byte(7.0, 0.0, 1.0), depth_byte(1.0, 1.0, 1.0)), (0, 255, 0));
+    }
+
+    /// A depth video through ffmpeg (skipped where there is none), with a stand-in estimator: brightness as depth, a
+    /// frame's grey the clip's range - a square brightening over the clip is not each frame's own white
+    #[test]
+    fn a_clip_becomes_its_depth_video() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("nc-depth-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.mp4");
+        let ok = Command::new("ffmpeg")
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=0x202020:s=320x240:r=24:d=1", "-vf", "drawbox=x=100:y=80:w=80:h=80:color=white@1:t=fill,eq=brightness='t/2-0.4':eval=frame",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&src)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return;
+        }
+        let (w, h, secs) = probe(&src).unwrap();
+        let s = settings(&json!({"control": "depth", "width": 320, "height": 256, "frames": 22}), (w, h, secs)).unwrap();
+        let dst = dir.join("out.mp4");
+        let mut seen = 0;
+        let (made, (lo, hi)) = make_depth(&src, &dst, &s, &mut |rgb| Ok(luma(rgb)), &mut |n| {
+            seen = n;
+            Ok(())
+        }).unwrap();
+        assert_eq!((made, seen), (22, 22));
+        assert!(lo < hi, "{lo} {hi}");
+        let (ow, oh, _) = probe(&dst).unwrap();
+        assert_eq!((ow, oh), (320, 256));
+        // a cancel from progress stops it and leaves no file
+        let dst2 = dir.join("out2.mp4");
+        let e = make_depth(&src, &dst2, &s, &mut |rgb| Ok(luma(rgb)), &mut |n| if n >= 3 { Err("cancelled".into()) } else { Ok(()) });
+        assert_eq!(e.unwrap_err(), "cancelled");
+        assert!(!dst2.exists() && !dst2.with_extension("mp4.part").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

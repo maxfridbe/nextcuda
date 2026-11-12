@@ -43,6 +43,7 @@ image/                     IMAGES
   unlimitedocr nextsycl-image-unlimitedocr  Unlimited-OCR: pages to Markdown (SAM-B + CLIP-L, a DeepSeek-V2 MoE decoder)
   zimage     nextcuda-image-zimage  Z-Image-Turbo: the foundation's Z-Image DiT, a Qwen3-4B text encoder (crates/h3's
                                  tower), FLUX's 16-channel VAE decoder
+  depthanything nextcuda-image-depthanything  Depth Anything V2 Small: relative depth (DINOv2-S/14 + DPT), float32
   example    nextsycl-image-example  a template
 
 video/                     VIDEO
@@ -123,6 +124,8 @@ Every llm engine is held to the same checks: `spec-check` (verify passes equal o
 count, sampler / schedule / shift, per-request LoRAs, an optional `Edit` (the picture, reference pictures, a mask,
 a strength), RGBA; `defaults()` for what a request leaves out; `Step` progress. A model is several files by role
 (`ModelFiles`: transformer, text encoder, VAE...); `ImageKind::roles` says which, `archs` which registry entries.
+The engines that do not draw say what they do instead: `reads` / `ocr`, `upscale` / `upscale_clip`,
+`remove_background`, `svg_fit`, `vectorize`, `estimates_depth` / `depth` (a picture's relative inverse depth).
 
 **video** (`nextsycl-video`) - `generate(request, progress, cancel) -> Clip`: the clip's prompt and settings,
 keyframes, an audio reference, the output path; progress by stage; `cancel` stops it at a step boundary;
@@ -320,6 +323,19 @@ CONTRIBUTING.md walks through a port step by step; each kind's template (`<kind>
   same GGUFs (ns-ocr-dump with the prompt placing the image: every tower block cos >= 0.99996, the decoder >= 0.998 -
   llama.cpp's CPU products quantize activations to 8 bits - and 32 of 32 greedy tokens). B70: a page seen at ~600
   tok/s, written at ~55-58; test-ocr.py passes all three transcripts.
+- **depth-anything-v2** (`image/depthanything`) - Depth Anything V2 Small (transformers' DepthAnythingForDepthEstimation,
+  Apache-2.0; Base and Large are CC-BY-NC-4.0 and not served): a picture's relative inverse depth (`depth`), what
+  video.control's depth control videos are made of. DINOv2 ViT-S/14 (384 wide, 12 layers of 6 heads; the hidden states
+  after layers 3, 6, 9, 12 through its final norm) and the DPT head (1 x 1 projections; x4 / x2 transposed convolutions
+  as one product each and the diffusion library's pixel shuffle; a stride-2 3 x 3; fusion of pre-activation residual
+  units with align-corners bilinear upsampling; the head's convolutions and ReLUs), float32 throughout on the shared
+  kernels (the diffusion GEMMs without TF32, norms, GELU, attention; the vision im2col and resizes) - no kernels of
+  its own; one arena for a pass's temporaries, sized by the first. The preparation is DPTImageProcessor's (the side
+  nearest 518 that keeps the aspect on the 14 grid, Pillow's bicubic, ImageNet's normalization), the position table
+  resized bicubically to the patches as Dinov2Embeddings does. Checked against transformers on the CPU
+  (reference/depthanything: ref.py, compare.py). The clip path is the glue's (video/studio/control.rs `make_depth`):
+  every frame's depth kept in 16 bits, then the clip scaled by one range (the 0.5th-99.5th percentile of all frames'
+  values) and encoded grey, near bright.
 
 ## The audio engines
 

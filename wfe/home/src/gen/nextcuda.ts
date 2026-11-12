@@ -2148,10 +2148,59 @@ export interface VideoCanvasesListReq {
 
 /** What video.control takes. */
 export interface VideoControlReq {
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
+  batch?: string | null;
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
+  held?: boolean | null;
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
+  label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
+  priority?: number | null;
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
+  project?: string | null;
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
+  queue?: boolean | null;
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
+  reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
   /** the clip to read: a file in the clips directory (video.upload it - MP4, WebM, MOV, MKV - or a finished clip's name) */
   file: string;
-  /** what to make of it (default canny); the ones this box makes are its features video.control.<control> - the rest are refused (400) */
+  /** what to make of it (default canny); the ones this box makes are its features video.control.<control> - the rest are refused (400). depth needs a depth model enabled (409 otherwise) */
   control?: ControlKind | null;
+  /** depth: the depth model's id; none: the loaded one, else the first enabled (capability depth) */
+  model?: string | null;
   /**
    * the canvas the clip will be made at (the source is scaled to cover it and cut in the middle, as video.generate does with a control video); none: the source's aspect at about 768 x 576
    * @minimum 256
@@ -2190,6 +2239,16 @@ export interface VideoControlReq {
    * @default 200
    */
   high?: number | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
   /** other keys */
   [key: string]: unknown;
 }
@@ -3303,7 +3362,7 @@ export interface Methods {
    */
   "video.upload": { req: VideoUploadReq; resp: any };
   /**
-   * A clip turned into a ControlNet control video for video.generate's control_video: canny edges or its brightness (gray), at the clip's canvas and length (24 fps, scaled to cover, a short source's last frame held), made on the CPU while the call waits (seconds). The answer names the file beside the clips (control_video takes the name; system.files.delete removes it) and links it
+   * A clip turned into a ControlNet control video for video.generate's control_video: canny edges or its brightness (gray), made on the CPU while the call waits (seconds), or its depth (near bright; the clip scaled by one range), a depth model's job in the image queue (image.status / image.cancel; wait false answers with the job) - at the clip's canvas and length (24 fps, scaled to cover, a short source's last frame held). The answer names the file beside the clips (control_video takes the name; system.files.delete removes it) and links it
    * @tags video
    * @example {"control":"canny","file":"ref_1792400000_take.webm","frames":124,"height":576,"width":768}
    */
@@ -3964,7 +4023,7 @@ export function client(post: Post, raw?: PostRaw) {
      */
     "video.upload": (req: VideoUploadReq): Promise<any> => post("video.upload", req),
     /**
-     * A clip turned into a ControlNet control video for video.generate's control_video: canny edges or its brightness (gray), at the clip's canvas and length (24 fps, scaled to cover, a short source's last frame held), made on the CPU while the call waits (seconds). The answer names the file beside the clips (control_video takes the name; system.files.delete removes it) and links it
+     * A clip turned into a ControlNet control video for video.generate's control_video: canny edges or its brightness (gray), made on the CPU while the call waits (seconds), or its depth (near bright; the clip scaled by one range), a depth model's job in the image queue (image.status / image.cancel; wait false answers with the job) - at the clip's canvas and length (24 fps, scaled to cover, a short source's last frame held). The answer names the file beside the clips (control_video takes the name; system.files.delete removes it) and links it
      * @tags video
      * @example {"control":"canny","file":"ref_1792400000_take.webm","frames":124,"height":576,"width":768}
      */

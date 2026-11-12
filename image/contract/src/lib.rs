@@ -446,6 +446,15 @@ pub trait ImageEngine: Send + Sync {
     fn remove_background(&self, _pic: &Picture, _post_process: bool) -> Result<(Picture, Picture)> {
         Err(Error(format!("{} does not remove backgrounds (birefnet, isnet-general-use do)", self.arch())))
     }
+    /// whether it estimates depth (`depth`: Depth Anything); video.control's depth control video is made with it
+    fn estimates_depth(&self) -> bool {
+        false
+    }
+    /// the picture's relative inverse depth (near = large; its scale is the model's own, not metres), one value a pixel
+    /// at the picture's size, rows top to bottom
+    fn depth(&self, _pic: &Picture) -> Result<Vec<f32>> {
+        Err(Error(format!("{} does not estimate depth (depth-anything-v2 does)", self.arch())))
+    }
     /// whether it upscales whole clips (`upscale_clip`: a video super-resolution model); video.upscale then gives it
     /// the clip rather than each frame to `upscale`
     fn upscales_clips(&self) -> bool {

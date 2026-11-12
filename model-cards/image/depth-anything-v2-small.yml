@@ -1,0 +1,22 @@
+# Depth Anything V2 Small (depth-anything; Apache-2.0) in transformers' layout: relative depth for video.control's
+# depth control videos (image/depthanything: DINOv2 ViT-S/14 and the DPT head in Rust and CUDA, float32). The Base and
+# Large checkpoints are CC-BY-NC-4.0 and not offered
+id: depth-anything-v2-small
+kind: image
+arch: depth-anything-v2
+license: apache-2.0
+commercial: true
+title: 'Depth Anything V2 Small (depth: video.control''s depth control videos)'
+about: 'Depth Anything V2 Small (24.8 M parameters): a picture''s relative inverse depth, near bright - DINOv2 ViT-S/14 and the DPT head at the side nearest 518 on the 14 grid, float32 on one card. video.control with control depth makes a clip''s depth control video with it (one range for the clip), an image-queue job'
+gpus: '0'
+vram_gib: 1.0
+defaults: {}
+env: {}
+files:
+  model:
+    key: depth-anything-v2-small
+    url: https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf/resolve/5426e4f0f36572d16453bbda7a8389317b1bef99/model.safetensors
+    size: 99173660
+    sha256: 3152477ce0d8d6978d76b995120de97cb5b928701fd0f817769f59e249a16b70
+    path: depth-anything-v2-small/model.safetensors
+guide: guides/depth.md
