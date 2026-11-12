@@ -159,6 +159,12 @@ export interface ImageDescribeNativeBody {
 
 /** What image.edit makes from: the body its kind's server takes. */
 export interface ImageEditBody {
+  /**
+   * p-h3-image-pdmd2 (and p-h3-image): the sampler's eta - how much of each step's noise is fresh. 1 (the pDMD model's default; sampler lcm): each step lands x0, then the next level starts from it under new noise from the seed, the sampler the distillation was trained for (ComfyUI's SamplerLCM); 0 (sampler euler; the base model's default): deterministic flow Euler; between: the two noises mixed. Above 1 is 1. Other models refuse it
+   * @minimum 0
+   * @maximum 1
+   */
+  eta?: number | null;
   /** up to 8, base64, data: URLs or upload:<name> (image.upload) - PNG, JPEG, WebP; each at most 40 MP, the request at most 256 MiB; each is resized to about 1 MP, so 2048 px on the long side is plenty */
   images: string[];
   /** the model's id; none: the loaded one, else the first enabled */
@@ -173,6 +179,12 @@ export interface ImageEditBody {
   /** url (default) or b64_json */
   response_format?: string | null;
   seed?: number | null;
+  /**
+   * with eta: the fresh noise's scale (ComfyUI's s_noise; default 1, clamped to 0..2)
+   * @minimum 0
+   * @maximum 2
+   */
+  s_noise?: number | null;
   /** default: the last picture's aspect */
   size?: string | null;
   steps?: number | null;
@@ -191,6 +203,12 @@ export interface ImageEditBody {
 export interface ImageGenerateBody {
   /** true guidance (needs negative_prompt) */
   cfg?: number | null;
+  /**
+   * p-h3-image-pdmd2 (and p-h3-image): the sampler's eta - how much of each step's noise is fresh. 1 (the pDMD model's default; sampler lcm): each step lands x0, then the next level starts from it under new noise from the seed, the sampler the distillation was trained for (ComfyUI's SamplerLCM); 0 (sampler euler; the base model's default): deterministic flow Euler; between: the two noises mixed. Above 1 is 1. Other models refuse it
+   * @minimum 0
+   * @maximum 1
+   */
+  eta?: number | null;
   /** an init picture (base64, a data: URL, or upload:<name> from image.upload; at most 40 MP): a plain img2img - the denoise starts from it at strength and the prompt guides it (it is no reference: for an edit that reads the picture use image.edit). Needs strength below 1 */
   image?: string | null;
   /** each "name:scale" (a registered LoRA's id or a file) or {"name", "scale"}; [] unloads them */
@@ -203,6 +221,12 @@ export interface ImageGenerateBody {
   prompt: string;
   /** url (default) or b64_json */
   response_format?: string | null;
+  /**
+   * with eta: the fresh noise's scale (ComfyUI's s_noise; default 1, clamped to 0..2)
+   * @minimum 0
+   * @maximum 2
+   */
+  s_noise?: number | null;
   /** ComfyUI's names (euler, euler_ancestral, dpmpp_2m ...) */
   sampler?: string | null;
   schedule?: string | null;

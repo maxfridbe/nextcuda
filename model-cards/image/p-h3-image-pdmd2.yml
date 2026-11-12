@@ -5,9 +5,13 @@
 # rank 384), out_proj, mlp.fc1 and mlp.fc2 and on the two text-refiner blocks' - 208 layers, each the shape of P-H3-Image's
 # matrix (hidden 5376, attention 7168, MLP 14336). It rides beside the Q4_K blocks as resident bfloat16 side paths at
 # strength 1 (not merged: a Q4_K matrix quantized again would lose much of the delta). Sampling (pDMD's): the flow's
-# shift 12 over N + 1 even levels, 2 steps (1, 0.923, 0), no guidance. Edits: strength below 1 starts from the picture
-# noised to that level (0.4 to 0.55 holds it; 0.7 redraws), with the picture also the edit's reference unless
-# reference is false.
+# shift 12 over N + 1 even levels, 2 steps (1, 0.923, 0), no guidance, with the stochastic sampler at eta 1 (the
+# request's eta, 0 to 1; sampler lcm): each step lands x0, then the next level starts from it under fresh noise from
+# the seed - ComfyUI's SamplerLCM, the sampler the distillation steps with; eta 0 (sampler euler) is deterministic flow
+# Euler (as before 2026-11-11). s_noise (1) scales the fresh noise. Measured: eta does not remove the 16-pixel grid
+# texture every P-H3 picture here carries (the base model's 8 steps too); docs/image.md. Edits: strength below 1
+# starts from the picture noised to that level (0.4 to 0.55 holds it; 0.7 redraws), with the picture also the edit's
+# reference unless reference is false.
 id: p-h3-image-pdmd2
 kind: image
 arch: p-h3-image
@@ -15,14 +19,14 @@ license: minimax-h3-community
 commercial: true
 license_note: 'The LoRA is Apache-2.0 (the pDMD authors); the base it rides on, and what it renders, are under the MiniMax H3 Community License: not licensed in the European Union, the United Kingdom, South Korea or the United States without a separate licence from MiniMax; written authorization above US$20 million yearly revenue; show "Powered by MiniMax H3" on a product built on it; its Acceptable Use Policy; its outputs may not train another model. The text encoder''s Qwen3-VL-4B parts are Apache-2.0.'
 title: 'P-H3-Image pDMD 2-step (2 steps, no guidance; live previews and edit frames; Rust + CUDA)'
-about: 'P-H3-Image with pDMD''s 2-NFE distillation LoRA (Apache-2.0, rank 128 over all 50 blocks and the text refiner) resident beside its Q4_K blocks: 2 steps on the shift-12 grid at about 1 MP, no guidance; edits as img2img from strength 0.55 (or as an instruction edit at strength 1). The same files as p-h3-image plus the 1.96 GB LoRA, split over both cards'
+about: 'P-H3-Image with pDMD''s 2-NFE distillation LoRA (Apache-2.0, rank 128 over all 50 blocks and the text refiner) resident beside its Q4_K blocks: 2 steps on the shift-12 grid at about 1 MP, no guidance, the LCM-style sampler at eta 1 (eta 0: deterministic Euler); edits as img2img from strength 0.55 (or as an instruction edit at strength 1). The same files as p-h3-image plus the 1.96 GB LoRA, split over both cards'
 gpus: '0,1'
 split: true                      # as p-h3-image: the denoiser's blocks (and their LoRA side paths) over both cards
 vram_gib: 11.0
 defaults:
   steps: 2
   cfg: 1.0
-  sampler: euler
+  sampler: lcm                   # eta 1; euler is eta 0
   size: 1024x1024
 env: {}
 files:

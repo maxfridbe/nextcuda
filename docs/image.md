@@ -86,6 +86,23 @@ video engine runs too.
   `Edit <Picture 1>. ` goes before the instruction. Without a size the canvas is picture 1 at 4-8 MP.
 - **Two 12 GB cards:** the text encoder (3.6 GiB) and the decoder (2.25 GiB) resident on the 3060, the blocks 39 on
   the 5070 and 11 on the 3060 (`NC_PH3_RESERVE_GIB`, 2, is the room each keeps); loads in ~15 s.
+- **The pDMD 2-step card (`p-h3-image-pdmd2`) and `eta`:** pDMD's 2-NFE LoRA beside the blocks, the shift-12 grid
+  over N + 1 even levels (2 steps: 1, 0.923, 0), and a stochastic sampler (`image/ph3image/src/sampler.rs`): each
+  step takes the model's x0, then puts the latent back at the next level as `(1 - next) x0 + next eps`, with
+  `eps = sqrt(1 - eta^2) eps_hat + eta s_noise z` (`eps_hat` the step's own noise estimate, `z` fresh noise from the
+  request's seed, drawn after the starting noise). eta 1 (this card's default; `sampler: lcm`) is ComfyUI's
+  SamplerLCM, the sampler distribution-matching distillation steps with; eta 0 (`sampler: euler`; the base card's
+  default) is flow Euler, the same arithmetic and the same pixels as before. Requests: `eta` (0 to 1, clamped: 3 is
+  1) and `s_noise` (default 1, clamped to 0..2) as fields of image.generate / image.edit, or in `options`; the answer's
+  `run` says `sampler`, `eta` and `s_noise`. An img2img (strength below 1) starts from the picture noised to its
+  strength, then the same steps.
+- **The grid texture (measured 2026-11-11, 1024 x 1024, seed 3):** every P-H3 picture here carries a 16-pixel
+  periodic texture - the energy at the latent grid's harmonics 17 to 23 times their neighbours' (a camera photo:
+  1.1). eta does not remove it: 2 steps 20.8 (eta 0) / 18.2 (eta 1), 4 steps 23.3 / 19.4, an instruction edit 18.4 /
+  19.4, a 3-step polish from 0.5 46 / 54; the base card's 8 steps 17. A grid-free picture (1.0) sent through an
+  img2img at strength 0.05, one step, comes back at 142 with either eta, and at strength 0.3, 2 steps, at 247 / 313:
+  the texture comes with the latent path (the VAE encoder, the decoder, or the denoiser near t 0), not the sampler.
+  Times are the same for both: 4.2 s a 2-step picture, 7.1 s 4 steps, 5.7 s a 3-step polish (pictures cached).
 
 | picture | per step | total | peak (5070 / 3060) |
 |---|---:|---:|---:|

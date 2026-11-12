@@ -1230,9 +1230,19 @@ impl ImageServer {
             rgba: b["background"].as_str() == Some("transparent") || b["rgba"].as_bool() == Some(true),
             extra: Default::default(),
         };
-        // the engine's own options for this request ("options": {NAME: value}), checked against what it declares
-        let given: nextcuda_core::options::Given = b["options"].as_object().into_iter().flatten()
+        // the engine's own options for this request ("options": {NAME: value}), checked against what it declares; the
+        // sampler's eta and s_noise may also come as fields of their own (an engine that takes none refuses them)
+        let mut given: nextcuda_core::options::Given = b["options"].as_object().into_iter().flatten()
             .map(|(k, v)| (k.clone(), v.as_str().map_or_else(|| v.to_string(), str::to_string))).collect();
+        for k in ["eta", "s_noise"] {
+            match &b[k] {
+                Value::Null => {}
+                Value::Number(x) => {
+                    given.entry(k.to_string()).or_insert_with(|| x.to_string());
+                }
+                v => return Err(bad(format!("{k} {v}: a number"))),
+            }
+        }
         let url = b["response_format"].as_str() == Some("url");
         if url && self.out_dir.is_none() {
             return Err(bad("response_format url: this server keeps no files (start it with an output directory)".into()));
@@ -1286,6 +1296,7 @@ impl ImageServer {
             req.extra = nextcuda_core::options::by_name(&given, engine.options());
         }
         let steps = engine.steps_for(&req);
+        let run_info = engine.run_info(&req);
         let rendered = engine.rendered_prompt(&req);
         let p = &self.progress;
         let pics = engine.generate(&req, &mut |st| {
@@ -1308,10 +1319,11 @@ impl ImageServer {
         let mut data = Vec::new();
         for (i, pic) in pics.iter().enumerate() {
             let s = seed + i as u64;
-            let meta = [("prompt", prompt.clone()), ("model", self.model.clone()), ("seed", s.to_string()),
+            let mut meta = vec![("prompt", prompt.clone()), ("model", self.model.clone()), ("seed", s.to_string()),
                         ("size", format!("{}x{}", pic.width, pic.height)), ("steps", steps.to_string()), ("loras", lora_txt.join(",")),
                         ("seconds", format!("{seconds:.2}")), ("wh", wh.map(|w| format!("{:.3}", w / pics.len() as f64)).unwrap_or_default()),
                         ("pictures", if n_pics > 0 { n_pics.to_string() } else { String::new() })];
+            meta.extend(run_info.iter().cloned());
             let png = pic.png_bytes(&meta).map_err(|e| (500u16, e))?;
             let mut item = json!({"revised_prompt": rendered, "seed": s, "width": pic.width, "height": pic.height});
             if let Some(dir) = &self.out_dir {
@@ -1334,7 +1346,11 @@ impl ImageServer {
             }
             data.push(item);
         }
-        Ok(json!({"created": now(), "data": data, "nextsycl": {"seconds": seconds, "steps": steps, "seed": seed, "loras": lora_txt, "wh": wh}}))
+        let mut run = json!({"seconds": seconds, "steps": steps, "seed": seed, "loras": lora_txt, "wh": wh});
+        for (k, v) in &run_info {
+            run[*k] = v.parse::<f64>().map_or_else(|_| json!(v), |x| json!(x));
+        }
+        Ok(json!({"created": now(), "data": data, "nextsycl": run}))
     }
 }
 

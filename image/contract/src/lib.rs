@@ -403,6 +403,11 @@ pub trait ImageEngine: Send + Sync {
     fn steps_for(&self, req: &ImageRequest) -> u32 {
         req.steps.unwrap_or(self.defaults().steps)
     }
+    /// what the request runs with beyond the steps, for the answer's run details (P-H3-Image: its sampler, eta and
+    /// s_noise); a number's text is given as a number
+    fn run_info(&self, _req: &ImageRequest) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
     /// seconds the load took
     fn load_seconds(&self) -> f64;
     /// make the request's pictures, reporting each step (an error from `progress` stops it there: a cancel)

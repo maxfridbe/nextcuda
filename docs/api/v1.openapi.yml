@@ -787,6 +787,13 @@ components:
     ImageEditBody:
       type: object
       properties:
+        eta:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0
+          maximum: 1
+          description: 'p-h3-image-pdmd2 (and p-h3-image): the sampler''s eta - how much of each step''s noise is fresh. 1 (the pDMD model''s default; sampler lcm): each step lands x0, then the next level starts from it under new noise from the seed, the sampler the distillation was trained for (ComfyUI''s SamplerLCM); 0 (sampler euler; the base model''s default): deterministic flow Euler; between: the two noises mixed. Above 1 is 1. Other models refuse it'
         images:
           type: array
           items:
@@ -815,6 +822,13 @@ components:
           anyOf:
           - type: integer
           - type: 'null'
+        s_noise:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0
+          maximum: 2
+          description: 'with eta: the fresh noise''s scale (ComfyUI''s s_noise; default 1, clamped to 0..2)'
         size:
           anyOf:
           - type: string
@@ -845,6 +859,13 @@ components:
           - type: number
           - type: 'null'
           description: true guidance (needs negative_prompt)
+        eta:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0
+          maximum: 1
+          description: 'p-h3-image-pdmd2 (and p-h3-image): the sampler''s eta - how much of each step''s noise is fresh. 1 (the pDMD model''s default; sampler lcm): each step lands x0, then the next level starts from it under new noise from the seed, the sampler the distillation was trained for (ComfyUI''s SamplerLCM); 0 (sampler euler; the base model''s default): deterministic flow Euler; between: the two noises mixed. Above 1 is 1. Other models refuse it'
         image:
           anyOf:
           - type: string
@@ -877,6 +898,13 @@ components:
           - type: string
           - type: 'null'
           description: url (default) or b64_json
+        s_noise:
+          anyOf:
+          - type: number
+          - type: 'null'
+          minimum: 0
+          maximum: 2
+          description: 'with eta: the fresh noise''s scale (ComfyUI''s s_noise; default 1, clamped to 0..2)'
         sampler:
           anyOf:
           - type: string

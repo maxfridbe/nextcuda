@@ -28,6 +28,7 @@
 pub mod check;
 pub mod connector;
 pub mod describe;
+pub mod sampler;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -99,14 +100,35 @@ const KEEP_CONDS: usize = 16;
 const TURBO_RESERVE_GIB: f64 = 1.5;
 const KEEP_PICS: usize = 2;
 
-/// A request's options: another sampling grid than the checkpoint's
-pub const OPTIONS: &[EngineOption] = &[EngineOption {
-    name: "sigmas",
-    env: "",
-    value: "S,S,...",
-    help: "the sampling grid instead of the checkpoint's 8 steps: strictly decreasing from at most 1 down to 0 (one step between two)",
-    at: At::Request,
-}];
+/// with it: the sampler's eta when a request names none (sampler.rs: 1, all fresh noise at each step - ComfyUI's
+/// SamplerLCM, the sampler distribution-matching distillation steps with; eta 0 is flow Euler, as before)
+pub const TURBO_ETA: f32 = 1.0;
+
+/// A request's options: another sampling grid than the checkpoint's, the sampler's eta and s_noise (also the
+/// request's own fields eta and s_noise)
+pub const OPTIONS: &[EngineOption] = &[
+    EngineOption {
+        name: "sigmas",
+        env: "",
+        value: "S,S,...",
+        help: "the sampling grid instead of the checkpoint's 8 steps: strictly decreasing from at most 1 down to 0 (one step between two)",
+        at: At::Request,
+    },
+    EngineOption {
+        name: "eta",
+        env: "",
+        value: "0..1",
+        help: "how much of each step's noise is fresh: 1 (with the pDMD LoRA the default; sampler lcm) x0 then new noise at the next level, 0 (sampler euler; the base model's default) deterministic flow Euler; clamped to 0..1",
+        at: At::Request,
+    },
+    EngineOption {
+        name: "s_noise",
+        env: "",
+        value: "0..2",
+        help: "the fresh noise's scale (1 by default; ComfyUI's s_noise); clamped to 0..2",
+        at: At::Request,
+    },
+];
 
 /// The text encoder's taps after these layers, the last through its final norm (connector::TAPS)
 const TE_LAYERS: usize = 36;
@@ -372,6 +394,23 @@ impl PH3Image {
                       busy: Mutex::new(()), lora, conds: Mutex::new(Vec::new()), pics: Mutex::new(Vec::new()) })
     }
 
+    /// A request's sampler as (eta, s_noise), clamped: eta as given (the field or options.eta), else the sampler named
+    /// (euler 0, lcm 1), else the model's (the pDMD LoRA's TURBO_ETA, the base model's 0)
+    fn eta_for(&self, req: &ImageRequest) -> std::result::Result<(f32, f32), String> {
+        let num = |k: &str| req.extra.get(k).map(|v| v.trim().parse::<f32>().ok().filter(|x| x.is_finite()).ok_or(format!("{k} {v:?}: a number"))).transpose();
+        if let Some(s) = req.sampler.filter(|s| !matches!(s, Sampler::Euler | Sampler::Lcm)) {
+            return Err(format!("{ARCH} samples with lcm (eta 1) or euler (eta 0), eta between them; not {}", s.name()));
+        }
+        let eta = match (num("eta")?, req.sampler) {
+            (Some(e), _) => e,
+            (None, Some(Sampler::Euler)) => 0.0,
+            (None, Some(_)) => 1.0,
+            (None, None) if self.turbo() => TURBO_ETA,
+            (None, None) => 0.0,
+        };
+        Ok((sampler::clamp_eta(eta), sampler::clamp_s_noise(num("s_noise")?.unwrap_or(1.0))))
+    }
+
     fn turbo(&self) -> bool {
         self.lora.is_some()
     }
@@ -478,9 +517,11 @@ impl PH3Image {
     /// audio's), Euler over `sig`, the decoder. RGB float32 [3, H, W] in [0, 1]. `start`: an img2img's latents, noised
     /// to `sig[0]` with the picture's noise. `tick(Some(i))` after step i, `tick(None)` between blocks and stages (where
     /// a cancel stops it).
+    /// `eta` above 0: the sampler's (sampler.rs) fresh noise at each step from the same generator, after the starting
+    /// noise; 0: Euler, as before.
     #[allow(clippy::too_many_arguments)]
     fn picture(&self, cond: &Cond, refs: &[Encoded], (w, h): (usize, usize), seed: u64, sig: &[f32], start: Option<&[f32]>,
-               tick: &mut dyn FnMut(Option<usize>) -> Result<()>) -> nextcuda_h3::Result<Vec<f32>> {
+               (eta, s_noise): (f32, f32), tick: &mut dyn FnMut(Option<usize>) -> Result<()>) -> nextcuda_h3::Result<Vec<f32>> {
         let e = &self.e;
         let model = e.blocks()?;
         let l = cond.ctx.len() / self.connector.out;
@@ -527,8 +568,20 @@ impl PH3Image {
         };
         let xa: Vec<f32> = noise_a.iter().map(|n| n * s0).collect();
         let tick = std::cell::RefCell::new(tick);
-        let (v, _) = denoiser::sample_from(&mut d, xv, xa, &noise_v, sig, None, &mut |i, _, _| (tick.borrow_mut())(Some(i)).map_err(ie),
-                                           &mut |_, b| if b % 10 == 9 { (tick.borrow_mut())(None).map_err(ie) } else { Ok(()) })?;
+        let v = if eta <= 0.0 {
+            denoiser::sample_from(&mut d, xv, xa, &noise_v, sig, None, &mut |i, _, _| (tick.borrow_mut())(Some(i)).map_err(ie),
+                                  &mut |_, b| if b % 10 == 9 { (tick.borrow_mut())(None).map_err(ie) } else { Ok(()) })?.0
+        } else {
+            let mut xs = vec![xv, xa];
+            sampler::run(&mut xs, sig, eta, s_noise,
+                         &mut |xs, s, _| {
+                             let (dv, da) = d.denoised(&xs[0], &xs[1], s, &mut |b| if b % 10 == 9 { (tick.borrow_mut())(None).map_err(ie) } else { Ok(()) })?;
+                             Ok(vec![dv, da])
+                         },
+                         &mut |n| g.randn(n),
+                         &mut |i| (tick.borrow_mut())(Some(i)).map_err(ie))?;
+            xs.swap_remove(0)
+        };
         drop(d);
         drop(model);
         (tick.borrow_mut())(None).map_err(ie)?;
@@ -573,15 +626,19 @@ impl ImageEngine for PH3Image {
     }
     fn defaults(&self) -> Defaults {
         match self.turbo() {
-            true => Defaults { width: 1024, height: 1024, steps: TURBO_STEPS, cfg: 1.0, sampler: Sampler::Euler, schedule: Sched::Shift, shift: TURBO_SHIFT },
+            true => Defaults { width: 1024, height: 1024, steps: TURBO_STEPS, cfg: 1.0, sampler: Sampler::Lcm, schedule: Sched::Shift, shift: TURBO_SHIFT },
             false => Defaults { width: 2912, height: 2912, steps: STEPS, cfg: 1.0, sampler: Sampler::Euler, schedule: Sched::Shift, shift: 1.0 },
         }
     }
     fn edits(&self) -> bool {
         true
     }
+    /// lcm (eta 1) and euler (eta 0): the two ends of the one sampler (sampler.rs), `eta` between them
     fn samplers(&self) -> Vec<Sampler> {
-        vec![Sampler::Euler]
+        match self.turbo() {
+            true => vec![Sampler::Lcm, Sampler::Euler],
+            false => vec![Sampler::Euler, Sampler::Lcm],
+        }
     }
     fn schedules(&self) -> Vec<Sched> {
         vec![Sched::Shift]
@@ -629,6 +686,12 @@ impl ImageEngine for PH3Image {
         let own = if self.turbo() { req.steps.unwrap_or(TURBO_STEPS) } else { STEPS };
         req.extra.get("sigmas").and_then(|v| parse_sigmas(v).ok()).map_or(own, |s| s.len() as u32 - 1)
     }
+    fn run_info(&self, req: &ImageRequest) -> Vec<(&'static str, String)> {
+        match self.eta_for(req) {
+            Ok((eta, s_noise)) => vec![("sampler", if eta > 0.0 { "lcm" } else { "euler" }.into()), ("eta", eta.to_string()), ("s_noise", s_noise.to_string())],
+            Err(_) => Vec::new(),
+        }
+    }
 
     fn generate(&self, req: &ImageRequest, progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Vec<Picture>> {
         let _one = self.busy.lock().unwrap_or_else(|p| p.into_inner());
@@ -652,9 +715,7 @@ impl ImageEngine for PH3Image {
             }
             _ => {}
         }
-        if req.sampler.is_some_and(|s| s != Sampler::Euler) {
-            return Err(Error(format!("{ARCH} samples with euler only")));
-        }
+        let noise = self.eta_for(req).map_err(Error)?;
         let given = req.extra.get("sigmas").map(|v| parse_sigmas(v)).transpose().map_err(Error)?;
         let steps = req.steps.unwrap_or(d.steps);
         // an img2img's start: the edit's strength below 1
@@ -713,8 +774,9 @@ impl ImageEngine for PH3Image {
         let refs: &[Encoded] = set.as_ref().map_or(&[], |s| s.refs.as_slice());
         let canvas = set.as_ref().map(|s| s.canvas).or(asked).unwrap_or((d.width, d.height));
         let (w, h) = (canvas.0 as usize, canvas.1 as usize);
-        log(format!("{ARCH}: {w}x{h}, {} text tokens, {} picture(s), {} steps on {:?}{}, conditioned in {:.2} s", cond.ctx.len() / self.connector.out,
-                    refs.len(), of, sig, if self.turbo() { " (pDMD LoRA)" } else { "" }, t0.elapsed().as_secs_f64()));
+        log(format!("{ARCH}: {w}x{h}, {} text tokens, {} picture(s), {} steps on {:?}{}, eta {} s_noise {}, conditioned in {:.2} s",
+                    cond.ctx.len() / self.connector.out, refs.len(), of, sig, if self.turbo() { " (pDMD LoRA)" } else { "" }, noise.0, noise.1,
+                    t0.elapsed().as_secs_f64()));
         let mut out = Vec::new();
         for p in 0..req.n.max(1) {
             progress(Step { picture: p, at: 0, of, seconds: t0.elapsed().as_secs_f64() })?;
@@ -730,7 +792,7 @@ impl ImageEngine for PH3Image {
                 }
                 progress(Step { picture: p, at, of, seconds: t0.elapsed().as_secs_f64() })
             };
-            let px = self.picture(&cond, refs, (w, h), req.seed + p as u64, &sig, start.as_deref().map(|v| v.as_slice()), &mut tick)
+            let px = self.picture(&cond, refs, (w, h), req.seed + p as u64, &sig, start.as_deref().map(|v| v.as_slice()), noise, &mut tick)
                 .map_err(|e| Error(nextcuda_image::tag_device_oom(&e.0, None)))?;
             log(format!("{ARCH}: picture {} in {:.2} s (steps {})", p + 1, tp.elapsed().as_secs_f64(),
                         times.iter().map(|s| format!("{s:.2}")).collect::<Vec<_>>().join(" ")));
