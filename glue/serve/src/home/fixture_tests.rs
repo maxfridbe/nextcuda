@@ -960,6 +960,9 @@ fn video_control_depth_needs_a_depth_model_and_is_an_image_job() {
     let (st, m) = w.home.rpc_inner("video.control", &ask).unwrap_err();
     assert_eq!(st, 409, "{m}");
     assert!(m.contains("no depth model is enabled"), "{m}");
+    // and system.version does not offer depth control videos (canny and gray it does)
+    let has = |f: &str| w.home.rpc_inner("system.version", &json!({})).unwrap()["features"].as_array().unwrap().iter().any(|x| x == f);
+    assert!(has("video.control.canny") && !has("video.control.depth"));
     // a model named that does not estimate depth: 400
     let mut named = ask.clone();
     named["model"] = json!("sdxl");
@@ -977,6 +980,7 @@ fn video_control_depth_needs_a_depth_model_and_is_an_image_job() {
     let mut depth = model("depth-anything-v2-small", "image", 1.0);
     depth["arch"] = json!("depth-anything-v2");
     w.mem.models.lock().unwrap().push(depth);
+    assert!(has("video.control.depth"), "a depth model enabled: depth offered");
     let job = w.home.rpc_inner("video.control", &ask).unwrap();
     assert_eq!((job["kind"].as_str(), job["method"].as_str()), (Some("image"), Some("video.control")), "{job}");
     assert_eq!(super::jobs::kind_of_method("video.control"), "image");

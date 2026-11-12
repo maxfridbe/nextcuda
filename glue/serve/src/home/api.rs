@@ -679,7 +679,8 @@ impl Home {
             ("system", "version") => {
                 let on = self.kinds_on(&all);
                 let methods: Vec<String> = table::methods().iter().filter(|m| on.contains(&m.kind) && not_ported(m).is_none()).map(|m| m.full().to_string()).collect();
-                Ok(json!({"version": crate::VERSION, "api": API_VERSION, "kinds": on, "features": FEATURES, "methods": methods,
+                let depth = all.iter().any(|m| registry::kind_of(m) == "image" && m["enabled"] != false && super::control::estimates_depth(m));
+                Ok(json!({"version": crate::VERSION, "api": API_VERSION, "kinds": on, "features": features_now(depth), "methods": methods,
                           "maintenance": self.maintenance().map(|n| super::maint::public(&n))}))
             }
             ("system", "files.stat" | "files.delete") => self.file_op(m.name, b),
@@ -1589,9 +1590,24 @@ pub(super) fn needs_text(all: &[Value], id: &Value) -> bool {
     all.iter().find(|m| &m["id"] == id).is_some_and(|m| m["speech"].as_array().is_some_and(|a| a.iter().any(|x| x == "transcript")))
 }
 
+/// The features as system.version states them now: FEATURES, less what this box cannot do with the models it has
+/// enabled - video.control.depth needs a depth model (a client offers depth control videos only where they are made)
+pub(super) fn features_now(depth: bool) -> Vec<&'static str> {
+    FEATURES.iter().copied().filter(|f| depth || *f != "video.control.depth").collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{code_of, not_ported, rpc_error, table, FEATURES};
+    use super::{code_of, features_now, not_ported, rpc_error, table, FEATURES};
+
+    #[test]
+    fn depth_control_is_a_feature_only_with_a_depth_model() {
+        assert!(features_now(true).contains(&"video.control.depth"));
+        let without = features_now(false);
+        assert!(!without.contains(&"video.control.depth"));
+        assert!(without.contains(&"video.control") && without.contains(&"video.control.canny") && without.contains(&"video.control.gray"));
+        assert_eq!(without.len() + 1, FEATURES.len());
+    }
 
     #[test]
     fn nextsycls_methods_are_all_declared_and_the_unported_ones_say_so() {
