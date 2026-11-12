@@ -129,3 +129,18 @@ score comes back with it (`score`, and the WAV's comment): sung again with the s
   transcribed tune (Whisper hears the verse and the choruses): jazz 135.7 s in 39.4 s, metal 117.1 s in 34.5 s,
   synthwave 138.4 s in 40.4 s. The whole song with new words ("Rolling on, rolling on ...") is sung line for line,
   163.2 s in 47.1 s. Each run spends 7.2 s on the transcription; peaks are 7.0 GiB on the 5070 and 3.1 GiB on the 3060.
+- **Instrumental covers** (2026-11-11, `instrumental: true`): the lead stays in the `Ins` voice (passage by passage: a
+  passage SheetSage2 heard as sung moves there; with a line in both the Vocal notes become rests), the Vocal voice is
+  all rests and the lyrics are the score's sections with no words. The test recording is Paganini's Caprice No. 24
+  (viola and piano, Elias Goldstein, 2009, public domain by its author: `/mnt/hdd/nextcuda-models/yue2/test`, 310.7 s).
+  Whisper large-v3-turbo writes no lyrics on the takes - only its stock no-speech phrases ("Thank you", "Субтитры
+  сделал DimaTorzok") over whole 30 s windows, as it does on the recording itself; timed segments (words it heard),
+  techno seed 11 17 s ("so"), synthwave seed 11 0 s, techno seed 12 1 s ("Bye."), the same with cfg 1.3 0 s. Before
+  the passage-by-passage move (the tune rested where SheetSage2 had it in Vocal, 90 notes of 2366 lost) techno seed 12
+  mumbled for 93 s - Whisper timed 17 segments of nonsense words over 60-121 s and 236-297 s. A 300 s take in 142 s;
+  synthwave seed 11 ended itself at 80.8 s.
+- **Text-only instrumentals are refused** (no recording: `instrumental` needs one). Tried as plain songs: `[Instrumental]`
+  as the lyrics (synthwave seed 11, techno seed 12) and no lyrics (synthwave seed 11), 120 s each. Whisper timed no
+  words in any, but that cannot tell humming from a synth line, and the plan YuE2 draws for them names verses and
+  choruses: in one of the three it wrote a sung phrase (32 notes) into the Vocal voice, the voice it sings. Not shipped
+  until something can hear a wordless voice.
