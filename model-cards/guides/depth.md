@@ -23,3 +23,5 @@ Fun ControlNet-Union steers by (`video.generate`'s `control_video`). It is a job
 - The answer is canny's (`name`, `file`, `width`, `height`, `frames`, `fps`, `seconds`, `source_frames`,
   `source_seconds`, `start_s`, `took_s`) with `model`, `range`, `frame_seconds` and the `job`.
 - Only the Small is offered: Depth Anything V2 Base and Large are CC-BY-NC-4.0 (non-commercial).
+- `system.version` lists the feature `video.control.depth` only while a depth model is enabled (a client offers depth
+  control videos only where they are made); without one a depth request is refused 409 with the call that enables it.
