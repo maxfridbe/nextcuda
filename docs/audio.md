@@ -136,11 +136,16 @@ score comes back with it (`score`, and the WAV's comment): sung again with the s
   Whisper large-v3-turbo writes no lyrics on the takes - only its stock no-speech phrases ("Thank you", "Субтитры
   сделал DimaTorzok") over whole 30 s windows, as it does on the recording itself; timed segments (words it heard),
   techno seed 11 17 s ("so"), synthwave seed 11 0 s, techno seed 12 1 s ("Bye."), the same with cfg 1.3 0 s. Before
-  the passage-by-passage move (the tune rested where SheetSage2 had it in Vocal, 90 notes of 2366 lost) techno seed 12
+  the passage-by-passage move (the tune rested where SheetSage2 had it in Vocal, 45 of its 1183 notes lost) techno seed 12
   mumbled for 93 s - Whisper timed 17 segments of nonsense words over 60-121 s and 236-297 s. A 300 s take in 142 s;
   synthwave seed 11 ended itself at 80.8 s.
+  Through the platform (48c6c18, the recording fetched from its Commons link as a FLAC; 3 takes each, unguided):
+  Whisper timed words in 2 of 5 takes over their last third - techno take 2 38 s ("The moment I go to all my
+  appalling..."), synthwave take 2 95 s of nonsense words; the others 1-6 s of single words over sustained notes. The
+  same synthwave take made again with cfg 1.3 (the same seed and FLAC; at cfg 1 it is the platform's take byte for
+  byte): one 20 s segment, one word. So an instrumental cover is guided by 1.3 unless the request names a cfg.
 - **Text-only instrumentals are refused** (no recording: `instrumental` needs one). Tried as plain songs: `[Instrumental]`
   as the lyrics (synthwave seed 11, techno seed 12) and no lyrics (synthwave seed 11), 120 s each. Whisper timed no
   words in any, but that cannot tell humming from a synth line, and the plan YuE2 draws for them names verses and
-  choruses: in one of the three it wrote a sung phrase (32 notes) into the Vocal voice, the voice it sings. Not shipped
+  choruses: in one of the three it wrote a sung phrase (16 notes) into the Vocal voice, the voice it sings. Not shipped
   until something can hear a wordless voice.

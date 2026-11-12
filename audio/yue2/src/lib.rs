@@ -63,12 +63,14 @@ pub const MAX_SECONDS: f32 = 900.0;
 /// (2026-11-02: a 7-minute song lost its Bridge). The context decides what fits (`latents`: prompt + score + codes).
 pub const SCORE_MAX: usize = 12_288;
 pub const ODE_STEPS: u32 = 32;
+/// an instrumental cover's guidance when the request names none (the style's "no vocals" held against the instruction)
+pub const INSTRUMENTAL_CFG: f32 = 1.3;
 
 pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "cot", env: "NS_YUE2_COT", value: "full|melody|off", help: "what the model writes before the music: a score of melody and chords (full, the default), a melody alone (melody: covers), or none (off)", at: At::Both },
     EngineOption { name: "abc", env: "", value: "TEXT", help: "a score (ABC) to sing over instead of one drawn (cot melody or full): a cover's melody, or the score of an earlier song (its `score`) to sing it again with new words - same seed and style", at: At::Request },
     EngineOption { name: "int8", env: "NS_YUE2_INT8", value: "0|1", help: "the flow's (NAR path's) matrices as int8 ConvRot rows on the int8 tensor cores (on; 0: as stored, Q8_0)", at: At::Load },
-    EngineOption { name: "instrumental", env: "", value: "true|false", help: "a cover played, not sung: the recording's lead stays where an instrument plays it (SheetSage2's Ins voice), the voice YuE2 sings is left all rests and the lyrics are the score's sections, empty - no words needed; the style is the arrangement. Needs a recording (source)", at: At::Request },
+    EngineOption { name: "instrumental", env: "", value: "true|false", help: "a cover played, not sung: the recording's lead stays where an instrument plays it (SheetSage2's Ins voice), the voice YuE2 sings is left all rests and the lyrics are the score's sections, empty - no words needed; the style is the arrangement; guided by 1.3 unless cfg is given. Needs a recording (source)", at: At::Request },
     EngineOption { name: "sing-lead", env: "", value: "1|0", help: "a cover of an instrumental recording: its lead line (SheetSage2's Ins voice) moved to the voice YuE2 sings (on; 0: the score as transcribed - an instrumental cover)", at: At::Request },
     EngineOption { name: "score-tokens", env: "", value: "4096", help: "the most tokens the score may take (32 to 12288; 4096 by default, about 6 minutes of song: a longer score is cut and closed and the song ends with it; the prompt, score and codes must fit the model's context)", at: At::Request },
     EngineOption { name: "plan-only", env: "", value: "true|false", help: "a new song (cot melody or full, no recording): only the score the model plans from the style and lyrics comes back (the answer's score, no song): its sections and how long each runs, to see the structure before the song is made. It takes the score's draw alone, about a minute", at: At::Request },
@@ -258,7 +260,9 @@ impl Yue2 {
         if plan_only && (cot == Cot::Off || abc.is_some() || req.source.is_some()) {
             return Err(Error("plan-only: a new song's plan (cot full or melody, no recording and no score given); a recording's score is score-only".into()));
         }
-        let cfg = req.cfg.unwrap_or(cot.default_cfg());
+        // an instrumental cover is guided by default: unguided, some takes mumble a wordless voice over their last third
+        // (2026-11-11, Paganini's Caprice 24: 38 s and 95 s in 2 of 5 takes); the same take guided by 1.3 dropped it
+        let cfg = req.cfg.unwrap_or(if instrumental { INSTRUMENTAL_CFG } else { cot.default_cfg() });
         if !(0.0..=20.0).contains(&cfg) {
             return Err(Error(format!("cfg {cfg}: 0 to 20")));
         }

@@ -62,7 +62,8 @@ score in the new style; the recording itself is never played back into the song.
   melody on instruments in the style. The lead stays in (or moves to) the `Ins` voice and the `Vocal` voice is all rests
   (a line in both: the Vocal notes become rests of the same length); no lyrics are needed - the engine writes the
   score's sections as empty tags (`[Intro]`, `[Verse]` ...). The style is the arrangement: genre, tempo, the instruments
-  that carry the tune, "no vocals". A new song from a style alone is refused: its plan can write a sung phrase into the Vocal voice with no words to
+  that carry the tune, "no vocals". It is guided by 1.3 unless `cfg` is given: unguided, a take can mumble a wordless
+  voice over its last third. A new song from a style alone is refused: its plan can write a sung phrase into the Vocal voice with no words to
   sing (docs/audio.md), so it may hum.
 - **New words over the recording's tune**: give your own lyrics instead of its; keep their lines and syllables close to
   the original's, section for section, so the notes have words to carry.
