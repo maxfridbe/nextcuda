@@ -384,12 +384,15 @@ pub fn depth_byte(v: f32, lo: f32, hi: f32) -> u8 {
     ((v - lo) / (hi - lo) * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
+/// A frame's depth: RGB bytes at the canvas in, its relative inverse depth (a value a pixel) out
+pub type DepthOf<'a> = dyn FnMut(&[u8]) -> Result<Vec<f32>, String> + 'a;
+
 /// The depth control video of `src` written to `dst`: each frame (RGB bytes at the canvas) through `depth` (its
 /// relative inverse depth at the canvas, a value a pixel), `progress` told the frames done (an error from either stops
 /// it: a cancel); when the clip has ended, every frame scaled by the clip's range and encoded. The frames written and
 /// the range
-pub fn make_depth(src: &Path, dst: &Path, s: &Settings, depth: &mut dyn FnMut(&[u8]) -> Result<Vec<f32>, String>,
-                  progress: &mut dyn FnMut(u32) -> Result<(), String>) -> Result<(u32, (f32, f32)), String> {
+pub fn make_depth(src: &Path, dst: &Path, s: &Settings, depth: &mut DepthOf, progress: &mut dyn FnMut(u32) -> Result<(), String>)
+                  -> Result<(u32, (f32, f32)), String> {
     let (w, h, n) = (s.width as usize, s.height as usize, s.frames as usize);
     let mut dec = decoder(src, s)?;
     let part = dst.with_extension("mp4.part");
