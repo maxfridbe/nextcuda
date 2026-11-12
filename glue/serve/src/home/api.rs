@@ -53,6 +53,8 @@ const FEATURES: &[&str] = &[
     // 2026-11-11: image.describe's describer (best, native or an id) and image.describers: the image models' own text
     // encoders that read pictures (Qwen3-VL-8B from Qwen-Image 2.1's files, Qwen3-VL-4B from P-H3-Image's)
     "image.describe.describer", "image.describers",
+    // 2026-11-11: YuE2's instrumental covers (the `instrumental` option: a recording's lead played, not sung)
+    "audio.yue2.instrumental",
 ];
 
 /// Qwen-Image's sizes: its training buckets (multiples of 16) and the guide's defaults
