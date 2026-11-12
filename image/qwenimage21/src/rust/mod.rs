@@ -417,7 +417,14 @@ impl ImageEngine for RustQwenImage21 {
             // an edit's pictures through the vision tower and the VAE; then each prompt's embedding and its prefix
             let (seen, lats) = if pics.is_empty() { (Vec::new(), Vec::new()) } else { self.pictures(&pics, area)? };
             let conds: Vec<(&DevBuf, (usize, usize))> = lats.iter().map(|(b, s)| (b, *s)).collect();
-            let prompt = if req.prompt.trim().is_empty() { " " } else { req.prompt.trim() };
+            // a transparent picture is asked for in the model card's words, as the stable-diffusion.cpp path does: without
+            // them the model paints an opaque background and the alpha comes back solid
+            let rgba_text = req.rgba.then(|| crate::native::rgba_prompt(req.prompt.trim()));
+            let prompt = match &rgba_text {
+                Some(p) => p.as_str(),
+                None if req.prompt.trim().is_empty() => " ",
+                None => req.prompt.trim(),
+            };
             let neg_prompt = req.negative.as_deref().filter(|n| !n.trim().is_empty()).unwrap_or(" ");
             let prefix_of = |p: &str| -> Result<dit::Prefix> {
                 if seen.is_empty() {

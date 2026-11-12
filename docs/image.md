@@ -9,6 +9,11 @@ beside it. Settings: [environment.md](environment.md); the models: [models.md](m
   8 reference pictures with an optional mask, the effort ladder below. `NC_IMAGE_BACKEND=rust` runs it on the Rust
   engine instead (text to image so far): the pipeline is Rust, the kernels CUDA (cuBLAS and our own), the
   transformer kept on the card in its stored GGUF type, no ggml.
+- **Transparency (2.1, `background: "transparent"`):** the model card's phrase goes around the prompt on both engines,
+  and the alpha is the VAE's fourth channel. stable-diffusion.cpp is built with `kernels/image/sd/sdcpp-vae-precision.patch`
+  (upstream PR #2043's core): its VAE convolutions had run in half, the 2.1 decoder's activations passed 65,504, and
+  the inf / NaN came out as opaque white latent-sized blocks over the background (sd.cpp#2024; 64 % of one picture's
+  pixels exactly 255,255,255,255). The convolutions now run in the weights' bf16. The models list `rgba`.
 - **Qwen-Image 2512:** text to image and img2img. Under 20 steps the Lightning LoRA runs (4 steps, guidance 1); at 20
   or more it is bypassed for a full guided run - the platform's effort ladder, so an engine behind it behaves as
   the one it replaces.

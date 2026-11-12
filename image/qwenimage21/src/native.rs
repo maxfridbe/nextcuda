@@ -96,7 +96,7 @@ fn fit_ref(p: &Picture) -> Picture {
 const RGBA_PREFIX: &str = "This is an RGBA image with transparency. ";
 const RGBA_SUFFIX: &str = " The image has alpha channel and the background is transparent.";
 
-fn rgba_prompt(prompt: &str) -> String {
+pub(crate) fn rgba_prompt(prompt: &str) -> String {
     let p = prompt.trim().trim_end_matches('.');
     if p.to_lowercase().starts_with("this is an rgba image") {
         prompt.to_string()

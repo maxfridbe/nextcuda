@@ -199,6 +199,11 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
             if m["env"]["NS_QI_SIGMAS"].is_string() || m["files"]["turbo-lora"].is_string() {
                 c.push("few_step");
             }
+            // transparent pictures (background "transparent"): Qwen-Image 2.1's VAE decodes an alpha channel (2512's
+            // does not)
+            if arch == "qwen-image-2.1" {
+                c.push("rgba");
+            }
             // its text encoder reads pictures: image.describe's describer "native" (describe.rs NATIVES)
             if super::describe::native_of(m).is_some() {
                 c.push("describe_native");
@@ -1647,6 +1652,14 @@ mod tests {
         assert!(caps.contains(&"word_timestamps") && !caps.contains(&"speech"));
         let (_, methods) = capabilities(&json!({"id": "voxcpm2", "kind": "audio", "arch": "voxcpm2", "speech": ["clone"]}));
         assert!(methods.contains(&"audio.speak") && !methods.contains(&"audio.transcribe"));
+    }
+
+    #[test]
+    fn qwen_image_2_1_makes_transparent_pictures_and_2512_does_not() {
+        let (caps, _) = capabilities(&json!({"id": "qwen-image-2.1-q8", "kind": "image", "arch": "qwen-image-2.1"}));
+        assert!(caps.contains(&"rgba") && caps.contains(&"generate"));
+        let (caps, _) = capabilities(&json!({"id": "qwen-image-2512-q4km", "kind": "image", "arch": "qwen-image-2512"}));
+        assert!(!caps.contains(&"rgba"));
     }
 
     #[test]

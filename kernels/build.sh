@@ -17,8 +17,9 @@ JOBS=${JOBS:-4}
 OUT=${OUT:-../dist}
 OBJ=${OBJ:-../target/kernels}
 mkdir -p "$OUT/silo" "$OBJ"
-SDCPP=${SDCPP:-$HOME/stable-diffusion.cpp}
-SDLIB=${SDLIB:-$HOME/nextcuda/src/sdcpp-build}
+# sd.cpp with image/sd/sdcpp-vae-precision.patch on it (Qwen-Image 2.1's alpha: see the patch), built beside it
+SDCPP=${SDCPP:-$HOME/nextcuda/src/sdcpp-alpha}
+SDLIB=${SDLIB:-$HOME/nextcuda/src/sdcpp-alpha-build}
 
 GEN=()
 last=
