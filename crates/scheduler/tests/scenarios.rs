@@ -522,3 +522,38 @@ fn s30_a_model_bigger_than_its_card_is_still_a_failure_at_once() {
     assert_eq!(code, 502, "{msg}");
     assert_eq!(h.count("refused"), 1);
 }
+
+#[test]
+fn s31_an_idle_copy_on_a_card_another_job_saturates_gets_a_copy_on_the_idle_card() {
+    // hardac1, 2026-11-13 (nextsycl cd4da5c): YuE2 stayed loaded on card 0 from an earlier song; a FlashVSR upscale took
+    // card 0's compute, and the next song shared it (no progress for 15 minutes) while card 1 sat idle
+    let h = FakeHost::new(&[CARD, CARD], &[("audio", 2), ("image", 1)]);
+    let y = h.add("yue", "audio", 4000, &[0, 1], plain());
+    let v = h.add("flashvsr", "image", 4000, &[0], plain());
+    ask(&h, &y, 4000, 90).unwrap();
+    assert_eq!(h.log(), vec!["start audio yue slot 0 gpu 0"]);
+    ask(&h, &v, 4000, 90).unwrap();
+    // card 0 quiet: the song reuses its idle copy there
+    ask(&h, &y, 4000, 90).unwrap();
+    assert_eq!(h.count("start"), 2, "{:?}", h.log());
+    // the upscale busy on card 0: the next song starts a copy on card 1 instead of sharing card 0
+    h.busy("flashvsr", 3600.0, 1);
+    let (_, port) = ask(&h, &y, 4000, 90).unwrap();
+    assert_eq!(h.log().last().unwrap(), "start audio yue slot 1 gpu 1", "{:?}", h.log());
+    // and the one after goes to that copy (no third start; the card 0 copy waits out its idle time)
+    let (_, again) = ask(&h, &y, 4000, 90).unwrap();
+    assert_eq!((h.count("start audio"), again), (2, port), "{:?}", h.log());
+}
+
+#[test]
+fn s32_a_saturated_card_still_serves_when_the_model_has_no_other_card() {
+    // the same, but the model may use card 0 alone: it shares the busy card (no copy possible), as before
+    let h = FakeHost::new(&[CARD, CARD], &[("audio", 2), ("image", 1)]);
+    let y = h.add("yue", "audio", 4000, &[0], plain());
+    let v = h.add("flashvsr", "image", 4000, &[0], plain());
+    ask(&h, &y, 4000, 90).unwrap();
+    ask(&h, &v, 4000, 90).unwrap();
+    h.busy("flashvsr", 3600.0, 1);
+    ask(&h, &y, 4000, 90).unwrap();
+    assert_eq!(h.count("start audio"), 1, "{:?}", h.log());
+}
