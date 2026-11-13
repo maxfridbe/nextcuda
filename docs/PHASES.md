@@ -41,14 +41,22 @@ NVIDIA behind it instead of SYCL. The platform talks to it with the same `/rpc/<
   its blocks in the type the GGUF stores (mixed-quant files included), the VAE, every ComfyUI sampler and schedule,
   sigma presets, img2img with strength, edits with up to 8 references through the vision tower, LoRAs as side
   paths, RGBA, progress and cancel; a text encoder read from a llama.cpp GGUF a layer at a time with a host cache
-  and an embedding cache (`crates/qwen3vl/src/gguf.rs`). Selected with `NC_IMAGE_BACKEND=rust`.
+  and an embedding cache (`crates/qwen3vl/src/gguf.rs`).
 - **nextsycl's documented optimizations, done:** fused flash attention in the silo (18.3 -> 5.5 ms a call at 4k
   tokens), layer norm + modulation fused, ConvRot int8 W8A8 (`NS_QI_INT8=1`; cuBLASLt int8 tensor cores, about 2x a
   step here against 1.4x on the B70), AOT per-card builds, the kernels checked against host arithmetic.
+- **The Rust engine is the only one for 2.1 (2026-11-13):** stable-diffusion.cpp's in-process path and the sd-cli
+  worker are gone from it; masks ported (the last picture, a sentence in the prompt), the canvas of an edit from the
+  last picture that is not the mask. 2048 x 2048 fits a 12 GB card: the feed-forward in 4,096-row slices, the kernels'
+  scratch freed between stages (`nsd_trim`), the VAE's up path in 64-latent tiles with a 14-latent margin above
+  1024 x 1024 (the same pixels). An edit of one picture to 2048 x 2048, guided, on the 3060: 41 s a step, peak
+  11.0 GiB (it was refused before: a 256 MiB allocation short). Out of card memory anywhere in the image server -
+  the engine's allocations, the kernels' scratch ("did not fit in memory"), cuBLAS's workspace, a load beside other
+  work - is answered 503 `no_room` (retryable), never a 400.
 - **Not done:** `image check` stage dumps (no reference dumps exist for CUDA), the Rust engine for Qwen-Image-2512
   (still stable-diffusion.cpp), int8 at the quality nextsycl documents (30.4 dB PSNR against half here, about 39 dB
   there; the picture looks right, the cause is not found), attention at nextsycl's ~110 TFLOPS (ldmatrix and
-  cp.async not used yet, about 50 now), the Rust engine as the default.
+  cp.async not used yet, about 50 now).
 
 ### Rust engine clocks (RTX 5070, 8 steps guided, `nextcuda image bench`, 3 seeds, warm median)
 

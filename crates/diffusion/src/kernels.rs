@@ -30,6 +30,7 @@ struct Api {
     create: unsafe extern "C" fn(M) -> M,
     destroy: unsafe extern "C" fn(M),
     wait: unsafe extern "C" fn(M) -> c_int,
+    trim: unsafe extern "C" fn(M) -> c_int,
     linear: unsafe extern "C" fn(M, P, c_int, i64, i64, P, i64, *const f32, M, c_int) -> c_int,
     linear_acc: unsafe extern "C" fn(M, P, c_int, i64, i64, P, i64, *const f32, M, i64) -> c_int,
     linear_q: unsafe extern "C" fn(M, P, c_int, i64, i64, P, c_int, i64, *const f32, M, c_int, i64) -> c_int,
@@ -85,6 +86,7 @@ fn api() -> Result<&'static Api> {
             create: sym!("nsd_create"),
             destroy: sym!("nsd_destroy"),
             wait: sym!("nsd_wait"),
+            trim: sym!("nsd_trim"),
             linear: sym!("nsd_linear"),
             linear_acc: sym!("nsd_linear_acc"),
             linear_q: sym!("nsd_linear_q"),
@@ -175,6 +177,13 @@ impl Nsd {
     pub fn wait(&self) -> Result<()> {
         // SAFETY: a live context.
         self.ok(unsafe { (self.k.wait)(self.ctx) }, "waiting for the GPU")
+    }
+
+    /// The scratch buffers the kernels grew (score tables, im2col, dequantized slices) freed, the card's memory back
+    /// between stages; they are made again when needed
+    pub fn trim(&self) -> Result<()> {
+        // SAFETY: a live context.
+        self.ok(unsafe { (self.k.trim)(self.ctx) }, "freeing the scratch")
     }
 
     /// out [M, N] = x [M, K] . W^T + bias (float32 [N] or null); x and W in `dt`

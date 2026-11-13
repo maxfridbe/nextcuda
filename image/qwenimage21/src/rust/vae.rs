@@ -24,6 +24,14 @@ use nextcuda_gguf::safetensors::SafeTensors;
 use super::prof;
 use crate::ffi;
 
+/// The largest side, in latents, the decoder's up path runs in one piece (a 1024 x 1024 picture); a larger picture
+/// goes in tiles of this side
+const TILE: usize = 64;
+/// The up path's reach in latents: each output pixel reads latents at most this far away (3 x 3 convolutions: 6 at
+/// the latent scale, 1 + 6 at each 2x scale after it - 12.6 in all), so a tile's margin of this many gives its core
+/// exactly the pixels of the whole picture
+const HALO: usize = 14;
+
 /// F.normalize's floor, as an epsilon on the mean square: never reached by real activations
 const EPS: f32 = 1e-24;
 
@@ -260,7 +268,10 @@ impl Vae {
         Ok(out)
     }
 
-    /// RGBA [H, W, 4] bytes from latents float32 [h * w, z] (as the denoiser leaves them, before the statistics)
+    /// RGBA [H, W, 4] bytes from latents float32 [h * w, z] (as the denoiser leaves them, before the statistics).
+    /// The middle (its attention sees every latent) runs over the whole picture; the up path is local - a pixel reads
+    /// latents at most `HALO` away - so above `TILE` x `TILE` latents it runs a tile at a time, each with that margin
+    /// around it: the same pixels, in the memory of a 1024 x 1024 picture (2048 x 2048 beside the denoiser on 12 GB).
     pub fn decode(&self, nsd: &Nsd, lat: &[f32], h: usize, w: usize) -> Result<(Vec<u8>, usize, usize)> {
         let gpu = &self.gpu;
         let k = ffi::api()?;
@@ -271,11 +282,51 @@ impl Vae {
         let x = DevBuf::new(gpu, zl.len() * 2)?;
         // SAFETY: h x w x z values each way.
         ffi::check(unsafe { (k.to_half)(gpu.raw(), zf.fp(), x.ptr(), zl.len() as i64) }, "to half")?;
+        drop(zf);
         let x = self.conv(nsd, &self.post_quant, &x, h, w)?;
         let x = self.conv(nsd, &self.conv_in, &x, h, w)?;
         let x = self.resnet(nsd, &self.mid[0], x, h, w)?;
         let x = self.attention(nsd, &self.att, x, h, w, self.conv_in.co)?;
-        let mut x = self.resnet(nsd, &self.mid[1], x, h, w)?;
+        let x = self.resnet(nsd, &self.mid[1], x, h, w)?;
+        let s = self.scale();
+        let (ph, pw) = (h * s, w * s);
+        if h <= TILE && w <= TILE {
+            let out = self.up_path(nsd, x, h, w)?;
+            return Ok((out, pw, ph));
+        }
+        let c = self.conv_in.co;
+        let core = TILE - 2 * HALO;
+        let mut out = vec![0u8; ph * pw * 4];
+        for y0 in (0..h).step_by(core) {
+            for x0 in (0..w).step_by(core) {
+                let (y1, x1) = ((y0 + core).min(h), (x0 + core).min(w));
+                // the tile with its margin, cut from the middle's output
+                let (ya, yb, xa, xb) = (y0.saturating_sub(HALO), (y1 + HALO).min(h), x0.saturating_sub(HALO), (x1 + HALO).min(w));
+                let (th, tw) = (yb - ya, xb - xa);
+                let t = DevBuf::new(gpu, th * tw * c * 2)?;
+                t.copy_2d(0, tw * c * 2, &x, (ya * w + xa) * c * 2, w * c * 2, tw * c * 2, th)?;
+                let px = self.up_path(nsd, t, th, tw)?;
+                // its core into the picture
+                let (cy, cx, ch, cw) = ((y0 - ya) * s, (x0 - xa) * s, (y1 - y0) * s, (x1 - x0) * s);
+                for r in 0..ch {
+                    let src = ((cy + r) * tw * s + cx) * 4;
+                    let dst = ((y0 * s + r) * pw + x0 * s) * 4;
+                    out[dst..dst + cw * 4].copy_from_slice(&px[src..src + cw * 4]);
+                }
+            }
+        }
+        Ok((out, pw, ph))
+    }
+
+    /// Pixels per latent: 2 for each up block that upsamples
+    fn scale(&self) -> usize {
+        1 << self.ups.iter().filter(|u| u.resample.is_some()).count()
+    }
+
+    /// The up path from the middle's output x [h, w, 1152] half: the up blocks, the output norm and conv, RGBA bytes
+    fn up_path(&self, nsd: &Nsd, mut x: DevBuf, h: usize, w: usize) -> Result<Vec<u8>> {
+        let gpu = &self.gpu;
+        let k = ffi::api()?;
         let (mut h, mut w) = (h, w);
         for up in &self.ups {
             // the block's input, for its shortcut
@@ -296,7 +347,9 @@ impl Vae {
                 // SAFETY: x holds h x w x ci halves, u four times that.
                 ffi::check(unsafe { (k.up2)(gpu.raw(), x.ptr(), h as i64, w as i64, c.ci as i64, u.ptr()) }, "upsample")?;
                 prof::mark(nsd, "vae up 2x")?;
+                drop(x);
                 x = self.conv(nsd, c, &u, 2 * h, 2 * w)?;
+                drop(u);
                 // SAFETY: inp holds h x w x ci halves, x 2h x 2w x co.
                 ffi::check(unsafe { (k.dupup_add)(gpu.raw(), inp.ptr(), h as i64, w as i64, up.ci as i64, co as i64, ft, x.ptr()) }, "shortcut")?;
                 nsd.wait()?;
@@ -306,6 +359,7 @@ impl Vae {
         }
         let c = self.conv_out.ci;
         let a = self.norm_silu(nsd, &x, h * w, c, &self.out_norm)?;
+        drop(x);
         let img = self.conv(nsd, &self.conv_out, &a, h, w)?;
         let rgba = DevBuf::new(gpu, h * w * 4)?;
         // SAFETY: h x w x 4 halves in, as many bytes out.
@@ -314,7 +368,7 @@ impl Vae {
         gpu.sync()?;
         let mut out = vec![0u8; h * w * 4];
         rgba.read(0, &mut out)?;
-        Ok((out, w, h))
+        Ok(out)
     }
 
     /// The middle's attention: x + proj(attention(qkv(norm(x)))), one head of every channel over every pixel - as two

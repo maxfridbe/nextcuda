@@ -17,15 +17,11 @@ an engine as `llm <arch>` / `image <arch>` / `audio <arch>` / `video <arch>`, `k
 
 ## nextcuda's own (phase 1)
 
-What the python-backed image engine reads. (Everything below that mentions SYCL, Arc or the kernel libraries is
+What the image engines read (the `NC_SD_*` rows: Qwen-Image 2512 through stable-diffusion.cpp). (Everything below that mentions SYCL, Arc or the kernel libraries is
 nextsycl's, kept until phase 2 replaces it.)
 
 | Variable | Default | What it does | Read by |
 |---|---|---|---|
-| `NC_SDCPP_BIN` | none (required) | the stable-diffusion.cpp `sd-cli` binary, built with CUDA (`--opt-sdcpp-bin`) | image qwenimage21 |
-| `NC_SDCPP_EXTRA_ARGS` | none | more arguments for every sd-cli run (`--opt-sdcpp-extra-args`) | image qwenimage21 |
-| `NC_QWEN21_ALPHA` | auto | where a transparent picture's alpha comes from: auto, native or rembg (`--opt-alpha`) | image qwenimage21 |
-| `NC_IMAGE_BACKEND` | native when the library has stable-diffusion.cpp | `native`: in process through the library (the model stays loaded); `python`: the sd-cli worker (`--opt-backend`) | image qwenimage21 |
 | `NC_SD_OFFLOAD` | 1 | 0: the weights on the card; 1: in host memory, staged to the card per graph (`--opt-offload`) | image qwenimage21 |
 | `NC_SD_MAX_VRAM` | what the card has free | GiB of card memory the weights and buffers may take (`--opt-max-vram`) | image qwenimage21 |
 | `NC_SD_ARGS` | none | the bridge's own, `k=v;...`: threads=N, flash_attn=0\|1, vae_tiling=0\|1 (`--opt-sd-args`) | image qwenimage21 |
@@ -39,8 +35,6 @@ nextsycl's, kept until phase 2 replaces it.)
 | `NEXTCUDA_URL` | http://127.0.0.1:8000 | the front door tooling/test_vsr_frontdoor.sh sends its clips to | tooling |
 | `NEXTCUDA_BIN` | ../dist/nextcuda beside the script | the program tooling/test_upscale_names.sh starts its two servers with | tooling |
 | `NEXTCUDA_TOKEN` | serve.json's token | the token tooling/test_vsr_frontdoor.sh sends | tooling |
-| `NC_PYTHON` | python3 | the interpreter that runs the image worker | image qwenimage21 |
-| `NC_IMAGE_WORKER` | python/worker.py beside the program, else the source tree's | the worker script that drives the platform's engine | image qwenimage21 |
 
 `NC_*` (the prefix) is read from `nextcuda.conf` and the environment into every image engine's load settings.
 

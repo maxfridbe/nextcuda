@@ -1,19 +1,26 @@
 # Pictures, designs, upscaling and vectors
 
-The image kind (Qwen-Image through stable-diffusion.cpp's ggml-cuda, or the Rust + CUDA engine) and the models that sit
-beside it. Settings: [environment.md](environment.md); the models: [models.md](models.md).
+The image kind (Qwen-Image 2.1 on the Rust + CUDA engine, 2512 still through stable-diffusion.cpp's ggml-cuda) and the
+models that sit beside it. Settings: [environment.md](environment.md); the models: [models.md](models.md).
 
 ## Qwen-Image
 
 - **Qwen-Image 2.1:** text to image (RGBA with `rgba`), img2img with a `strength`, edits and compositions from up to
-  8 reference pictures with an optional mask, the effort ladder below. `NC_IMAGE_BACKEND=rust` runs it on the Rust
-  engine instead (text to image so far): the pipeline is Rust, the kernels CUDA (cuBLAS and our own), the
-  transformer kept on the card in its stored GGUF type, no ggml.
-- **Transparency (2.1, `background: "transparent"`):** the model card's phrase goes around the prompt on both engines,
-  and the alpha is the VAE's fourth channel. stable-diffusion.cpp is built with `kernels/image/sd/sdcpp-vae-precision.patch`
-  (upstream PR #2043's core): its VAE convolutions had run in half, the 2.1 decoder's activations passed 65,504, and
-  the inf / NaN came out as opaque white latent-sized blocks over the background (sd.cpp#2024; 64 % of one picture's
-  pixels exactly 255,255,255,255). The convolutions now run in the weights' bf16. The models list `rgba`.
+  8 reference pictures with an optional mask (it rides as the last picture, a sentence in the prompt saying what it
+  is), every shared sampler and schedule, LoRAs. It runs on the Rust engine (`image/qwenimage21/src/rust/`): the
+  pipeline is Rust, the kernels CUDA (cuBLAS and our own), the transformer kept on the card in its stored GGUF type.
+  stable-diffusion.cpp and the phase 1 sd-cli worker are gone from it (2026-11-13).
+- **2048 x 2048 on a 12 GB card:** the feed-forward runs 4,096 rows at a time, the kernels' scratch is let go between
+  the stages, an edit's text and picture prefix spills to host memory when the card has not the room, and the VAE's
+  up path runs in tiles of 64 latents with a 14-latent margin (its reach: the pixels are the whole picture's) above
+  1024 x 1024. An edit of one picture at 2048 x 2048 peaks at 11.0 GiB on the 3060 (41 s a guided step there).
+- **Out of card memory is `no_room`:** a picture the card has not the room for (a model loaded beside it, a size
+  too big for what is free) answers 503 `no_room`, retryable - the front door frees idle work on the card and tries
+  again - not a 400; a load that does not fit says so the same way.
+- **Transparency (2.1, `background: "transparent"`):** the model card's phrase goes around the prompt, and the alpha
+  is the VAE's fourth channel. (stable-diffusion.cpp needed `kernels/image/sd/sdcpp-vae-precision.patch` for it - its
+  half VAE convolutions overflowed into opaque white blocks, sd.cpp#2024; the Rust engine's convolutions were never
+  affected.) The models list `rgba`.
 - **Qwen-Image 2512:** text to image and img2img. Under 20 steps the Lightning LoRA runs (4 steps, guidance 1); at 20
   or more it is bypassed for a full guided run - the platform's effort ladder, so an engine behind it behaves as
   the one it replaces.
@@ -70,7 +77,10 @@ the encoder is the fix). [`PHASES.md`](PHASES.md) has the history of the numbers
 | `--opt-offload 0\|1` | `NC_SD_OFFLOAD` | weights in host memory, staged per graph (default 1) |
 | `--opt-max-vram GiB` | `NC_SD_MAX_VRAM` | the card memory the weights and buffers may take |
 | `--opt-sd-args k=v;...` | `NC_SD_ARGS` | `threads=N`, `flash_attn=0\|1`, `vae_tiling=0\|1` |
-| `--opt-backend native\|rust\|python` | `NC_IMAGE_BACKEND` | stable-diffusion.cpp in process (default), the Rust engine on the shared CUDA kernels, or the phase 1 sd-cli worker |
+| `--opt-int8 0\|1` | `NS_QI_INT8` | 2.1: the DiT's block matrices as int8 ConvRot (the card's int8 tensor cores) |
+| `--opt-sigmas 1,X,...` | `NS_QI_SIGMAS` | 2.1: a few-step model's own noise levels |
+
+The `NC_SD_*` options are Qwen-Image 2512's (stable-diffusion.cpp).
 
 ## P-H3-Image: text to image and edits on MiniMax H3
 

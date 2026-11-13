@@ -195,7 +195,7 @@ pub fn run(cfg: &nextcuda_models::Config, args: &[String]) -> Result<(), String>
         for &(w, h) in &sizes {
             let mut rows: Vec<Value> = Vec::new();
             for r in 0..runs {
-                let _ = nextcuda_image_qwenimage21::sd::take_log();
+                let _ = nextcuda_image_qwenimage21::stages::take_log();
                 let from = sampler.len();
                 let t = Instant::now();
                 let stamps: std::cell::RefCell<Vec<(u32, f64)>> = std::cell::RefCell::new(Vec::new());
@@ -208,7 +208,7 @@ pub fn run(cfg: &nextcuda_models::Config, args: &[String]) -> Result<(), String>
                     .map_err(|e| e.0)?;
                 let total = t.elapsed().as_secs_f64();
                 std::thread::sleep(std::time::Duration::from_millis(300));
-                let (text, sample, vae) = nextcuda_image_qwenimage21::sd::stage_times(&nextcuda_image_qwenimage21::sd::take_log());
+                let (text, sample, vae) = nextcuda_image_qwenimage21::stages::stage_times(&nextcuda_image_qwenimage21::stages::take_log());
                 let st = stamps.borrow();
                 // the seconds each denoising step took: the gaps between the progress lines
                 let at: Vec<(u32, f64)> = st.iter().filter(|x| x.0 > 0).cloned().collect();

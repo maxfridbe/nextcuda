@@ -178,6 +178,12 @@ pub struct Prefix {
     pub frame: i64,
 }
 
+/// The rows the feed-forward runs at once: all of a 1024 x 1024 picture's (4,096), a slice of a larger one's (its
+/// 3 x 12,288 halves a row are 1.2 GiB at 2048 x 2048 in one piece)
+fn ffn_rows(m: usize) -> usize {
+    m.clamp(1, 4096)
+}
+
 /// q / k row order: pair (2i, 2i + 1) -> (i, 64 + i)
 fn rope_perm(j: usize) -> usize {
     if j < HEAD / 2 {
@@ -515,12 +521,18 @@ impl Dit {
         // SAFETY: x holds m x 4096 floats, h as many halves; the scale row 4096 floats.
         ffi::check(unsafe { (k.ln_mod)(self.gpu.raw(), x.fp(), m as i64, DIM as i64, EPS, off(&md[2]), h.ptr()) }, "norm + modulate")?;
         prof::mark(nsd, "norm + modulate")?;
-        b.gp.apply(nsd, h.ptr(), m, DIM, gp.ptr(), Dt::F16)?;
-        prof::mark(nsd, "gate|up linear")?;
-        nsd.swiglu(gp.ptr(), Dt::F16, m, FFN, act.ptr(), Dt::F16)?;
-        prof::mark(nsd, "swiglu")?;
-        b.down.apply(nsd, act.ptr(), m, FFN, o.ptr(), Dt::F16)?;
-        prof::mark(nsd, "down linear")?;
+        // the feed-forward a slice of rows at a time: the slice `gp` and `act` have room for (ffn_rows)
+        let cap = (gp.len / (2 * FFN * 2)).max(1);
+        let half_at = |buf: &DevBuf, at: usize| -> *mut std::ffi::c_void { buf.ptr().cast::<u16>().wrapping_add(at).cast() };
+        for r0 in (0..m).step_by(cap) {
+            let r = cap.min(m - r0);
+            b.gp.apply(nsd, half_at(h, r0 * DIM), r, DIM, gp.ptr(), Dt::F16)?;
+            prof::mark(nsd, "gate|up linear")?;
+            nsd.swiglu(gp.ptr(), Dt::F16, r, FFN, act.ptr(), Dt::F16)?;
+            prof::mark(nsd, "swiglu")?;
+            b.down.apply(nsd, act.ptr(), r, FFN, half_at(o, r0 * DIM), Dt::F16)?;
+            prof::mark(nsd, "down linear")?;
+        }
         nsd.gate_add(x.ptr(), Dt::F32, m, DIM, o.ptr(), Dt::F16, zeros.ptr(), off(&md[3]).cast())?;
         prof::mark(nsd, "gate add")
     }
@@ -602,7 +614,7 @@ impl Dit {
         zeros.fill(0)?;
         let cs = self.rope_table(&idx)?;
         let (h, qkv, att, o) = (DevBuf::new(gpu, p * DIM * 2)?, DevBuf::new(gpu, p * 3 * DIM * 2)?, DevBuf::new(gpu, p * DIM * 2)?, DevBuf::new(gpu, p * DIM * 2)?);
-        let (gp, act) = (DevBuf::new(gpu, p * 2 * FFN * 2)?, DevBuf::new(gpu, p * FFN * 2)?);
+        let (gp, act) = (DevBuf::new(gpu, ffn_rows(p) * 2 * FFN * 2)?, DevBuf::new(gpu, ffn_rows(p) * FFN * 2)?);
         // the prefix kept on the card when its k | v of every layer leaves room for the activations beside the weights
         // (a few GiB: a step's buffers, the attention's score blocks, the VAE); else in host memory, a layer a step
         let kv_bytes = self.blocks.len() * p * 2 * DIM * 2;
@@ -671,7 +683,7 @@ impl Dit {
         let att = DevBuf::new(gpu, n * DIM * 2)?;
         // the linears' outputs before their gated add: half
         let o = DevBuf::new(gpu, n * DIM * 2)?;
-        let (gp, act) = (DevBuf::new(gpu, n * 2 * FFN * 2)?, DevBuf::new(gpu, n * FFN * 2)?);
+        let (gp, act) = (DevBuf::new(gpu, ffn_rows(n) * 2 * FFN * 2)?, DevBuf::new(gpu, ffn_rows(n) * FFN * 2)?);
         let half_at = |buf: &DevBuf, at: usize| -> *mut std::ffi::c_void { buf.ptr().cast::<u16>().wrapping_add(at).cast() };
         let img = tt * 3 * DIM; // the image's first row in `all`, in halves
         let stage = if pre.kv.iter().any(|k| matches!(k, Kv::Host(_))) { Some(DevBuf::new(gpu, tt * 2 * DIM * 2)?) } else { None };
@@ -709,8 +721,9 @@ impl Dit {
             }
         }
         // the output norm: layernorm * (1 + scale), then the projection to 64 latent channels
-        let xh = DevBuf::new(gpu, n * DIM * 2)?;
-        let xn = DevBuf::f32(gpu, n * DIM)?;
+        // in the blocks' buffers: the normed rows (half) in h's room, as float32 in `all`'s (1.5 x as large)
+        drop((gp, act, att, o, stage));
+        let (xh, xn) = (&h, &all);
         // SAFETY: n x 4096 values each way; the scale row 4096 floats.
         ffi::check(unsafe { (k.ln_mod)(gpu.raw(), x.fp(), n as i64, DIM as i64, EPS, md[4].fp(), xh.ptr()) }, "norm + modulate")?;
         ffi::check(unsafe { (k.to_float)(gpu.raw(), xh.ptr(), xn.fp(), (n * DIM) as i64) }, "to float")?;

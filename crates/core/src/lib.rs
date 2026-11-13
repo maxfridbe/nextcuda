@@ -77,9 +77,10 @@ pub fn no_room_message(gpu: usize, short_mb: u64, msg: &str) -> String {
     format!("no_room[gpu={gpu},short_mb={short_mb}]: {msg}")
 }
 
-/// Whether a driver message says the card is out of memory
+/// Whether a driver message says the card is out of memory: CUDA's, cuBLAS's (its workspace), or a kernel's own
+/// scratch that "did not fit in memory" (the shared kernels' words for it)
 pub fn is_oom_message(msg: &str) -> bool {
-    msg.contains("out of memory") || msg.contains("device allocation of")
+    msg.contains("out of memory") || msg.contains("device allocation of") || msg.contains("did not fit in memory") || msg.contains("CUBLAS_STATUS_ALLOC_FAILED")
 }
 
 /// An allocation of `len` bytes on `gpu` that failed with `msg`: tagged no_room (the card and the MiB it lacks, at least
@@ -617,6 +618,8 @@ mod no_room_tests {
     fn a_driver_out_of_memory_is_told_apart_from_other_failures() {
         assert!(is_oom_message("allocating 132120576 bytes on NVIDIA GeForce RTX 5070: device allocation of 132120576 bytes failed: out of memory"));
         assert!(!is_oom_message("copying to the GPU: invalid argument"));
+        assert!(is_oom_message("conv2d: nsd_conv2d: the im2col buffer did not fit in memory (210 MiB for 1x2048x2048x144 -> 144, k3)"));
+        assert!(is_oom_message("linear: CUBLAS_STATUS_ALLOC_FAILED"));
         assert_eq!(no_room_message(1, 126, "x"), "no_room[gpu=1,short_mb=126]: x");
     }
 }

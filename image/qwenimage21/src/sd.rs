@@ -81,6 +81,8 @@ fn cstr(s: &str) -> Result<CString> {
 pub struct Sd {
     k: &'static Api,
     ctx: *mut c_void,
+    /// the card's index (nvidia-smi's): a no_room names it
+    gpu: usize,
 }
 
 // SAFETY: the context is used by one thread at a time (the engine holds it in a mutex).
@@ -127,41 +129,32 @@ pub struct Gen<'a> {
     pub lora: Option<(&'a str, f32)>,
 }
 
-/// The library's log, kept (last 4,000 lines) so a bench can read the stage times it prints
-static LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// The library's lines since the picture began: an allocation it could not make is read from them (it says only "made no
+/// picture" itself)
+static LAST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// A line into the same log (the Rust engine writes its stage times as the library does, so one bench reads both)
-pub fn record(line: String) {
-    LOG.lock().unwrap().push(line);
-}
-
-/// The log lines since the last call
-pub fn take_log() -> Vec<String> {
-    std::mem::take(&mut *LOG.lock().unwrap())
-}
-
-/// The stage times the library's log gives for one picture: (text encode, sampling, VAE decode), seconds
-pub fn stage_times(lines: &[String]) -> (Option<f64>, Option<f64>, Option<f64>) {
-    let taking = |needle: &str| -> Option<f64> {
-        lines.iter().rev().find(|l| l.contains(needle)).and_then(|l| {
-            let at = l.rfind("taking ")? + 7;
-            l[at..].trim().trim_end_matches('s').parse::<f64>().ok()
-        })
+/// The card memory the library said it lacked in `lines` ("need 6214 MB device ... available 4122 MB", a CUDA out of
+/// memory): the MiB short, or None when it ran out of nothing
+pub fn short_of_memory(lines: &[String]) -> Option<u64> {
+    let num_after = |l: &str, key: &str| -> Option<u64> {
+        let at = l.find(key)? + key.len();
+        l[at..].trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
     };
-    (taking("get_learned_condition completed"), taking("generating 1 latent images completed").or_else(|| taking("sampling completed")),
-     taking("decode_first_stage completed"))
+    lines.iter().rev().find_map(|l| {
+        if let (Some(need), Some(have)) = (num_after(l, "need "), num_after(l, "available ")) {
+            if l.contains("MB") && need > have {
+                return Some(need - have);
+            }
+        }
+        nextcuda_core::is_oom_message(l).then_some(0)
+    })
 }
 
 unsafe extern "C" fn log_cb(level: c_int, text: *const c_char, _user: *mut c_void) {
     // SAFETY: a NUL-terminated line from the library.
     let t = unsafe { CStr::from_ptr(text) }.to_string_lossy();
-    {
-        let mut l = LOG.lock().unwrap();
-        if l.len() >= 4000 {
-            l.drain(..2000);
-        }
-        l.push(t.trim_end().to_string());
-    }
+    crate::stages::record(t.trim_end().to_string());
+    LAST.lock().unwrap_or_else(|p| p.into_inner()).push(t.trim_end().to_string());
     if level >= 2 {
         eprint!("{t}");
     }
@@ -184,7 +177,8 @@ impl Sd {
                 return Err(Error(format!("loading the model: {}", last(k))));
             }
         }
-        Ok(Sd { k, ctx })
+        let gpu = backend.trim_start_matches("cuda").parse().unwrap_or(0);
+        Ok(Sd { k, ctx, gpu })
     }
 
     /// Stop the picture being made (callable from the progress callback)
@@ -218,6 +212,7 @@ impl Sd {
         let (rw, rh, rc): (Vec<c_int>, Vec<c_int>, Vec<c_int>) =
             (g.refs.iter().map(|r| r.w as c_int).collect(), g.refs.iter().map(|r| r.h as c_int).collect(), g.refs.iter().map(|r| r.c as c_int).collect());
         let mut cb = Cb { f: progress, sd: self.ctx, k, cancelled: false };
+        LAST.lock().unwrap_or_else(|p| p.into_inner()).clear();
         let (mut out, mut ow, mut oh, mut oc) = (std::ptr::null_mut::<u8>(), 0, 0, 0);
         // SAFETY: every pointer is to memory that outlives the call; the progress user pointer is `cb`.
         let rc_ = unsafe {
@@ -232,7 +227,16 @@ impl Sd {
             rc_
         };
         if rc_ != 0 {
-            return Err(Error(if cb.cancelled { "cancelled".into() } else { format!("making the picture: {}", last(k)) }));
+            if cb.cancelled {
+                return Err(Error("cancelled".into()));
+            }
+            let msg = format!("making the picture: {}", last(k));
+            // out of card memory is no_room (the front door frees idle work and tries again), not a bad request
+            let lines = std::mem::take(&mut *LAST.lock().unwrap_or_else(|p| p.into_inner()));
+            return Err(match short_of_memory(&lines) {
+                Some(mb) => Error(nextcuda_core::no_room_message(self.gpu, mb.max(1), &format!("{msg}: the card is short of memory"))),
+                None => Error(msg),
+            });
         }
         let (w, h, c) = (ow as usize, oh as usize, oc as usize);
         // SAFETY: the bridge made w x h x c bytes at `out`.
@@ -240,5 +244,18 @@ impl Sd {
         // SAFETY: from this library's allocator, freed once.
         unsafe { (k.free_image)(out) };
         Ok(Out { data, w, h, c })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_librarys_memory_lines_are_read_as_short_of_memory() {
+        let l = vec!["[INFO] sampling".to_string(), "[ERROR] need 6214 MB device memory, available 4122 MB".to_string()];
+        assert_eq!(short_of_memory(&l), Some(2092));
+        assert_eq!(short_of_memory(&["CUDA error: out of memory".to_string()]), Some(0));
+        assert_eq!(short_of_memory(&["[INFO] decode_first_stage completed, taking 2.6s".to_string()]), None);
     }
 }

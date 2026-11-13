@@ -1,7 +1,7 @@
 # Qwen-Image 2.1 Turbo Q8_0 (Viggle v0.3: 6 steps, no guidance; Rust + CUDA)
 # model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets.
 # Viggle's few-step distill merged into the base transformer (fp32, then Q8_0), the Q8 card's text encoder, projector
-# and VAE. It runs on the Rust engine (NC_IMAGE_BACKEND=rust), which samples the distill's own 6 sigmas with the
+# and VAE. It runs on the Rust engine, which samples the distill's own 6 sigmas with the
 # size's shift - nextsycl's turbo card's schedule; stable-diffusion.cpp has no way to be given those levels.
 id: qwen-image-2.1-turbo-q8
 kind: image
@@ -20,7 +20,6 @@ defaults:
   schedule: shift
   size: 1024x1024
 env:
-  NC_IMAGE_BACKEND: rust
   NS_QI_SIGMAS: 1,0.9375,0.875,0.75,0.5,0.25
   NS_QI_SIGMA_SHIFT: dynamic
 files:

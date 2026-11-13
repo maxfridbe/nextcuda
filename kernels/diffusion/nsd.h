@@ -27,6 +27,9 @@ void* nsd_create(void* ns_gpu);
 void nsd_destroy(void* ctx);
 /* Waits until everything queued has run; reports an asynchronous error if there was one. */
 int nsd_wait(void* ctx);
+/* Waits for the stream and frees the scratch buffers (they grow to the largest work and are kept): their memory back
+ * to the card between stages of a pipeline. The next kernel that needs one makes it again. */
+int nsd_trim(void* ctx);
 
 /* A plain linear layer: out = x . w^T + bias. x [M, K] and w [N, K] in the same type dt (float32, half or
  * bfloat16); bias float32 [N] or NULL; out [M, N] in out_dt (float32 or dt). Accumulated in float32. */

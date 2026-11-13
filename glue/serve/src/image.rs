@@ -545,7 +545,7 @@ impl ImageServer {
             }
         });
         *p.lock().unwrap() = json!({"busy": false});
-        let out = out.map_err(|e| (400u16, e.0))?;
+        let out = out.map_err(|e| engine_fail(e, false))?;
         let seconds = t0.elapsed().as_secs_f64();
         let wh = match (j0, self.tele.joules()) {
             (Some(a), Some(b)) if b >= a => Some((b - a) / 3600.0),
@@ -755,7 +755,8 @@ impl ImageServer {
             }
             Err(e) => {
                 *self.progress.lock().unwrap() = json!({"busy": false});
-                Err((engine_fail_status(&e), format!("loading {} again after the describer: {e}", self.model)))
+                let m = nextcuda_image::tag_device_oom(&format!("loading {} again after the describer: {e}", self.model), None);
+                Err((engine_fail_status(&m), m))
             }
         }
     }
@@ -1371,7 +1372,8 @@ impl ImageServer {
                         // back to the plain model, so the server keeps serving
                         *g = (self.load)(&[], &mut |l| eprintln!("{l}")).ok().map(|e| (e, Vec::new()));
                         *self.progress.lock().unwrap() = json!({"busy": false});
-                        return Err((500, format!("loading with those LoRAs: {e}")));
+                        let m = nextcuda_image::tag_device_oom(&format!("loading with those LoRAs: {e}"), None);
+                        return Err((if nextcuda_image::untag_no_room(&m).is_some() { 503 } else { 500 }, m));
                     }
                 }
             }
@@ -1477,6 +1479,26 @@ mod file_name_tests {
         assert!(nextcuda_image::untag_no_room(&m).is_some());
         assert_eq!(engine_fail(nextcuda_image::Error("cancelled".into()), false), (499, "cancelled".to_string()));
         assert_eq!(engine_fail(nextcuda_image::Error("boom".into()), false).0, 400);
+    }
+
+    #[test]
+    fn a_picture_short_of_card_memory_is_no_room_not_a_bad_request() {
+        // the Rust engine's own refusals and the shared kernels' scratch, as an image.edit at 2048 x 2048 met them
+        for raw in [
+            "nsd_conv2d: the im2col buffer did not fit in memory (210 MiB for 1x2048x2048x144 -> 144, k3; the card has 90 of 12227 MiB free)",
+            "attention: the score table did not fit in memory (even a row of it)",
+            "linear: CUBLAS_STATUS_ALLOC_FAILED",
+            "allocating 268435456 bytes on NVIDIA GeForce RTX 3060: device allocation of 268435456 bytes failed: out of memory",
+        ] {
+            let (st, m) = engine_fail(nextcuda_image::Error(raw.into()), false);
+            assert_eq!(st, 503, "{raw}");
+            assert!(nextcuda_image::untag_no_room(&m).is_some(), "{raw}");
+        }
+        // an engine's own no_room (the Rust engine's load on a card held by other work)
+        let e = nextcuda_image::no_room_error(0, 2092, "qwen-image-2.1 needs about 10.1 GiB on NVIDIA GeForce RTX 5070; 8.0 GiB are free");
+        assert_eq!(engine_fail(e, false).0, 503);
+        // a request the engine cannot do is still the caller's to change
+        assert_eq!(engine_fail(nextcuda_image::Error("1000x1000: the sides are multiples of 16".into()), false).0, 400);
     }
 
     #[test]

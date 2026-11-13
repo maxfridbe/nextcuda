@@ -530,6 +530,18 @@ void* nsd_create(void* gpu) {
     return c;
 }
 
+int nsd_trim(void* ctx) {
+    auto* c = (Ctx*) ctx;
+    CU(cudaSetDevice(c->dev));
+    CU(cudaStreamSynchronize(c->s));
+    for (int i = 0; i < 10; i++) {
+        if (c->buf[i]) CU(cudaFree(c->buf[i]));
+        c->buf[i] = nullptr;
+        c->cap[i] = 0;
+    }
+    return 0;
+}
+
 void nsd_destroy(void* ctx) {
     auto* c = (Ctx*) ctx;
     if (!c) return;

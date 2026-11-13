@@ -19,9 +19,7 @@ LIBDIST=()
 "$TOOL" run --rm -v "$PWD":/build:Z -w /build -e CARGO_TARGET_DIR=/build/target-trixie "${LIBDIST[@]}" "$IMAGE" \
     cargo build --release -p nextcuda
 install -m 0755 target-trixie/release/nextcuda dist/nextcuda
-# what the binary finds beside itself: the python worker, the model cards, the docs it serves
+# what the binary finds beside itself: the model cards, the docs it serves (dist/python: the sd-cli worker's, gone)
 rm -rf dist/python dist/model-cards
-mkdir -p dist/python
-cp image/qwenimage21/python/*.py dist/python/
 cp -r model-cards dist/model-cards
 echo ">> dist/nextcuda ready"

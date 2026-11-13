@@ -1,4 +1,4 @@
-//! Qwen-Image 2.1 in Ru        shifted_schedules()t and CUDA, from nextsycl's engine: the pipeline is host code in Rust over the shared
+//! Qwen-Image 2.1 in Rust and CUDA, from nextsycl's engine: the pipeline is host code in Rust over the shared
 //! diffusion kernels (`kernels/diffusion/nsd.cu`, cuBLAS and CUDA), the transformer kept in the type its GGUF stores
 //! it in (7.3 GB at Q8_0: it fits a 12 GB card beside its activations), the text encoder streamed layer by layer
 //! from its GGUF, the VAE in half. No Python and no ggml.
@@ -84,6 +84,25 @@ fn preset_of(sigmas: Option<String>, shift: Option<String>) -> Result<Option<Pre
     Ok(Some(Preset { nodes, dynamic }))
 }
 
+const RGBA_PREFIX: &str = "This is an RGBA image with transparency. ";
+const RGBA_SUFFIX: &str = " The image has alpha channel and the background is transparent.";
+
+/// A transparent picture asked for in the model card's words: without them the model paints an opaque background and
+/// the alpha comes back solid
+pub fn rgba_prompt(prompt: &str) -> String {
+    let p = prompt.trim().trim_end_matches('.');
+    if p.to_lowercase().starts_with("this is an rgba image") {
+        prompt.to_string()
+    } else {
+        format!("{RGBA_PREFIX}{p}.{RGBA_SUFFIX}")
+    }
+}
+
+/// The sentence telling the model where an edit goes: the mask is picture `n` (the last), white where it may change
+pub fn mask_hint(n: usize) -> String {
+    format!(" Image {n} is a mask: its white area marks the only region of image 1 to change; keep everything outside it exactly as it is, and do not render the mask itself.")
+}
+
 /// The pipeline's calculate_dimensions: `area` at aspect `ratio` (width / height), sides rounded to multiples of 32
 /// (Python's round: halves to even)
 pub fn dims(area: f64, ratio: f64) -> (usize, usize) {
@@ -165,8 +184,9 @@ impl RustQwenImage21 {
         let need = dit_b + (1u64 << 30) + (5u64 << 29);
         let free = free.unwrap_or(total);
         if need > free {
-            return Err(Error(format!("{ARCH} needs about {:.1} GiB on {}; {:.1} GiB are free", need as f64 / (1u64 << 30) as f64, gpu.name,
-                                      free as f64 / (1u64 << 30) as f64)));
+            // a card held by other work: no_room (the front door frees idle work there and tries again), not a failure
+            return Err(nextcuda_image::no_room_error(gpu.index, (need - free) >> 20, &format!("{ARCH} needs about {:.1} GiB on {}; {:.1} GiB are free",
+                                                                                   need as f64 / (1u64 << 30) as f64, gpu.name, free as f64 / (1u64 << 30) as f64)));
         }
         let nsd = Nsd::new(gpu)?;
         let te = GgufTextEncoder::load(role(files, "text-encoder")?, gpu, log)?;
@@ -335,17 +355,15 @@ impl ImageEngine for RustQwenImage21 {
         // an edit conditions on its pictures (the first changed, the others references); img2img starts from the
         // picture instead
         let (img2img, pics): (Option<&nextcuda_image::Edit>, Vec<&Picture>) = match &req.edit {
-            Some(e) if e.condition => {
-                if e.mask.is_some() {
-                    return Err(Error(format!("{ARCH}: masks are not part of this model's edits (describe the change instead)")));
-                }
-                (None, std::iter::once(&e.image).chain(e.refs.iter()).collect())
-            }
+            // a mask rides as the last picture, and a sentence in the prompt says what it is
+            Some(e) if e.condition => (None, std::iter::once(&e.image).chain(e.refs.iter()).chain(e.mask.iter()).collect()),
             Some(e) => (Some(e), Vec::new()),
             None => (None, Vec::new()),
         };
         let area = (d.width * d.height) as usize;
-        let (dw, dh) = match pics.last() {
+        // the canvas takes the last picture's aspect (the pipeline's), a mask's aside
+        let n_mask = req.edit.as_ref().is_some_and(|e| e.condition && e.mask.is_some()) as usize;
+        let (dw, dh) = match pics.get(pics.len().wrapping_sub(1 + n_mask)) {
             Some(p) => dims(area as f64, p.width as f64 / p.height as f64),
             None => (d.width as usize, d.height as usize),
         };
@@ -419,11 +437,15 @@ impl ImageEngine for RustQwenImage21 {
             let conds: Vec<(&DevBuf, (usize, usize))> = lats.iter().map(|(b, s)| (b, *s)).collect();
             // a transparent picture is asked for in the model card's words, as the stable-diffusion.cpp path does: without
             // them the model paints an opaque background and the alpha comes back solid
-            let rgba_text = req.rgba.then(|| crate::native::rgba_prompt(req.prompt.trim()));
+            let mut asked = req.prompt.trim().to_string();
+            if req.edit.as_ref().is_some_and(|e| e.condition && e.mask.is_some()) {
+                asked.push_str(&mask_hint(pics.len()));
+            }
+            let rgba_text = req.rgba.then(|| rgba_prompt(&asked));
             let prompt = match &rgba_text {
                 Some(p) => p.as_str(),
-                None if req.prompt.trim().is_empty() => " ",
-                None => req.prompt.trim(),
+                None if asked.is_empty() => " ",
+                None => asked.as_str(),
             };
             let neg_prompt = req.negative.as_deref().filter(|n| !n.trim().is_empty()).unwrap_or(" ");
             let prefix_of = |p: &str| -> Result<dit::Prefix> {
@@ -438,13 +460,17 @@ impl ImageEngine for RustQwenImage21 {
             let pre = prefix_of(prompt)?;
             // true guidance: a negative prompt (" " when none was given) and a second pass a step
             let npre = if cfg > 1.0 { Some(prefix_of(neg_prompt)?) } else { None };
-            crate::sd::record(format!("get_learned_condition completed, taking {:.2}s", t_text.elapsed().as_secs_f64()));
+            // the conditioning's scratch (the vision tower's and the encoder's score tables, the VAE encoder's im2col) back
+            // to the card before the steps
+            drop(lats);
+            self.nsd.trim()?;
+            crate::stages::record(format!("get_learned_condition completed, taking {:.2}s", t_text.elapsed().as_secs_f64()));
             let n = hw.0 * hw.1 * dit::LATENT;
             let of = (sig.len() - 1) as u32;
             // the velocity at latents `lat`, sigma `s`: guided when there is a negative prompt (v_neg + cfg (v - v_neg),
             // each token's norm put back to v's, as the pipeline's true guidance)
             let velocity = |lat: &DevBuf, s: f32| -> Result<DevBuf> {
-                let mut v = self.dit.velocity(&self.nsd, &pre, lat, hw, s, None)?;
+                let v = self.dit.velocity(&self.nsd, &pre, lat, hw, s, None)?;
                 if let Some(np) = &npre {
                     let vn = self.dit.velocity(&self.nsd, np, lat, hw, s, None)?;
                     // SAFETY: n floats each, rows of LATENT values.
@@ -511,10 +537,11 @@ impl ImageEngine for RustQwenImage21 {
                     let fin: Vec<f32> = if last > 0.0 { res.iter().map(|v| v / (1.0 - last)).collect() } else { res };
                     DevBuf::from_f32(gpu, &fin)?
                 };
-                crate::sd::record(format!("generating 1 latent images completed, taking {:.2}s", t_sample.elapsed().as_secs_f64()));
+                crate::stages::record(format!("generating 1 latent images completed, taking {:.2}s", t_sample.elapsed().as_secs_f64()));
+                self.nsd.trim()?;
                 let t_vae = Instant::now();
                 let (rgba, pw, ph) = self.vae.decode(&self.nsd, &lat.to_f32()?, hw.0, hw.1)?;
-                crate::sd::record(format!("decode_first_stage completed, taking {:.2}s", t_vae.elapsed().as_secs_f64()));
+                crate::stages::record(format!("decode_first_stage completed, taking {:.2}s", t_vae.elapsed().as_secs_f64()));
                 if prof::on() {
                     prof::report(&mut |l| eprintln!("{l}"));
                 }
