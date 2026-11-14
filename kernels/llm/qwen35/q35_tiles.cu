@@ -1,16 +1,19 @@
-// q35_tiles.cu: nextcuda's own products of several rows on the int8 tensor cores, beside ggml-cuda's MMQ (q35_mmq.cu)
-// and the verify products (q35_vq8.cu), taken instead of them with NS_Q35_TILES=1 - not the default: measured
-// 2026-11-14 on Qwen3.8-27B GSQ-RCO's matrices (ffn gate / down, attn qkv / k), the sum of their times, these / MMQ's:
-// 512 rows 0.955 on the 5070, 1.009 on the 3060 (Q6_K up to 1.19 there, Q2_K 0.83); 128 rows 1.036 / 0.984; 47 rows
-// 1.42 / 1.33 (16 rows 1.16 / 1.35). Through the engine (5070 + 3060) a 3119-token prompt 6 % faster, 16.6K 2.6 %, the
-// same tokens on the 3k prompt; the story's KL against MMQ's logits 0.00145, perplexity over 3000 tokens +0.25 %.
+// q35_tiles.cu: nextcuda's own products of several rows on the int8 tensor cores - Qwen3.8's prompt products (the
+// default since 2026-11-14, through q35_mmq.cu's entry points) and the opt-in verify products.
 //
-// The 256-value block types go through the chunk products (namespace k2, below): x quantized a scale a 128, the
-// sums integer within it, producer warps decoding while others multiply. Q8_0 (the DSpine draft) through the older
-// tile products: a thread block takes 128 matrix rows and 64 or 128 input rows; a chunk of each row's blocks is copied
-// into shared memory (cp.async) while the last chunk's steps run, each step decoding 128 x 64 weights into int8 and
-// multiplying them with the input rows' int8 by mma m16n8k32, each 32's sum scaled. 1..8 rows (a verify pass): a warp
-// a 16-row tile over all of K, the input rows straight from their Q8_1 blocks.
+// The 256-value block types (namespace k2): x quantized a scale a 128 values so the sums stay integer within it (each
+// mma's sums times the format's own integer scale, the K-quants' mins by dp2a), the group scaled once. Two kernels:
+// for short prompts (64 rows or fewer) and the grid i-quants, ggml-cuda MMQ's structure (mq_k: load_tiles /
+// process_tile, stream-k with fixup, mmq_x as MMQ picks it - ported, ggml MIT); for the rest a producer / multiplier
+// pipeline (kmm_k). Measured 2026-11-14 on Qwen3.8-27B GSQ-RCO's matrices (9 roles, every type), the sum of the times
+// these / ggml-cuda MMQ's: 16 rows 0.984 on the 5070, 0.953 on the 3060; 47 rows 0.970 / 0.920; 128 rows 0.982 / 0.991;
+// 512 rows 0.951 / 0.989. Through the engine (5070 + 3060): a 181-token prompt 461 tok/s against 382, 703 tokens 740
+// against 662, 3119 1168 against 1028, 16.6K 1343 against 1266; KL to MMQ's logits 0.00150, perplexity over 3000
+// tokens 7.5821 against 7.5747.
+//
+// Q8_0 (the DSpine draft) through the older tile products: 128 matrix rows x 64 or 128 input rows, a chunk of each
+// row's blocks staged by cp.async, each step's weights decoded into int8 and multiplied by mma m16n8k32, each 32's sum
+// scaled. 1..8 rows (a verify pass): a warp a 16-row tile over all of K, the input rows straight from their Q8_1 blocks.
 #include "ns.h"
 #include "ns_internal.hpp"
 #include "q35.h"
@@ -19,6 +22,7 @@
 
 #include <cuda_fp16.h>
 #include <algorithm>
+#include <type_traits>
 #include <cstdlib>
 #include <string>
 
@@ -351,7 +355,8 @@ namespace k2 {
 constexpr int CH = 256, SV = 128;        // a chunk's values (one block a row); a step's
 constexpr int BM = 64;
 constexpr int TP = 128;                  // x's rows padded to a multiple of this (the products read whole tiles)
-inline int64_t tpad(int64_t t) { return (t + TP - 1) / TP * TP; }
+// (short prompts padded only to the input tile they are read in: 32 or 64)
+inline int64_t tpad(int64_t t) { return t <= 32 ? 32 : t <= 64 ? 64 : (t + TP - 1) / TP * TP; }
 
 // x [T][K] -> layout 2: per chunk c the int8 values [c][Tp][256], a scale every G values [c][256 / G][Tp] (float),
 // each 16 values' sum of the int8 [c][Tp][16] (int16: the K-quants' mins meet them). Padded rows are zero
@@ -532,12 +537,14 @@ template<int T> struct Raw { static constexpr int CB = Fmt<T>::bytes, RU = (CB +
 // x's (three: copied two steps ahead): int8 [BN][128], the scale [BN], (the K-quants') sums of 16 [BN][8]
 struct WSt { static constexpr int W = 0, WS = W + BM * SV, WM = WS + BM * 8, WD = WM + BM * 8, BYTES = WD + BM * 8; };
 template<int BN, bool SUMS> struct XSt { static constexpr int X = 0, XD = X + BN * SV, XS = XD + BN * 4, BYTES = XS + (SUMS ? BN * 16 : 0); };
-template<int T, int BN> constexpr size_t smem() {
-    return (size_t) 2 * WSt::BYTES + (size_t) 3 * XSt<BN, Fmt<T>::mins != 0>::BYTES + (size_t) 2 * BM * Raw<T>::RW * 4 +
+template<int T, int BN, int NR> constexpr size_t smem() {
+    return (size_t) 2 * WSt::BYTES + (size_t) 3 * XSt<BN, Fmt<T>::mins != 0>::BYTES + (size_t) NR * BM * Raw<T>::RW * 4 +
            (size_t) Grid<T>::N * sizeof(typename Grid<T>::E);
 }
 
-template<int T, int NT, int WN, int PW, int G>
+// NR buffers of the blocks' bytes: copied NR - 1 chunks ahead (3 for short prompts, whose steps are short against the
+// copies' latency: the weights stream from memory once)
+template<int T, int NT, int WN, int PW, int G, int NR>
 __global__ void __launch_bounds__(128 * WN + 32 * PW, 1) kmm_k(const uint8_t* __restrict__ w, size_t rb, const uint8_t* __restrict__ xq, float* __restrict__ y,
                                                              int K, int n_out, int ntok, int tp, size_t ystride) {
     constexpr int BN = 8 * NT * WN, CT = 128 * WN, NTH = 32 * PW, ALL = CT + NTH;
@@ -548,8 +555,8 @@ __global__ void __launch_bounds__(128 * WN + 32 * PW, 1) kmm_k(const uint8_t* __
     using GE = typename Grid<T>::E;
     extern __shared__ __align__(16) uint8_t sm[];
     uint8_t* xs0 = sm + 2 * WSt::BYTES;
-    uint32_t* raw = (uint32_t*) (xs0 + 3 * XS_::BYTES);   // [2][BM][RW]
-    GE* grid = (GE*) (raw + 2 * BM * R::RW);
+    uint32_t* raw = (uint32_t*) (xs0 + 3 * XS_::BYTES);   // [NR][BM][RW]
+    GE* grid = (GE*) (raw + NR * BM * R::RW);
     auto wst = [&](int s) { return sm + (s & 1) * WSt::BYTES; };
     auto xst = [&](int s) { return xs0 + (s % 3) * XS_::BYTES; };
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, q = lane & 3;
@@ -573,7 +580,7 @@ __global__ void __launch_bounds__(128 * WN + 32 * PW, 1) kmm_k(const uint8_t* __
                 const uint8_t* p = src(r, c);
                 const int mis = (int) ((uintptr_t) p & 15);
                 const uint8_t* u = p - mis + 16 * k;
-                uint32_t* d = raw + ((c & 1) * BM + r) * R::RW + 4 * k;
+                uint32_t* d = raw + ((c % NR) * BM + r) * R::RW + 4 * k;
                 if (16 * k + 16 <= mis + R::CB) cp16(d, u);
                 else
                     for (int j = 0; j < 4 && 16 * k + 4 * j < mis + R::CB; ++j) cp_async4(d + j, u + 4 * j);
@@ -599,7 +606,7 @@ __global__ void __launch_bounds__(128 * WN + 32 * PW, 1) kmm_k(const uint8_t* __
             uint8_t* st = wst(s);
             const int c = s >> 1, r = item >> 2, pl = item & 3, p = 4 * (s & 1) + pl;
             const int mis = (int) ((uintptr_t) src(r, c) & 15);
-            const uint8_t* blk = (const uint8_t*) (raw + ((c & 1) * BM + r) * R::RW) + mis;
+            const uint8_t* blk = (const uint8_t*) (raw + ((c % NR) * BM + r) * R::RW) + mis;
             Sub sb;
             int s0, s1, m0, m1;
             float d, dm;
@@ -617,26 +624,35 @@ __global__ void __launch_bounds__(128 * WN + 32 * PW, 1) kmm_k(const uint8_t* __
             if (MN != 0) *(char2*) (st + WSt::WM + r * 8 + 2 * pl) = make_char2((char) m0, (char) m1);
             if (pl == 0) *(float2*) (st + WSt::WD + r * 8) = make_float2(d, dm);
         };
+        // the copies' commit groups counted: a step's x and its chunk's bytes are in once all but the groups
+        // committed after them are (x one step ahead, the bytes NR - 1 chunks)
+        int groups = 0, gx = 0, gr0 = 0, gr1 = 0, gr2 = 0;
+        auto rid = [&](int c) { const int k = c % NR; return k == 0 ? gr0 : k == 1 ? gr1 : gr2; };
+        auto rset = [&](int c, int v) { const int k = c % NR; if (k == 0) gr0 = v; else if (k == 1) gr1 = v; else gr2 = v; };
         xfetch(0);
-        rfetch(0);
+        gx = groups++;
+        for (int k = 0; k < NR - 1 && k < nch; ++k) { rfetch(k); rset(k, groups++); }
         for (int i = tid; i < Grid<T>::N; i += NTH) grid[i] = Grid<T>::src()[i];   // seen after the first bar 5
 #pragma unroll 1
         for (int s = 0; s < nst + 2; ++s) {
             if (s >= 2) bar_sync(3 + (s & 1), ALL);   // empty: step s - 2 multiplied
             if (s >= nst) continue;
-            int issued = 0;
+            int gxn = gx;
             if (s + 1 < nst) {
                 xfetch(s + 1);
-                ++issued;
+                gxn = groups++;
             }
-            if ((s & 1) == 0 && s / 2 + 1 < nch) {
-                rfetch(s / 2 + 1);
-                ++issued;
+            if ((s & 1) == 0 && s / 2 + NR - 1 < nch) {
+                rfetch(s / 2 + NR - 1);
+                rset(s / 2 + NR - 1, groups++);
             }
-            // this step's x and its chunk's bytes in (all but what was just issued), seen by every producer
-            if (issued == 2) cp_wait<2>();
-            else if (issued == 1) cp_wait<1>();
+            // this step's x and its chunk's bytes in, seen by every producer
+            const int newer = groups - 1 - max(gx, rid(s / 2));
+            if (newer >= 3) cp_wait<3>();
+            else if (newer == 2) cp_wait<2>();
+            else if (newer == 1) cp_wait<1>();
             else cp_wait<0>();
+            gx = gxn;
             bar_sync(5, NTH);
             for (int item = tid; item < BM * 4; item += NTH) decode(s, item);
             bar_arrive(1 + (s & 1), ALL);             // full: step s ready
@@ -780,16 +796,16 @@ inline Ws& wspace(int dev) {
 }
 constexpr size_t WS_FLOATS = (size_t) 8 << 20;   // 32 MiB
 
-template<int T, int NT, int WN, int PW, int G>
+template<int T, int NT, int WN, int PW, int G, int NR>
 void kmm_go(const uint8_t* W, size_t rb, int64_t n_out, int64_t K, const uint8_t* x, int64_t ntok, float* y, cudaStream_t s) {
     constexpr int BN = 8 * NT * WN;
-    constexpr size_t sm = smem<T, BN>();
+    constexpr size_t sm = smem<T, BN, NR>();
     static bool set[64] = {};
     static int nsm[64] = {};
     int dev = 0;
     cudaGetDevice(&dev);
     if (!set[dev & 63]) {
-        cudaFuncSetAttribute(kmm_k<T, NT, WN, PW, G>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sm);
+        cudaFuncSetAttribute(kmm_k<T, NT, WN, PW, G, NR>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sm);
         cudaDeviceGetAttribute(&nsm[dev & 63], cudaDevAttrMultiProcessorCount, dev);
         set[dev & 63] = true;
     }
@@ -802,20 +818,360 @@ void kmm_go(const uint8_t* W, size_t rb, int64_t n_out, int64_t K, const uint8_t
     const size_t out = (size_t) ntok * n_out;
     while ((size_t) gx * gy * parts < (size_t) 2 * nsm[dev & 63] && nall / (parts + 1) >= 2 && (size_t) (parts + 1) * out <= w.floats) ++parts;
     float* dst = parts > 1 ? w.p : y;
-    kmm_k<T, NT, WN, PW, G><<<dim3(gx, gy, (unsigned) parts), 128 * WN + 32 * PW, sm, s>>>(W, rb, x, dst, (int) K, (int) n_out, (int) ntok,
+    kmm_k<T, NT, WN, PW, G, NR><<<dim3(gx, gy, (unsigned) parts), 128 * WN + 32 * PW, sm, s>>>(W, rb, x, dst, (int) K, (int) n_out, (int) ntok,
                                                                                           (int) tpad(ntok), out);
     if (parts > 1) ksum_k<<<(unsigned) ((out + 255) / 256), 256, 0, s>>>(w.p, y, out, parts);
 }
+// ---- short prompts (up to 64 input rows): ggml-cuda MMQ's structure (mmq.cuh's mul_mat_q_process_tile and
+// load_tiles_*; ggml, MIT) - 128 matrix rows a thread block, 8 warps of 16 rows each over all J input rows, a chunk of
+// 256 values a step decoded by every thread straight from global memory into shared int8 (4 pieces a thread, their
+// loads in flight together), x copied in a half (128 values) at a time - load, barrier, multiply, barrier; mmq_x (J)
+// the fewest tiles' as MMQ picks it. Two thread blocks an SM (MMQ runs one): one's decode beside the other's products.
+// Our formats' integer scales and x's scale a 128 as above
+constexpr int MI = 128;
+__device__ __forceinline__ int swz2(int r, int k) { return r * CH + ((k ^ (r & 7)) << 4); }   // 256-byte rows
+
+template<int J, bool SUMS> struct MSt {
+    static constexpr int W = 0, WS = W + MI * CH, WM = WS + MI * 16, WD = WM + MI * 16, X = WD + MI * 8, XD = X + J * SV, XS = XD + J * 4,
+                         BYTES = XS + (SUMS ? J * 16 : 0);
+};
+// (the codebook in shared memory where it is 4 KB or less: IQ2_S's 8 KB would leave room for one block an SM)
+template<int T> __host__ __device__ constexpr bool msgrid() { return Grid<T>::N * sizeof(typename Grid<T>::E) <= 4096; }
+template<int T, int J> constexpr size_t msmem() {
+    return (size_t) MSt<J, Fmt<T>::mins != 0>::BYTES + (msgrid<T>() ? (size_t) Grid<T>::N * sizeof(typename Grid<T>::E) : 0);
+}
+
+// Stream-k (mmq.cuh's mul_mat_q stream-k path and mul_mat_q_stream_k_fixup; ggml, MIT): the thread blocks share the
+// (tile, chunk) iterations evenly, a tile at a time; a tile finished in a block goes to y, a block's last, unfinished
+// tile to its own fixup room, added into y after (in block order) by the block that finishes that tile
+template<int T, int J>
+__global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __restrict__ w, size_t rb, const uint8_t* __restrict__ xq, float* __restrict__ y,
+                                               int K, int n_out, int ntok, int tp, float* __restrict__ fixup) {
+    constexpr int NT = J / 8;
+    constexpr bool HV = nsq::Halves<T>::v;
+    constexpr int MN = Fmt<T>::mins;
+    using S = MSt<J, MN != 0>;
+    using GE = typename Grid<T>::E;
+    extern __shared__ __align__(16) uint8_t sm[];
+    const GE* grid = (const GE*) (sm + S::BYTES);
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, g = lane >> 2, q = lane & 3;
+    const int R0 = warp * 16;
+    uint32_t i4t[4];
+    nsq::iq4nl_table(i4t);
+    const int nch = K / CH, ntx = (ntok + J - 1) / J, nty = (n_out + MI - 1) / MI;
+    const int total = ntx * nty * nch;
+    int kbc = (int) ((int64_t) blockIdx.x * total / gridDim.x);
+    const int kbc_stop = (int) ((int64_t) (blockIdx.x + 1) * total / gridDim.x);
+    const float* xD = (const float*) (xq + (size_t) nch * tp * CH);
+    const int16_t* xS = (const int16_t*) (xD + (size_t) nch * 2 * tp);
+    if (msgrid<T>())
+        for (int i = tid; i < Grid<T>::N; i += 256) ((GE*) (sm + S::BYTES))[i] = Grid<T>::src()[i];
+    else
+        grid = (GE*) Grid<T>::src();
+    __syncthreads();
+#pragma unroll 1
+    while (kbc < kbc_stop) {
+    const int tile = kbc / nch, c0 = kbc % nch, c1 = min(nch, c0 + kbc_stop - kbc);
+    kbc += c1 - c0;
+    const int row0 = (tile / ntx) * MI, tok0 = (tile % ntx) * J;
+    float acc[NT][4];
+    int ai[NT][4];
+#pragma unroll
+    for (int i = 0; i < NT; ++i)
+#pragma unroll
+        for (int k = 0; k < 4; ++k) acc[i][k] = 0.f;
+    // x a half ahead in registers: read during the products, stored after the barrier that ends them
+    constexpr int XU = (J * 8 + 255) / 256;
+    int4 xr[XU], xs4 = make_int4(0, 0, 0, 0);
+    float xd = 0.f;
+    auto xload = [&](int c, int hh) {
+#pragma unroll
+        for (int u = 0; u < XU; ++u) {
+            const int i = tid + 256 * u, t = i >> 3, k = i & 7;
+            if (i < J * 8) xr[u] = *(const int4*) (xq + ((size_t) c * tp + tok0 + t) * CH + hh * SV + k * 16);
+        }
+        if (tid < J) {
+            xd = xD[((size_t) c * 2 + hh) * tp + tok0 + tid];
+            if (MN != 0) xs4 = *(const int4*) (xS + ((size_t) c * tp + tok0 + tid) * 16 + hh * 8);
+        }
+    };
+    xload(c0, 0);
+#pragma unroll 1
+    for (int c = c0; c < c1; ++c) {
+        // load_tiles: a thread a (row, piece), 4 of them, from the blocks in global memory - their loads in flight
+        // together: the blocks' alignment (the same for every row where a row is a multiple of 16 bytes) chosen once a
+        // chunk, not a branch a piece
+        // a row's block: its word k into the int8 row at byte 4j of piece p (both nibble halves for the 4-bit types)
+        auto put4 = [&](int r, int p, int j, uint32_t v) { *(uint32_t*) (sm + S::W + swz2(r, 2 * p + (j >> 2)) + 4 * (j & 3)) = v; };
+        auto rowp = [&](int r) { return w + (size_t) min(row0 + r, n_out - 1) * rb + (size_t) c * Fmt<T>::bytes; };
+        auto load = [&](auto al) {
+            constexpr int AL = decltype(al)::value;
+            if constexpr (T == nsq::IQ4_XS || T == nsq::Q6_K) {
+                // load_tiles_iq4_xs / _q6_K's mapping (ggml, MIT): a warp a row, a lane a word of its values -
+                // 16 rows a thread, each word read once, the rows' 128 bytes a coalesced read
+#pragma unroll
+                for (int i0 = 0; i0 < MI; i0 += 8) {
+                    const int r = i0 + warp;
+                    const uint8_t* b = (const uint8_t*) __builtin_assume_aligned(rowp(r), AL);
+                    if constexpr (T == nsq::Q4_K) {
+                        const uint32_t q = *(const uint32_t*) (b + 16 + 4 * lane);   // pair k = lane / 8, word lane % 8
+                        put4(r, 2 * (lane >> 3), lane & 7, q & 0x0f0f0f0fu);
+                        put4(r, 2 * (lane >> 3) + 1, lane & 7, (q >> 4) & 0x0f0f0f0fu);
+                    } else if constexpr (T == nsq::IQ4_XS) {
+                        const int2 v = nsq::levels8(*(const uint32_t*) (b + 8 + 4 * lane), i4t);   // piece lane / 4, word lane % 4
+                        put4(r, lane >> 2, lane & 3, (uint32_t) v.x);
+                        put4(r, lane >> 2, 4 + (lane & 3), (uint32_t) v.y);
+                    } else {
+                        // ql word lane: half n = lane / 16, w = lane % 16: piece 4n + w / 8 (low nibbles) and + 2 (high),
+                        // its bytes 4 (w % 8); the high bits from qh word 8n + w % 8
+                        const int n = lane >> 4, wv = lane & 15, k1 = wv >> 3, j = wv & 7;
+                        const uint32_t ql = nsq::u32_at(b + 4 * lane), qh = nsq::u32_at(b + 128 + 4 * (8 * n + j));
+                        put4(r, 4 * n + k1, j, __vsub4((ql & 0x0f0f0f0fu) | (((qh >> (2 * k1)) & 0x03030303u) << 4), 0x20202020u));
+                        put4(r, 4 * n + k1 + 2, j, __vsub4(((ql >> 4) & 0x0f0f0f0fu) | (((qh >> (2 * k1 + 4)) & 0x03030303u) << 4), 0x20202020u));
+                    }
+                }
+                // the scales (and mins): a thread a (row, piece), 4 of them
+#pragma unroll
+                for (int u = 0; u < 4; ++u) {
+                    const int item = tid + 256 * u, r = item >> 3, p = item & 7;
+                    const uint8_t* b = (const uint8_t*) __builtin_assume_aligned(rowp(r), AL);
+                    int s0, s1, m0, m1;
+                    float d, dm;
+                    iscale<T>(b, p, s0, s1, m0, m1, d, dm);
+                    *(char2*) (sm + S::WS + r * 16 + 2 * p) = make_char2((char) s0, (char) s1);
+                    if (MN != 0) *(char2*) (sm + S::WM + r * 16 + 2 * p) = make_char2((char) m0, (char) m1);
+                    if (p == 0) *(float2*) (sm + S::WD + r * 8) = make_float2(d, dm);
+                }
+                return;
+            }
+#pragma unroll
+            for (int u = 0; u < 4; ++u) {
+                const int item = tid + 256 * u, r = item >> 3, p = item & 7;
+                const uint8_t* blk = (const uint8_t*) __builtin_assume_aligned(
+                    w + (size_t) min(row0 + r, n_out - 1) * rb + (size_t) c * Fmt<T>::bytes, AL);
+                Sub sb;
+                int s0, s1, m0, m1;
+                float d, dm;
+                gsub<T>(blk, p, sb, grid);
+                iscale<T>(blk, p, s0, s1, m0, m1, d, dm);
+                *(int4*) (sm + S::W + swz2(r, 2 * p)) = make_int4(sb.v[0], sb.v[1], sb.v[2], sb.v[3]);
+                *(int4*) (sm + S::W + swz2(r, 2 * p + 1)) = make_int4(sb.v[4], sb.v[5], sb.v[6], sb.v[7]);
+                *(char2*) (sm + S::WS + r * 16 + 2 * p) = make_char2((char) s0, (char) s1);
+                if (MN != 0) *(char2*) (sm + S::WM + r * 16 + 2 * p) = make_char2((char) m0, (char) m1);
+                if (p == 0) *(float2*) (sm + S::WD + r * 8) = make_float2(d, dm);
+            }
+        };
+        {
+            const uintptr_t a0 = (uintptr_t) (w + (size_t) row0 * rb + (size_t) c * Fmt<T>::bytes) | (rb & 15);
+            if ((a0 & 15) == 0) load(std::integral_constant<int, 16>());
+            else if ((a0 & 3) == 0) load(std::integral_constant<int, 4>());
+            else load(std::integral_constant<int, 2>());
+        }
+#pragma unroll 1
+        for (int hh = 0; hh < 2; ++hh) {
+            // x's half (read a half ago) into shared memory; then the next half's read
+#pragma unroll
+            for (int u = 0; u < XU; ++u) {
+                const int i = tid + 256 * u, t = i >> 3, k = i & 7;
+                if (i < J * 8) *(int4*) (sm + S::X + swz(t, k)) = xr[u];
+            }
+            if (tid < J) {
+                ((float*) (sm + S::XD))[tid] = xd;
+                if (MN != 0) *(int4*) (sm + S::XS + tid * 16) = xs4;
+            }
+            constexpr int o = 0;
+            __syncthreads();
+            if (hh == 0) xload(c, 1);
+            else if (c + 1 < c1) xload(c + 1, 0);
+            // vec_dot: 4 pieces, the warp's 16 rows' A fragments by ldmatrix against the NT n-tiles
+#pragma unroll
+            for (int i = 0; i < NT; ++i)
+#pragma unroll
+                for (int k = 0; k < 4; ++k) ai[i][k] = 0;
+#pragma unroll 1
+            for (int pl = 0; pl < 4; ++pl) {
+                const int p = 4 * hh + pl;
+                int a[4];
+                ldsm4(sm + S::W + swz2(R0 + (lane & 7) + ((lane >> 3) & 1) * 8, 2 * p + (lane >> 4)), a[0], a[1], a[2], a[3]);
+                const char2 sA = *(const char2*) (sm + S::WS + (R0 + g) * 16 + 2 * p), sB = *(const char2*) (sm + S::WS + (R0 + g + 8) * 16 + 2 * p);
+#pragma unroll
+                for (int h = 0; h < (HV ? 2 : 1); ++h) {
+                    const int sg = (int8_t) (h ? sA.y : sA.x), s8 = (int8_t) (h ? sB.y : sB.x);
+                    // all the n-tiles' B fragments first (ldmatrix x4: two n-tiles' 16-byte halves, or for k16 four
+                    // n-tiles' half h), then their mma, then the scaling - no load-to-mma-to-add chain an n-tile
+                    int bf[NT][2];
+                    if (!HV) {
+#pragma unroll
+                        for (int n2 = 0; n2 + 1 < NT; n2 += 2)
+                            ldsm4(sm + S::X + o + swz(n2 * 8 + (lane & 7) + (lane >> 4) * 8, 2 * pl + ((lane >> 3) & 1)), bf[n2][0], bf[n2][1], bf[n2 + 1][0],
+                                  bf[n2 + 1][1]);
+                        if (NT & 1)
+                            asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0, %1}, [%2];"
+                                         : "=r"(bf[NT - 1][0]), "=r"(bf[NT - 1][1])
+                                         : "r"((unsigned) __cvta_generic_to_shared(sm + S::X + o + swz((NT - 1) * 8 + (lane & 7), 2 * pl + ((lane >> 3) & 1)))));
+                    } else {
+#pragma unroll
+                        for (int n4 = 0; n4 + 3 < NT; n4 += 4)
+                            ldsm4(sm + S::X + o + swz(n4 * 8 + (lane & 7) + (lane >> 3) * 8, 2 * pl + h), bf[n4][0], bf[n4 + 1][0], bf[n4 + 2][0], bf[n4 + 3][0]);
+#pragma unroll
+                        for (int nt = NT & ~3; nt < NT; ++nt)
+                            asm volatile("ldmatrix.sync.aligned.m8n8.x1.shared.b16 {%0}, [%1];"
+                                         : "=r"(bf[nt][0])
+                                         : "r"((unsigned) __cvta_generic_to_shared(sm + S::X + o + swz(nt * 8 + (lane & 7), 2 * pl + h))));
+                    }
+                    int cc[NT][4];
+#pragma unroll
+                    for (int nt = 0; nt < NT; ++nt) {
+                        if (!HV) imma32(cc[nt], a[0], a[1], a[2], a[3], bf[nt][0], bf[nt][1]);
+                        else imma16(cc[nt], a[2 * h], a[2 * h + 1], bf[nt][0]);
+                    }
+#pragma unroll
+                    for (int nt = 0; nt < NT; ++nt) {
+                        ai[nt][0] += cc[nt][0] * sg;
+                        ai[nt][1] += cc[nt][1] * sg;
+                        ai[nt][2] += cc[nt][2] * s8;
+                        ai[nt][3] += cc[nt][3] * s8;
+                    }
+                }
+            }
+            const float2 da = *(const float2*) (sm + S::WD + (R0 + g) * 8), db = *(const float2*) (sm + S::WD + (R0 + g + 8) * 8);
+            int2 u = make_int2(0, 0), v = make_int2(0, 0);
+            if (MN != 0) {
+                u = *(const int2*) (sm + S::WM + (R0 + g) * 16 + 8 * hh);
+                v = *(const int2*) (sm + S::WM + (R0 + g + 8) * 16 + 8 * hh);
+            }
+#pragma unroll
+            for (int nt = 0; nt < NT; ++nt) {
+                const int t = nt * 8 + 2 * q;
+                const float2 dx = *(const float2*) (sm + S::XD + o + t * 4);
+                if (MN != 0) {
+                    const int4 x0 = *(const int4*) (sm + S::XS + o + t * 16), x1 = *(const int4*) (sm + S::XS + o + (t + 1) * 16);
+                    auto mins = [](const int4& xs, int m0, int m1) {
+                        int r = __dp2a_lo(xs.x, m0, 0);
+                        r = __dp2a_hi(xs.y, m0, r);
+                        r = __dp2a_lo(xs.z, m1, r);
+                        return __dp2a_hi(xs.w, m1, r);
+                    };
+                    acc[nt][0] += dx.x * (da.x * (float) ai[nt][0] - da.y * (float) mins(x0, u.x, u.y));
+                    acc[nt][1] += dx.y * (da.x * (float) ai[nt][1] - da.y * (float) mins(x1, u.x, u.y));
+                    acc[nt][2] += dx.x * (db.x * (float) ai[nt][2] - db.y * (float) mins(x0, v.x, v.y));
+                    acc[nt][3] += dx.y * (db.x * (float) ai[nt][3] - db.y * (float) mins(x1, v.x, v.y));
+                } else {
+                    acc[nt][0] += (dx.x * da.x) * (float) ai[nt][0];
+                    acc[nt][1] += (dx.y * da.x) * (float) ai[nt][1];
+                    acc[nt][2] += (dx.x * db.x) * (float) ai[nt][2];
+                    acc[nt][3] += (dx.y * db.x) * (float) ai[nt][3];
+                }
+            }
+            __syncthreads();
+        }
+    }
+    if (c1 == nch) {
+#pragma unroll
+        for (int nt = 0; nt < NT; ++nt) {
+            const int r = row0 + R0 + g, t = tok0 + nt * 8 + 2 * q;
+            if (t < ntok && r < n_out) y[(size_t) t * n_out + r] = acc[nt][0];
+            if (t < ntok && r + 8 < n_out) y[(size_t) t * n_out + r + 8] = acc[nt][2];
+            if (t + 1 < ntok && r < n_out) y[(size_t) (t + 1) * n_out + r] = acc[nt][1];
+            if (t + 1 < ntok && r + 8 < n_out) y[(size_t) (t + 1) * n_out + r + 8] = acc[nt][3];
+        }
+    } else {
+        // the unfinished tile (the block's last): [input in tile][row in tile], as y's rows run
+        float* f = fixup + (size_t) blockIdx.x * MI * J;
+#pragma unroll
+        for (int nt = 0; nt < NT; ++nt) {
+            const int r = R0 + g, t = nt * 8 + 2 * q;
+            f[t * MI + r] = acc[nt][0];
+            f[(t + 1) * MI + r] = acc[nt][1];
+            f[t * MI + r + 8] = acc[nt][2];
+            f[(t + 1) * MI + r + 8] = acc[nt][3];
+        }
+    }
+    }
+}
+
+// a block that finished a tile it did not start adds the earlier blocks' parts of it, in block order
+template<int J>
+__global__ void mq_fixup_k(float* __restrict__ y, const float* __restrict__ fixup, int n_out, int ntok, int nch, int nb) {
+    const int b = blockIdx.x, ntx = (ntok + J - 1) / J, total = ntx * ((n_out + MI - 1) / MI) * nch;
+    const int s = (int) ((int64_t) b * total / nb), e = (int) ((int64_t) (b + 1) * total / nb);
+    if (s % nch == 0 || e < (s / nch + 1) * nch) return;   // starts a tile, or finishes none it started in
+    const int tile = s / nch, row0 = (tile / ntx) * MI, tok0 = (tile % ntx) * J;
+    for (int i = threadIdx.x; i < MI * J; i += blockDim.x) {
+        const int t = i / MI, r = i % MI;   // (consecutive threads along y's row)
+        float v = 0.f;
+        for (int j = b - 1; j >= 0; --j) {
+            v += fixup[(size_t) j * MI * J + i];
+            if ((int) ((int64_t) j * total / nb) <= tile * nch) break;   // j started at or before the tile's start
+        }
+        if (row0 + r < n_out && tok0 + t < ntok) y[(size_t) (tok0 + t) * n_out + row0 + r] += v;
+    }
+}
+
+template<int T, int J>
+void mq_go(const uint8_t* W, size_t rb, int64_t n_out, int64_t K, const uint8_t* x, int64_t ntok, float* y, cudaStream_t s) {
+    constexpr size_t sm = msmem<T, J>();
+    static bool set[64] = {};
+    static int nsm[64] = {};
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (!set[dev & 63]) {
+        cudaFuncSetAttribute(mq_k<T, J>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sm);
+        cudaDeviceGetAttribute(&nsm[dev & 63], cudaDevAttrMultiProcessorCount, dev);
+        set[dev & 63] = true;
+    }
+    // two thread blocks an SM over all the (tile, chunk) iterations; tiling alone where it already fills the waves
+    // to 90 % (as MMQ: no fixup then)
+    const int ntiles = (int) (((ntok + J - 1) / J) * ((n_out + MI - 1) / MI)), slots = (J <= 64 ? 2 : 1) * nsm[dev & 63];
+    const int waves = (ntiles + slots - 1) / slots;
+    const Ws& wsp = wspace(dev);
+    const int total = ntiles * (int) (K / CH);
+    int nb = 100 * ntiles / (slots * waves) >= 90 ? ntiles : std::max(ntiles, std::min(slots, total / 8));   // (8 chunks a block at least)
+    if ((size_t) nb * MI * J > wsp.floats) nb = ntiles;   // (no room reserved: plain tiling)
+    mq_k<T, J><<<nb, 256, sm, s>>>(W, rb, x, y, (int) K, (int) n_out, (int) ntok, (int) tpad(ntok), wsp.p);
+    if (nb != ntiles) mq_fixup_k<J><<<nb, 256, 0, s>>>(y, wsp.p, (int) n_out, (int) ntok, (int) (K / CH), nb);
+}
+// mmq_x the way MMQ picks it (mul_mat_q_switch_J): the fewest column tiles, then the narrowest; 8 .. 64 here
+template<int T>
+void mq_launch(const uint8_t* W, size_t rb, int64_t n_out, int64_t K, const uint8_t* x, int64_t ntok, float* y, cudaStream_t s) {
+    if (ntok <= 8) mq_go<T, 8>(W, rb, n_out, K, x, ntok, y, s);
+    else if (ntok <= 16) mq_go<T, 16>(W, rb, n_out, K, x, ntok, y, s);
+    else if (ntok <= 24) mq_go<T, 24>(W, rb, n_out, K, x, ntok, y, s);
+    else if (ntok <= 32) mq_go<T, 32>(W, rb, n_out, K, x, ntok, y, s);
+    else if (ntok <= 40) mq_go<T, 40>(W, rb, n_out, K, x, ntok, y, s);
+    else if (ntok <= 48) mq_go<T, 48>(W, rb, n_out, K, x, ntok, y, s);
+    else if (ntok <= 56) mq_go<T, 56>(W, rb, n_out, K, x, ntok, y, s);
+    else if (ntok <= 64) mq_go<T, 64>(W, rb, n_out, K, x, ntok, y, s);
+    else if (ntok <= 96) mq_go<T, 96>(W, rb, n_out, K, x, ntok, y, s);
+    else mq_go<T, 128>(W, rb, n_out, K, x, ntok, y, s);
+}
+
 // the input tile: 32 or 64 rows for short prompts (4 multiplying warps, 8 decoding: the decode the larger share), 128
 template<int T, int G>
 void kmm_g(const uint8_t* W, size_t rb, int64_t n_out, int64_t K, const uint8_t* x, int64_t ntok, float* y, cudaStream_t s) {
-    if (ntok <= 32) kmm_go<T, 4, 1, 8, G>(W, rb, n_out, K, x, ntok, y, s);
-    else if (ntok <= 64) kmm_go<T, 8, 1, 8, G>(W, rb, n_out, K, x, ntok, y, s);
-    else kmm_go<T, 8, 2, 8, G>(W, rb, n_out, K, x, ntok, y, s);
+    if (ntok <= 32) kmm_go<T, 4, 1, 8, G, 3>(W, rb, n_out, K, x, ntok, y, s);
+    else if (ntok <= 64) kmm_go<T, 8, 1, 8, G, 3>(W, rb, n_out, K, x, ntok, y, s);
+    else kmm_go<T, 8, 2, 8, G, 2>(W, rb, n_out, K, x, ntok, y, s);
 }
 template<int T>
 void kmm_launch(const void* w, int64_t n_out, int64_t K, const uint8_t* x, int64_t ntok, float* y, cudaStream_t s) {
     const size_t rb = (size_t) (K / Fmt<T>::qk) * Fmt<T>::bytes;
+    // which of the two kernels, by timing both on Qwen3.8-27B's matrices (16 / 47 / 128 / 512 input rows, the 5070 and
+    // the 3060): MMQ's structure (mq_k) for short prompts and, past them, for the grid i-quants (their decode the larger
+    // share, every warp at it); the producer / multiplier pipeline (kmm_k) for the rest and for narrow matrices
+    // (2048 rows or fewer)
+    int dev = 0, major = 0;
+    cudaGetDevice(&dev);
+    cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+    bool mq = n_out > 2048;
+    if (mq && ntok > 64) {
+        const bool grid = T == nsq::IQ2_XXS || T == nsq::IQ3_XXS || T == nsq::IQ3_S;
+        mq = grid || (T == nsq::IQ4_XS && (major >= 9 ? ntok <= 128 : ntok > 128));
+    }
+    if (mq) {
+        mq_launch<T>((const uint8_t*) w, rb, n_out, K, x, ntok, y, s);
+        return;
+    }
     kmm_g<T, SV>((const uint8_t*) w, rb, n_out, K, x, ntok, y, s);
 }
 }  // namespace k2

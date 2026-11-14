@@ -242,9 +242,6 @@ int ns_q35_vq8_supported(int type) {
 }
 
 int ns_q35_vq8(ns_gpu* g, int type, const void* w, const void* xq, float* y, int64_t n_in, int64_t n_out, int64_t ncols) {
-    // NS_Q35_TILES=1: nextcuda's own (q35_tiles.cu)
-    static const bool tiles = [] { const char* v = std::getenv("NS_Q35_TILES"); return v != nullptr && v[0] == '1'; }();
-    if (tiles) return ns_q35_tiles_vq8(g, type, w, xq, y, n_in, n_out, ncols);
     NS_TRY
     NS_CU(cudaSetDevice(g->dev));
     if (!ns_q35_vq8_supported(type) || n_in % QK != 0 || n_out % 16 != 0 || ncols < 1 || ncols > 8)

@@ -148,17 +148,15 @@ The goal: no third-party C or C++ in nextcuda, at run time or compiled in - next
   verify passes 8-20 % shorter, the same tokens. The opt-in verify products (`q35_vq8.cu`, `NS_Q35_VQ8`) read their
   blocks with `nh_blocks.cuh`, not `vecdotq.cuh`: the same speed or faster except IQ4_XS's 17408-long rows on the 5070
   (125 us, not 111).
-- **Not done: Qwen3.8's prompt products** (ggml-cuda's MMQ, in `kernels/llm/qwen35/third_party/ggml-cuda`, which stays
-  for them). nextcuda's own chunk products (`q35_tiles.cu`, `NS_Q35_TILES=1`, 2026-11-14) match or beat MMQ at 512
-  input rows but not on short prompts. x is quantized a scale a 128 values so the sums stay integer within it (each
-  mma's sums times the format's own integer scale; the K-quants' mins by dp2a against x's sums of 16), the weights
-  decoded by producer warps while others multiply (named barriers; blocks staged by 16-byte cp.async, the grid
-  codebooks in shared memory), ldmatrix fragments, 64-row tiles, K split where the tiles are too few. The sum of the
-  model's matrices' times, own / MMQ: 512 rows 0.955 on the 5070, 1.009 on the 3060 (Q6_K 1.19 there); 128 rows 1.036 /
-  0.984; 47 rows 1.42 / 1.33; 16 rows 1.16 / 1.35. Through the engine a 3119-token prompt 6 % faster (the same
-  tokens), 16.6K 2.6 %; KL to MMQ's logits 0.00145, perplexity over 3000 tokens +0.25 % (a scale a 64: KL 0.00106, a
-  32: 0.00076, each slower). Tried and dropped: a scale a 256 (faster, KL 0.00318, tokens changed), a 32's own power of
-  two (slower), the int-to-float conversions as integer adds, deeper copy pipelines, 16 multiplying warps, MMQ's own
-  loop shape (every warp decoding straight from global memory, 128-row tiles, 4 barriers a 256: no faster on short
-  prompts, where the gap is: the decode of a 64-row tile is latency-bound when the step has few input rows).
+- **Done: Qwen3.8's prompt products** (2026-11-14; ggml-cuda's MMQ before). `q35_tiles.cu`: x a scale a 128 values,
+  integer sums within it (the formats' own integer scales; the K-quants' mins by dp2a), ldmatrix fragments. Short
+  prompts (64 rows or fewer) and the grid i-quants through MMQ's structure, ported (mq_k: 128-row tiles, every warp
+  decoding straight from global memory, mmq_x as MMQ picks it, stream-k with fixup, load_tiles' word-a-lane reads for
+  IQ4_XS / Q6_K), two blocks an SM; the rest through a producer / multiplier pipeline (kmm_k: producer warps stage and
+  decode, named barriers). What closed the short prompts' gap: each thread's 4 pieces' loads in flight together (the
+  blocks' alignment chosen once a chunk, not a branch a piece: 1.21 -> 1.01), x read a half ahead into registers, the
+  fixup laid out along y's rows (its scattered writes had cost 24 us on one matrix). The model's matrices' summed
+  time against MMQ's: 16 rows 0.984 / 0.953 (5070 / 3060), 47 0.970 / 0.920, 128 0.982 / 0.991, 512 0.951 / 0.989
+  (Q6_K on the 3060 at 512 still 1.2). Engine: 181 tokens 461 tok/s against 382, 3119 1168 against 1028, 16.6K 1343
+  against 1266; KL to MMQ's logits 0.0015, perplexity over 3000 tokens 7.582 against 7.575.
 

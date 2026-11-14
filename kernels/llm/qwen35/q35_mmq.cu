@@ -1,8 +1,8 @@
 // q35_mmq.cu: the prompt products from the stored blocks, ggml-cuda's MMQ (third_party/ggml-cuda, MIT): x quantized
 // to q8_1 in MMQ's tile layout, each matrix's blocks multiplied on the int8 tensor cores with float32 sums per block
 // (no half copy of the weights). The types Qwen3.8-27B GSQ-RCO's file holds; IQ1_M (one tensor) is not one: the
-// engine expands it to half as before. Under q35.h's C ABI. NS_Q35_TILES=1 takes nextcuda's own tile products
-// (q35_tiles.cu) instead - not yet as fast (its header has the numbers).
+// engine expands it to half as before. Under q35.h's C ABI. Not the default since 2026-11-14: nextcuda's own products
+// (q35_tiles.cu) are as fast at every prompt length; NS_Q35_TILES=0 takes these.
 #include "ns.h"
 #include "ns_internal.hpp"
 #include "q35.h"
@@ -156,9 +156,9 @@ static bool mmq_type(int t) {
     }
 }
 
-// NS_Q35_TILES=1: nextcuda's own tile products for the prompt and verify passes (q35_tiles.cu)
+// nextcuda's own prompt products (q35_tiles.cu); NS_Q35_TILES=0: ggml-cuda's MMQ
 static bool q35_tiles() {
-    static const bool on = [] { const char* v = std::getenv("NS_Q35_TILES"); return v != nullptr && v[0] == '1'; }();
+    static const bool on = [] { const char* v = std::getenv("NS_Q35_TILES"); return v == nullptr || v[0] != '0'; }();
     return on;
 }
 

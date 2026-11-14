@@ -48,10 +48,12 @@ What it took (2026-10-18, from 691 tok/s and 31 tok/s that morning):
   R and the split chosen per card from timing every shape on this model's matrices. Against ggml-cuda's MMVQ (before):
   decode 60.9 tok/s, not 53.9 (the 3119-token story, 5070 + 3060, the same tokens and drafts accepted, KL 0 to its
   logits), verify passes of 1..8 rows 8-20 % shorter (31.9-54.3 ms, not 34.8-67.9). `NS_Q35_MMVQ=ggml` takes MMVQ's.
-- **ggml-cuda's MMQ** for a prompt's products (vendored from llama.cpp's tree, `kernels/llm/qwen35/third_party`).
-  nextcuda's own chunk products (`q35_tiles.cu`, `NS_Q35_TILES=1`) match it at 512 input rows (the model's matrices'
-  summed time 0.955 of MMQ's on the 5070, 1.009 on the 3060; a 3119-token prompt 6 % faster end to end, the same
-  tokens) but not on short prompts (47 rows 1.33-1.42x), so MMQ stays (`PHASES.md` has what was tried).
+- **The prompt products are nextcuda's own** (`q35_tiles.cu`, since 2026-11-14; ggml-cuda's MMQ before): x quantized
+  a scale a 128 values, the sums integer within it; short prompts and the grid i-quants through MMQ's own structure
+  (load_tiles / process_tile, stream-k, ported), the rest through a producer / multiplier pipeline. The model's matrices'
+  summed time against MMQ's: 16 rows 0.98 / 0.95 (5070 / 3060), 47 0.97 / 0.92, 128 0.98 / 0.99, 512 0.95 / 0.99.
+  Through the engine: 181-token prompt 461 tok/s (MMQ 382), 703 tokens 740 (662), 3119 1168 (1028), 16.6K 1343 (1266);
+  KL to MMQ's logits 0.0015, perplexity over 3000 tokens 7.582 (7.575).
 
 Settings ([`environment.md`](environment.md)): `NS_Q35_PIPE`, `NS_Q35_GRAPHS`, `NS_Q35_MMVQ`, `NS_Q35_KV`, `NS_Q35_KV_ROT`, `NS_Q35_DRAFTS` (2),
 `NS_Q35_CHUNK`, `NS_Q35_HEAD`, `NS_Q35_VISION`; `NS_PROFILE=gpu NS_Q35_PROFILE=1` times every kernel by card and phase.
