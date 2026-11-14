@@ -26,7 +26,8 @@ kernels() {
   fi
 }
 
-"${SSH[@]}" 'mkdir -p ~/nextcuda/dist ~/nextcuda/src ~/.config/systemd/user' 2>&1 | quiet
+# (stable-diffusion.cpp's library, which the image library linked until 2026-11-13, goes from an older dist/)
+"${SSH[@]}" 'mkdir -p ~/nextcuda/dist ~/nextcuda/src ~/.config/systemd/user; rm -f ~/nextcuda/dist/libstable-diffusion.so' 2>&1 | quiet
 if [ -n "${EMBED:-}" ]; then
   # the libraries first: the build embeds them (crates/sys/build.rs)
   kernels
