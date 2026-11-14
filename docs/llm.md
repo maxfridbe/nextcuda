@@ -111,8 +111,8 @@ curl -s http://127.0.0.1:8085/v1/chat/completions -H 'content-type: application/
   the VRAM's hot experts for passes of 2,048 rows, read back after it).
 - **Engine options** (`nextcuda llm engines`): `--opt-pinned-gib`, `--opt-chunk` (prompt rows a pass, 2048),
   `--opt-reserve-mib` (VRAM left free, 700). `NS_NH_CPU_FRAC` gives part of each layer's pinned experts to the CPU
-  (ggml-cpu, `libggml-base.so` / `libggml-cpu.so` beside the program) - measured slower here than the copies over
-  gen4 x16, so it is off.
+  (the engine's own products in Rust, `llm/nemotronh/src/cpu/`: AVX2 / AVX-512, the faster per type timed at start) -
+  measured slower here than the copies over gen4 x16, so it is off.
 - **Open WebUI** (`http://<host>:3000`, the page's Chat link): `tooling/open-webui.sh` (re)makes its container (the
   `open-webui` volume kept) with the front door's `/v1` and token as its OpenAI connection, and
   `tooling/open-webui.service` starts it with the box. The chat model loads on the first message and unloads after

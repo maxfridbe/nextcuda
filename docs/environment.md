@@ -231,14 +231,14 @@ Qwen3.8-27B dense (`llm/qwen35`, its silo `kernels/llm/qwen35/silo`).
 | `NS_NH_BORROW` | 1 | 0: a long prompt does not borrow VRAM from the hot experts' tail for its passes (it then keeps only NS_NH_RESIDENT_ROWS a pass) | llm nemotronh |
 | `NS_NH_COPY_BATCH` | 1 | 0: a layer's staging copies one by one, not in one ns_stream_copy_batch (cudaMemcpyBatchAsync) when the core library has it | llm nemotronh |
 | `NS_NH_COPY_LANE` | 1 | 0: decode's staging copies on the GPU's stream rather than copy lane 1 (so the experts already in VRAM no longer multiply meanwhile) | llm nemotronh |
-| `NS_NH_CPU` | 1 (when the ggml CPU libraries are there) | 0: the CPU path for part of the pinned experts is not loaded (see NS_NH_CPU_FRAC) | llm nemotronh |
-| `NS_NH_CPU_FRAC` | 0 | part of each layer's pinned experts multiplied by the CPU (ggml-cpu) instead of copied to the card, 0 to 1; measured slower than the copies over gen4 x16, so off | llm nemotronh |
+| `NS_NH_CPU` | 1 | 0: the CPU path for part of the pinned experts is off whatever NS_NH_CPU_FRAC says | llm nemotronh |
+| `NS_NH_CPU_FRAC` | 0 | part of each layer's pinned experts multiplied by the CPU (the engine's own products, `llm/nemotronh/src/cpu/`) instead of copied to the card, 0 to 1; measured slower than the copies over gen4 x16, so off | llm nemotronh |
+| `NS_NH_CPU_ISA` | the widest the CPU has | the widest vector path the CPU products may use: `scalar`, `avx2`, `avx512` (with AVX-512 each type takes whichever of its AVX2 and AVX-512 forms timed faster at start) | llm nemotronh |
 | `NS_NH_CPU_THREADS` | the CPUs this process may use | threads of the CPU path (NS_NH_CPU_FRAC) | llm nemotronh |
 | `NS_NH_DENSE_GEMM_MIN` | 16 | rows from which a dense matrix's product goes through the tensor cores (dequantized to half, one GEMM) rather than the quantized product | llm nemotronh |
 | `NS_NH_DIRECT` | 1 | 0: expert reads from the file through the page cache instead of O_DIRECT | llm nemotronh |
 | `NS_NH_DYN_VRAM` | 0 | 1: decode's copies up go into the VRAM tier's slots (LRU) instead of a per-pass buffer (measured slower: off) | llm nemotronh |
 | `NS_NH_GEMM_MIN` | 12 | rows of one expert from which its product goes through the tensor cores rather than the quantized product | llm nemotronh |
-| `NS_NH_GGML_DIR` | beside the program | where the CPU path's libggml-base.so and libggml-cpu.so are | llm nemotronh |
 | `NS_NH_HOT` | 1 | 0: the expert profile (expert-profile.txt) is not used to fill VRAM and the pinned cache at load | llm nemotronh |
 | `NS_NH_IO_THREADS` | 24 | threads reading experts from the file (many reads in flight: an NVMe's speed) | llm nemotronh |
 | `NS_NH_KL` | off | nh --bench: FILE - the first run writes each decode step's top 256 log-probabilities and token there; later runs feed its tokens and print KL and top-1 agreement | llm nemotronh |
@@ -639,6 +639,8 @@ Inputs of the checks and unit tests that need files outside the repository (unse
 | `NS_TEST_WHISPER_GENERATION` | test skipped | whisper-large-v3-turbo's generation_config.json (with NS_TEST_WHISPER_TOKENIZER) for the vocabulary, rules and alignment tests | audio whisper (cargo test) |
 | `NS_TEST_WHISPER_REF` | test skipped | a folder of reference/whisper/ref.py dumps (short/, long/, song/): the mel, greedy-rule, alignment and placement tests against openai-whisper | audio whisper (cargo test) |
 | `NS_TEST_WHISPER_TOKENIZER` | test skipped | whisper-large-v3-turbo's tokenizer.json for the byte-level tokenizer test and the vocabulary tests | tests (crates/tok), audio whisper (cargo test) |
+| `NS_TEST_NH_BLOCKS` | test skipped | a folder of rows of Nemotron 3.5 Super's expert blocks (`TYPE_role.bin` + `.txt`: "rows cols tensor") for the CPU products' tests on the file's own blocks | llm nemotronh (cargo test) |
+| `NS_TEST_NH_GGML_DIR` | test skipped | libggml-base.so and libggml-cpu.so for the one-off check of the CPU products against ggml-cpu (`cargo test -- --ignored ggml`) | llm nemotronh (cargo test) |
 | `NS_TEST_QWEN_TOKENIZER` | test skipped | a Qwen3-VL tokenizer.json for the tokenizer test (with NS_TEST_QWEN_TOKENS) | tests (crates/tok) |
 | `NS_TEST_QWEN_TOKENS` | test skipped | the reference pipeline's tokens.json the tokenizer test compares against | tests (crates/tok) |
 | `NS_X_INT8` | - | fixture: an option table's variable in the --opt-NAME unit tests (never read by an engine) | tests (crates/core options) |

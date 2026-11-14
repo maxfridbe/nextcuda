@@ -372,8 +372,8 @@ pub struct NemotronH {
     w16: Option<DevBuf>,
     dense_gemm_min: usize,
     pub times: std::sync::Mutex<Times>,
-    /// decode's CPU share (cpu.rs): ggml's products and the workers, and the share of a layer's pinned experts it takes
-    cpu: Option<(&'static cpu::Ggml, cpu::Pool)>,
+    /// decode's CPU share (cpu/): its products and the workers, and the share of a layer's pinned experts it takes
+    cpu: Option<(&'static cpu::Cpu, cpu::Pool)>,
     cpu_frac: f64,
     pub load_s: f64,
 }
@@ -1206,14 +1206,14 @@ impl NemotronH {
         let pre: Vec<DevBuf> = if pre_bytes > 0 && std::env::var("NS_NH_PREDICT").map_or(true, |v| v != "0") { (0..2).map(|_| DevBuf::new(&gpu, pre_bytes)).collect::<Result<_>>()? } else { Vec::new() };
         let hot_buf = if hot_budget > 0 && !pools.is_empty() { Some(DevBuf::new(&gpu, hot_budget as usize)?) } else { None };
         let cache = if pools.is_empty() { None } else { Some(std::sync::Mutex::new(ExpertCache { pools, map: Default::default(), clock: 0, hits: 0, misses: 0, wanted: Default::default(), hot: Default::default(), hot_buf, hot_hits: 0, vslots: Vec::new(), hot_at: Default::default(), vram_ins: 0, scratch, scratch_used: 0, scratch_map: Default::default(), stage, stage_used: 0, stage_map: Default::default(), pre, pre_used: [0; 2], pre_map: Default::default(), pre_ticket: Default::default(), pre_done: [-1; 2], pre_ring: 0, reading: Default::default(), stale: Vec::new(), stage_done: -1 })) };
-        // the CPU's share: when ggml-cpu is there and takes every cached layer's expert types
-        let cpu = cpu::Ggml::get().filter(|gg| layers.iter().all(|ly| match &ly.mix {
+        // the CPU's share, when asked for: when its products take every cached layer's expert types
+        let cpu_frac: f64 = std::env::var("NS_NH_CPU_FRAC").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0f64).clamp(0.0, 1.0);
+        let cpu = cpu::Cpu::get().filter(|gg| cpu_frac > 0.0 && layers.iter().all(|ly| match &ly.mix {
             Mix::Moe(m) if matches!(m.up.home, Home::Cached) => gg.supports(m.up.ty.code() as i32) && gg.supports(m.down.ty.code() as i32),
             _ => true,
         })).map(|gg| (gg, cpu::Pool::new(std::env::var("NS_NH_CPU_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get())))));
-        let cpu_frac: f64 = std::env::var("NS_NH_CPU_FRAC").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0f64).clamp(0.0, 1.0);
-        if let (Some((_, p)), true) = (&cpu, cpu_frac > 0.0) {
-            log(format!("nemotronh: decode multiplies {:.0} % of a layer's pinned experts on {} CPU threads (ggml-cpu)", cpu_frac * 100.0, p.threads));
+        if let Some((gg, p)) = &cpu {
+            log(format!("nemotronh: decode multiplies {:.0} % of a layer's pinned experts on {} CPU threads ({})", cpu_frac * 100.0, p.threads, gg.paths()));
         }
         let copy_batch: Option<CopyBatch> = match nextcuda_core::api()?.symbol("ns_stream_copy_batch") {
             p if p.is_null() || std::env::var("NS_NH_COPY_BATCH").is_ok_and(|v| v == "0") => None,
