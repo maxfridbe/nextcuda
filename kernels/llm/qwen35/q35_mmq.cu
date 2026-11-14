@@ -1,13 +1,15 @@
 // q35_mmq.cu: the prompt products from the stored blocks, ggml-cuda's MMQ (third_party/ggml-cuda, MIT): x quantized
 // to q8_1 in MMQ's tile layout, each matrix's blocks multiplied on the int8 tensor cores with float32 sums per block
 // (no half copy of the weights). The types Qwen3.8-27B GSQ-RCO's file holds; IQ1_M (one tensor) is not one: the
-// engine expands it to half as before. Under q35.h's C ABI.
+// engine expands it to half as before. Under q35.h's C ABI. NS_Q35_TILES=1 takes nextcuda's own tile products
+// (q35_tiles.cu) instead - not yet as fast (its header has the numbers).
 #include "ns.h"
 #include "ns_internal.hpp"
 #include "q35.h"
 
 #include "third_party/ggml-cuda/common.cuh"
 
+#include <cstdlib>
 #include <mutex>
 #include <vector>
 
@@ -154,10 +156,16 @@ static bool mmq_type(int t) {
     }
 }
 
+// NS_Q35_TILES=1: nextcuda's own tile products for the prompt and verify passes (q35_tiles.cu)
+static bool q35_tiles() {
+    static const bool on = [] { const char* v = std::getenv("NS_Q35_TILES"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+
 extern "C" {
 
 // the q8_1 layout x takes for a type's MMQ (ggml's mmq_q8_1_ds_layout; -1: none): matrices of one layout share it
-int ns_q35_mmq_layout(int type) { return mmq_type(type) ? (int) mmq_get_q8_1_ds_layout((ggml_type) type) : -1; }
+int ns_q35_mmq_layout(int type) { return !mmq_type(type) ? -1 : q35_tiles() ? 1 : (int) mmq_get_q8_1_ds_layout((ggml_type) type); }
 
 int ns_q35_mmq_supported(int type) {
     int dev = 0;
@@ -167,12 +175,14 @@ int ns_q35_mmq_supported(int type) {
 }
 
 size_t ns_q35_mmq_q8_bytes(int64_t K, int64_t T) {
+    if (q35_tiles()) return ns_q35_tiles_q8_bytes(K, T);
     const int64_t kp = GGML_PAD(K, MATRIX_ROW_PADDING);
     // the rows' tiles, and one column tile's worth past them (the launch reads a whole tile)
     return (size_t) (T * kp) * sizeof(block_q8_1_mmq) / QK8_1_MMQ + 128 * sizeof(block_q8_1_mmq);
 }
 
 int ns_q35_mmq_quantize(ns_gpu* g, int type, const float* x, int64_t T, int64_t K, void* xq) {
+    if (q35_tiles()) return ns_q35_tiles_quantize(g, type, x, T, K, xq);
     NS_TRY
     NS_CU(cudaSetDevice(g->dev));
     if (!mmq_type(type) || K % 4 != 0) return ns_fail("ns_q35_mmq_quantize: a type without MMQ, or K not a multiple of 4");
@@ -184,6 +194,7 @@ int ns_q35_mmq_quantize(ns_gpu* g, int type, const float* x, int64_t T, int64_t 
 }
 
 int ns_q35_mmq(ns_gpu* g, int type, const void* w, int64_t n_out, int64_t K, const void* xq, int64_t T, float* y) {
+    if (q35_tiles()) return ns_q35_tiles_mmq(g, type, w, n_out, K, xq, T, y);
     NS_TRY
     NS_CU(cudaSetDevice(g->dev));
     if (!mmq_type(type)) return ns_fail("ns_q35_mmq: type " + std::to_string(type) + " has no MMQ here");

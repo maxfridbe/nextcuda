@@ -270,6 +270,7 @@ Qwen3.8-27B dense (`llm/qwen35`, its silo `kernels/llm/qwen35/silo`).
 | `NS_Q35_GRAPHS` | 1 | 0: a pipelined prompt's stages launched kernel by kernel instead of as one CUDA graph each | llm qwen35 |
 | `NS_Q35_MMVQ` | ggml | nh: the decode and verify products by the shared kernels instead of ggml-cuda's MMVQ | llm qwen35 |
 | `NS_Q35_PIPE` | 1 | 0: a prompt over two GPUs a pass a chunk instead of pipelined (the first GPU on chunk k+1 beside the last on k) | llm qwen35 |
+| `NS_Q35_TILES` | 0 | 1: the prompt and verify passes' products are nextcuda's own tile products (`kernels/llm/qwen35/q35_tiles.cu`) instead of ggml-cuda's MMQ and the verify kernels - not yet as fast (1.1-1.7x MMQ's time on the 5070, 1.25-1.8x on the 3060), as close to the float64 product or closer | llm qwen35 (kernels) |
 | `NS_Q35_VQ8` | 9 (never) | the rows (2..8) from which a decode / verify pass's products are q35_vq8's (each weight block decoded once, the rows on the int8 tensor cores) for IQ3_S / IQ3_XXS / IQ4_XS matrices: one number, or one a card in the engine's order | llm qwen35 |
 | `NS_Q35_VQ8_CHECK` | 0 | Debug: 1 - each q35_vq8 product compared with MMVQ's (the largest difference printed) | llm qwen35 |
 | `NS_Q35_VQ8_TYPES` | all it has | Experiment: the block types q35_vq8 takes (names, comma-separated: `IQ3_S,IQ4_XS`) | llm qwen35 |

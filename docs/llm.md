@@ -45,6 +45,10 @@ What it took (2026-10-18, from 691 tok/s and 31 tok/s that morning):
   25% faster on the 3060.
 - **ggml-cuda's MMQ and MMVQ** for the products (vendored from llama.cpp's tree, `kernels/llm/qwen35/third_party`): the
   shared matrix-vector kernels read the 3060's layers at ~97 GB/s of its 360. With MMVQ two drafts a step is best.
+  nextcuda's own tile products (`q35_tiles.cu`, `NS_Q35_TILES=1`; on the block reader Nemotron's products use) are as
+  close to the exact product as MMQ's but not yet as fast (2026-11-13, 512 rows of a 17408 x 5120 matrix, MMQ / tiles on
+  the 5070: IQ3_S 1.03 / 1.23 ms, IQ3_XXS 1.00 / 1.22, IQ4_XS 0.91 / 1.22, Q4_K 1.04 / 1.72; the 3060 1.25-1.8x), and
+  Nemotron's decode products are 6.5 % slower here than MMVQ at the verify passes' 2-8 rows, so MMQ and MMVQ stay.
 
 Settings ([`environment.md`](environment.md)): `NS_Q35_PIPE`, `NS_Q35_GRAPHS`, `NS_Q35_MMVQ`, `NS_Q35_KV`, `NS_Q35_KV_ROT`, `NS_Q35_DRAFTS` (2),
 `NS_Q35_CHUNK`, `NS_Q35_HEAD`, `NS_Q35_VISION`; `NS_PROFILE=gpu NS_Q35_PROFILE=1` times every kernel by card and phase.

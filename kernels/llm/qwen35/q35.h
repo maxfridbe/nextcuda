@@ -114,6 +114,14 @@ int ns_q35_mmvq(ns_gpu* g, int type, const void* w, const void* xq, float* y, in
 int ns_q35_vq8_supported(int type);
 int ns_q35_vq8(ns_gpu* g, int type, const void* w, const void* xq, float* y, int64_t n_in, int64_t n_out, int64_t ncols);
 
+/* ---- nextcuda's own tile products (q35_tiles.cu), what ns_q35_mmq_* and ns_q35_vq8 take with NS_Q35_TILES=1: x for
+ * the prompt products in their own layout (32 bytes and a float4 of scales a piece of 32 of a row: tiles_q8_bytes),
+ * the verify products' x the Q8_1 rows */
+size_t ns_q35_tiles_q8_bytes(int64_t K, int64_t T);
+int ns_q35_tiles_quantize(ns_gpu* g, int type, const float* x, int64_t T, int64_t K, void* xq);
+int ns_q35_tiles_mmq(ns_gpu* g, int type, const void* w, int64_t n_out, int64_t K, const void* xq, int64_t T, float* y);
+int ns_q35_tiles_vq8(ns_gpu* g, int type, const void* w, const void* xq, float* y, int64_t n_in, int64_t n_out, int64_t ncols);
+
 /* ---- the DSpine draft (dspine.cu; crates/qwen35/src/dspine.rs): row-wise steps over at most 8 rows.
  * bridge_norm: y = x / (rms + eps), rms[r] = sqrt(max(mean x^2, tiny)) of each row [rows, C].
  * codes: row 0 = anchor_code (sqrt(C) x the anchor token's codebook row), row r > 0 = sqrt_c x proj / (|proj| + eps).
