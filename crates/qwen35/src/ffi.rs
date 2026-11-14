@@ -36,7 +36,7 @@ pub struct Api {
     pub mmq_supported: unsafe extern "C" fn(c_int) -> c_int,
     pub mmq_reserve: unsafe extern "C" fn(G) -> c_int,
     pub mmq_layout: unsafe extern "C" fn(c_int) -> c_int,
-    /// ggml-cuda's MMVQ (nh's mmvq's arguments)
+    /// the decode products under qwen35's names (nh's mmvq, its arguments; ggml-cuda's MMVQ until 2026-11-14)
     pub q35_mmvq_supported: unsafe extern "C" fn(c_int) -> c_int,
     pub q35_mmvq: unsafe extern "C" fn(G, c_int, P, P, FM, i64, i64, i64) -> c_int,
     pub mmq_q8_bytes: unsafe extern "C" fn(i64, i64) -> usize,

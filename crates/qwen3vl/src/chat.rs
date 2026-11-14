@@ -9,7 +9,7 @@
 //!   prefill  the encoder's layers over every row at once (half, the quantized product through half), the picture's
 //!            vision tokens at its pads, its deepstack features after the first layers, interleaved M-RoPE (t / h / w);
 //!            each layer's keys and values written into the cache as they are made
-//!   decode   one row: Q8_1 x the stored blocks (ggml-cuda's MMVQ, lent by crates/qwen35), float32 residual stream,
+//!   decode   one row: Q8_1 x the stored blocks (the shared decode products, lent by crates/qwen35), float32 residual stream,
 //!            keys and values half in the cache, one query row over it (the flash kernel), the head's logits read back
 //!   stop     <|im_end|> or <|endoftext|>, or max_tokens
 //! ```

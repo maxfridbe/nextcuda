@@ -1,5 +1,5 @@
 //! The decode products, lent to the foundation's other language models (qwen3vl's chat): one to eight rows times a
-//! matrix kept in its GGUF blocks on the card - nextcuda's own (nemotronh's `ns_nh_mmvq`; ggml-cuda's MMVQ `ns_q35_mmvq` for a type only it has), the
+//! matrix kept in its GGUF blocks on the card - nemotronh's `ns_nh_mmvq` (`ns_q35_mmvq` the same under qwen35's name), the
 //! rows first made Q8_1 (`quantize`) - and the logits' argmax. All on the GPU's own stream.
 
 use std::ffi::c_void;

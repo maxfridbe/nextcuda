@@ -2,8 +2,8 @@
 //! DeltaNet (linear attention: a conv + SiLU, the delta-rule recurrence, a SiLU-gated norm), the fourth gated full
 //! attention (a sigmoid gate a head in the query projection, q / k norms, rotary positions on the first 64 of 256
 //! features), each followed by a dense SwiGLU. The weights stay in their GGUF blocks on the GPU: decode reads them
-//! through the Q8_1 products (up to 8 rows: nemotronh's, Strata's and ggml-cuda's), a prompt chunk expands each matrix
-//! to half and multiplies (cuBLAS). After nextsycl's qwen35 engine; no silo here.
+//! through the Q8_1 products (up to 8 rows: nemotronh's, shared), a prompt chunk through the int8 tile products
+//! (q35_tiles.cu; NS_Q35_MMQ=0: each matrix expanded to half and multiplied by cuBLAS). After nextsycl's qwen35 engine; no silo here.
 //!
 //! ```text
 //!   x = embed(tokens)
@@ -320,7 +320,7 @@ struct Snaps {
 }
 
 /// NS_Q35_DRAFTS: tokens drafted a step (0: none; at most 7 - a verify pass is at most 8 rows)
-/// (2: with ggml-cuda's MMVQ a verify row costs more past three - a story's 256 tokens, the 5070 + 3060: drafts 0 30.9
+/// (2: measured with ggml-cuda's MMVQ, then the decode products: a verify row costs more past three - a story's 256 tokens, the 5070 + 3060: drafts 0 30.9
 /// tok/s, 1 42.7, 2 44.4, 3 38.2, 5 31.3)
 fn draft_count() -> usize {
     std::env::var("NS_Q35_DRAFTS").ok().and_then(|v| v.parse().ok()).unwrap_or(2).min(7)
@@ -447,7 +447,7 @@ pub struct Qwen35<'g> {
     prof: Option<Mutex<Profile>>,
     /// the GPU of the head and the draft block (an index into devs)
     head: usize,
-    /// the prompt products by MMQ (NS_Q35_MMQ=0: by the half expansion and cuBLAS)
+    /// the prompt products from the stored blocks (q35_tiles.cu's; NS_Q35_MMQ=0: by the half expansion and cuBLAS)
     mmq: bool,
     /// each GPU's attention cache type (NS_Q35_KV)
     kv_ty: Vec<KvTy>,
@@ -455,8 +455,6 @@ pub struct Qwen35<'g> {
     kv_rot: bool,
     /// over two GPUs: the two buffers on the last that pipelined chunks' rows cross into (`feed_pipelined`)
     pipe: Vec<DevBuf>,
-    /// the decode products by ggml-cuda's MMVQ (NS_Q35_MMVQ=ggml; the default: nextcuda's own, nemotronh's ns_nh_mmvq)
-    ggml_mmvq: bool,
     /// NS_Q35_VERIFY_MMQ: passes of at least this many rows (a verify pass) take MMQ's products where it has the type,
     /// not MMVQ's (9: never), a GPU (in the engine's order)
     verify_mmq: Vec<usize>,
@@ -912,7 +910,7 @@ impl<'g> Qwen35<'g> {
             devs.push(Dev { gpu: gpu.clone(), w16: DevBuf::new(gpu, own)?, arena: Arena::new(gpu, arena_of(chunk))?, lb, le,
                                 uploads: Mutex::new(Uploads { slots: (0..UPLOAD_SLOTS).map(|_| (None, None)).collect(), next: 0 }) });
         }
-        // MMQ's fixup buffer at its largest on each GPU now (a captured stage cannot allocate it)
+        // the prompt products' split room on each GPU now (a captured stage cannot allocate it)
         if mmq_on {
             for d in &devs {
                 // SAFETY: a live GPU handle.
@@ -962,7 +960,7 @@ impl<'g> Qwen35<'g> {
                     work: Mutex::new(()), mtp, dspine, dsp_pipe, drafts, snaps: Mutex::new(Snaps { layers: snap_layers, of: None }), vh, next_id: 0.into(), load_s,
                     load_bytes: loaded, pictures: Mutex::new(HashMap::new()), vision,
                     mmq: !std::env::var("NS_Q35_MMQ").is_ok_and(|v| v == "0"), head, kv_ty, kv_rot, pipe,
-                    ggml_mmvq: std::env::var("NS_Q35_MMVQ").is_ok_and(|v| v == "ggml"), xq: Mutex::new(Vec::new()), verify_mmq, vq8, vq8_check, vq8_types,
+                    xq: Mutex::new(Vec::new()), verify_mmq, vq8, vq8_check, vq8_types,
                     prof: ["NS_Q35_PROFILE", "NS_PROFILE"].iter().any(|k| std::env::var(k).is_ok_and(|v| v == "1")).then(|| Mutex::new(Profile::default())) })
     }
 
@@ -1099,9 +1097,7 @@ impl<'g> Qwen35<'g> {
                            || unsafe { (k.gemm_f16)(self.raw(), self.dev().w16.ptr(), xh.ptr(), y.fp(), t as i64, n, kk) });
         }
         // SAFETY: arithmetic only.
-        let (own, ggml) = unsafe { ((k.mmvq_supported)(w.ty.code() as i32) != 0, (k.q35_mmvq_supported)(w.ty.code() as i32) != 0) };
-        let ggml_mmvq = ggml && (self.ggml_mmvq || !own);
-        let mmvq = ggml_mmvq || own;
+        let mmvq = unsafe { (k.mmvq_supported)(w.ty.code() as i32) } != 0;
         // SAFETY: arithmetic only.
         let cur = self.cur.load(std::sync::atomic::Ordering::Relaxed);
         // SAFETY: arithmetic only.
@@ -1142,12 +1138,11 @@ impl<'g> Qwen35<'g> {
                 }
             };
             // SAFETY: the matrix in its blocks, x's Q8_1 blocks, y [t, rows].
-            // nextcuda's own decode products (NS_Q35_MMVQ=ggml, or a type only it has: ggml-cuda's MMVQ)
-            let f = if ggml_mmvq { k.q35_mmvq } else { k.mmvq };
+            // the decode products (nemotronh's, shared)
             return self.op("mmvq", key, wb + q8 + 4 * t * rows, flops,
-                           || unsafe { f(self.raw(), w.ty.code() as i32, w.buf.ptr(), qb.std.ptr(), y.fp(), kk, n, t as i64) });
+                           || unsafe { (k.mmvq)(self.raw(), w.ty.code() as i32, w.buf.ptr(), qb.std.ptr(), y.fp(), kk, n, t as i64) });
         }
-        // a prompt's rows: ggml-cuda's MMQ from the blocks (int8 tensor cores; NS_Q35_MMQ=0: the half product)
+        // a prompt's rows: the tile products from the blocks (int8 tensor cores; NS_Q35_MMQ=0: the half product)
         if self.mmq && unsafe { (k.mmq_supported)(w.ty.code() as i32) } != 0 {
             // SAFETY: arithmetic only; then x [t, cols] -> its q8_1 tiles (once for the products of its layout that
             // read it); y [t, rows] = x . W^T.

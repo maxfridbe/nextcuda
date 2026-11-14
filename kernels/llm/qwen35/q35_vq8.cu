@@ -1,14 +1,15 @@
 // q35_vq8.cu: the verify passes' products - 2..8 rows (a verify pass's: the token and its drafts) against the stored
 // blocks, each weight block decoded to int8 once and multiplied with all the rows on the int8 tensor cores (mma
-// m16n8k32: 16 matrix rows x the 8 input rows x a block of 32). ggml-cuda's MMVQ decodes a block again for every input
-// row (the 3060 runs 8 of them at ~124 GB/s of its 360) and its MMQ tiles 128 rows for 8 (the same on the 3060). The
+// m16n8k32: 16 matrix rows x the 8 input rows x a block of 32). A one-row-at-a-time product decodes a block again for
+// every input row, and the prompt products tile 128 rows for 8. The
 // sums are each block of 32's integer dot product, the type's scale on it, then (block scale x the row's Q8_1 scale)
 // x that. The blocks are read by nextcuda's own code (nh_blocks.cuh's tables and sign masks; ggml-cuda's vecdotq.cuh
 // helpers until 2026-11-13). The types Qwen3.8-27B GSQ-RCO's layers are mostly made of: IQ3_S,
 // IQ4_XS, IQ3_XXS (82% of their bytes; the others go to MMQ - the 2-bit i-quants and Q4_K were written this way too,
 // measured no faster than MMQ, and dropped). After nextsycl's silo/xmm.cpp (its XMX verify products), for CUDA.
-// Measured (the 5070 + 3060, layers 0-32 on the 3060): an 8-row verify pass 61.0 ms with these and MMQ for the rest,
-// 62.6 with MMQ alone, 66.5 with MMVQ; at 2..5 rows MMVQ stays faster (the engine's NS_Q35_VQ8 threshold)
+// Measured 2026-11 against ggml-cuda's MMQ / MMVQ (then the engine's): an 8-row verify pass 61.0 ms with these and MMQ
+// for the rest, 62.6 with MMQ alone, 66.5 with MMVQ. Opt-in (NS_Q35_VQ8): nextcuda's own decode products (2026-11-13)
+// are faster at 2..8 rows than all three were
 #include "ns.h"
 #include "ns_internal.hpp"
 #include "q35.h"
@@ -256,7 +257,7 @@ int ns_q35_vq8(ns_gpu* g, int type, const void* w, const void* xq, float* y, int
         case nsq::IQ3_XXS: ok = launch<DecIq3xxs>(w, yq, y, n_in, n_out, ncols, nw, g->q); break;
         default: ok = launch<DecIq4xs>(w, yq, y, n_in, n_out, ncols, nw, g->q); break;
     }
-    // (a row's blocks not whole words: MMVQ's products, the same sums)
+    // (a row's blocks not whole words: the decode products, the same sums)
     if (!ok) return ns_q35_mmvq(g, type, w, xq, y, n_in, n_out, ncols);
     NS_LAUNCH_CHECK();
     return 0;

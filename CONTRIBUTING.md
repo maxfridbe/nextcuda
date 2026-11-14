@@ -7,8 +7,9 @@ is the method (how to check, clock and tune an engine) and `docs/benchy/README.m
 
 ## The rules
 
-1. **CUDA is the only GPU runtime.** Kernels are CUDA (nvcc), on the GPU's own stream; cuBLAS and ggml-cuda are
-   fine. No SYCL, Vulkan, OpenCL, HIP, Metal, wgpu, or a framework that brings another (candle, PyTorch, ONNX
+1. **CUDA is the only GPU runtime.** Kernels are CUDA (nvcc), on the GPU's own stream; cuBLAS is fine, and no
+   third-party C / C++ kernels are vendored (nextcuda's own since 2026-11-14; a design learned from one carries an
+   origin note). No SYCL, Vulkan, OpenCL, HIP, Metal, wgpu, or a framework that brings another (candle, PyTorch, ONNX
    Runtime, burn...). Host code is Rust. Python is a fallback for an engine whose Rust one is not there yet, never the
    first choice.
 2. **Third-party crates are fine** - anything that does not bring another GPU runtime (rule 1). Prefer a few

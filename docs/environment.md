@@ -269,15 +269,13 @@ Qwen3.8-27B dense (`llm/qwen35`, its silo `kernels/llm/qwen35/silo`).
 | `NS_Q35_KV_ROT` | 0 | 1: a quantized cache rotated (a 32-value Hadamard transform a block on keys, values and queries, the output turned back: q4_0's error a third smaller) | llm qwen35 |
 | `NS_Q35_PLAN_LOG` | 0 | Debug: 1 - the plan's room and need a GPU, and each GPU's free memory after each step of the load | llm qwen35 |
 | `NS_Q35_GRAPHS` | 1 | 0: a pipelined prompt's stages launched kernel by kernel instead of as one CUDA graph each | llm qwen35 |
-| `NS_Q35_MMVQ` | nh | ggml: the decode and verify products by ggml-cuda's MMVQ instead of nextcuda's own (`nh_iq.cu`'s, Nemotron's too) | llm qwen35 |
 | `NS_Q35_PIPE` | 1 | 0: a prompt over two GPUs a pass a chunk instead of pipelined (the first GPU on chunk k+1 beside the last on k) | llm qwen35 |
-| `NS_Q35_TILES` | 1 | 0: the prompt products by ggml-cuda's MMQ instead of nextcuda's own (`kernels/llm/qwen35/q35_tiles.cu`, as fast or faster at every prompt length since 2026-11-14) | llm qwen35 (kernels) |
 | `NS_Q35_VQ8` | 9 (never) | the rows (2..8) from which a decode / verify pass's products are q35_vq8's (each weight block decoded once, the rows on the int8 tensor cores) for IQ3_S / IQ3_XXS / IQ4_XS matrices: one number, or one a card in the engine's order | llm qwen35 |
-| `NS_Q35_VQ8_CHECK` | 0 | Debug: 1 - each q35_vq8 product compared with MMVQ's (the largest difference printed) | llm qwen35 |
+| `NS_Q35_VQ8_CHECK` | 0 | Debug: 1 - each q35_vq8 product compared with the decode products' (the largest difference printed) | llm qwen35 |
 | `NS_Q35_VQ8_TYPES` | all it has | Experiment: the block types q35_vq8 takes (names, comma-separated: `IQ3_S,IQ4_XS`) | llm qwen35 |
 | `NS_Q35_VQ8_WARPS` | 8 under 2,048 rows, else 4 | Experiment: warps a block of q35_vq8 (2, 4 or 8) | kernels:qwen35 |
-| `NS_Q35_VERIFY_MMQ` | 9 (never) | the rows from which a decode / verify pass's products are ggml-cuda's MMQ (int8 tensor cores) where it has the matrix's type, instead of MMVQ's: one number, or one a card in the engine's order (`9,6`: the 3060 never, the 5070 from 6 rows) | llm qwen35 |
-| `NS_Q35_MMQ` | 1 | 0: a prompt chunk's products by each matrix expanded to half and cuBLAS instead of ggml-cuda's MMQ (int8 tensor cores from the blocks) | llm qwen35 |
+| `NS_Q35_VERIFY_MMQ` | 9 (never) | the rows from which a decode / verify pass's products are the prompt products' (int8 tensor cores) where it has the matrix's type, instead of the decode products': one number, or one a card in the engine's order (`9,6`: the 3060 never, the 5070 from 6 rows) | llm qwen35 |
+| `NS_Q35_MMQ` | 1 | 0: a prompt chunk's products by each matrix expanded to half and cuBLAS instead of the tile products (`q35_tiles.cu`: int8 tensor cores from the blocks) | llm qwen35 |
 | `NS_Q35_VISION` | 1 | 0: no vision tower (the mmproj beside the model left unloaded: no pictures, its memory to the context) | llm qwen35 |
 | `NS_Q38_CASES` | none | Test: a directory the Qwen3.8 template test writes each case's prompt to (compared with the jinja template by tooling) | tok (tests) |
 | `NS_Q35_MMVQ_GROUPS` | 512 | Experiment: work-groups of the silo's matrix-vector kernels with a lookup table | kernels:qwen35 silo |

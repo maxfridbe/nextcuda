@@ -159,4 +159,7 @@ The goal: no third-party C or C++ in nextcuda, at run time or compiled in - next
   time against MMQ's: 16 rows 0.984 / 0.953 (5070 / 3060), 47 0.970 / 0.920, 128 0.982 / 0.991, 512 0.951 / 0.989
   (Q6_K on the 3060 at 512 still 1.2). Engine: 181 tokens 461 tok/s against 382, 3119 1168 against 1028, 16.6K 1343
   against 1266; KL to MMQ's logits 0.0015, perplexity over 3000 tokens 7.582 against 7.575.
+- **Done: third-party C++ out of nextcuda.** `kernels/llm/qwen35/third_party/ggml-cuda` removed (2026-11-14): the
+  `ns_q35_mmq*` / `ns_q35_mmvq` entry points are q35_tiles.cu's and nh_iq.cu's; `NS_Q35_TILES` and `NS_Q35_MMVQ` are
+  gone with it.
 

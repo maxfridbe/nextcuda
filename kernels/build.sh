@@ -83,8 +83,7 @@ for k in $KINDS; do
   extra=()
   if [ "$k" = image ]; then
     # MOSS-Image's text encoder is Qwen3.5 (gated DeltaNet): the llm library's qwen35 and nemotronh kernels in the
-    # image library too. The library exports only its API (image.map: ns_*, nsd_* and ns_fail for the silos): their
-    # vendored ggml-cuda copies stay inside it
+    # image library too. The library exports only its API (image.map: ns_*, nsd_* and ns_fail for the silos)
     objs="$objs $(ls "$OBJ"/llm_*.o 2>/dev/null | grep -v '_silo_' || true)"
     extra+=(-Xlinker --version-script=image.map)
   fi

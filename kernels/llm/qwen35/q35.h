@@ -87,13 +87,13 @@ int ns_q35_kda_scan(ns_gpu* g, const float* q, const float* k, const float* v, c
 /* out [n] = silu(min(gate, limit)) * clamp(up, -limit, limit) (always clamped: +inf for none); out may be gate */
 int ns_q35_swiglu(ns_gpu* g, const float* gate, const float* up, float* out, int64_t n, float limit);
 
-/* ---- the prompt products, ggml-cuda's MMQ (q35_mmq.cu, third_party/ggml-cuda): x as q8_1 in MMQ's tiles, the
- * matrix's blocks on the int8 tensor cores. Types: Q2_K Q4_K Q6_K IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S IQ4_XS, Q8_0 (the DSpine
- * draft's layers) */
+/* ---- the prompt products (q35_mmq.cu's entry points over q35_tiles.cu; ggml-cuda's MMQ until 2026-11-14): x quantized
+ * into the tile products' layout, the matrix's blocks on the int8 tensor cores. Types: Q2_K Q4_K Q6_K IQ2_XXS IQ2_XS IQ2_S
+ * IQ3_XXS IQ3_S IQ4_XS, Q8_0 (the DSpine draft's layers) */
 int ns_q35_mmq_supported(int type);
-/* the GPU's MMQ fixup buffer allocated at its largest (none later: a CUDA graph's capture cannot allocate) */
+/* the products' room on the GPU allocated now (none later: a CUDA graph's capture cannot allocate) */
 int ns_q35_mmq_reserve(ns_gpu* g);
-/* the q8_1 layout ns_q35_mmq_quantize makes for a type (-1: no MMQ): products of the same layout share x's */
+/* the layout ns_q35_mmq_quantize makes for a type (-1: none): products of the same layout share x's */
 int ns_q35_mmq_layout(int type);
 /* bytes of x [T][K] quantized for ns_q35_mmq */
 size_t ns_q35_mmq_q8_bytes(int64_t K, int64_t T);
@@ -102,19 +102,18 @@ int ns_q35_mmq_quantize(ns_gpu* g, int type, const float* x, int64_t T, int64_t 
 /* y [T][n_out] = x . W^T, W [n_out][K] in `type`'s blocks, x as ns_q35_mmq_quantize made it (for that type) */
 int ns_q35_mmq(ns_gpu* g, int type, const void* w, int64_t n_out, int64_t K, const void* xq, int64_t T, float* y);
 
-/* ---- the decode / verify rows' products, ggml-cuda's MMVQ (q35_mmq.cu): nh's ns_nh_mmvq's arguments - xq its Q8_1
- * rows (ns_nh_quantize: ggml's block_q8_1), 1..8 of them. Types: Q4_0 .. Q8_0, IQ4_NL, the K quants, IQ1_S / M, IQ2_*, IQ3_*,
- * IQ4_XS */
+/* ---- the decode / verify rows' products under qwen35's name: nh's ns_nh_mmvq (ggml-cuda's MMVQ until 2026-11-14) - xq its
+ * Q8_1 rows (ns_nh_quantize), 1..8 of them. Types: Q4_0 .. Q8_0, IQ4_NL, the K quants, IQ1_S / M, IQ2_*, IQ3_*, IQ4_XS */
 int ns_q35_mmvq_supported(int type);
 int ns_q35_mmvq(ns_gpu* g, int type, const void* w, const void* xq, float* y, int64_t n_in, int64_t n_out, int64_t ncols);
 
 /* ---- the verify passes' products (q35_vq8.cu): y [ncols][n_out] = W [n_out][n_in] . xq [ncols], 1..8 input rows (xq: their
  * Q8_1 rows as for ns_q35_mmvq), each weight block decoded once and multiplied with every row on the int8 tensor cores (mma
- * m16n8k32); MMVQ's sums block by block. Types: IQ3_S IQ3_XXS IQ4_XS; n_out a multiple of 16, n_in of 256 */
+ * m16n8k32); the decode products' sums block by block. Types: IQ3_S IQ3_XXS IQ4_XS; n_out a multiple of 16, n_in of 256 */
 int ns_q35_vq8_supported(int type);
 int ns_q35_vq8(ns_gpu* g, int type, const void* w, const void* xq, float* y, int64_t n_in, int64_t n_out, int64_t ncols);
 
-/* ---- nextcuda's own tile products (q35_tiles.cu), what ns_q35_mmq_* and ns_q35_vq8 take with NS_Q35_TILES=1: x for
+/* ---- nextcuda's own tile products (q35_tiles.cu), behind ns_q35_mmq_* (the prompt products): x for
  * the prompt products in their own layout (32 bytes and a float4 of scales a piece of 32 of a row: tiles_q8_bytes),
  * the verify products' x the Q8_1 rows */
 /* x's layout for a type (2: the chunk products', 1: the tile products', -1: none) */

@@ -392,7 +392,7 @@ say `describe_native` in system.models.
   downloaded: model_not_downloaded.
 - **How it runs** (crates/qwen3vl `chat` and `reader`): the encoder's layers over the prompt (the picture's vision
   tokens at its pads, deepstack, interleaved M-RoPE), keys and values into a half cache, then one row a token on
-  ggml-cuda's MMVQ from the stored blocks (crates/qwen35 `products`), the final norm and the head; the same
+  the shared decode products from the stored blocks (crates/qwen35 `products`), the final norm and the head; the same
   instruction as the chat describer, no thinking (Qwen3-VL Instruct has none). The image server loads it in place of
   the pipeline (one or the other on a 12 GB card) and keeps it until the next picture is drawn, which loads the
   pipeline again; a server the front door starts for a describe (`--describe-first`) loads no pipeline at all.
