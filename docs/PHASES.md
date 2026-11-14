@@ -131,3 +131,23 @@ port has not landed answers with what it would take and does, and refuses the ca
 Then the same day: the three speech engines run on CUDA in Rust (no Python) - Breeze TTS 2, Qwen3-TTS and VoxCPM2,
 nextsycl's code over CUDA ports of its audio kernels (`kernels/audio/`), each checked against its upstream package
 (README "Speech"). Still declared only: model3d, the drives, music (MiniMax Music 3), OCR, video.
+
+## Third-party C++ out (2026-11-13)
+
+The goal: no third-party C or C++ in nextcuda, at run time or compiled in - nextcuda's own CUDA kernels and Rust.
+
+- **Done: Nemotron's CPU experts in Rust** (`llm/nemotronh/src/cpu/`, replacing ggml-cpu's `libggml-base.so` /
+  `libggml-cpu.so`, dlopened): the activation quantized byte for byte as ggml-cpu did, products within 1.4e-7 of the sum
+  of |terms| of its; a layer's CPU share on the box's 8 threads 1.01-1.09x its speed. The libraries are gone from the
+  box. (ggml-cpu's own path segfaulted in that decode - it was off by default.)
+- **Done: Nemotron's products from the stored blocks** (`kernels/llm/nemotronh/nh_iq.cu` on `nh_blocks.cuh`,
+  replacing Strata's `iq_kernels.cu` and ggml's `ggml-common.h`): expansions bit for bit, products within 3e-5 of the
+  largest value; from DRAM on the 5070 the same or faster per type (Q6_K 13-41 %), several columns 1.5-3x.
+- **Not done: Qwen3.8's products** (ggml-cuda's MMQ, MMVQ and the verify products' `vecdotq.cuh`, in
+  `kernels/llm/qwen35/third_party/ggml-cuda`). nextcuda's own tile products (`q35_tiles.cu`, `NS_Q35_TILES=1`) are as
+  close to the float64 product or closer but 1.1-1.7x MMQ's time on the 5070 (1.25-1.8x on the 3060) and ~2.6x at 8-row
+  verify passes; Nemotron's decode products took Qwen's decode 6.5 % slower (MTP's 2-8-row verify passes) and are not
+  used there. The tile products overlap their reads with the tensor cores (a chunk of blocks staged by cp.async, the
+  next step's rows in registers: from 1.6-3x MMQ's time to 1.1-1.7x); where the rest goes is not profiled (the box's
+  user has no access to the GPU's counters).
+

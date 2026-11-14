@@ -99,6 +99,8 @@ Not here yet: HunyuanImage 2.1; the bigger cards' forms (the models [marked too 
 ## Standing on
 
 - [nextsycl](https://github.com/) - the control plane, the contracts, the web front end and the rules.
-- [ggml](https://github.com/ggml-org/ggml) - the quantized formats and the ggml-cuda kernels the LLM engines vendor.
-  (stable-diffusion.cpp ran Qwen-Image here until 2026-11-13; its numbers stay in the benchmark docs.)
+- [ggml](https://github.com/ggml-org/ggml) - the quantized formats, and ggml-cuda's MMQ / MMVQ, still vendored for
+  Qwen3.8's products (nextcuda's own are not yet as fast). Nemotron's products (Strata's kernels before) and its CPU
+  experts (ggml-cpu before) are nextcuda's own since 2026-11-13, and stable-diffusion.cpp ran Qwen-Image here until
+  then; their numbers stay in the benchmark docs.
 - Qwen-Image 2.1 and 2512 (Qwen), the GGUFs of leejet, unsloth and realrebelai, and Viggle's and lightx2v's LoRAs.

@@ -1,5 +1,6 @@
 /* libnextcuda-image.so's exports: its C API (ns_*, nsd_*) and what the silos call back (ns_fail, ns_cuda); every
- * other symbol stays inside it (build.sh: the llm kernels' ggml-cuda copies must not stand in for sd.cpp's) */
+ * other symbol stays inside it (build.sh: the llm kernels' vendored ggml-cuda MMQ stays private to the library;
+ * stable-diffusion.cpp, whose ggml it once had to keep apart from, is gone since 2026-11-13) */
 {
   global:
     ns_*;
