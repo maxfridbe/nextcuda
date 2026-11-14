@@ -68,7 +68,7 @@ Each model's guide (how to ask it, what it takes, what it answers) is in `model-
 | kind | engines | on the two cards |
 |---|---|---|
 | chat | `qwen35` (Qwen3.8: DeltaNet + attention, MTP drafts, vision), `nemotron_h_moe` | Qwen3.8 over both, pipelined; Nemotron on the 5070 |
-| image, OCR | stable-diffusion.cpp's ggml-cuda (Qwen-Image), our Rust + CUDA engines (Qwen-Image 2.1 `rust`, Ming-Image, Z-Image-Turbo, Unlimited-OCR, PaddleOCR-VL, olmOCR-2) | one card each; olmOCR-2 the decoder on one, the vision tower on the other; Ming-Image the DiT on the 5070, its text encoder on the 3060 |
+| image, OCR | our Rust + CUDA engines (Qwen-Image 2.1 and 2512, Ming-Image, Z-Image-Turbo, Unlimited-OCR, PaddleOCR-VL, olmOCR-2) | one card each; olmOCR-2 the decoder on one, the vision tower on the other; Ming-Image the DiT on the 5070, its text encoder on the 3060 |
 | speech | `breeze-tts-2`, `qwen3-tts`, `voxcpm2`, `vibevoice` (several speakers) | one card each; VoxCPM2 int8 fits beside the chat model |
 | songs | `minimax-music3` (int8), `acestep-1.5` | MiniMax: the language model on the 5070, the flow stage and decoder on the 3060 |
 | video | `minimax-h3` (the native daemon, `--span`), `ltx2` (LTX-2.5: Gemma-4 text stage, a 22B audio-video DiT, VAEs, vocoder, latent upsampler) and the video studio (scenes, plans, a film's clips joined) | the denoiser over both cards, nothing streamed: an H3 clip in ~62 s from the SSD; LTX-2.5's DiT resident, 32 blocks on the 5070 and 16 on the 3060, its text stage loaded for a clip and released |

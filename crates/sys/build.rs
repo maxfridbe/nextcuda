@@ -1,13 +1,11 @@
-//! Embeds the kernel libraries (libnextcuda-<kind>.so and stable-diffusion.cpp's libstable-diffusion.so, from
-//! NS_LIB_DIST, else dist/) into the binary: `LIBS`, each as (file name, bytes). nvcc is on the GPU host, not here: the
+//! Embeds the kernel libraries (libnextcuda-<kind>.so, from NS_LIB_DIST, else dist/) into the binary: `LIBS`, each as (file name, bytes). nvcc is on the GPU host, not here: the
 //! libraries are there to embed only when they were built first and brought back (tooling/deploy.sh with EMBED=1 does);
 //! without them the set is empty and the libraries are opened from files (lib.rs). Silos stay files: they open on
 //! demand.
 use std::fmt::Write;
 use std::path::PathBuf;
 
-const LIBS: &[&str] = &["libnextcuda-llm.so", "libnextcuda-image.so", "libnextcuda-video.so", "libnextcuda-audio.so", "libnextcuda-model3d.so",
-                        "libstable-diffusion.so"];
+const LIBS: &[&str] = &["libnextcuda-llm.so", "libnextcuda-image.so", "libnextcuda-video.so", "libnextcuda-audio.so", "libnextcuda-model3d.so"];
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it"));

@@ -1,6 +1,6 @@
 [package]
 name = "nextcuda-image-qwenimage21"
-description = "Qwen-Image 2.1 on NVIDIA: stable-diffusion.cpp (CUDA) behind the image contract, through the platform's python engine"
+description = "Qwen-Image 2.1 and 2512 on NVIDIA: Rust over the shared CUDA kernels, behind the image contract"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

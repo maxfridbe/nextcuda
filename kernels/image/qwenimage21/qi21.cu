@@ -41,7 +41,7 @@ __device__ float block_max(float v) {
 
 constexpr int PER = 32;  // a row of up to 8,192 values held in registers
 
-__global__ void ln_mod_k(const float* x, int64_t C, float eps, const float* scale, __half* o) {
+__global__ void ln_mod_k(const float* x, int64_t C, float eps, const float* scale, const float* shift, __half* o) {
     const size_t r = blockIdx.x;
     const int l = threadIdx.x;
     const float* row = x + r * C;
@@ -65,7 +65,7 @@ __global__ void ln_mod_k(const float* x, int64_t C, float eps, const float* scal
 #pragma unroll
     for (int j = 0; j < PER; ++j) {
         const int64_t i = (int64_t) j * WG + l;
-        if (i < C) o[r * C + i] = f2h((v[j] - mean) * inv * (scale ? 1.0f + scale[i] : 1.0f));
+        if (i < C) o[r * C + i] = f2h((v[j] - mean) * inv * (scale ? 1.0f + scale[i] : 1.0f) + (shift ? shift[i] : 0.0f));
     }
 }
 
@@ -196,7 +196,16 @@ extern "C" {
 int ns_image_qi21_ln_mod(ns_gpu* g, const float* x, int64_t M, int64_t C, float eps, const float* scale, void* out) {
     if (C > (int64_t) WG * PER) return ns_fail("ns_image_qi21_ln_mod: rows longer than 8192");
     NS_CU(cudaSetDevice(g->dev));
-    ln_mod_k<<<(unsigned) M, WG, 0, g->q>>>(x, C, eps, scale, (__half*) out);
+    ln_mod_k<<<(unsigned) M, WG, 0, g->q>>>(x, C, eps, scale, nullptr, (__half*) out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_image_qi21_ln_mod_shift(ns_gpu* g, const float* x, int64_t M, int64_t C, float eps, const float* scale, const float* shift, void* out) {
+    if (C > (int64_t) WG * PER) return ns_fail("ns_image_qi21_ln_mod_shift: rows longer than 8192");
+    if (M == 0) return 0;
+    NS_CU(cudaSetDevice(g->dev));
+    ln_mod_k<<<(unsigned) M, WG, 0, g->q>>>(x, C, eps, scale, shift, (__half*) out);
     NS_LAUNCH_CHECK();
     return 0;
 }

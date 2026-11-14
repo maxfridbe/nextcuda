@@ -14,6 +14,8 @@ typedef struct ns_gpu ns_gpu;
 /* out [M, C] half = layernorm(x [M, C] float32, no affine, eps) * (1 + scale[c]); scale float32 [C] or NULL (plain
  * layernorm). One block a row: the row read once into registers, mean and variance by block reductions. */
 int ns_image_qi21_ln_mod(ns_gpu* g, const float* x, int64_t M, int64_t C, float eps, const float* scale, void* out);
+/* Qwen-Image 2512's: layer norm, then out = n * (1 + scale) + shift (scale, shift float32 [C] or NULL) */
+int ns_image_qi21_ln_mod_shift(ns_gpu* g, const float* x, int64_t M, int64_t C, float eps, const float* scale, const float* shift, void* out);
 /* The int8 weights of a matrix: per row of w [N, K] float32, scale[r] = max|w[r]| / 127 (at least 1e-30) and
  * q[r] = round(w[r] / scale[r]) as int8 (ties to even, clamped to [-127, 127]). */
 int ns_image_qi21_quant_rows(ns_gpu* g, const float* w, int64_t N, int64_t K, int8_t* q, float* scale);

@@ -435,7 +435,7 @@ impl ImageEngine for RustQwenImage21 {
             // an edit's pictures through the vision tower and the VAE; then each prompt's embedding and its prefix
             let (seen, lats) = if pics.is_empty() { (Vec::new(), Vec::new()) } else { self.pictures(&pics, area)? };
             let conds: Vec<(&DevBuf, (usize, usize))> = lats.iter().map(|(b, s)| (b, *s)).collect();
-            // a transparent picture is asked for in the model card's words, as the stable-diffusion.cpp path does: without
+            // a transparent picture is asked for in the model card's words: without
             // them the model paints an opaque background and the alpha comes back solid
             let mut asked = req.prompt.trim().to_string();
             if req.edit.as_ref().is_some_and(|e| e.condition && e.mask.is_some()) {

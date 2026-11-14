@@ -1,5 +1,5 @@
 // nsd.cu: the shared diffusion kernels on CUDA (nsd.h). Matrix products are cuBLAS (tensor cores); the rest are the
-// elementwise and row kernels of nextsycl's nsd.cpp, with its arithmetic.
+// elementwise and row kernels of nextsycl's diffusion kernels (its nsd source), with their arithmetic.
 #include "nsd.h"
 #include "ns_internal.hpp"
 

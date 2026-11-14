@@ -6,8 +6,8 @@ We stand on the shoulders of giants.
 
 - **nextsycl's control plane, on NVIDIA** - the same front door on :8000, the same `/rpc/<kind>.<method>` API, the same
   jobs, queue and model registry; what runs the models under it is CUDA
-- **No Python** - Rust on the control side, CUDA ([stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)'s
-  ggml-cuda kernels) on the GPU side; the model stays loaded between pictures
+- **No Python** - Rust on the control side, CUDA kernels (cuBLAS and our own) on the GPU side; the model stays loaded
+  between pictures
 - **Made for the cards people have** - two 12 GB cards (an RTX 5070 and an RTX 3060) run chat, pictures, OCR, speech,
   songs, video with sound and 3D: Qwen3.8-27B reads prompts at ~1,200 tok/s over both cards (llama.cpp: 925),
   MiniMax H3 and LTX-2.5 make video with sound across both, Nemotron 3.5 Super (120B) chats on one, its experts streamed
@@ -99,6 +99,6 @@ Not here yet: HunyuanImage 2.1; the bigger cards' forms (the models [marked too 
 ## Standing on
 
 - [nextsycl](https://github.com/) - the control plane, the contracts, the web front end and the rules.
-- [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) and [ggml](https://github.com/ggml-org/ggml)
-  - the CUDA kernels the engines run on.
+- [ggml](https://github.com/ggml-org/ggml) - the quantized formats and the ggml-cuda kernels the LLM engines vendor.
+  (stable-diffusion.cpp ran Qwen-Image here until 2026-11-13; its numbers stay in the benchmark docs.)
 - Qwen-Image 2.1 and 2512 (Qwen), the GGUFs of leejet, unsloth and realrebelai, and Viggle's and lightx2v's LoRAs.

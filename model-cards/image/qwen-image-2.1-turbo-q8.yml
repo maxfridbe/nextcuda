@@ -2,7 +2,7 @@
 # model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets.
 # Viggle's few-step distill merged into the base transformer (fp32, then Q8_0), the Q8 card's text encoder, projector
 # and VAE. It runs on the Rust engine, which samples the distill's own 6 sigmas with the
-# size's shift - nextsycl's turbo card's schedule; stable-diffusion.cpp has no way to be given those levels.
+# size's shift - nextsycl's turbo card's schedule.
 id: qwen-image-2.1-turbo-q8
 kind: image
 arch: qwen-image-2.1

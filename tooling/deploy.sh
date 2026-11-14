@@ -30,7 +30,7 @@ if [ -n "${EMBED:-}" ]; then
   kernels
   echo "==> $HOST: the kernel libraries, back here to embed"
   rm -rf target-trixie/embed-libs && mkdir -p target-trixie/embed-libs
-  "${RSYNC[@]}" --include 'libnextcuda-*.so' --include 'libstable-diffusion.so' --exclude '*' "$HOST":nextcuda/dist/ target-trixie/embed-libs/ 2>&1 | quiet
+  "${RSYNC[@]}" --include 'libnextcuda-*.so' --exclude '*' "$HOST":nextcuda/dist/ target-trixie/embed-libs/ 2>&1 | quiet
   ls target-trixie/embed-libs/libnextcuda-*.so >/dev/null 2>&1 || { echo "==> $HOST: no kernel libraries in ~/nextcuda/dist to embed" >&2; exit 1; }
   [ -n "${SKIP_BUILD:-}" ] || NS_LIB_DIST=/build/target-trixie/embed-libs ./build.sh
 else

@@ -79,15 +79,6 @@ fn embedded(name: &str) -> Option<&'static [u8]> {
     LIBS.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
 }
 
-/// The libraries a kind's library needs by name, opened before it: the image library links stable-diffusion.cpp's
-/// (found through its RUNPATH $ORIGIN beside a file; out of the binary, by its soname once it is open)
-fn deps(name: &str) -> &'static [&'static str] {
-    match name {
-        "libnextcuda-image.so" => &["libstable-diffusion.so"],
-        _ => &[],
-    }
-}
-
 /// An embedded library as a file the loader can open: an anonymous memory file (the descriptor stays open), its
 /// /proc/self/fd path. Once a name.
 fn materialize(name: &str) -> Result<PathBuf, String> {
@@ -129,17 +120,6 @@ pub fn embedded_path(kind: &str) -> Option<PathBuf> {
     materialize(&format!("libnextcuda-{kind}.so")).ok()
 }
 
-/// dlopen a path globally (its symbols and its soname are then found by the libraries opened after it)
-fn open(path: &Path) -> Result<(), String> {
-    let c = CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
-    // SAFETY: dlopen with a valid C string; the handle is checked.
-    let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
-    if h.is_null() {
-        return Err(format!("{}: {}", path.display(), dl_error()));
-    }
-    Ok(())
-}
-
 fn dl_error() -> String {
     // SAFETY: dlerror returns null or a C string valid until the next dl* call on this thread.
     let p = unsafe { dlerror() };
@@ -170,16 +150,11 @@ impl Api {
         Api::load_from(&p.unwrap_or_else(|| PathBuf::from("dist").join(&name)))
     }
 
-    /// The kind's library out of the binary (None when this binary has none): the libraries it needs by name first
-    /// (`deps`), each as an anonymous memory file opened by its /proc/self/fd path
+    /// The kind's library out of the binary (None when this binary has none), as an anonymous memory file opened by its
+    /// /proc/self/fd path
     fn load_embedded(name: &str) -> Result<Option<Api>, String> {
         if embedded(name).is_none() {
             return Ok(None);
-        }
-        for d in deps(name) {
-            if embedded(d).is_some() {
-                open(&materialize(d)?)?;
-            }
         }
         let p = materialize(name)?;
         let dir = std::env::var_os("NS_SILO_DIR").map(PathBuf::from).and_then(|d| d.parent().map(Path::to_path_buf))

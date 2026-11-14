@@ -104,7 +104,7 @@ impl Checkpoint {
                     GType::BF16 => (DType::BF16, None),
                     GType::Q8_0 | GType::Q4K | GType::Q6K => (DType::U8, Some(e.ty)),
                 };
-                // stable-diffusion.cpp's converter keeps ComfyUI's `model.diffusion_model.` in front of every name
+                // a GGUF converted from a ComfyUI checkpoint keeps its `model.diffusion_model.` in front of every name
                 let name = e.name.strip_prefix("model.diffusion_model.").unwrap_or(&e.name).to_string();
                 (name.clone(), Entry { name, dtype, shape: e.shape, offset: e.offset, bytes: e.bytes, kquant })
             })

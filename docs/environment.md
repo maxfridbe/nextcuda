@@ -17,14 +17,12 @@ an engine as `llm <arch>` / `image <arch>` / `audio <arch>` / `video <arch>`, `k
 
 ## nextcuda's own (phase 1)
 
-What the image engines read (the `NC_SD_*` rows: Qwen-Image 2512 through stable-diffusion.cpp). (Everything below that mentions SYCL, Arc or the kernel libraries is
+What the image engines read. (Everything below that mentions SYCL, Arc or the kernel libraries is
 nextsycl's, kept until phase 2 replaces it.)
 
 | Variable | Default | What it does | Read by |
 |---|---|---|---|
-| `NC_SD_OFFLOAD` | 1 | 0: the weights on the card; 1: in host memory, staged to the card per graph (`--opt-offload`) | image qwenimage21 |
-| `NC_SD_MAX_VRAM` | what the card has free | GiB of card memory the weights and buffers may take (`--opt-max-vram`) | image qwenimage21 |
-| `NC_SD_ARGS` | none | the bridge's own, `k=v;...`: threads=N, flash_attn=0\|1, vae_tiling=0\|1 (`--opt-sd-args`) | image qwenimage21 |
+| `NC_Q2512_RESERVE_GIB` | 3.5 | card memory Qwen-Image 2512 keeps for its activations and VAE when its transformer's blocks are placed; the blocks past it stream from pinned host memory each step (`--opt-reserve`) | image qwenimage21 |
 | `NC_FLASHVSR_SPLIT` | 17,13 on two cards, 30 on one | the FlashVSR DiT's 30 blocks over the model's cards, in order (`--opt-split`); the first card also holds the LQ projection | image flashvsr |
 | `NC_FLASHVSR_DECODER` | first | the card FlashVSR's decoder runs on: first or last of the model's cards (`--opt-decoder`) | image flashvsr |
 | `NC_FLASHVSR_PROFILE` | 0 | 1: FlashVSR waits for its cards at each stage and logs where a clip's time went | image flashvsr |
@@ -42,7 +40,7 @@ nextsycl's, kept until phase 2 replaces it.)
 |---|---|---|---|
 | `CUDA_DEVICE_ORDER` | PCI_BUS_ID (set by the program when unset) | how CUDA numbers the GPUs: nvidia-smi's order, not fastest first | runtime (every kind) |
 | `NEXTCUDA_LIB` | the copy inside the binary, else the library beside the executable | the kind's kernel library to load (a `libnextcuda-<kind>.so` path; set, the copy inside the binary is not used) | runtime (every kind) |
-| `NS_LIB_FROM_DISK` | unset: the kernel libraries are read from inside the binary (when it was built with them: `tooling/deploy.sh` with `EMBED=1`) | `1`: open `libnextcuda-<kind>.so` and `libstable-diffusion.so` from the files beside the executable instead (rebuild a kernel without relinking the program) | runtime (every kind), cli |
+| `NS_LIB_FROM_DISK` | unset: the kernel libraries are read from inside the binary (when it was built with them: `tooling/deploy.sh` with `EMBED=1`) | `1`: open `libnextcuda-<kind>.so` from the files beside the executable instead (rebuild a kernel without relinking the program) | runtime (every kind), cli |
 | `NS_WFE_FROM_DISK` | unset: the front ends are read from inside the binary | `1`: read the pages and modules from `dist/wfe` instead of the embedded copy (edit a page and reload, no rebuild) | serve, studio, image/audio/model3d servers, cli |
 
 ### Build
@@ -64,8 +62,6 @@ nextsycl's, kept until phase 2 replaces it.)
 | `NS_LIB_DIST` | `dist/` beside the repository (where the GPU host's build puts them; empty on a build machine) | build time: the directory `crates/sys/build.rs` embeds the kernel libraries from (`build.sh` passes it into its container: a path under the repository, as `/build/...`) | build |
 | `NS_WFE_DIST` | `dist/wfe` beside the repository | build time: the directory `glue/serve/build.rs` embeds into the binary (`build.sh` builds it first) | build |
 | `CARGO_MANIFEST_DIR`, `OUT_DIR` | set by cargo | where `glue/serve/build.rs` and `crates/sys/build.rs` find the repository and write the lists of embedded files | build |
-| `SDCPP` | ~/stable-diffusion.cpp | the stable-diffusion.cpp source tree (its headers) | build (kernels) |
-| `SDLIB` | ~/nextcuda/src/sdcpp-build | its shared build (`libstable-diffusion.so`) | build (kernels) |
 
 ## Runtime and paths
 

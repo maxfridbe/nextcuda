@@ -43,6 +43,9 @@ pub struct GgufTextEncoder {
     layers: usize,
     theta: f64,
     eps: f32,
+    /// Qwen3's per-head norms of q and k (Qwen2.5 has none, and biases on q k v instead)
+    qk_norm: bool,
+    qkv_bias: bool,
     /// the layers' bytes once read, in host memory (`NC_TE_HOST_CACHE=0`: read from the file each time): the encoder
     /// is streamed to the card for every prompt, and a read of 5 GB costs more than the copy
     cache: Option<Mutex<HashMap<String, Arc<Vec<u8>>>>>,
@@ -61,8 +64,9 @@ impl GgufTextEncoder {
         let t0 = std::time::Instant::now();
         let file = Gguf::open(path).map_err(ge)?;
         let arch = file.architecture().to_string();
-        if arch != "qwen3vl" && arch != "qwen3" {
-            return Err(Error(format!("{}: a {arch} model, not Qwen3-VL", path.display())));
+        // Qwen2.5-VL's language model too (Qwen-Image 2512's encoder): biases on q k v, no per-head norms
+        if arch != "qwen3vl" && arch != "qwen3" && arch != "qwen2vl" {
+            return Err(Error(format!("{}: a {arch} model, not Qwen3-VL or Qwen2.5-VL", path.display())));
         }
         let geti = |k: &str| -> Result<usize> {
             file.arch_meta(k).and_then(|v| v.as_u64()).map(|v| v as usize).ok_or_else(|| Error(format!("{}: no {arch}.{k}", path.display())))
@@ -76,7 +80,9 @@ impl GgufTextEncoder {
         let theta = getf("rope.freq_base", 5_000_000.0);
         let eps = getf("attention.layer_norm_rms_epsilon", 1e-6) as f32;
         let tok = Tokenizer::from_gguf(&file).map_err(Error)?;
-        log(format!("qwen3vl text encoder (GGUF): {layers} layers, {hidden} wide, {heads} / {kv_heads} heads, {ffn} ffn; {:.1} s", t0.elapsed().as_secs_f64()));
+        let qk_norm = file.tensor("blk.0.attn_q_norm.weight").is_some();
+        let qkv_bias = file.tensor("blk.0.attn_q.bias").is_some();
+        log(format!("{arch} text encoder (GGUF): {layers} layers, {hidden} wide, {heads} / {kv_heads} heads, {ffn} ffn; {:.1} s", t0.elapsed().as_secs_f64()));
         Ok(GgufTextEncoder {
             file,
             tok,
@@ -88,6 +94,8 @@ impl GgufTextEncoder {
             layers,
             theta,
             eps,
+            qk_norm,
+            qkv_bias,
             cache: (std::env::var("NC_TE_HOST_CACHE").map_or(true, |v| v != "0")).then(|| Mutex::new(HashMap::new())),
         })
     }
@@ -168,6 +176,16 @@ impl GgufTextEncoder {
         self.encode_layers(nsd, ids, self.layers)
     }
 
+    /// The hidden state after the last layer and the final norm (`output_norm`: what transformers' hidden_states[-1]
+    /// is, and Qwen-Image's pipeline takes): float32 [S, hidden] on the card
+    pub fn encode_normed(&self, nsd: &Nsd, ids: &[u32]) -> Result<DevBuf> {
+        let x = self.encode_ids(nsd, ids)?;
+        let w = self.vector("output_norm.weight")?;
+        nsd.rms_norm_mod(x.ptr(), Dt::F32, ids.len(), self.hidden, w.ptr(), self.eps, none(), none(), none(), x.ptr(), Dt::F32)?;
+        nsd.wait()?;
+        Ok(x)
+    }
+
     /// The hidden state after the first `n` layers
     pub fn encode_layers(&self, nsd: &Nsd, ids: &[u32], n: usize) -> Result<DevBuf> {
         self.encode_seen(nsd, ids, &[], n)
@@ -234,6 +252,9 @@ impl GgufTextEncoder {
         for ((st, len), v) in runs.iter().zip(seen) {
             x.copy_within(st * d * 4, &v.tokens, 0, len * d * 4)?;
         }
+        if !seen.is_empty() && !self.qk_norm {
+            return Err(Error("pictures in the prompt are read by Qwen3-VL's encoder only (this is Qwen2.5-VL's)".into()));
+        }
         let pos: Vec<[i64; 3]> = if seen.is_empty() {
             (0..s as i64).map(|p| [p, p, p]).collect()
         } else {
@@ -260,18 +281,26 @@ impl GgufTextEncoder {
         for l in 0..n.min(self.layers) {
             let p = format!("blk.{l}.");
             let (in_norm, post_norm) = (self.vector(&format!("{p}attn_norm.weight"))?, self.vector(&format!("{p}ffn_norm.weight"))?);
-            let (q_norm, k_norm) = (self.vector(&format!("{p}attn_q_norm.weight"))?, self.vector(&format!("{p}attn_k_norm.weight"))?);
             nsd.rms_norm_mod(x.ptr(), Dt::F32, s, d, in_norm.ptr(), self.eps, none(), none(), none(), hb.ptr(), Dt::F16)?;
             let mut off = 0;
             for name in ["attn_q", "attn_k", "attn_v"] {
                 let w = self.matrix(&format!("{p}{name}.weight"))?;
-                nsd.linear_q(hb.ptr(), Dt::F16, s, d, w.buf.ptr(), w.qtype, w.rows, none(), half_at(&qkv, off), Dt::F16, qkv_w)?;
+                let bias = if self.qkv_bias { Some(self.vector(&format!("{p}{name}.bias"))?) } else { None };
+                nsd.linear_q(hb.ptr(), Dt::F16, s, d, w.buf.ptr(), w.qtype, w.rows, bias.as_ref().map_or(none(), |b| b.ptr()), half_at(&qkv, off), Dt::F16,
+                             qkv_w)?;
                 off += w.rows;
                 // the weights are freed when `w` goes: the work on them first
                 nsd.wait()?;
             }
-            nsd.rms_rope(qkv.ptr(), Dt::F16, s, h, HEAD, qkv_w, q_norm.ptr(), self.eps, cs.ptr(), HEAD)?;
-            nsd.rms_rope(half_at(&qkv, h * HEAD), Dt::F16, s, kv, HEAD, qkv_w, k_norm.ptr(), self.eps, cs.ptr(), HEAD)?;
+            if self.qk_norm {
+                let (q_norm, k_norm) = (self.vector(&format!("{p}attn_q_norm.weight"))?, self.vector(&format!("{p}attn_k_norm.weight"))?);
+                nsd.rms_rope(qkv.ptr(), Dt::F16, s, h, HEAD, qkv_w, q_norm.ptr(), self.eps, cs.ptr(), HEAD)?;
+                nsd.rms_rope(half_at(&qkv, h * HEAD), Dt::F16, s, kv, HEAD, qkv_w, k_norm.ptr(), self.eps, cs.ptr(), HEAD)?;
+                nsd.wait()?;
+            } else {
+                nsd.rope(qkv.ptr(), Dt::F16, s, h, HEAD, qkv_w, cs.ptr(), HEAD)?;
+                nsd.rope(half_at(&qkv, h * HEAD), Dt::F16, s, kv, HEAD, qkv_w, cs.ptr(), HEAD)?;
+            }
             nsd.attention_causal(qkv.ptr(), half_at(&qkv, h * HEAD), half_at(&qkv, (h + kv) * HEAD), Dt::F16, s, h, kv, HEAD, qkv_w, qkv_w, att.ptr())?;
             {
                 let w = self.matrix(&format!("{p}attn_output.weight"))?;

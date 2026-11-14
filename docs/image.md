@@ -1,7 +1,6 @@
 # Pictures, designs, upscaling and vectors
 
-The image kind (Qwen-Image 2.1 on the Rust + CUDA engine, 2512 still through stable-diffusion.cpp's ggml-cuda) and the
-models that sit beside it. Settings: [environment.md](environment.md); the models: [models.md](models.md).
+The image kind (Qwen-Image 2.1 and 2512 on Rust + CUDA engines) and the models that sit beside it. Settings: [environment.md](environment.md); the models: [models.md](models.md).
 
 ## Qwen-Image
 
@@ -12,22 +11,26 @@ models that sit beside it. Settings: [environment.md](environment.md); the model
   stable-diffusion.cpp and the phase 1 sd-cli worker are gone from it (2026-11-13).
 - **2048 x 2048 on a 12 GB card:** the feed-forward runs 4,096 rows at a time, the kernels' scratch is let go between
   the stages, an edit's text and picture prefix spills to host memory when the card has not the room, and the VAE's
-  up path runs in tiles of 64 latents with a 14-latent margin (its reach: the pixels are the whole picture's) above
-  1024 x 1024. An edit of one picture at 2048 x 2048 peaks at 11.0 GiB on the 3060 (41 s a guided step there).
+  up path runs in tiles of 64 latents with a 14-latent margin (its reach) above 1024 x 1024 - within one level of the
+  whole picture's (the products' rounding). An edit of one picture at 2048 x 2048 peaks at 11.0 GiB on the 3060 (41 s
+  a guided step there); through the front door on the 5070, 12 steps took 199 s, peak 10.4 GiB.
 - **Out of card memory is `no_room`:** a picture the card has not the room for (a model loaded beside it, a size
   too big for what is free) answers 503 `no_room`, retryable - the front door frees idle work on the card and tries
   again - not a 400; a load that does not fit says so the same way.
 - **Transparency (2.1, `background: "transparent"`):** the model card's phrase goes around the prompt, and the alpha
-  is the VAE's fourth channel. (stable-diffusion.cpp needed `kernels/image/sd/sdcpp-vae-precision.patch` for it - its
+  is the VAE's fourth channel. (stable-diffusion.cpp, removed since, needed a patch of upstream PR #2043 for it - its
   half VAE convolutions overflowed into opaque white blocks, sd.cpp#2024; the Rust engine's convolutions were never
   affected.) The models list `rgba`.
-- **Qwen-Image 2512:** text to image and img2img. Under 20 steps the Lightning LoRA runs (4 steps, guidance 1); at 20
-  or more it is bypassed for a full guided run - the platform's effort ladder, so an engine behind it behaves as
-  the one it replaces.
-- **A 12 GB card is enough:** the weights stay in host memory and are staged to the card per graph
-  (`NC_SD_OFFLOAD`, `NC_SD_MAX_VRAM`); the text encoder, the transformer and the VAE take turns.
-- **Community GGUFs are accepted as they are:** a file that stores `img_in.weight` reshaped (realrebelai's does) gets
-  a corrected copy made once beside it; your file is not changed.
+- **Qwen-Image 2512:** text to image and img2img (`image/qwenimage21/src/q2512/`, 2026-11-13). Under 20 steps the
+  Lightning LoRA runs (4 steps, guidance 1, the sigmas shifted by 3); at 20 or more it is bypassed for a full guided
+  run (30 steps by default, guidance 4, the size's dynamic shift) - the platform's effort ladder. The 20B MMDiT keeps
+  its matrices in the GGUF's types; the blocks that fit beside 3.5 GiB of activations (`NC_Q2512_RESERVE_GIB`) stay
+  on the card, the rest are copied in from pinned host memory each step (a guided step's two passes share the copy).
+  Qwen2.5-VL 7B (the text encoder) streams a layer at a time from its GGUF; the Wan 2.1 VAE in half, its up path
+  tiled above 1024 x 1024. Qwen-Image's activations pass half's range (the text stream's reach 1e9): the linears
+  write float32, fc2 reads bfloat16, and v enters the half attention scaled by 1/64 (the output linears undo it).
+- **Community GGUFs are accepted as they are:** realrebelai's 2.1 Q4 stores `img_in.weight` reshaped; the Rust engine
+  reads it as it is (stable-diffusion.cpp needed a corrected copy, `Qwen-Image-2.1-Q4.nc.gguf`, no longer used).
 - **Progress and cancel:** every step is reported as it is made and a cancel stops the step in progress.
 - **Energy and timing in the answer:** `nextsycl.seconds`, `steps`, `seed` come back in each result (the key keeps
   nextsycl's name: the platform reads it).
@@ -74,13 +77,11 @@ the encoder is the fix). [`PHASES.md`](PHASES.md) has the history of the numbers
 
 | option | variable | |
 |---|---|---|
-| `--opt-offload 0\|1` | `NC_SD_OFFLOAD` | weights in host memory, staged per graph (default 1) |
-| `--opt-max-vram GiB` | `NC_SD_MAX_VRAM` | the card memory the weights and buffers may take |
-| `--opt-sd-args k=v;...` | `NC_SD_ARGS` | `threads=N`, `flash_attn=0\|1`, `vae_tiling=0\|1` |
+| `--opt-reserve GiB` | `NC_Q2512_RESERVE_GIB` | 2512: the card memory kept for activations when its blocks are placed (default 3.5) |
 | `--opt-int8 0\|1` | `NS_QI_INT8` | 2.1: the DiT's block matrices as int8 ConvRot (the card's int8 tensor cores) |
 | `--opt-sigmas 1,X,...` | `NS_QI_SIGMAS` | 2.1: a few-step model's own noise levels |
 
-The `NC_SD_*` options are Qwen-Image 2512's (stable-diffusion.cpp).
+stable-diffusion.cpp was removed on 2026-11-13; its rows in the clocks above are kept as the history they were.
 
 ## P-H3-Image: text to image and edits on MiniMax H3
 

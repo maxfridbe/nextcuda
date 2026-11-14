@@ -5,7 +5,6 @@
 ```
 kernels/ns            the C ABI (GPUs, memory, streams, copies) on CUDA - nextsycl's ns.h, the same functions
 kernels/image/qwenimage21   the engine's own kernels (qi21.cu)
-kernels/image/sd      a flat C ABI over stable-diffusion.cpp's ggml-cuda: one loaded model, progress, cancel
 crates/core           the safe layer over libnextcuda-<kind>.so (host-memory fallback without it)
 image/qwenimage21     the engines: Qwen-Image 2.1 and 2512 behind nextcuda-image's contract
 kernels/llm/nemotronh, llm/nemotronh   Nemotron-H: Mamba-2, attention and Strata's i-quant products (CUDA), the

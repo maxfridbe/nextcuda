@@ -1,16 +1,16 @@
 # Qwen-Image 2512 Q4_K_M (text to image; img2img; a distilled 4-step LoRA below 20 steps)
 # model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets.
-# Files are stable-diffusion.cpp's: the GGUF transformer, Qwen2.5-VL as a GGUF, the VAE; the Lightning LoRA is the
-# distilled path (a request under 20 steps), a full guided run above it.
+# Files: the GGUF transformer, Qwen2.5-VL as a GGUF, the VAE; the Lightning LoRA is the distilled path (a request under
+# 20 steps), a full guided run above it. The Rust engine keeps the blocks that fit on the card, the rest stream.
 id: qwen-image-2512-q4km
 kind: image
 arch: qwen-image-2512
 license: apache-2.0
 commercial: true
 title: 'Qwen-Image 2512 Q4_K_M (20B MMDiT, Qwen2.5-VL; Lightning 4-step LoRA below 20 steps)'
-about: 'Qwen-Image-2512 as unsloth''s Q4_K_M GGUF (13.2 GB, streamed from host memory on a 12 GB card), the Qwen2.5-VL 7B text encoder as Q4_K_M, the 16-channel VAE, and lightx2v''s Lightning 4-step LoRA'
+about: 'Qwen-Image-2512 as unsloth''s Q4_K_M GGUF (13.2 GB: the blocks that fit on a 12 GB card, the rest streamed from host memory each step), the Qwen2.5-VL 7B text encoder as Q4_K_M, the 16-channel VAE, and lightx2v''s Lightning 4-step LoRA'
 gpus: '0'
-vram_gib: 9.0                     # with the weights offloaded to host RAM and staged per graph
+vram_gib: 10.0                    # the blocks that fit beside 3.5 GiB of activations (NC_Q2512_RESERVE_GIB); the rest stream from host RAM
 defaults:
   steps: 30
   cfg: 4.0

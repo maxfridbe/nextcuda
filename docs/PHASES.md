@@ -49,12 +49,22 @@ NVIDIA behind it instead of SYCL. The platform talks to it with the same `/rpc/<
   worker are gone from it; masks ported (the last picture, a sentence in the prompt), the canvas of an edit from the
   last picture that is not the mask. 2048 x 2048 fits a 12 GB card: the feed-forward in 4,096-row slices, the kernels'
   scratch freed between stages (`nsd_trim`), the VAE's up path in 64-latent tiles with a 14-latent margin above
-  1024 x 1024 (the same pixels). An edit of one picture to 2048 x 2048, guided, on the 3060: 41 s a step, peak
+  1024 x 1024 (within one level of the whole picture's: the products' rounding). An edit of one picture to 2048 x 2048, guided, on the 3060: 41 s a step, peak
   11.0 GiB (it was refused before: a 256 MiB allocation short). Out of card memory anywhere in the image server -
   the engine's allocations, the kernels' scratch ("did not fit in memory"), cuBLAS's workspace, a load beside other
   work - is answered 503 `no_room` (retryable), never a 400.
-- **Not done:** `image check` stage dumps (no reference dumps exist for CUDA), the Rust engine for Qwen-Image-2512
-  (still stable-diffusion.cpp), int8 at the quality nextsycl documents (30.4 dB PSNR against half here, about 39 dB
+- **Qwen-Image 2512 in Rust (2026-11-13):** `image/qwenimage21/src/q2512/` - the 60-block MMDiT in the GGUF's
+  types (Q4_K_M: 33 blocks on a 12 GB card, the other 27 copied from pinned host memory each step), Qwen2.5-VL 7B from
+  its GGUF (`crates/qwen3vl`'s encoder now reads Qwen2.5's biases and plain RoPE, and its final norm), the Wan 2.1
+  VAE, Lightning below 20 steps. nextsycl has no 2512 engine to port: written from diffusers' QwenImage pipeline and
+  stable-diffusion.cpp's qwen_image.hpp. Its activations pass half's range (the text stream reaches 1e9; v in the
+  late blocks passes 65,504): float32 linear outputs, bfloat16 into fc2, v scaled by 1/64 into the half attention.
+  Checked against stable-diffusion.cpp's pictures (same prompts and seed; the two draw their noise differently, so
+  the scenes differ): the same subjects, composition quality and text ("OPEN" sign) - see the table below.
+- **stable-diffusion.cpp removed (2026-11-13):** `src/sd.rs`, `native.rs`, `gguffix.rs`, `kernels/image/sd/`, the
+  sd.cpp link in `kernels/build.sh` and `crates/sys`, `libstable-diffusion.so` from deploy. Its rows in the tables
+  here and in image.md are history.
+- **Not done:** `image check` stage dumps (no reference dumps exist for CUDA), int8 at the quality nextsycl documents (30.4 dB PSNR against half here, about 39 dB
   there; the picture looks right, the cause is not found), attention at nextsycl's ~110 TFLOPS (ldmatrix and
   cp.async not used yet, about 50 now).
 
@@ -69,7 +79,18 @@ NVIDIA behind it instead of SYCL. The platform talks to it with the same `/rpc/<
 Peak GPU memory with int8: 9.5 GB (768) and 10.6-11.1 GB (1024): close to the 12 GB limit. Edit with references:
 45 s (sd.cpp 89 s); turbo LoRA at 4 steps 5.4 s. Matrices: `benchy-results/image-v1-5070-rust2` and `-rust-int8`.
 
-## Clocks (RTX 5070 12 GB, in process through stable-diffusion.cpp, 2026-10-15)
+### Qwen-Image 2512 Q4_K_M, Rust against stable-diffusion.cpp (RTX 3060 12 GB, PCIe x1, 1024 x 1024, seed 7, 2026-11-13)
+
+| run | stable-diffusion.cpp | Rust | peak GPU memory (sd.cpp / Rust) |
+|---|---:|---:|---:|
+| Lightning, 4 steps (fox) | 177.9 s | 60.9 s (8.45 s a step) | 11.2 / 9.4 GB |
+| Lightning, 4 steps (lighthouse with an OPEN sign) | 167.6 s | 59.5 s | 11.2 / 9.4 GB |
+| full, 20 steps guided (fox) | 356.5 s | 265.7 s (11.95 s a step) | 11.4 / 8.0 GB |
+
+The picture after the load; the load itself (13.2 GB from the HDD) is about 100 s for both. On the 3060's x1 link
+most of a Lightning step is the 27 streamed blocks (5.9 GB); the 5070's x16 link moves them about 10x faster.
+
+## Clocks (RTX 5070 12 GB, in process through stable-diffusion.cpp - removed since, 2026-10-15)
 
 | model | picture | text encoder | sampler | VAE | total |
 |---|---|---|---|---|---|
