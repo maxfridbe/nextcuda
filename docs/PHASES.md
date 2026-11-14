@@ -87,6 +87,9 @@ Peak GPU memory with int8: 9.5 GB (768) and 10.6-11.1 GB (1024): close to the 12
 | Lightning, 4 steps (lighthouse with an OPEN sign) | 167.6 s | 59.5 s | 11.2 / 9.4 GB |
 | full, 20 steps guided (fox) | 356.5 s | 265.7 s (11.95 s a step) | 11.4 / 8.0 GB |
 
+Through the front door on the 5070 (x16): Lightning 4 steps at 1024 x 1024 31.1 s, peak 9.0 GiB; full 20 steps
+guided at 1328 x 1328 172.8 s (8.6 s a step), peak 8.7 GiB; Qwen-Image 2.1 Q8_0 12 steps at 1024 x 1024 32.9 s.
+
 The picture after the load; the load itself (13.2 GB from the HDD) is about 100 s for both. On the 3060's x1 link
 most of a Lightning step is the 27 streamed blocks (5.9 GB); the 5070's x16 link moves them about 10x faster.
 
