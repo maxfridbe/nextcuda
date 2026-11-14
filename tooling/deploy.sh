@@ -17,7 +17,9 @@ RSYNC=(rsync -a -e "ssh -o BatchMode=yes")
 quiet() { grep -v 'alacritty\|^\]11\|snapshot' || true; }
 # the kernel sources to the host and (unless SKIP_KERNELS) the libraries built there
 kernels() {
-  "${RSYNC[@]}" --delete kernels/ "$HOST":nextcuda/src/kernels/ 2>&1 | quiet
+  # by content, a changed file stamped now: the build there compares a source's time with its object's, and this
+  # tree's times are older than objects built there since (a changed qi21.cu was taken as built, 2026-11-13)
+  "${RSYNC[@]}" --checksum --no-times --delete kernels/ "$HOST":nextcuda/src/kernels/ 2>&1 | quiet
   if [ -z "${SKIP_KERNELS:-}" ]; then
     echo "==> $HOST: kernels"
     "${SSH[@]}" 'export PATH=/usr/local/cuda/bin:$PATH; cd ~/nextcuda/src/kernels && OUT=$HOME/nextcuda/dist OBJ=$HOME/nextcuda/src/obj ./build.sh 2>&1 | tail -8' 2>&1 | quiet
