@@ -102,6 +102,11 @@ curl -s http://127.0.0.1:8085/v1/chat/completions -H 'content-type: application/
   (`NS_PROMPT_CACHE_MIB`, the card's 2048) and then on disk (`NS_CACHE_DIR`, default `~/.cache/nextcuda/prompts`).
   A request that shares a system prompt or continues a chat reads only what is new: measured, a 1,314-token prompt
   read in 18.1 s the first time took 2.1 s the second.
+- **The products** (`kernels/llm/nemotronh/nh_iq.cu`, nextcuda's own since 2026-11-13; Strata's kernels before): every
+  type is read through one form (`nh_blocks.cuh`: a 32-value piece as int8 and its halves' scales and offsets), the
+  decode products 1-8 columns, a layer's experts in one launch. Against Strata's on the file's tensors: expansions to
+  half / float bit for bit, products within 3e-5 of the largest value; from DRAM on the 5070 Q6_K 13-41 % faster, Q8_0,
+  Q4_K, Q5_K and the experts' types the same, 4-8 columns 1.5-3x faster.
 - **The expert profile** (`expert-profile.txt` beside the model): which experts decode asked for. The next start fills
   VRAM and the pinned cache by it, so the first runs of a new topic are slower than later ones.
 - **Memory:** `NS_NH_PINNED_GIB` is the biggest knob (the card sets 22; 25 is faster but leaves the 31 GB box little

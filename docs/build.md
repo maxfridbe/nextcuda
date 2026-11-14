@@ -7,8 +7,9 @@ kernels/ns            the C ABI (GPUs, memory, streams, copies) on CUDA - nextsy
 kernels/image/qwenimage21   the engine's own kernels (qi21.cu)
 crates/core           the safe layer over libnextcuda-<kind>.so (host-memory fallback without it)
 image/qwenimage21     the engines: Qwen-Image 2.1 and 2512 behind nextcuda-image's contract
-kernels/llm/nemotronh, llm/nemotronh   Nemotron-H: Mamba-2, attention and Strata's i-quant products (CUDA), the
-                      engine behind nextcuda-llm's contract (llm/contract), its expert cache and reader threads
+kernels/llm/nemotronh, llm/nemotronh   Nemotron-H: Mamba-2, attention and the products from the stored blocks
+                      (nh_iq.cu on the block reader nh_blocks.cuh, every GGUF type the engines' files hold), the engine
+                      behind nextcuda-llm's contract (llm/contract), its expert cache, reader threads and CPU experts
 glue/serve, glue/models, cli/nextcuda    the control plane, the registry and the program, as nextsycl's
 ```
 

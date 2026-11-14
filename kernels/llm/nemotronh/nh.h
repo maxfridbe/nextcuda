@@ -2,7 +2,8 @@
  * C ABI, bound by its crate by name (llm/nemotronh/src/ffi.rs). Float32 activations, row-major, all queued on the GPU's
  * stream; 0, or -1 with the reason in ns_last_error. After llama.cpp's src/models/nemotron-h.cpp and nextsycl's
  * kernels/llm/nemotronh/nh.cpp (the same names and arguments; plain kernels first, tuned ones when it works). The
- * products from the stored blocks are Strata's (third_party/strata/iq_kernels.cu, MIT) and ggml-cuda's. */
+ * products from the stored blocks are nh_iq.cu's, on the block reader nh_blocks.cuh (every GGUF type the engines'
+ * files hold; Strata's kernels, vendored here until 2026-11-13, are gone). */
 #ifndef NS_NH_H
 #define NS_NH_H
 #include <stddef.h>
@@ -57,7 +58,7 @@ int ns_nh_to_half(ns_gpu* g, const float* x, void* y, int64_t n);
 int ns_nh_gather_half(ns_gpu* g, const float* x, const int32_t* rows, void* out, int64_t K, int64_t n);
 /* Y [m][n] (float32) = X [m][k] . W [n][k]^T, W and X half, row-major (cuBLAS, tensor cores) */
 int ns_nh_gemm_f16(ns_gpu* g, const void* W, const void* X, float* Y, int64_t m, int64_t n, int64_t k);
-/* n values of a tensor of an i-quant / Q2_0 / Q2_K / Q6_K / ... type to half (n a multiple of 256) */
+/* n values of a tensor of any type the products take to half (n whole blocks of the type) */
 int ns_nh_dequant_f16(ns_gpu* g, int type, const void* src, int64_t n, void* dst);
 
 /* a GGUF type's row bytes for n values (0: not one the products take) */

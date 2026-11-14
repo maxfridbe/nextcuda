@@ -21,7 +21,7 @@ GEN=()
 last=
 for a in $ARCHS; do GEN+=(-gencode "arch=compute_$a,code=sm_$a"); last=$a; done
 GEN+=(-gencode "arch=compute_$last,code=compute_$last")      # PTX of the newest: a newer card JITs it
-FLAGS=(-std=c++17 -O3 --use_fast_math -Xcompiler -fPIC -lineinfo "${GEN[@]}" -Ins -Ins -Idiffusion -Illm/nemotronh -Illm/qwen35 -Illm/nemotronh/third_party -Illm/nemotronh/third_party/ggml)
+FLAGS=(-std=c++17 -O3 --use_fast_math -Xcompiler -fPIC -lineinfo "${GEN[@]}" -Ins -Ins -Idiffusion -Illm/nemotronh -Illm/qwen35)
 # --use_fast_math is not on for the numerics that must match a reference: a source names its own flags below
 precise() { case "$1" in diffusion/*|llm/*|audio/*|model3d/skintokens/*|model3d/unimate/*|video/ltx2/*|image/rembg/*) return 0 ;; esac; return 1; }
 
@@ -40,7 +40,10 @@ compile() {
     precise "$f" && [ "$a" = "--use_fast_math" ] && continue
     fl+=("$a")
   done
-  if [ ! -f "$o" ] || [ "$f" -nt "$o" ] || [ ns/ns_internal.hpp -nt "$o" ]; then
+  # an LLM source also when a header of the LLM kernels changed (nh_blocks.cuh is the block reader of both engines)
+  hdr=
+  case "$f" in llm/*) hdr=$(find llm -name '*.cuh' -newer "$o" 2>/dev/null | head -1) ;; esac
+  if [ ! -f "$o" ] || [ "$f" -nt "$o" ] || [ ns/ns_internal.hpp -nt "$o" ] || [ -n "$hdr" ]; then
     "$NVCC" "${fl[@]}" -c "$f" -o "$o" && echo "ok   $f" || { echo "FAIL $f"; return 1; }
   else echo "cached $f"; fi
 }
