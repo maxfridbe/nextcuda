@@ -231,6 +231,7 @@ Qwen3.8-27B dense (`llm/qwen35`, its silo `kernels/llm/qwen35/silo`).
 | `NS_NH_BORROW` | 1 | 0: a long prompt does not borrow VRAM from the hot experts' tail for its passes (it then keeps only NS_NH_RESIDENT_ROWS a pass) | llm nemotronh |
 | `NS_NH_COPY_BATCH` | 1 | 0: a layer's staging copies one by one, not in one ns_stream_copy_batch (cudaMemcpyBatchAsync) when the core library has it | llm nemotronh |
 | `NS_NH_COPY_LANE` | 1 | 0: decode's staging copies on the GPU's stream rather than copy lane 1 (so the experts already in VRAM no longer multiply meanwhile) | llm nemotronh |
+| `NS_NH_MMVQ` | per card | Experiment: the decode products' shape as R,KS (rows a warp group, warps splitting K: one of 1,1 1,4 2,1 2,2 2,4 4,1 4,2), for every matrix and row count (default: the per-card table in `nh_iq.cu`) | kernels:llm |
 | `NS_NH_CPU` | 1 | 0: the CPU path for part of the pinned experts is off whatever NS_NH_CPU_FRAC says | llm nemotronh |
 | `NS_NH_CPU_FRAC` | 0 | part of each layer's pinned experts multiplied by the CPU (the engine's own products, `llm/nemotronh/src/cpu/`) instead of copied to the card, 0 to 1; measured slower than the copies over gen4 x16, so off | llm nemotronh |
 | `NS_NH_CPU_ISA` | the widest the CPU has | the widest vector path the CPU products may use: `scalar`, `avx2`, `avx512` (with AVX-512 each type takes whichever of its AVX2 and AVX-512 forms timed faster at start) | llm nemotronh |
@@ -268,7 +269,7 @@ Qwen3.8-27B dense (`llm/qwen35`, its silo `kernels/llm/qwen35/silo`).
 | `NS_Q35_KV_ROT` | 0 | 1: a quantized cache rotated (a 32-value Hadamard transform a block on keys, values and queries, the output turned back: q4_0's error a third smaller) | llm qwen35 |
 | `NS_Q35_PLAN_LOG` | 0 | Debug: 1 - the plan's room and need a GPU, and each GPU's free memory after each step of the load | llm qwen35 |
 | `NS_Q35_GRAPHS` | 1 | 0: a pipelined prompt's stages launched kernel by kernel instead of as one CUDA graph each | llm qwen35 |
-| `NS_Q35_MMVQ` | ggml | nh: the decode and verify products by the shared kernels instead of ggml-cuda's MMVQ | llm qwen35 |
+| `NS_Q35_MMVQ` | nh | ggml: the decode and verify products by ggml-cuda's MMVQ instead of nextcuda's own (`nh_iq.cu`'s, Nemotron's too) | llm qwen35 |
 | `NS_Q35_PIPE` | 1 | 0: a prompt over two GPUs a pass a chunk instead of pipelined (the first GPU on chunk k+1 beside the last on k) | llm qwen35 |
 | `NS_Q35_TILES` | 0 | 1: the prompt and verify passes' products are nextcuda's own tile products (`kernels/llm/qwen35/q35_tiles.cu`) instead of ggml-cuda's MMQ and the verify kernels - not yet as fast (1.1-1.7x MMQ's time on the 5070, 1.25-1.8x on the 3060), as close to the float64 product or closer | llm qwen35 (kernels) |
 | `NS_Q35_VQ8` | 9 (never) | the rows (2..8) from which a decode / verify pass's products are q35_vq8's (each weight block decoded once, the rows on the int8 tensor cores) for IQ3_S / IQ3_XXS / IQ4_XS matrices: one number, or one a card in the engine's order | llm qwen35 |

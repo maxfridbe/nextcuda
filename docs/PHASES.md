@@ -143,11 +143,18 @@ The goal: no third-party C or C++ in nextcuda, at run time or compiled in - next
 - **Done: Nemotron's products from the stored blocks** (`kernels/llm/nemotronh/nh_iq.cu` on `nh_blocks.cuh`,
   replacing Strata's `iq_kernels.cu` and ggml's `ggml-common.h`): expansions bit for bit, products within 3e-5 of the
   largest value; from DRAM on the 5070 the same or faster per type (Q6_K 13-41 %), several columns 1.5-3x.
-- **Not done: Qwen3.8's products** (ggml-cuda's MMQ, MMVQ and the verify products' `vecdotq.cuh`, in
-  `kernels/llm/qwen35/third_party/ggml-cuda`). nextcuda's own tile products (`q35_tiles.cu`, `NS_Q35_TILES=1`) are as
-  close to the float64 product or closer but 1.1-1.7x MMQ's time on the 5070 (1.25-1.8x on the 3060) and ~2.6x at 8-row
-  verify passes; Nemotron's decode products took Qwen's decode 6.5 % slower (MTP's 2-8-row verify passes) and are not
-  used there. The tile products overlap their reads with the tensor cores (a chunk of blocks staged by cp.async, the
-  next step's rows in registers: from 1.6-3x MMQ's time to 1.1-1.7x); where the rest goes is not profiled (the box's
-  user has no access to the GPU's counters).
+- **Done: Qwen3.8's decode and verify products** (ggml-cuda's MMVQ before): the shared `nh_iq.cu` products with rows
+  a warp group and K split over its warps, the shape per card and row count from timing; decode 60.9 tok/s, not 53.9,
+  verify passes 8-20 % shorter, the same tokens. The opt-in verify products (`q35_vq8.cu`, `NS_Q35_VQ8`) read their
+  blocks with `nh_blocks.cuh`, not `vecdotq.cuh`: the same speed or faster except IQ4_XS's 17408-long rows on the 5070
+  (125 us, not 111).
+- **Not done: Qwen3.8's prompt products** (ggml-cuda's MMQ, in `kernels/llm/qwen35/third_party/ggml-cuda`, which stays
+  for them). nextcuda's own tile products (`q35_tiles.cu`, `NS_Q35_TILES=1`) are as close to the float64 product or
+  closer but 1.2-1.7x MMQ's time on the 5070 (1.25-1.9x on the 3060). The tile products overlap their reads with the
+  tensor cores (a chunk of blocks staged by cp.async, the next step's rows in registers: from 1.6-3x MMQ's time to
+  1.1-1.7x). Tried since, by timing (no GPU counters for the box's user): without the decode the product phase alone
+  is about MMQ's whole time (IQ3_S 0.996 / 1.03 ms on the 5070), without the products the decode 0.60 ms; the sums'
+  int-to-float conversion as an integer and a float add (slower: 1.28 ms, not 1.23), the next step decoded into a
+  second buffer during this one's products, one barrier a step (no faster; Q6_K past the shared memory). The gap is
+  in the product phase's own work (fragment loads from shared memory, the per-32 scaling), not in the decode.
 

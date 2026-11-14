@@ -6,7 +6,7 @@
 //! contract, and the image engine MOSS-Image uses it as its text encoder - neither may depend on the other (CONTRIBUTING
 //! rule 3). It knows no contract: errors are `nextcuda_core::Error`, a sampler is a closure. Its kernels are
 //! `kernels/llm/qwen35/` (and the nemotronh engine's shared products), bound from the process's kernel library by name;
-//! `products` lends the decode products (ggml-cuda's MMVQ from the stored blocks) to another model of the foundation
+//! `products` lends the decode products (nextcuda's own, from the stored blocks) to another model of the foundation
 //! (qwen3vl's chat: Qwen-Image 2.1's text encoder writing).
 
 pub mod dspine;

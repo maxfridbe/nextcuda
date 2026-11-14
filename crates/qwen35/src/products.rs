@@ -1,5 +1,5 @@
 //! The decode products, lent to the foundation's other language models (qwen3vl's chat): one to eight rows times a
-//! matrix kept in its GGUF blocks on the card - ggml-cuda's MMVQ (`ns_q35_mmvq`, else nemotronh's `ns_nh_mmvq`), the
+//! matrix kept in its GGUF blocks on the card - nextcuda's own (nemotronh's `ns_nh_mmvq`; ggml-cuda's MMVQ `ns_q35_mmvq` for a type only it has), the
 //! rows first made Q8_1 (`quantize`) - and the logits' argmax. All on the GPU's own stream.
 
 use std::ffi::c_void;
@@ -37,10 +37,10 @@ pub fn quantize(gpu: &Gpu, x: *const f32, rows: usize, cols: usize, xq: *mut c_v
 pub fn mmvq(gpu: &Gpu, ty: u32, w: *const c_void, xq: *const c_void, y: *mut f32, n_in: usize, n_out: usize, rows: usize) -> Result<()> {
     let k = ffi::api()?;
     // SAFETY: arithmetic only.
-    let f = if unsafe { (k.q35_mmvq_supported)(ty as i32) } != 0 {
-        k.q35_mmvq
-    } else if unsafe { (k.mmvq_supported)(ty as i32) } != 0 {
+    let f = if unsafe { (k.mmvq_supported)(ty as i32) } != 0 {
         k.mmvq
+    } else if unsafe { (k.q35_mmvq_supported)(ty as i32) } != 0 {
+        k.q35_mmvq
     } else {
         return Err(Error(format!("mmvq: GGUF type {ty} has no decode product")));
     };

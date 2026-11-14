@@ -9,6 +9,8 @@
 #include "nh_blocks.cuh"
 
 #include <cuda_fp16.h>
+#include <cstdio>
+#include <cstdlib>
 
 namespace {
 
@@ -37,30 +39,66 @@ __global__ void q8_1_k(const float* __restrict__ x, Q8_1* __restrict__ y, int64_
     if (lane == 0) y[b].ds = __floats2half2_rn(d, sum);
 }
 
-// y [c][n_out] = row . x column c, a warp a row (4 a block of 128 threads), a lane a piece of 32 at a time
-template<int T, int NC>
+// y [c][n_out] = row . x column c: R rows a group of KS warps (4 warps a block of 128 threads), the group's warps
+// splitting K (long rows, few of them: more warps in flight), a lane a piece of 32 of each at a time - the R rows'
+// pieces decoded, then each column's Q8_1 block read once for all of them
+template<int T, int NC, int R, int KS>
 __global__ void __launch_bounds__(128) mmvq_k(const uint8_t* __restrict__ w, size_t rb, const Q8_1* __restrict__ x, float* __restrict__ y,
                                               int n_in, int n_out, int ncols) {
-    const int row = blockIdx.x * 4 + threadIdx.y;
-    if (row >= n_out) return;
+    const int ks = threadIdx.y % KS;
+    const int row0 = (blockIdx.x * (4 / KS) + threadIdx.y / KS) * R;
+    if (KS == 1 && row0 >= n_out) return;
     constexpr int spb = Fmt<T>::qk / 32;
     const int nsub = n_in / 32;
-    const uint8_t* wr = w + (size_t) row * rb;
-    float acc[NC];
+    float acc[R][NC];
 #pragma unroll
-    for (int c = 0; c < NC; ++c) acc[c] = 0.f;
-    for (int j = threadIdx.x; j < nsub; j += 32) {
-        Sub s;
-        nsq::sub<T>(wr + (size_t) (j / spb) * Fmt<T>::bytes, j % spb, s);
+    for (int r = 0; r < R; ++r)
 #pragma unroll
-        for (int c = 0; c < NC; ++c)
-            if (c < ncols) acc[c] += nsq::dot<T>(s, x[(size_t) c * nsub + j]);
+        for (int c = 0; c < NC; ++c) acc[r][c] = 0.f;
+    if (row0 < n_out)
+        for (int j = threadIdx.x + 32 * ks; j < nsub; j += 32 * KS) {
+            Sub s[R];
+#pragma unroll
+            for (int r = 0; r < R; ++r) {
+                const int row = row0 + r < n_out ? row0 + r : n_out - 1;
+                nsq::sub<T>(w + (size_t) row * rb + (size_t) (j / spb) * Fmt<T>::bytes, j % spb, s[r]);
+            }
+#pragma unroll
+            for (int c = 0; c < NC; ++c)
+                if (c < ncols) {
+                    const Q8_1 xb = x[(size_t) c * nsub + j];
+#pragma unroll
+                    for (int r = 0; r < R; ++r) acc[r][c] += nsq::dot<T>(s[r], xb);
+                }
+        }
+    if (KS == 1) {
+#pragma unroll
+        for (int r = 0; r < R; ++r)
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                const float v = warp_sum(acc[r][c]);
+                if (threadIdx.x == 0 && c < ncols && row0 + r < n_out) y[(size_t) c * n_out + row0 + r] = v;
+            }
+        return;
     }
+    // the group's partial sums through shared memory, the group's first warp adding them
+    __shared__ float part[4][R * NC];
 #pragma unroll
-    for (int c = 0; c < NC; ++c) {
-        const float v = warp_sum(acc[c]);
-        if (threadIdx.x == 0 && c < ncols) y[(size_t) c * n_out + row] = v;
-    }
+    for (int r = 0; r < R; ++r)
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const float v = warp_sum(acc[r][c]);
+            if (threadIdx.x == 0) part[threadIdx.y][r * NC + c] = v;
+        }
+    __syncthreads();
+    if (ks == 0)
+        for (int i = threadIdx.x; i < R * NC; i += 32) {
+            const int r = i / NC, c = i % NC;
+            float v = 0.f;
+#pragma unroll
+            for (int k = 0; k < KS; ++k) v += part[threadIdx.y + k][i];
+            if (c < ncols && row0 + r < n_out) y[(size_t) c * n_out + row0 + r] = v;
+        }
 }
 
 // the experts of a layer in one launch: entry j's weights at wp[j] (rows of rb bytes) . Q8_1 row xrow[j] of x
@@ -143,19 +181,65 @@ bool known(int t) { return nsq::fmt_of(t).x > 0; }
 
 unsigned blocks_for(int64_t n, int per) { return (unsigned) ((n + per - 1) / per); }
 
+// the decode products' shape for a column count: R rows a warp group, KS warps a group splitting K. Chosen by
+// timing every (R, KS) on Qwen3.8-27B's matrices (1..8 columns, from DRAM; the 5070 and the 3060): more rows a group
+// as the columns grow (each decoded piece used more), K split where the rows are long and few (ffn_down: too few
+// warps otherwise). sm_86 likes more rows and the split sooner (fewer, slower SMs). NS_NH_MMVQ=R,KS forces one
+struct Shape { int r, ks; };
+Shape mmvq_shape(int nc, int n_in, int n_out) {
+    static const Shape over = [] {
+        Shape s{0, 0};
+        if (const char* v = std::getenv("NS_NH_MMVQ")) std::sscanf(v, "%d,%d", &s.r, &s.ks);
+        return s;
+    }();
+    if (over.r > 0 && over.ks > 0) return over;
+    int dev = 0, major = 0;
+    cudaGetDevice(&dev);
+    cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+    const bool longk = n_in > n_out;
+    if (major >= 9) {
+        if (!longk) return nc == 1 ? Shape{1, 1} : nc == 2 ? Shape{2, 1} : Shape{4, 1};
+        return nc == 1 ? Shape{1, 4} : nc == 2 ? Shape{2, 4} : nc == 3 ? Shape{2, 2} : nc <= 6 ? Shape{4, 2} : Shape{4, 1};
+    }
+    if (!longk) return nc == 1 ? Shape{2, 1} : nc <= 3 ? Shape{4, 1} : nc <= 5 ? Shape{2, 2} : Shape{4, 2};
+    return nc <= 2 ? Shape{2, 4} : Shape{4, 2};
+}
+
+template<int T, int NC, int R, int KS>
+void mmvq_go(const uint8_t* w, size_t rb, const Q8_1* x, float* y, int n_in, int n_out, int nc, cudaStream_t q) {
+    mmvq_k<T, NC, R, KS><<<blocks_for(n_out, 4 / KS * R), dim3(32, 4), 0, q>>>(w, rb, x, y, n_in, n_out, nc);
+}
+
+template<int T, int NC>
+void mmvq_pick(const uint8_t* w, size_t rb, const Q8_1* x, float* y, int n_in, int n_out, int nc, cudaStream_t q) {
+    const Shape s = mmvq_shape(nc, n_in, n_out);
+    switch (s.r * 10 + s.ks) {
+        case 11: mmvq_go<T, NC, 1, 1>(w, rb, x, y, n_in, n_out, nc, q); break;
+        case 14: mmvq_go<T, NC, 1, 4>(w, rb, x, y, n_in, n_out, nc, q); break;
+        case 21: mmvq_go<T, NC, 2, 1>(w, rb, x, y, n_in, n_out, nc, q); break;
+        case 22: mmvq_go<T, NC, 2, 2>(w, rb, x, y, n_in, n_out, nc, q); break;
+        case 24: mmvq_go<T, NC, 2, 4>(w, rb, x, y, n_in, n_out, nc, q); break;
+        case 42: mmvq_go<T, NC, 4, 2>(w, rb, x, y, n_in, n_out, nc, q); break;
+        default: mmvq_go<T, NC, 4, 1>(w, rb, x, y, n_in, n_out, nc, q); break;
+    }
+}
+
 template<int T>
 void mmvq_launch(const uint8_t* w, const Q8_1* x, float* y, int n_in, int n_out, int ncols, cudaStream_t q) {
     const size_t rb = (size_t) (n_in / Fmt<T>::qk) * Fmt<T>::bytes;
-    const dim3 grid(blocks_for(n_out, 4)), block(32, 4);
     const int nsub = n_in / 32;
     for (int c0 = 0; c0 < ncols; c0 += 8) {
         const int nc = ncols - c0 < 8 ? ncols - c0 : 8;
         const Q8_1* xc = x + (size_t) c0 * nsub;
         float* yc = y + (size_t) c0 * n_out;
-        if (nc == 1) mmvq_k<T, 1><<<grid, block, 0, q>>>(w, rb, xc, yc, n_in, n_out, nc);
-        else if (nc == 2) mmvq_k<T, 2><<<grid, block, 0, q>>>(w, rb, xc, yc, n_in, n_out, nc);
-        else if (nc <= 4) mmvq_k<T, 4><<<grid, block, 0, q>>>(w, rb, xc, yc, n_in, n_out, nc);
-        else mmvq_k<T, 8><<<grid, block, 0, q>>>(w, rb, xc, yc, n_in, n_out, nc);
+        switch (nc) {
+            case 1: mmvq_pick<T, 1>(w, rb, xc, yc, n_in, n_out, nc, q); break;
+            case 2: mmvq_pick<T, 2>(w, rb, xc, yc, n_in, n_out, nc, q); break;
+            case 3: mmvq_pick<T, 3>(w, rb, xc, yc, n_in, n_out, nc, q); break;
+            case 4: mmvq_pick<T, 4>(w, rb, xc, yc, n_in, n_out, nc, q); break;
+            case 5: case 6: mmvq_pick<T, 6>(w, rb, xc, yc, n_in, n_out, nc, q); break;
+            default: mmvq_pick<T, 8>(w, rb, xc, yc, n_in, n_out, nc, q); break;
+        }
     }
 }
 

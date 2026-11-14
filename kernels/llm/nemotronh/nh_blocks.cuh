@@ -104,19 +104,35 @@ __device__ __forceinline__ int levels4(uint32_t x, const uint32_t (&t)[4]) {
     const uint32_t m = ((x >> 3) & 0x01010101u) * 0xffu;
     return (int) ((hi & m) | (lo & ~m));
 }
+// 8 level indices - the low nibbles of q's 4 bytes (x) and their high nibbles (y) - through the sixteen levels: each
+// 16-bit half of q's nibbles looked up in both halves of the table at once, the right half taken by each index's bit 3
+// (byte_perm uses only a selector nibble's low 3 bits), then the bytes put back in order
+__device__ __forceinline__ int2 levels8(uint32_t q, const uint32_t (&t)[4]) {
+    const uint32_t pick = 0x32103210u | ((q & 0x88888888u) >> 1);
+    uint32_t r[2];
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const uint32_t sel = q >> (16 * i);
+        r[i] = __byte_perm(__byte_perm(t[0], t[1], sel), __byte_perm(t[2], t[3], sel), pick >> (16 * i));
+    }
+    return make_int2((int) __byte_perm(r[0], r[1], 0x6420), (int) __byte_perm(r[0], r[1], 0x7531));
+}
 __device__ __forceinline__ void iq4nl_table(uint32_t (&t)[4]) {
     const uint32_t* w = (const uint32_t*) nsq_iq4nl_values;
     t[0] = w[0]; t[1] = w[1]; t[2] = w[2]; t[3] = w[3];
 }
 
-// the K-quants' 6-bit scale and min j of 8 (Q4_K, Q5_K)
+// the K-quants' 6-bit scale and min j of 8 (Q4_K, Q5_K), from the 12 scale bytes read as 3 words (q 4-byte aligned
+// in the block: at 4)
 __device__ __forceinline__ void scale_min_k4(const uint8_t* q, int j, int& sc, int& m) {
+    const uint32_t w0 = u32_at(q), w1 = u32_at(q + 4), w2 = u32_at(q + 8);
+    const int k = (j & 3) * 8;
     if (j < 4) {
-        sc = q[j] & 63;
-        m = q[j + 4] & 63;
+        sc = (w0 >> k) & 63;
+        m = (w1 >> k) & 63;
     } else {
-        sc = (q[j + 4] & 15) | ((q[j - 4] >> 6) << 4);
-        m = (q[j + 4] >> 4) | ((q[j] >> 6) << 4);
+        sc = ((w2 >> k) & 15) | (((w0 >> k) >> 6 & 3) << 4);
+        m = ((w2 >> k) >> 4 & 15) | (((w1 >> k) >> 6 & 3) << 4);
     }
 }
 
@@ -192,9 +208,9 @@ template<> __device__ __forceinline__ void sub<IQ4_NL>(const uint8_t* b, int, Su
     o.m0 = o.m1 = 0.f;
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
-        const uint32_t w = u32_at(b + 2 + 4 * i);
-        o.v[i] = levels4(w & 0x0f0f0f0fu, t);
-        o.v[i + 4] = levels4((w >> 4) & 0x0f0f0f0fu, t);
+        const int2 v = levels8(u32_at(b + 2 + 4 * i), t);
+        o.v[i] = v.x;
+        o.v[i + 4] = v.y;
     }
 }
 
@@ -207,9 +223,9 @@ template<> __device__ __forceinline__ void sub<IQ4_XS>(const uint8_t* b, int s, 
     o.m0 = o.m1 = 0.f;
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
-        const uint32_t w = u32_at(b + 8 + 16 * s + 4 * i);
-        o.v[i] = levels4(w & 0x0f0f0f0fu, t);
-        o.v[i + 4] = levels4((w >> 4) & 0x0f0f0f0fu, t);
+        const int2 v = levels8(u32_at(b + 8 + 16 * s + 4 * i), t);
+        o.v[i] = v.x;
+        o.v[i + 4] = v.y;
     }
 }
 
