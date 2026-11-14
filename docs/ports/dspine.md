@@ -47,8 +47,11 @@ refinement, top-k, an attention for heads of 128), `kernels/llm/qwen35/q35_vq8.c
   kernel (the four query heads of a key head x up to 8 rows = 32 queries a block, 64 keys a run, the runs merged), so no
   four-call trick.
 - **Q8_0 in MMQ**: the draft's layers are Q8_0 (made on the host at load, as nextsycl); `q35_mmq.cu` had ggml's Q8_0
-  MMQ case (since 2026-11-14 q35_tiles.cu's Q8_0 tile products), so prompt chunks' fc and k / v products run on the tensor cores (the target has no Q8_0 tensor: nothing else
-  changes).
+  MMQ case, since 2026-11-14 q35_tiles.cu's `mq_k` (MMQ's structure, x with a scale a 32 as MMQ's q8_1), so the draft's
+  16-row blocks and prompt chunks' fc and k / v products run on the tensor cores (the target has no Q8_0 tensor: nothing
+  else changes). The first own version (2229f16) sent Q8_0 to the older tile products: 1.4-4.5x MMQ's time on the
+  draft's matrices, code at 7 drafts 66.0 tok/s against MMQ's 75.2; with mq_k 71.1 (the same 68-69 ms a verify round
+  as MMQ; MMQ's build accepted more drafts on its own greedy text).
 - **Memory** (1.87 GiB of draft weights on the 5070, 0.05 on the 3060; its ring 0.31 GiB a session; a verify pass's DeltaNet
   snapshots for 7 drafts, 0.5 GiB more than MTP's 2): the plan moves target layers from the 5070 to the 3060 to make room -
   layers 0-22 on the 3060 with MTP at 80K, 0-32 with DSpine at 80K, 0-29 at 48K. More layers on the slower card make every

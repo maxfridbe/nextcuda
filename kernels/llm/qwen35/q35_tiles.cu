@@ -11,9 +11,10 @@
 // against 662, 3119 1168 against 1028, 16.6K 1343 against 1266; KL to MMQ's logits 0.00150, perplexity over 3000
 // tokens 7.5821 against 7.5747.
 //
-// Q8_0 (the DSpine draft) through the older tile products: 128 matrix rows x 64 or 128 input rows, a chunk of each
-// row's blocks staged by cp.async, each step's weights decoded into int8 and multiplied by mma m16n8k32, each 32's sum
-// scaled. 1..8 rows (a verify pass): a warp a 16-row tile over all of K, the input rows straight from their Q8_1 blocks.
+// Q8_0 (the DSpine draft's layers, made at load) through mq_k at every prompt length, x with a scale a 32 (layout 3:
+// MMQ's q8_1 numerics, each piece's sums scaled on their own as MMQ's Q8_0 case); rows not whole chunks of 256 through
+// the older tile products (128 matrix rows x 64 or 128 input rows, cp.async staging, mma m16n8k32). 1..8 rows (a
+// verify pass, opt-in): a warp a 16-row tile over all of K, the input rows straight from their Q8_1 blocks.
 #include "ns.h"
 #include "ns_internal.hpp"
 #include "q35.h"
@@ -441,6 +442,12 @@ template<> __device__ __forceinline__ void iscale<nsq::IQ4_XS>(const uint8_t* b,
     d = nsq::half_at(b); dm = 0.f;
 }
 
+// (Q8_0: its scale is a float a piece, applied in mq_k's own Q8_0 step; this only for the generic path's instantiation)
+template<> __device__ __forceinline__ void iscale<nsq::Q8_0>(const uint8_t* b, int, int& s0, int& s1, int& m0, int& m1, float& d, float& dm) {
+    s0 = s1 = 1; m0 = m1 = 0;
+    d = nsq::half_at(b); dm = 0.f;
+}
+
 // the grid types' codebooks, copied into shared memory for the decode's lookups (spread over banks there, where the
 // L1 serves a warp's scattered reads line by line); the readers as nh_blocks.cuh's, with the table passed
 template<int T> struct Grid { static constexpr int N = 0; using E = uint32_t; static __device__ const E* src() { return nullptr; } };
@@ -831,14 +838,17 @@ void kmm_go(const uint8_t* W, size_t rb, int64_t n_out, int64_t K, const uint8_t
 constexpr int MI = 128;
 __device__ __forceinline__ int swz2(int r, int k) { return r * CH + ((k ^ (r & 7)) << 4); }   // 256-byte rows
 
-template<int J, bool SUMS> struct MSt {
-    static constexpr int W = 0, WS = W + MI * CH, WM = WS + MI * 16, WD = WM + MI * 16, X = WD + MI * 8, XD = X + J * SV, XS = XD + J * 4,
+// (XN: x's scales a half - 1, a scale a 128; Q8_0's 4, a scale a 32. Q8_0's own scales, a float a piece, in WS..WD)
+template<int J, bool SUMS, int XN = 1> struct MSt {
+    static constexpr int W = 0, WS = W + MI * CH, WM = WS + MI * 16, WD = WM + MI * 16, X = WD + MI * 8, XD = X + J * SV, XS = XD + J * 4 * XN,
                          BYTES = XS + (SUMS ? J * 16 : 0);
 };
+// x's values a scale for a type in mq_k: Q8_0's 32 (its weights scaled a piece at a time anyway: MMQ's q8_1 numerics)
+template<int T> __host__ __device__ constexpr int mqg() { return T == nsq::Q8_0 ? 32 : SV; }
 // (the codebook in shared memory where it is 4 KB or less: IQ2_S's 8 KB would leave room for one block an SM)
 template<int T> __host__ __device__ constexpr bool msgrid() { return Grid<T>::N * sizeof(typename Grid<T>::E) <= 4096; }
 template<int T, int J> constexpr size_t msmem() {
-    return (size_t) MSt<J, Fmt<T>::mins != 0>::BYTES + (msgrid<T>() ? (size_t) Grid<T>::N * sizeof(typename Grid<T>::E) : 0);
+    return (size_t) MSt<J, Fmt<T>::mins != 0, SV / mqg<T>()>::BYTES + (msgrid<T>() ? (size_t) Grid<T>::N * sizeof(typename Grid<T>::E) : 0);
 }
 
 // Stream-k (mmq.cuh's mul_mat_q stream-k path and mul_mat_q_stream_k_fixup; ggml, MIT): the thread blocks share the
@@ -850,12 +860,19 @@ __global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __re
     constexpr int NT = J / 8;
     constexpr bool HV = nsq::Halves<T>::v;
     constexpr int MN = Fmt<T>::mins;
-    using S = MSt<J, MN != 0>;
+    constexpr bool Q8 = T == nsq::Q8_0;
+    constexpr int XN = SV / mqg<T>();
+    using S = MSt<J, MN != 0, XN>;
     using GE = typename Grid<T>::E;
     extern __shared__ __align__(16) uint8_t sm[];
     const GE* grid = (const GE*) (sm + S::BYTES);
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, g = lane >> 2, q = lane & 3;
     const int R0 = warp * 16;
+    // Q8_0 from 64 input rows: MMQ's mma layout (vec_dot_q8_0_q8_1_mma; ggml, MIT) - a warp 32 rows (2 m-tiles) x half
+    // the n-tiles, against 16 rows x all of them: a third less shared memory read a product. The accumulators: entry
+    // i of acc the warp's m-tile i / NTW, n-tile NB + i % NTW
+    constexpr int MW = Q8 && J >= 64 ? 2 : 1, NTW = NT / MW;
+    const int RB = (warp / MW) * 16 * MW, NB = (warp % MW) * NTW;
     uint32_t i4t[4];
     nsq::iq4nl_table(i4t);
     const int nch = K / CH, ntx = (ntok + J - 1) / J, nty = (n_out + MI - 1) / MI;
@@ -863,7 +880,7 @@ __global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __re
     int kbc = (int) ((int64_t) blockIdx.x * total / gridDim.x);
     const int kbc_stop = (int) ((int64_t) (blockIdx.x + 1) * total / gridDim.x);
     const float* xD = (const float*) (xq + (size_t) nch * tp * CH);
-    const int16_t* xS = (const int16_t*) (xD + (size_t) nch * 2 * tp);
+    const int16_t* xS = (const int16_t*) (xD + (size_t) nch * 2 * XN * tp);
     if (msgrid<T>())
         for (int i = tid; i < Grid<T>::N; i += 256) ((GE*) (sm + S::BYTES))[i] = Grid<T>::src()[i];
     else
@@ -881,19 +898,22 @@ __global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __re
 #pragma unroll
         for (int k = 0; k < 4; ++k) acc[i][k] = 0.f;
     // x a half ahead in registers: read during the products, stored after the barrier that ends them
-    constexpr int XU = (J * 8 + 255) / 256;
+    constexpr int XU = (J * 8 + 255) / 256, DU = (J * XN + 255) / 256;
     int4 xr[XU], xs4 = make_int4(0, 0, 0, 0);
-    float xd = 0.f;
+    float xd[DU];
     auto xload = [&](int c, int hh) {
 #pragma unroll
         for (int u = 0; u < XU; ++u) {
             const int i = tid + 256 * u, t = i >> 3, k = i & 7;
             if (i < J * 8) xr[u] = *(const int4*) (xq + ((size_t) c * tp + tok0 + t) * CH + hh * SV + k * 16);
         }
-        if (tid < J) {
-            xd = xD[((size_t) c * 2 + hh) * tp + tok0 + tid];
-            if (MN != 0) xs4 = *(const int4*) (xS + ((size_t) c * tp + tok0 + tid) * 16 + hh * 8);
+        // its scales [XN][J]: scale pp of the half for input row t
+#pragma unroll
+        for (int u = 0; u < DU; ++u) {
+            const int i = tid + 256 * u;
+            if (i < J * XN) xd[u] = xD[((size_t) c * 2 * XN + hh * XN + i / J) * tp + tok0 + i % J];
         }
+        if (MN != 0 && tid < J) xs4 = *(const int4*) (xS + ((size_t) c * tp + tok0 + tid) * 16 + hh * 8);
     };
     xload(c0, 0);
 #pragma unroll 1
@@ -906,7 +926,31 @@ __global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __re
         auto rowp = [&](int r) { return w + (size_t) min(row0 + r, n_out - 1) * rb + (size_t) c * Fmt<T>::bytes; };
         auto load = [&](auto al) {
             constexpr int AL = decltype(al)::value;
-            if constexpr (T == nsq::IQ4_XS || T == nsq::Q6_K) {
+            if constexpr (Q8) {
+                // load_tiles_q8_0 (ggml, MIT): a thread a (row, piece), 4 of them - the piece's 34-byte block from 4-byte
+                // words (a block starts 0 or 2 into one; the words past its end stay in the word its last bytes are
+                // in), its half scale as a float a piece. (A lane a word of a block, MMQ's own mapping, measured slower
+                // here: its 32 rows' loads in flight cost the registers of two blocks an SM)
+                (void) AL;
+#pragma unroll
+                for (int u = 0; u < 4; ++u) {
+                    const int item = tid + 256 * u, r = item >> 3, p = item & 7;
+                    const uint8_t* blk = w + (size_t) min(row0 + r, n_out - 1) * rb + (size_t) (c * 8 + p) * 34;
+                    const uint32_t* wd = (const uint32_t*) ((uintptr_t) blk & ~(uintptr_t) 3);
+                    const bool odd = ((uintptr_t) blk & 2) != 0;
+                    uint32_t v[9];
+#pragma unroll
+                    for (int k = 0; k < 9; ++k) v[k] = wd[k];
+                    uint32_t q[8];
+#pragma unroll
+                    for (int k = 0; k < 8; ++k) q[k] = odd ? v[k + 1] : __funnelshift_r(v[k], v[k + 1], 16);
+                    const uint16_t hd = odd ? (uint16_t) (v[0] >> 16) : (uint16_t) (v[0] & 0xffffu);
+                    *(int4*) (sm + S::W + swz2(r, 2 * p)) = make_int4((int) q[0], (int) q[1], (int) q[2], (int) q[3]);
+                    *(int4*) (sm + S::W + swz2(r, 2 * p + 1)) = make_int4((int) q[4], (int) q[5], (int) q[6], (int) q[7]);
+                    ((float*) (sm + S::WS))[r * 8 + p] = __half2float(__ushort_as_half(hd));
+                }
+                return;
+            } else if constexpr (T == nsq::IQ4_XS || T == nsq::Q6_K) {
                 // load_tiles_iq4_xs / _q6_K's mapping (ggml, MIT): a warp a row, a lane a word of its values -
                 // 16 rows a thread, each word read once, the rows' 128 bytes a coalesced read
 #pragma unroll
@@ -975,25 +1019,67 @@ __global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __re
                 const int i = tid + 256 * u, t = i >> 3, k = i & 7;
                 if (i < J * 8) *(int4*) (sm + S::X + swz(t, k)) = xr[u];
             }
-            if (tid < J) {
-                ((float*) (sm + S::XD))[tid] = xd;
-                if (MN != 0) *(int4*) (sm + S::XS + tid * 16) = xs4;
-            }
+#pragma unroll
+            for (int u = 0; u < DU; ++u)
+                if (tid + 256 * u < J * XN) ((float*) (sm + S::XD))[tid + 256 * u] = xd[u];
+            if (MN != 0 && tid < J) *(int4*) (sm + S::XS + tid * 16) = xs4;
             constexpr int o = 0;
             __syncthreads();
             if (hh == 0) xload(c, 1);
             else if (c + 1 < c1) xload(c + 1, 0);
+            if constexpr (Q8) {
+                // 4 pieces: the warp's MW m-tiles' A fragments, its NTW n-tiles' B, each piece's sums scaled on their own
+#pragma unroll (J <= 32 ? 4 : 1)
+                for (int pl = 0; pl < 4; ++pl) {
+                    const int p = 4 * hh + pl;
+                    int a[MW][4];
+#pragma unroll
+                    for (int m = 0; m < MW; ++m)
+                        ldsm4(sm + S::W + swz2(RB + m * 16 + (lane & 7) + ((lane >> 3) & 1) * 8, 2 * p + (lane >> 4)), a[m][0], a[m][1], a[m][2], a[m][3]);
+                    int bf[NTW][2];
+#pragma unroll
+                    for (int n2 = 0; n2 + 1 < NTW; n2 += 2)
+                        ldsm4(sm + S::X + swz((NB + n2) * 8 + (lane & 7) + (lane >> 4) * 8, 2 * pl + ((lane >> 3) & 1)), bf[n2][0], bf[n2][1], bf[n2 + 1][0],
+                              bf[n2 + 1][1]);
+                    if (NTW & 1)
+                        asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0, %1}, [%2];"
+                                     : "=r"(bf[NTW - 1][0]), "=r"(bf[NTW - 1][1])
+                                     : "r"((unsigned) __cvta_generic_to_shared(sm + S::X + swz((NB + NTW - 1) * 8 + (lane & 7), 2 * pl + ((lane >> 3) & 1)))));
+                    float2 dx[NTW];
+#pragma unroll
+                    for (int j = 0; j < NTW; ++j) dx[j] = *(const float2*) (sm + S::XD + (pl * J + (NB + j) * 8 + 2 * q) * 4);
+#pragma unroll
+                    for (int m = 0; m < MW; ++m) {
+                        const float wa = ((const float*) (sm + S::WS))[(RB + m * 16 + g) * 8 + p], wb = ((const float*) (sm + S::WS))[(RB + m * 16 + g + 8) * 8 + p];
+                        int cc[NTW][4];
+#pragma unroll
+                        for (int j = 0; j < NTW; ++j) imma32(cc[j], a[m][0], a[m][1], a[m][2], a[m][3], bf[j][0], bf[j][1]);
+#pragma unroll
+                        for (int j = 0; j < NTW; ++j) {
+                            float* A = acc[m * NTW + j];
+                            A[0] += (dx[j].x * wa) * (float) cc[j][0];
+                            A[1] += (dx[j].y * wa) * (float) cc[j][1];
+                            A[2] += (dx[j].x * wb) * (float) cc[j][2];
+                            A[3] += (dx[j].y * wb) * (float) cc[j][3];
+                        }
+                    }
+                }
+            } else {
             // vec_dot: 4 pieces, the warp's 16 rows' A fragments by ldmatrix against the NT n-tiles
 #pragma unroll
             for (int i = 0; i < NT; ++i)
 #pragma unroll
                 for (int k = 0; k < 4; ++k) ai[i][k] = 0;
-#pragma unroll 1
+#pragma unroll (Q8 && J <= 32 ? 4 : 1)
             for (int pl = 0; pl < 4; ++pl) {
                 const int p = 4 * hh + pl;
                 int a[4];
                 ldsm4(sm + S::W + swz2(R0 + (lane & 7) + ((lane >> 3) & 1) * 8, 2 * p + (lane >> 4)), a[0], a[1], a[2], a[3]);
-                const char2 sA = *(const char2*) (sm + S::WS + (R0 + g) * 16 + 2 * p), sB = *(const char2*) (sm + S::WS + (R0 + g + 8) * 16 + 2 * p);
+                char2 sA = make_char2(1, 1), sB = make_char2(1, 1);
+                if constexpr (!Q8) {
+                    sA = *(const char2*) (sm + S::WS + (R0 + g) * 16 + 2 * p);
+                    sB = *(const char2*) (sm + S::WS + (R0 + g + 8) * 16 + 2 * p);
+                }
 #pragma unroll
                 for (int h = 0; h < (HV ? 2 : 1); ++h) {
                     const int sg = (int8_t) (h ? sA.y : sA.x), s8 = (int8_t) (h ? sB.y : sB.x);
@@ -1025,15 +1111,30 @@ __global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __re
                         if (!HV) imma32(cc[nt], a[0], a[1], a[2], a[3], bf[nt][0], bf[nt][1]);
                         else imma16(cc[nt], a[2 * h], a[2 * h + 1], bf[nt][0]);
                     }
+                    if constexpr (Q8) {
+                        // a piece's sums scaled on their own (x's scale and the block's, both a 32's): as MMQ's Q8_0
+                        (void) sg; (void) s8;
+                        const float wa = ((const float*) (sm + S::WS))[(R0 + g) * 8 + p], wb = ((const float*) (sm + S::WS))[(R0 + g + 8) * 8 + p];
 #pragma unroll
-                    for (int nt = 0; nt < NT; ++nt) {
-                        ai[nt][0] += cc[nt][0] * sg;
-                        ai[nt][1] += cc[nt][1] * sg;
-                        ai[nt][2] += cc[nt][2] * s8;
-                        ai[nt][3] += cc[nt][3] * s8;
+                        for (int nt = 0; nt < NT; ++nt) {
+                            const float2 dx = *(const float2*) (sm + S::XD + (pl * J + nt * 8 + 2 * q) * 4);
+                            acc[nt][0] += (dx.x * wa) * (float) cc[nt][0];
+                            acc[nt][1] += (dx.y * wa) * (float) cc[nt][1];
+                            acc[nt][2] += (dx.x * wb) * (float) cc[nt][2];
+                            acc[nt][3] += (dx.y * wb) * (float) cc[nt][3];
+                        }
+                    } else {
+#pragma unroll
+                        for (int nt = 0; nt < NT; ++nt) {
+                            ai[nt][0] += cc[nt][0] * sg;
+                            ai[nt][1] += cc[nt][1] * sg;
+                            ai[nt][2] += cc[nt][2] * s8;
+                            ai[nt][3] += cc[nt][3] * s8;
+                        }
                     }
                 }
             }
+            if constexpr (!Q8) {
             const float2 da = *(const float2*) (sm + S::WD + (R0 + g) * 8), db = *(const float2*) (sm + S::WD + (R0 + g + 8) * 8);
             int2 u = make_int2(0, 0), v = make_int2(0, 0);
             if (MN != 0) {
@@ -1063,13 +1164,15 @@ __global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __re
                     acc[nt][3] += (dx.y * db.x) * (float) ai[nt][3];
                 }
             }
+            }
+            }   // (not Q8_0)
             __syncthreads();
         }
     }
     if (c1 == nch) {
 #pragma unroll
         for (int nt = 0; nt < NT; ++nt) {
-            const int r = row0 + R0 + g, t = tok0 + nt * 8 + 2 * q;
+            const int r = row0 + RB + (nt / NTW) * 16 + g, t = tok0 + (NB + nt % NTW) * 8 + 2 * q;
             if (t < ntok && r < n_out) y[(size_t) t * n_out + r] = acc[nt][0];
             if (t < ntok && r + 8 < n_out) y[(size_t) t * n_out + r + 8] = acc[nt][2];
             if (t + 1 < ntok && r < n_out) y[(size_t) (t + 1) * n_out + r] = acc[nt][1];
@@ -1080,7 +1183,7 @@ __global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __re
         float* f = fixup + (size_t) blockIdx.x * MI * J;
 #pragma unroll
         for (int nt = 0; nt < NT; ++nt) {
-            const int r = R0 + g, t = nt * 8 + 2 * q;
+            const int r = RB + (nt / NTW) * 16 + g, t = (NB + nt % NTW) * 8 + 2 * q;
             f[t * MI + r] = acc[nt][0];
             f[(t + 1) * MI + r] = acc[nt][1];
             f[t * MI + r + 8] = acc[nt][2];
@@ -1090,34 +1193,38 @@ __global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __re
     }
 }
 
-// a block that finished a tile it did not start adds the earlier blocks' parts of it, in block order
+// a block that finished a tile it did not start adds the earlier blocks' parts of it, in block order. A thread an
+// entry of the tile (blockIdx.y the tile's slice of 256): one loop over the parts a thread, their loads in flight
+// together - a thread looping over a whole tile's entries waits out each load in turn (30 us for a 128 x 128 tile)
 template<int J>
 __global__ void mq_fixup_k(float* __restrict__ y, const float* __restrict__ fixup, int n_out, int ntok, int nch, int nb) {
     const int b = blockIdx.x, ntx = (ntok + J - 1) / J, total = ntx * ((n_out + MI - 1) / MI) * nch;
     const int s = (int) ((int64_t) b * total / nb), e = (int) ((int64_t) (b + 1) * total / nb);
     if (s % nch == 0 || e < (s / nch + 1) * nch) return;   // starts a tile, or finishes none it started in
     const int tile = s / nch, row0 = (tile / ntx) * MI, tok0 = (tile % ntx) * J;
-    for (int i = threadIdx.x; i < MI * J; i += blockDim.x) {
-        const int t = i / MI, r = i % MI;   // (consecutive threads along y's row)
-        float v = 0.f;
-        for (int j = b - 1; j >= 0; --j) {
-            v += fixup[(size_t) j * MI * J + i];
-            if ((int) ((int64_t) j * total / nb) <= tile * nch) break;   // j started at or before the tile's start
-        }
-        if (row0 + r < n_out && tok0 + t < ntok) y[(size_t) (tok0 + t) * n_out + row0 + r] += v;
+    const int i = blockIdx.y * blockDim.x + threadIdx.x;
+    if (i >= MI * J) return;
+    const int t = i / MI, r = i % MI;   // (consecutive threads along y's row)
+    if (row0 + r >= n_out || tok0 + t >= ntok) return;
+    float v = 0.f;
+    for (int j = b - 1; j >= 0; --j) {
+        v += fixup[(size_t) j * MI * J + i];
+        if ((int) ((int64_t) j * total / nb) <= tile * nch) break;   // j started at or before the tile's start
     }
+    y[(size_t) (tok0 + t) * n_out + row0 + r] += v;
 }
 
 template<int T, int J>
 void mq_go(const uint8_t* W, size_t rb, int64_t n_out, int64_t K, const uint8_t* x, int64_t ntok, float* y, cudaStream_t s) {
     constexpr size_t sm = msmem<T, J>();
     static bool set[64] = {};
-    static int nsm[64] = {};
+    static int nsm[64] = {}, major[64] = {};
     int dev = 0;
     cudaGetDevice(&dev);
     if (!set[dev & 63]) {
         cudaFuncSetAttribute(mq_k<T, J>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sm);
         cudaDeviceGetAttribute(&nsm[dev & 63], cudaDevAttrMultiProcessorCount, dev);
+        cudaDeviceGetAttribute(&major[dev & 63], cudaDevAttrComputeCapabilityMajor, dev);
         set[dev & 63] = true;
     }
     // two thread blocks an SM over all the (tile, chunk) iterations; tiling alone where it already fills the waves
@@ -1126,14 +1233,24 @@ void mq_go(const uint8_t* W, size_t rb, int64_t n_out, int64_t K, const uint8_t*
     const int waves = (ntiles + slots - 1) / slots;
     const Ws& wsp = wspace(dev);
     const int total = ntiles * (int) (K / CH);
-    int nb = 100 * ntiles / (slots * waves) >= 90 ? ntiles : std::max(ntiles, std::min(slots, total / 8));   // (8 chunks a block at least)
+    // (fewer tiles than slots: a block for each slot, 8 chunks a block at least. More, for Q8_0 on the 3060: a block a
+    // slot, each its share of the iterations across the tiles - MMQ's stream-k - not a last wave of few tiles; measured
+    // slower on the 5070, and for the other types the plain tiles kept as they were measured)
+    const bool spread = T == nsq::Q8_0 && major[dev & 63] < 9;
+    int nb = 100 * ntiles / (slots * waves) >= 90 ? ntiles : spread && ntiles >= slots ? slots : std::max(ntiles, std::min(slots, total / 8));
     if ((size_t) nb * MI * J > wsp.floats) nb = ntiles;   // (no room reserved: plain tiling)
     mq_k<T, J><<<nb, 256, sm, s>>>(W, rb, x, y, (int) K, (int) n_out, (int) ntok, (int) tpad(ntok), wsp.p);
-    if (nb != ntiles) mq_fixup_k<J><<<nb, 256, 0, s>>>(y, wsp.p, (int) n_out, (int) ntok, (int) (K / CH), nb);
+    if (nb != ntiles) mq_fixup_k<J><<<dim3((unsigned) nb, (unsigned) (MI * J / 256)), 256, 0, s>>>(y, wsp.p, (int) n_out, (int) ntok, (int) (K / CH), nb);
 }
 // mmq_x the way MMQ picks it (mul_mat_q_switch_J): the fewest column tiles, then the narrowest; 8 .. 64 here
 template<int T>
 void mq_launch(const uint8_t* W, size_t rb, int64_t n_out, int64_t K, const uint8_t* x, int64_t ntok, float* y, cudaStream_t s) {
+    // (Q8_0 past 64 rows in tiles of 64: two blocks an SM, one's loads beside the other's products - measured faster
+    // than MMQ's 96 / 128 here, on both cards)
+    if (T == nsq::Q8_0 && ntok > 64) {
+        mq_go<T, 64>(W, rb, n_out, K, x, ntok, y, s);
+        return;
+    }
     if (ntok <= 8) mq_go<T, 8>(W, rb, n_out, K, x, ntok, y, s);
     else if (ntok <= 16) mq_go<T, 16>(W, rb, n_out, K, x, ntok, y, s);
     else if (ntok <= 24) mq_go<T, 24>(W, rb, n_out, K, x, ntok, y, s);
@@ -1307,9 +1424,11 @@ bool xmm_type(int t) {
     }
 }
 
-// x's layout for a type's prompt products: 2 the chunk products' (the 256-value block types), 1 the tile products'
-// (Q8_0), -1 none
-int layout(int t) { return !xmm_type(t) ? -1 : nsq::fmt_of(t).x == 256 ? 2 : 1; }
+// x's layout for a type's prompt products: 2 the chunk products' (the 256-value block types), 3 theirs with a scale a
+// 32 (Q8_0, through mq_k), -1 none. (Q8_0 rows not whole chunks of 256 go through the older tile products, x in their
+// layout 1: quantize and the products both choose by K)
+int layout(int t) { return !xmm_type(t) ? -1 : t == nsq::Q8_0 ? 3 : 2; }
+bool q8_chunks(int t, int64_t K) { return t == nsq::Q8_0 && K % 256 == 0; }
 
 // the tile products (x in the tile layout) or, `rows`, the per-warp ones for 1..8 rows (x the Q8_1 rows)
 int xmm(ns_gpu* g, int type, const void* w, int64_t n_out, int64_t K, const void* xq, int64_t ntok, float* y, bool rows, const char* who) {
@@ -1346,17 +1465,18 @@ int ns_q35_tiles_reserve(ns_gpu* g) {
 }
 
 // room for either layout (the chunk products' with its smallest groups)
-size_t ns_q35_tiles_q8_bytes(int64_t K, int64_t T) { return std::max((size_t) (K / 32) * (size_t) T * 48, K % 256 == 0 ? k2::xbytes(K, T, k2::SV) : 0); }
+size_t ns_q35_tiles_q8_bytes(int64_t K, int64_t T) { return std::max((size_t) (K / 32) * (size_t) T * 48, K % 256 == 0 ? k2::xbytes(K, T, 32) : 0); }
 
 int ns_q35_tiles_quantize(ns_gpu* g, int type, const float* x, int64_t T, int64_t K, void* xq) {
     NS_TRY
     NS_CU(cudaSetDevice(g->dev));
     if (!xmm_type(type) || K % 32 != 0) return ns_fail("ns_q35_tiles_quantize: a type without tile products, or K not a multiple of 32");
-    if (layout(type) == 2) {
+    if (layout(type) == 2 || q8_chunks(type, K)) {
         if (K % 256 != 0) return ns_fail("ns_q35_tiles_quantize: K not a multiple of 256");
         const int64_t tp = k2::tpad(T), n = (K / 256) * tp * 32;
         const unsigned blocks = (unsigned) ((n + 255) / 256);
-        k2::xq_k<k2::SV><<<blocks, 256, 0, g->q>>>(x, (uint8_t*) xq, T, tp, K);
+        if (type == nsq::Q8_0) k2::xq_k<32><<<blocks, 256, 0, g->q>>>(x, (uint8_t*) xq, T, tp, K);
+        else k2::xq_k<k2::SV><<<blocks, 256, 0, g->q>>>(x, (uint8_t*) xq, T, tp, K);
         NS_LAUNCH_CHECK();
         return 0;
     }
@@ -1379,6 +1499,10 @@ int ns_q35_tiles_mmq(ns_gpu* g, int type, const void* w, int64_t n_out, int64_t 
             Q35_KMM(nsq::IQ3_XXS) Q35_KMM(nsq::IQ3_S) Q35_KMM(nsq::IQ4_XS)
 #undef Q35_KMM
         }
+    } else if (q8_chunks(type, K)) {
+        if (K > 65536) return ns_fail("ns_q35_tiles_mmq: K past 65536");
+        if (T <= 0 || n_out <= 0) return 0;
+        k2::mq_launch<nsq::Q8_0>((const uint8_t*) w, (size_t) (K / 32) * 34, n_out, K, (const uint8_t*) xq, T, y, g->q);
     } else if (xmm(g, type, w, n_out, K, xq, T, y, false, "ns_q35_tiles_mmq") != 0) {
         return -1;
     }
