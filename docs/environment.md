@@ -465,7 +465,6 @@ Inputs of the checks and unit tests that need files outside the repository (unse
 | `NS_TEST_WHISPER_REF` | test skipped | a folder of reference/whisper/ref.py dumps (short/, long/, song/): the mel, greedy-rule, alignment and placement tests against openai-whisper | audio whisper (cargo test) |
 | `NS_TEST_WHISPER_TOKENIZER` | test skipped | whisper-large-v3-turbo's tokenizer.json for the byte-level tokenizer test and the vocabulary tests | tests (crates/tok), audio whisper (cargo test) |
 | `NS_TEST_NH_BLOCKS` | test skipped | a folder of rows of Nemotron 3.5 Super's expert blocks (`TYPE_role.bin` + `.txt`: "rows cols tensor") for the CPU products' tests on the file's own blocks | llm nemotronh (cargo test) |
-| `NS_TEST_NH_GGML_DIR` | test skipped | libggml-base.so and libggml-cpu.so for the one-off check of the CPU products against ggml-cpu (`cargo test -- --ignored ggml`) | llm nemotronh (cargo test) |
 | `NS_TEST_QWEN_TOKENIZER` | test skipped | a Qwen3-VL tokenizer.json for the tokenizer test (with NS_TEST_QWEN_TOKENS) | tests (crates/tok) |
 | `NS_TEST_QWEN_TOKENS` | test skipped | the reference pipeline's tokens.json the tokenizer test compares against | tests (crates/tok) |
 | `NS_X_INT8` | - | fixture: an option table's variable in the --opt-NAME unit tests (never read by an engine) | tests (crates/core options) |
