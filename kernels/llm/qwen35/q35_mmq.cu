@@ -165,7 +165,7 @@ static bool q35_tiles() {
 extern "C" {
 
 // the q8_1 layout x takes for a type's MMQ (ggml's mmq_q8_1_ds_layout; -1: none): matrices of one layout share it
-int ns_q35_mmq_layout(int type) { return !mmq_type(type) ? -1 : q35_tiles() ? 1 : (int) mmq_get_q8_1_ds_layout((ggml_type) type); }
+int ns_q35_mmq_layout(int type) { return !mmq_type(type) ? -1 : q35_tiles() ? 100 + ns_q35_tiles_layout(type) : (int) mmq_get_q8_1_ds_layout((ggml_type) type); }
 
 int ns_q35_mmq_supported(int type) {
     int dev = 0;
@@ -175,10 +175,9 @@ int ns_q35_mmq_supported(int type) {
 }
 
 size_t ns_q35_mmq_q8_bytes(int64_t K, int64_t T) {
-    if (q35_tiles()) return ns_q35_tiles_q8_bytes(K, T);
     const int64_t kp = GGML_PAD(K, MATRIX_ROW_PADDING);
     // the rows' tiles, and one column tile's worth past them (the launch reads a whole tile)
-    return (size_t) (T * kp) * sizeof(block_q8_1_mmq) / QK8_1_MMQ + 128 * sizeof(block_q8_1_mmq);
+    return q35_tiles() ? ns_q35_tiles_q8_bytes(K, T) : (size_t) (T * kp) * sizeof(block_q8_1_mmq) / QK8_1_MMQ + 128 * sizeof(block_q8_1_mmq);
 }
 
 int ns_q35_mmq_quantize(ns_gpu* g, int type, const float* x, int64_t T, int64_t K, void* xq) {
@@ -232,6 +231,7 @@ int ns_q35_mmq(ns_gpu* g, int type, const void* w, int64_t n_out, int64_t K, con
 // allocates it later - inside a CUDA graph's capture an allocation fails (a chunk's last, shorter pass is the first
 // to need the fixup when the full ones tile the SMs evenly)
 int ns_q35_mmq_reserve(ns_gpu* g) {
+    if (q35_tiles() && ns_q35_tiles_reserve(g) != 0) return -1;
     NS_TRY
     NS_CU(cudaSetDevice(g->dev));
     ns_mmq_ctx ctx;

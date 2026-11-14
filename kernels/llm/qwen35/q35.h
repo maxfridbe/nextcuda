@@ -117,6 +117,10 @@ int ns_q35_vq8(ns_gpu* g, int type, const void* w, const void* xq, float* y, int
 /* ---- nextcuda's own tile products (q35_tiles.cu), what ns_q35_mmq_* and ns_q35_vq8 take with NS_Q35_TILES=1: x for
  * the prompt products in their own layout (32 bytes and a float4 of scales a piece of 32 of a row: tiles_q8_bytes),
  * the verify products' x the Q8_1 rows */
+/* x's layout for a type (2: the chunk products', 1: the tile products', -1: none) */
+int ns_q35_tiles_layout(int type);
+/* the split products' room on the GPU (32 MiB), allocated now: a graph's capture cannot */
+int ns_q35_tiles_reserve(ns_gpu* g);
 size_t ns_q35_tiles_q8_bytes(int64_t K, int64_t T);
 int ns_q35_tiles_quantize(ns_gpu* g, int type, const float* x, int64_t T, int64_t K, void* xq);
 int ns_q35_tiles_mmq(ns_gpu* g, int type, const void* w, int64_t n_out, int64_t K, const void* xq, int64_t T, float* y);

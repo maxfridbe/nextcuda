@@ -49,10 +49,9 @@ What it took (2026-10-18, from 691 tok/s and 31 tok/s that morning):
   decode 60.9 tok/s, not 53.9 (the 3119-token story, 5070 + 3060, the same tokens and drafts accepted, KL 0 to its
   logits), verify passes of 1..8 rows 8-20 % shorter (31.9-54.3 ms, not 34.8-67.9). `NS_Q35_MMVQ=ggml` takes MMVQ's.
 - **ggml-cuda's MMQ** for a prompt's products (vendored from llama.cpp's tree, `kernels/llm/qwen35/third_party`).
-  nextcuda's own tile products (`q35_tiles.cu`, `NS_Q35_TILES=1`; on the block reader Nemotron's products use) are as
-  close to the exact product as MMQ's or closer but not as fast (2026-11-13, 512 rows of a 17408 x 5120 matrix, MMQ /
-  tiles on the 5070: IQ3_S 1.03 / 1.23 ms, IQ3_XXS 1.00 / 1.22, IQ4_XS 0.91 / 1.22, Q4_K 1.04 / 1.72; the 3060
-  1.25-1.8x), so MMQ stays.
+  nextcuda's own chunk products (`q35_tiles.cu`, `NS_Q35_TILES=1`) match it at 512 input rows (the model's matrices'
+  summed time 0.955 of MMQ's on the 5070, 1.009 on the 3060; a 3119-token prompt 6 % faster end to end, the same
+  tokens) but not on short prompts (47 rows 1.33-1.42x), so MMQ stays (`PHASES.md` has what was tried).
 
 Settings ([`environment.md`](environment.md)): `NS_Q35_PIPE`, `NS_Q35_GRAPHS`, `NS_Q35_MMVQ`, `NS_Q35_KV`, `NS_Q35_KV_ROT`, `NS_Q35_DRAFTS` (2),
 `NS_Q35_CHUNK`, `NS_Q35_HEAD`, `NS_Q35_VISION`; `NS_PROFILE=gpu NS_Q35_PROFILE=1` times every kernel by card and phase.
