@@ -562,6 +562,12 @@ impl AudioServer {
         // stays the same voice); a script of several speakers, and a song, whole
         let mut whole = b.clone();
         whole["response_format"] = json!("wav");
+        // each stretch is made whole and sent on as it comes: the stretch's own request is not a stream (stream: true
+        // reached generate_as, which refuses it - OpenAI's clients send it)
+        if let Some(o) = whole.as_object_mut() {
+            o.remove("stream");
+            o.remove("stream_format");
+        }
         let texts: Vec<String> = match &list {
             Some(t) => t.clone(),
             None => vec![["input", "text"].iter().find_map(|k| b[*k].as_str()).unwrap_or("").to_string()],
@@ -1238,6 +1244,17 @@ mod streamed {
         let last = made.last().unwrap().duration_since(t0);
         assert!(first < last, "first {first:?}, the last stretch made at {last:?}, total {total:?}");
         eprintln!("pcm over HTTP: {} stretches of 0.8 s, first byte {first:?}, total {total:?}", s.len());
+    }
+
+    /// stream: true (OpenAI's clients send it) is the same stream, not a 400 from the stretch's own request
+    #[test]
+    fn stream_true_streams() {
+        let (addr, said, _) = serve_stamped(Duration::from_millis(10));
+        let body = json!({"model": "tts-1", "input": TEXT, "voice": "alloy", "response_format": "pcm", "stream": true}).to_string();
+        let (raw, _, _, _) = post_from(&addr, &body, None);
+        let (head, pcm, closed) = dechunk(&raw);
+        assert!(head.starts_with("HTTP/1.1 200") && closed, "{head}");
+        assert!(!pcm.is_empty() && said.lock().unwrap().len() >= 2);
     }
 
     #[test]
