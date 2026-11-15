@@ -36,6 +36,62 @@ const SPLIT: usize = 2;
 /// of the whole picture
 const SPLIT_HALO: usize = 13;
 
+/// A tile of a picture: its core rows y0..y1 and columns x0..x1 (the tiles' cores cover the picture once), and the cut
+/// around it with its margin, ya..yb and xa..xb (the core grown by the margin, within the picture)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Tile {
+    pub y0: usize,
+    pub y1: usize,
+    pub x0: usize,
+    pub x1: usize,
+    pub ya: usize,
+    pub yb: usize,
+    pub xa: usize,
+    pub xb: usize,
+}
+
+/// Tiles of an h x w picture with cores `cy` x `cx` (the last of a row or column shorter) and margins of `halo`,
+/// row by row
+pub(crate) fn tiles(h: usize, w: usize, cy: usize, cx: usize, halo: usize) -> Vec<Tile> {
+    let mut v = Vec::new();
+    for y0 in (0..h).step_by(cy) {
+        for x0 in (0..w).step_by(cx) {
+            let (y1, x1) = ((y0 + cy).min(h), (x0 + cx).min(w));
+            v.push(Tile { y0, y1, x0, x1, ya: y0.saturating_sub(halo), yb: (y1 + halo).min(h), xa: x0.saturating_sub(halo), xb: (x1 + halo).min(w) });
+        }
+    }
+    v
+}
+
+/// The tiles of the up blocks after SPLIT over h x w pixels of their scale (`grown`: how much the SPLIT blocks
+/// enlarged the latents): cuts at most `grown` x TILE a side, the cores as even as the count of tiles allows,
+/// SPLIT_HALO margins
+fn split_tiles(h: usize, w: usize, grown: usize) -> Vec<Tile> {
+    let side = grown * TILE - 2 * SPLIT_HALO;
+    let (ny, nx) = (h.div_ceil(side), w.div_ceil(side));
+    tiles(h, w, h.div_ceil(ny), w.div_ceil(nx), SPLIT_HALO)
+}
+
+/// Half weights [co, ci, kk] (2 bytes each) reordered [co, kk, ci]: the silo's 3 x 3 reads a tap's channels together
+fn taps_last_order(raw: &[u8], co: usize, ci: usize, kk: usize) -> Vec<u8> {
+    let mut p = vec![0u8; raw.len()];
+    for o in 0..co {
+        for c in 0..ci {
+            for tap in 0..kk {
+                let (src, dst) = (((o * ci + c) * kk + tap) * 2, ((o * kk + tap) * ci + c) * 2);
+                p[dst..dst + 2].copy_from_slice(&raw[src..src + 2]);
+            }
+        }
+    }
+    p
+}
+
+/// Whether a convolution's weight shape is one the silo's 3 x 3 takes: [Co, Ci, 3, 3] or the causal video conv's
+/// [Co, Ci, 1, 3, 3], Ci a multiple of 8 and Co of 2
+fn silo_3x3(sh: &[u64]) -> bool {
+    sh.len() >= 4 && sh[2..].iter().product::<u64>() == 9 && sh[sh.len() - 1] == 3 && sh[1] % 8 == 0 && sh[0] % 2 == 0
+}
+
 /// F.normalize's floor, as an epsilon on the mean square: never reached by real activations
 const EPS: f32 = 1e-24;
 
@@ -145,17 +201,7 @@ impl Vae {
             let t = st.need(name).map_err(ge)?;
             let mut raw = st.read(t).map_err(ge)?;
             if taps_last {
-                let (co, ci, kk) = (t.shape[0] as usize, t.shape[1] as usize, t.shape[2..].iter().product::<u64>() as usize);
-                let mut p = vec![0u8; raw.len()];
-                for o in 0..co {
-                    for c in 0..ci {
-                        for tap in 0..kk {
-                            let (src, dst) = (((o * ci + c) * kk + tap) * 2, ((o * kk + tap) * ci + c) * 2);
-                            p[dst..dst + 2].copy_from_slice(&raw[src..src + 2]);
-                        }
-                    }
-                }
-                raw = p;
+                raw = taps_last_order(&raw, t.shape[0] as usize, t.shape[1] as usize, t.shape[2..].iter().product::<u64>() as usize);
             }
             let n = t.elements() as usize;
             let src = DevBuf::new(&gpu, raw.len())?;
@@ -175,9 +221,7 @@ impl Vae {
         let conv_as = |p: &str, plain: bool| -> Result<Conv> {
             let t = st.need(&format!("{p}.weight")).map_err(ge)?;
             // [Co, Ci, 3, 3], or the causal video conv's [Co, Ci, 1, 3, 3]
-            let sh = &t.shape;
-            let s3 = sh.len() >= 4 && sh[2..].iter().product::<u64>() == 9 && sh[sh.len() - 1] == 3 && sh[1] % 8 == 0 && sh[0] % 2 == 0;
-            let taps_last = silo_conv && !plain && s3;
+            let taps_last = silo_conv && !plain && silo_3x3(&t.shape);
             let (w, shape) = half_as(&format!("{p}.weight"), taps_last)?;
             let (co, ci, k) = (shape[0] as usize, shape[1] as usize, *shape.last().unwrap_or(&1) as usize);
             Ok(Conv { w, b: vec(&format!("{p}.bias"))?, ci, co, k, taps_last })
@@ -360,27 +404,20 @@ impl Vae {
         let c = self.ups.get(split).map_or(self.conv_out.ci, |u| u.ci);
         let s = ph / h;
         let grown = 1usize << self.ups[..split].iter().filter(|u| u.resample.is_some()).count();
-        let side = grown * TILE - 2 * SPLIT_HALO;
-        let (ny, nx) = (h.div_ceil(side), w.div_ceil(side));
-        let (cy_n, cx_n) = (h.div_ceil(ny), w.div_ceil(nx));
         let mut out = vec![0u8; ph * pw * 4];
-        for y0 in (0..h).step_by(cy_n) {
-            for x0 in (0..w).step_by(cx_n) {
-                let (y1, x1) = ((y0 + cy_n).min(h), (x0 + cx_n).min(w));
-                // the tile with its margin, cut from the whole picture at this scale
-                let (ya, yb, xa, xb) = (y0.saturating_sub(SPLIT_HALO), (y1 + SPLIT_HALO).min(h), x0.saturating_sub(SPLIT_HALO), (x1 + SPLIT_HALO).min(w));
-                let (th, tw) = (yb - ya, xb - xa);
-                let t = DevBuf::new(gpu, th * tw * c * 2)?;
-                t.copy_2d(0, tw * c * 2, &x, (ya * w + xa) * c * 2, w * c * 2, tw * c * 2, th)?;
-                let (t, oh, ow) = self.up_blocks(nsd, t, th, tw, split..self.ups.len())?;
-                let px = self.head(nsd, t, oh, ow)?;
-                // its core into the picture
-                let (cy, cx, ch, cw) = ((y0 - ya) * s, (x0 - xa) * s, (y1 - y0) * s, (x1 - x0) * s);
-                for r in 0..ch {
-                    let src = ((cy + r) * tw * s + cx) * 4;
-                    let dst = ((y0 * s + r) * pw + x0 * s) * 4;
-                    out[dst..dst + cw * 4].copy_from_slice(&px[src..src + cw * 4]);
-                }
+        for Tile { y0, y1, x0, x1, ya, yb, xa, xb } in split_tiles(h, w, grown) {
+            // the tile with its margin, cut from the whole picture at this scale
+            let (th, tw) = (yb - ya, xb - xa);
+            let t = DevBuf::new(gpu, th * tw * c * 2)?;
+            t.copy_2d(0, tw * c * 2, &x, (ya * w + xa) * c * 2, w * c * 2, tw * c * 2, th)?;
+            let (t, oh, ow) = self.up_blocks(nsd, t, th, tw, split..self.ups.len())?;
+            let px = self.head(nsd, t, oh, ow)?;
+            // its core into the picture
+            let (cy, cx, ch, cw) = ((y0 - ya) * s, (x0 - xa) * s, (y1 - y0) * s, (x1 - x0) * s);
+            for r in 0..ch {
+                let src = ((cy + r) * tw * s + cx) * 4;
+                let dst = ((y0 * s + r) * pw + x0 * s) * 4;
+                out[dst..dst + cw * 4].copy_from_slice(&px[src..src + cw * 4]);
             }
         }
         Ok((out, pw, ph))
@@ -536,5 +573,100 @@ impl Vae {
         let all = f.to_f32()?;
         let z = self.z;
         Ok((0..h * w).flat_map(|p| (0..z).map(move |c| (p, c))).map(|(p, c)| (all[p * zc + c] - self.mean[c]) / self.std[c]).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each pixel of an h x w picture in exactly one tile's core, every cut its core grown by the margin within the
+    /// picture: what decode's copy of each core into the picture relies on
+    fn check_cover(h: usize, w: usize, t: &[Tile], halo: usize) {
+        let mut seen = vec![0u8; h * w];
+        for t in t {
+            assert!(t.y0 < t.y1 && t.y1 <= h && t.x0 < t.x1 && t.x1 <= w, "{t:?}");
+            assert_eq!((t.ya, t.yb, t.xa, t.xb), (t.y0.saturating_sub(halo), (t.y1 + halo).min(h), t.x0.saturating_sub(halo), (t.x1 + halo).min(w)), "{t:?}");
+            for y in t.y0..t.y1 {
+                for x in t.x0..t.x1 {
+                    seen[y * w + x] += 1;
+                }
+            }
+        }
+        assert!(seen.iter().all(|&n| n == 1), "{h} x {w}: every pixel in one core");
+    }
+
+    #[test]
+    fn the_tiles_cores_cover_the_picture_once_and_their_margins_stay_inside_it() {
+        for (h, w, c, halo) in [(10, 10, 4, 2), (7, 13, 5, 3), (128, 64, 100, 14), (3, 3, 8, 14), (300, 200, 100, 14)] {
+            check_cover(h, w, &tiles(h, w, c, c, halo), halo);
+        }
+        // a picture no larger than a core is one tile, its cut the whole picture
+        assert_eq!(tiles(3, 5, 8, 8, 14), vec![Tile { y0: 0, y1: 3, x0: 0, x1: 5, ya: 0, yb: 3, xa: 0, xb: 5 }]);
+    }
+
+    #[test]
+    fn the_split_tiles_fit_a_1024_picture_and_give_every_inner_core_its_full_reach() {
+        // Qwen-Image 2.1: one of the first SPLIT up blocks doubles (grown 2: 512 x 512 at 2048 x 2048), so a cut may be
+        // 2 x TILE a side there; that picture, 1536 x 2048, an odd narrow one, and a larger growth
+        for (h, w, grown) in [(512, 512, 2), (384, 512, 2), (130, 500, 2), (1000, 700, 4)] {
+            let t = split_tiles(h, w, grown);
+            check_cover(h, w, &t, SPLIT_HALO);
+            for t in &t {
+                // no cut larger than the memory of a 1024 x 1024 picture's up path at this scale
+                assert!(t.yb - t.ya <= grown * TILE && t.xb - t.xa <= grown * TILE, "{h} x {w}: {t:?}");
+                // a core away from the picture's edge has SPLIT_HALO pixels of the picture all round it
+                if t.y0 > 0 {
+                    assert_eq!(t.y0 - t.ya, SPLIT_HALO);
+                }
+                if t.y1 < h {
+                    assert_eq!(t.yb - t.y1, SPLIT_HALO);
+                }
+            }
+            // the cores as even as the count allows: they differ by at most the last one's shortfall
+            let rows: Vec<usize> = t.iter().filter(|t| t.x0 == 0).map(|t| t.y1 - t.y0).collect();
+            assert!(rows[..rows.len() - 1].iter().all(|&r| r == rows[0]) && rows[rows.len() - 1] <= rows[0], "{rows:?}");
+        }
+        // 2048 x 2048: 512 a side after the split, cores of at most 128 - 2 x 13 = 102: 6 x 6 tiles of 86 (the last 82)
+        let t = split_tiles(512, 512, 2);
+        assert_eq!(t.len(), 36);
+        assert_eq!((t[0].y1, t[35].y1 - t[35].y0), (86, 82));
+    }
+
+    #[test]
+    fn the_silos_weights_are_reordered_so_a_taps_channels_sit_together() {
+        // each half's value names where it came from: (o, c, tap) as o * 100 + c * 10 + tap
+        let (co, ci, kk) = (2, 3, 9);
+        let mut raw = Vec::new();
+        for o in 0..co {
+            for c in 0..ci {
+                for tap in 0..kk {
+                    raw.extend_from_slice(&((o * 100 + c * 10 + tap) as u16).to_le_bytes());
+                }
+            }
+        }
+        let p = taps_last_order(&raw, co, ci, kk);
+        let at = |o: usize, tap: usize, c: usize| u16::from_le_bytes([p[((o * kk + tap) * ci + c) * 2], p[((o * kk + tap) * ci + c) * 2 + 1]]);
+        for o in 0..co {
+            for tap in 0..kk {
+                for c in 0..ci {
+                    assert_eq!(at(o, tap, c) as usize, o * 100 + c * 10 + tap);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_three_by_three_convolutions_of_whole_eights_go_to_the_silo() {
+        assert!(silo_3x3(&[384, 384, 3, 3]));
+        // the causal video convolution's [Co, Ci, 1, 3, 3]
+        assert!(silo_3x3(&[192, 96, 1, 3, 3]));
+        // the 1 x 1s, the time convs [Co, Ci, 3, 1, 1], channels the silo's gather does not take
+        assert!(!silo_3x3(&[384, 384, 1, 1]));
+        assert!(!silo_3x3(&[384, 384, 3, 1, 1]));
+        assert!(!silo_3x3(&[384, 12, 3, 3]), "Ci not a multiple of 8");
+        assert!(!silo_3x3(&[3, 96, 3, 3]), "Co odd");
+        assert!(silo_3x3(&[4, 96, 3, 3]));
+        assert!(!silo_3x3(&[384, 384]));
     }
 }

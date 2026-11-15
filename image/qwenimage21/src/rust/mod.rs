@@ -572,4 +572,22 @@ mod tests {
         assert!(!s.contains(&Schedule::Shift), "the model's own schedule takes the image size's shift: {s:?}");
         assert!(s.contains(&Schedule::Karras) && s.len() + 1 == Schedule::ALL.len());
     }
+
+    #[test]
+    fn a_transparent_picture_is_asked_for_in_the_model_cards_words_once() {
+        // without the card's sentences the model paints an opaque background
+        assert_eq!(rgba_prompt(" a red apple. "), format!("{RGBA_PREFIX}a red apple.{RGBA_SUFFIX}"));
+        assert_eq!(rgba_prompt("a red apple"), format!("{RGBA_PREFIX}a red apple.{RGBA_SUFFIX}"));
+        // a prompt already in those words is left as it is (any case): no doubled preamble
+        let own = "This is an RGBA image with transparency. A cat.";
+        assert_eq!(rgba_prompt(own), own);
+        assert_eq!(rgba_prompt("this is an rgba image of a cat"), "this is an rgba image of a cat");
+    }
+
+    #[test]
+    fn the_mask_sentence_names_the_last_picture() {
+        // the mask rides as the last picture of an edit: with one reference, the image, the reference and the mask
+        let h = mask_hint(3);
+        assert!(h.starts_with(" Image 3 is a mask") && h.contains("region of image 1"), "{h}");
+    }
 }

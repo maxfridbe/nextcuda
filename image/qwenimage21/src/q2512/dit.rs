@@ -615,6 +615,22 @@ mod tests {
     }
 
     #[test]
+    fn bf16_bits_round_to_the_nearest_even_and_keep_nan_a_nan() {
+        // bfloat16 is float32's top half: exact values pass, the dropped half rounds to nearest, ties to even
+        assert_eq!(bf16_bits(1.0), 0x3f80);
+        assert_eq!(bf16_bits(-2.0), 0xc000);
+        assert_eq!(bf16_bits(f32::from_bits(0x3f80_8000)), 0x3f80, "a tie below an even mantissa stays");
+        assert_eq!(bf16_bits(f32::from_bits(0x3f81_8000)), 0x3f82, "a tie below an odd one goes up");
+        assert_eq!(bf16_bits(f32::from_bits(0x3f80_8001)), 0x3f81, "past the tie goes up");
+        assert_eq!(bf16_bits(f32::INFINITY), 0x7f80);
+        assert_eq!(bf16_bits(f32::NEG_INFINITY), 0xff80);
+        // a NaN whose payload sits in the dropped half would round to infinity: it is kept a quiet NaN
+        assert_eq!(bf16_bits(f32::from_bits(0x7f80_0001)), 0x7fc0);
+        // the largest float32 rounds up to infinity, as IEEE rounding does
+        assert_eq!(bf16_bits(f32::MAX), 0x7f80);
+    }
+
+    #[test]
     fn the_rope_permutation_is_a_permutation_of_each_head() {
         let mut seen: Vec<usize> = (0..HEAD).map(rope_perm).collect();
         seen.sort();

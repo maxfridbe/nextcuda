@@ -130,7 +130,7 @@ impl Gemm {
             return call(w.ptr(), rows, 0);
         }
         let rb = GType::from_code(qtype).and_then(|t| t.bytes(k as u64)).ok_or_else(|| Error(format!("type {qtype}: no row size")))? as usize;
-        let per = ((SLICE_BYTES / (k * 2)) / 256 * 256).clamp(256, rows.div_ceil(256) * 256);
+        let per = slice_rows(k, rows);
         let mut slot = self.slice.lock().unwrap();
         if slot.as_ref().is_none_or(|b| b.len < per * k * 2) {
             *slot = None;
@@ -275,6 +275,19 @@ fn ffn_rows(m: usize) -> usize {
     m.clamp(1, 4096)
 }
 
+/// The rows of a stored matrix of `rows` x `k` made half at a time for the silo's product: about SLICE_BYTES of them,
+/// whole tiles of 256 rows, at least one tile and no more tiles than the matrix has
+fn slice_rows(k: usize, rows: usize) -> usize {
+    ((SLICE_BYTES / (k * 2)) / 256 * 256).clamp(256, rows.div_ceil(256) * 256)
+}
+
+/// Whether a stored part is split for the silo's Q8_0 products (given the silo has them): Q8_0 (type 8), not
+/// converted to int8, on a card of compute capability 12 or more (the 5070's: on the 3060 the fragments' conversion
+/// costs more than the slices' dequant, 31 against 34 TFLOPS), whole blocks a row and rows in eights
+fn q8_split_wanted(int8: bool, code: u32, cc: u32, k: usize, rows: usize) -> bool {
+    !int8 && code == 8 && cc >= 120 && k % 32 == 0 && rows % 8 == 0
+}
+
 /// q / k row order: pair (2i, 2i + 1) -> (i, 64 + i)
 fn rope_perm(j: usize) -> usize {
     if j < HEAD / 2 {
@@ -317,15 +330,12 @@ impl Dit {
             w.write(0, &bytes)?;
             // Q8_0 for the silo's products: split into int8 rows and scales, read by the tensor cores as they are
             let k = t.shape.get(1).copied().unwrap_or(0) as usize;
-            // (the 5070's: on the 3060 the fragments' conversion costs more than the slices' dequant, 31 against 34 TFLOPS)
-            if let (false, 8, true, Some(split), Some(_)) = (int8, code, gpu.cc >= 120, ffi::silo().and_then(|s| s.q8_split), ffi::silo().and_then(|s| s.gemm_q8)) {
-                if k % 32 == 0 && rows % 8 == 0 {
-                    let (q, d) = (DevBuf::new(&gpu, rows * k)?, DevBuf::new(&gpu, rows * k / 32 * 2)?);
-                    // SAFETY: w holds rows x k / 32 blocks of 34 bytes; q rows x k bytes, d k / 32 x rows halves.
-                    ffi::check(unsafe { split(gpu.raw(), w.ptr(), rows as i64, k as i64, q.ptr(), d.ptr()) }, "q8 split")?;
-                    nsd.wait()?;
-                    return Ok(Part { w: q, qtype: code, rows, scales: Some(d) });
-                }
+            if let (true, Some(split), Some(_)) = (q8_split_wanted(int8, code, gpu.cc, k, rows), ffi::silo().and_then(|s| s.q8_split), ffi::silo().and_then(|s| s.gemm_q8)) {
+                let (q, d) = (DevBuf::new(&gpu, rows * k)?, DevBuf::new(&gpu, rows * k / 32 * 2)?);
+                // SAFETY: w holds rows x k / 32 blocks of 34 bytes; q rows x k bytes, d k / 32 x rows halves.
+                ffi::check(unsafe { split(gpu.raw(), w.ptr(), rows as i64, k as i64, q.ptr(), d.ptr()) }, "q8 split")?;
+                nsd.wait()?;
+                return Ok(Part { w: q, qtype: code, rows, scales: Some(d) });
             }
             Ok(Part { w, qtype: code, rows, scales: None })
         };
@@ -850,5 +860,46 @@ impl Dit {
         prof::mark(nsd, "output")?;
         nsd.wait()?;
         Ok(v)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_feed_forward_runs_a_1024_pictures_rows_at_once_and_a_larger_one_in_slices() {
+        // 64 x 64 tokens (1024 x 1024) whole; 128 x 128 (2048 x 2048) a slice, so its 2 x 12,288 halves a row fit
+        assert_eq!(ffn_rows(4096), 4096);
+        assert_eq!(ffn_rows(16384), 4096);
+        assert_eq!(ffn_rows(300), 300);
+        // an empty pass still has a buffer of one row
+        assert_eq!(ffn_rows(0), 1);
+    }
+
+    #[test]
+    fn a_matrix_is_made_half_in_slices_of_whole_256_row_tiles_near_64_mib() {
+        // the DiT's 3072 / 4096 / 12288 deep matrices: whole tiles, about SLICE_BYTES of halves
+        for k in [3072, 4096, 12288] {
+            let per = slice_rows(k, 1 << 20);
+            assert_eq!(per % 256, 0, "k {k}: whole tiles");
+            assert!(per * k * 2 <= SLICE_BYTES && (per + 256) * k * 2 > SLICE_BYTES, "k {k}: {per} rows");
+        }
+        // a short matrix: its own rows rounded up to a tile, not a 64 MiB buffer
+        assert_eq!(slice_rows(4096, 300), 512);
+        assert_eq!(slice_rows(4096, 1), 256);
+        // a matrix too deep for one tile in 64 MiB still gets one tile
+        assert_eq!(slice_rows(1 << 18, 4096), 256);
+    }
+
+    #[test]
+    fn only_q8_0_matrices_on_a_5070_class_card_are_split_for_the_silos_q8_products() {
+        // the 5070 is compute capability 12.0 (120), the 3060 8.6 (86): on the 3060 the dequantized slices were faster
+        assert!(q8_split_wanted(false, 8, 120, 3072, 9216));
+        assert!(!q8_split_wanted(false, 8, 86, 3072, 9216), "the 3060 keeps the slices");
+        assert!(!q8_split_wanted(true, 8, 120, 3072, 9216), "int8 ConvRot replaces the stored blocks");
+        assert!(!q8_split_wanted(false, 14, 120, 3072, 9216), "Q6_K has its own path");
+        assert!(!q8_split_wanted(false, 8, 120, 3000, 9216), "a row of part blocks");
+        assert!(!q8_split_wanted(false, 8, 120, 3072, 9212), "rows not in eights");
     }
 }

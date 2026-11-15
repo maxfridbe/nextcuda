@@ -19,6 +19,7 @@ use nextcuda_diffusion::kernels::{none, Dt, Nsd};
 use nextcuda_gguf::safetensors::SafeTensors;
 
 use crate::ffi;
+use crate::rust::vae::{tiles, Tile};
 
 /// F.normalize's floor, as an epsilon on the mean square: never reached by real activations
 const EPS: f32 = 1e-24;
@@ -291,20 +292,16 @@ impl Vae {
         let c = self.conv_in.co;
         let core = TILE - 2 * HALO;
         let mut out = vec![0u8; ph * pw * 3];
-        for y0 in (0..h).step_by(core) {
-            for x0 in (0..w).step_by(core) {
-                let (y1, x1) = ((y0 + core).min(h), (x0 + core).min(w));
-                let (ya, yb, xa, xb) = (y0.saturating_sub(HALO), (y1 + HALO).min(h), x0.saturating_sub(HALO), (x1 + HALO).min(w));
-                let (th, tw) = (yb - ya, xb - xa);
-                let t = DevBuf::new(gpu, th * tw * c * 2)?;
-                t.copy_2d(0, tw * c * 2, &x, (ya * w + xa) * c * 2, w * c * 2, tw * c * 2, th)?;
-                let px = self.up_path(nsd, t, th, tw)?;
-                let (cy, cx, ch, cw) = ((y0 - ya) * s, (x0 - xa) * s, (y1 - y0) * s, (x1 - x0) * s);
-                for r in 0..ch {
-                    let src = ((cy + r) * tw * s + cx) * 3;
-                    let dst = ((y0 * s + r) * pw + x0 * s) * 3;
-                    out[dst..dst + cw * 3].copy_from_slice(&px[src..src + cw * 3]);
-                }
+        for Tile { y0, y1, x0, x1, ya, yb, xa, xb } in tiles(h, w, core, core, HALO) {
+            let (th, tw) = (yb - ya, xb - xa);
+            let t = DevBuf::new(gpu, th * tw * c * 2)?;
+            t.copy_2d(0, tw * c * 2, &x, (ya * w + xa) * c * 2, w * c * 2, tw * c * 2, th)?;
+            let px = self.up_path(nsd, t, th, tw)?;
+            let (cy, cx, ch, cw) = ((y0 - ya) * s, (x0 - xa) * s, (y1 - y0) * s, (x1 - x0) * s);
+            for r in 0..ch {
+                let src = ((cy + r) * tw * s + cx) * 3;
+                let dst = ((y0 * s + r) * pw + x0 * s) * 3;
+                out[dst..dst + cw * 3].copy_from_slice(&px[src..src + cw * 3]);
             }
         }
         Ok((out, pw, ph))

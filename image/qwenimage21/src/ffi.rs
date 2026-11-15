@@ -140,7 +140,12 @@ pub fn silo() -> Option<&'static Silo> {
 /// the tensor cores (twice their float32 rate on a GeForce), the slices' sums in float32
 pub fn f16acc() -> bool {
     static F: OnceLock<bool> = OnceLock::new();
-    *F.get_or_init(|| std::env::var("NS_QI_F16ACC").map_or(true, |v| v != "0"))
+    *F.get_or_init(|| f16acc_of(std::env::var("NS_QI_F16ACC").ok().as_deref()))
+}
+
+/// NS_QI_F16ACC's value read: on unless it is "0"
+fn f16acc_of(v: Option<&str>) -> bool {
+    v != Some("0")
 }
 
 /// The silo attention's mode: its 128-row kernel, with `f16acc` the P V product's sums in half (the same error as
@@ -149,8 +154,35 @@ pub fn f16acc() -> bool {
 /// 255 against float32's 0.14)
 pub fn attention_mode() -> i32 {
     static F: OnceLock<i32> = OnceLock::new();
-    *F.get_or_init(|| {
-        let qk16 = f16acc() && std::env::var("NS_QI_QK16").is_ok_and(|v| v == "1");
-        1 | if qk16 { 2 } else { 0 } | if f16acc() { 4 } else { 0 }
-    })
+    *F.get_or_init(|| attention_mode_of(f16acc(), std::env::var("NS_QI_QK16").ok().as_deref()))
+}
+
+/// The mode for half sums on or off (`f16acc`) and NS_QI_QK16's value: the 128-row kernel (1), half sums in Q K^T (2)
+/// only with NS_QI_QK16=1 and half sums on, in P V (4) whenever half sums are on
+fn attention_mode_of(f16acc: bool, qk16: Option<&str>) -> i32 {
+    let qk16 = f16acc && qk16 == Some("1");
+    1 | if qk16 { 2 } else { 0 } | if f16acc { 4 } else { 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn half_sums_are_on_unless_ns_qi_f16acc_is_zero() {
+        assert!(f16acc_of(None));
+        assert!(f16acc_of(Some("1")));
+        assert!(!f16acc_of(Some("0")));
+    }
+
+    #[test]
+    fn q_k_half_sums_need_ns_qi_qk16_one_and_half_sums_on() {
+        // the default (9e61d40): the 128-row kernel, P V in half, Q K^T in float32 (half sums there moved texture)
+        assert_eq!(attention_mode_of(true, None), 1 | 4);
+        assert_eq!(attention_mode_of(true, Some("1")), 1 | 2 | 4);
+        assert_eq!(attention_mode_of(true, Some("0")), 1 | 4);
+        // NS_QI_F16ACC=0 turns every half sum off, NS_QI_QK16=1 included
+        assert_eq!(attention_mode_of(false, Some("1")), 1);
+        assert_eq!(attention_mode_of(false, None), 1);
+    }
 }
