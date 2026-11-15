@@ -74,6 +74,7 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "top-k", env: "", value: "80", help: "sampling top-k", at: At::Request },
     EngineOption { name: "top-p", env: "", value: "0.69", help: "sampling top-p", at: At::Request },
     EngineOption { name: "repetition-penalty", env: "", value: "2.4", help: "the repetition penalty over the last 96 frames of the first six codebooks", at: At::Request },
+    EngineOption { name: "level", env: "", value: "on|off", help: "loudness leveling (on): the take brought to -19 dBFS of speech and held there (the model drifts quieter through a long take with some voices, and a preset keeps its recording's level); off: the decoder's level less 3 dB, as Zyphra serves it", at: At::Request },
     EngineOption { name: "silence", env: "", value: "0..30", help: "codec-silence frames after the text (3: 0.2 s, decoded ahead and cut)", at: At::Request },
 ];
 
@@ -206,6 +207,74 @@ pub fn output(pcm: &mut [f32], headroom_db: f32) {
     for x in pcm.iter_mut() {
         let v = *x * g;
         *x = if v.abs() > KNEE { v.signum() * (KNEE + w * ((v.abs() - KNEE) / w).tanh()) } else { v };
+    }
+}
+
+/// The level speech is brought to: active-speech RMS in dBFS (about -18 LUFS; the platform's other speech engines
+/// deliver -19 to -22)
+pub const TARGET_DBFS: f32 = -19.0;
+
+/// Loudness leveling: ZONOS3-Mini drifts quieter through a long take with some voices (Zyphra's own runtime does the
+/// same on the same embedding: -26 -> -32 dB, -30 -> -42 dB over 27 s), and a preset's level is its recording's (Savannah
+/// -29 dB). The level of the speech around each 50 ms frame (active frames only, a 3 s window) is brought to `target`
+/// by a gain that moves slowly (0.5 s smoothing, -12 to +40 dB), so a sentence keeps its own dynamics while the take as
+/// a whole holds its level. Pauses keep the gain of the speech before them.
+pub fn level(pcm: &mut [f32], rate: u32, target: f32) {
+    let hop = (rate as usize / 20).max(1);
+    let nf = pcm.len().div_ceil(hop);
+    if nf == 0 {
+        return;
+    }
+    let energy: Vec<f64> = (0..nf).map(|f| {
+        let s = &pcm[f * hop..((f + 1) * hop).min(pcm.len())];
+        s.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>() / s.len().max(1) as f64
+    }).collect();
+    let db = |e: f64| 10.0 * (e + 1e-12).log10();
+    // active: within 35 dB of the take's loud frames (relative: a take that fades to a whisper keeps its tail), above
+    // digital silence
+    let mut sorted: Vec<f64> = energy.clone();
+    sorted.sort_by(|a, b| b.total_cmp(a));
+    let loud = db(sorted[(nf / 20).min(nf - 1)]);
+    let active: Vec<bool> = energy.iter().map(|e| db(*e) > -80.0 && db(*e) > loud - 35.0).collect();
+    if !active.iter().any(|a| *a) {
+        return;
+    }
+    let half = 30; // frames: 1.5 s either side
+    let (mut sum, mut cnt) = (vec![0f64; nf + 1], vec![0usize; nf + 1]);
+    for f in 0..nf {
+        sum[f + 1] = sum[f] + if active[f] { energy[f] } else { 0.0 };
+        cnt[f + 1] = cnt[f] + active[f] as usize;
+    }
+    let mut gain_db = vec![0f32; nf];
+    let mut last: Option<f32> = None;
+    for f in 0..nf {
+        let (lo, hi) = (f.saturating_sub(half), (f + half + 1).min(nf));
+        let n = cnt[hi] - cnt[lo];
+        // a window with too little speech keeps the gain before it (the first speech's for a leading pause)
+        let g = if n >= 4 { Some((target - db((sum[hi] - sum[lo]) / n as f64) as f32).clamp(-12.0, 40.0)) } else { None };
+        if g.is_some() {
+            last = g;
+        }
+        gain_db[f] = g.or(last).unwrap_or(f32::NAN);
+    }
+    let first = gain_db.iter().copied().find(|g| g.is_finite()).unwrap_or(0.0);
+    gain_db.iter_mut().filter(|g| !g.is_finite()).for_each(|g| *g = first);
+    // smoothed forwards and backwards (no lag either way): a 0.5 s time constant
+    let a = (-1.0f32 / 10.0).exp();
+    for f in 1..nf {
+        gain_db[f] = a * gain_db[f - 1] + (1.0 - a) * gain_db[f];
+    }
+    for f in (0..nf - 1).rev() {
+        gain_db[f] = a * gain_db[f + 1] + (1.0 - a) * gain_db[f];
+    }
+    // per sample, between frame centres
+    for (i, x) in pcm.iter_mut().enumerate() {
+        let p = (i as f32 / hop as f32 - 0.5).max(0.0);
+        let f0 = (p as usize).min(nf - 1);
+        let f1 = (f0 + 1).min(nf - 1);
+        let t = p - f0 as f32;
+        let g = gain_db[f0] * (1.0 - t) + gain_db[f1] * t;
+        *x *= 10f32.powf(g / 20.0);
     }
 }
 
@@ -501,6 +570,11 @@ impl AudioEngine for Zonos3 {
                 buckets[i] = Some(prompt::bucket(&c.cond_edges[i], v));
             }
         }
+        let leveled = match given(req, "level") {
+            None | Some("on") | Some("1") | Some("true") => true,
+            Some("off") | Some("0") | Some("false") => false,
+            Some(v) => return Err(Error(format!("level {v:?}: on or off"))),
+        };
         let cfg = req.cfg.unwrap_or(1.0);
         if !cfg.is_finite() || cfg < 0.0 {
             return Err(Error(format!("cfg {cfg}: a scale of 0 or more (1: none)")));
@@ -530,11 +604,17 @@ impl AudioEngine for Zonos3 {
             let mut pcm = self.decode_take(dec, &take, &prefill)?;
             eprintln!("{ARCH}: stretch {}/{}: {} rows ({:.1} s of sound), generated by {:.2} s, decoded ({}) by {:.2} s", i + 1, parts.len(), take.rows.len(),
                       pcm.len() as f64 / RATE as f64, t_gen, dec.variant, t0.elapsed().as_secs_f64());
-            output(&mut pcm, dec.headroom_db);
+            if !leveled {
+                output(&mut pcm, dec.headroom_db);
+            }
             if !out.is_empty() {
                 out.extend(std::iter::repeat_n(0.0f32, (GAP * RATE as f32) as usize));
             }
             out.extend(pcm);
+        }
+        if leveled {
+            level(&mut out, RATE, TARGET_DBFS);
+            output(&mut out, 0.0);
         }
         progress(Step { phase: "decode", at: parts.len() as u32, of: parts.len() as u32, seconds: t0.elapsed().as_secs_f64() })?;
         Ok(Audio { rate: dec.rate, channels: 1, samples: out })
@@ -560,6 +640,26 @@ mod tests {
         let long = "word ".repeat(50);
         let s = stretches(&long, 40);
         assert!(s.iter().all(|x| x.chars().count() <= 40 && !x.is_empty()));
+    }
+
+    #[test]
+    fn leveling_holds_a_fading_take_at_the_target() {
+        // 20 s of a tone fading from -26 to -42 dB, with a pause in the middle
+        let rate = 44100;
+        let mut v: Vec<f32> = (0..20 * rate).map(|i| {
+            let t = i as f32 / rate as f32;
+            let amp = 10f32.powf((-26.0 - 0.8 * t) / 20.0) * 2f32.sqrt();
+            if (9.0..10.0).contains(&t) { 0.0 } else { amp * (2.0 * std::f32::consts::PI * 220.0 * t).sin() }
+        }).collect();
+        level(&mut v, rate as u32, TARGET_DBFS);
+        let rms = |a: usize, b: usize| 20.0 * ((v[a * rate..b * rate].iter().map(|x| x * x).sum::<f32>() / ((b - a) * rate) as f32).sqrt()).log10();
+        for (a, b) in [(1, 3), (5, 8), (11, 14), (16, 19)] {
+            assert!((rms(a, b) - TARGET_DBFS).abs() < 1.0, "{a}-{b} s: {}", rms(a, b));
+        }
+        assert!(v[(9.5 * rate as f32) as usize].abs() < 1e-6, "the pause stays silent");
+        let mut quiet = vec![0f32; 1000];
+        level(&mut quiet, rate as u32, TARGET_DBFS);
+        assert!(quiet.iter().all(|x| *x == 0.0));
     }
 
     #[test]

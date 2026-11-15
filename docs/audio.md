@@ -87,6 +87,14 @@ nextcuda audio check <dump dir> --model zonos3-mini --stages prompt,lm,forced,de
   clone's speaker encoding of 13 s of recording 0.1 s. 2.1 GiB at the peak with the keep2 decoder (the backbone 0.8
   GiB, the decoder 0.7); the full decoder adds 4 GiB on the card when a request first names it (2.5 s to load), then
   decodes a 9 s take in 0.1 s as the default one does.
+- **Loudness** (2026-11-15): the model drifts quieter through a long take with some voices, and a preset keeps its
+  recording's level. Zyphra's own runtime does the same on the same inputs (a cloned voice, seeds 1-3, gated speech level
+  per 5 s: -24 -> -32, -29 -> -45, -24 -> -36 dB; Savannah's codes -26 to -32 dB), and serves it 3 dB down. The engine now
+  levels each take (`level`, on by default): the speech around each 50 ms frame (a 3 s window, a gate relative to the
+  take's loud frames) is brought to -19 dBFS active RMS by a gain smoothed over 0.5 s (-12 to +40 dB), then the soft
+  limiter. Measured on the same takes, the gated level per 5 s spreads 0.9-2.0 dB (it spread 2.9-21 dB): a 70 s Rupert
+  take -16.5 to -17.4, Savannah -16.9 to -18.0, the full decoder -16.7 to -17.6, the user's clone (the take that faded
+  21 dB) -16.8 to -18.8. `level: off` gives the decoder's level less 3 dB, as Zyphra serves it.
 - **Not ported:** raw-reference cloning of a new recording (it needs the 4 GB acoustic encoder and the 1.5 GB SSL
   teacher; the presets' shipped codes are used as they are), Zyphra's text normalizer (the server's speech text pass
   runs first), LACI, speech editing, accent adapters, control spans and streaming decode.

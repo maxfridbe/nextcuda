@@ -32,6 +32,8 @@ Doses of named directions, `"controls": "delivery.tempo=2, emotions.happy=4"` (a
   `texture.husky` (`.raspy`, `.deep`, `.soft` ...), `room.clean`
 
 ## Other options
+`level` (on): every take is brought to -19 dBFS of speech and held there (the model drifts quieter through a long
+take with some voices); `off` keeps the model's own level, 3 dB down.
 `speaking-rate` (UTF-8 bytes a second, ~14 is ordinary English), `loudness` (LUFS), `fmax` (Hz): the model's
 condition rows (unset: its own choice). `decoder: full` - the full-size codec head (4 GiB more on the card, loaded on
 first use; keep2, the default, is what Zyphra serves). `temperature` (0.75), `top-k` (80), `top-p` (0.69),
