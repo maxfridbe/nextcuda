@@ -47,17 +47,18 @@ passes a step); before = the build of that morning (cuBLAS products, the first f
 
 | card | picture | model | text encode | per step | VAE | total | before: encode / step / VAE / total |
 |---|---|---|---:|---:|---:|---:|---|
-| RTX 5070 | 1024x1024 | `qwen-image-2.1-turbo-q8` | 0.20 s | 0.81 s | 0.35 s | **5.4 s** | 0.48 / 1.17 / 0.88 / 8.4 s |
-| RTX 5070 | 2048x2048 | `qwen-image-2.1-turbo-q8` | 0.19 s | 4.42 s | 1.67 s | **28.4 s** | 0.48 / 6.58 / 9.73 / 49.7 s |
-| RTX 5070 | 1024x1024 | `qwen-image-2.1-q8` | 0.24 s | 1.67 s | 0.42 s | **14.0 s** | 0.53 / 2.37 / 0.91 / 20.4 s |
-| RTX 5070 | 2048x2048 | `qwen-image-2.1-q8` | 0.24 s | 8.98 s | 1.94 s | **74.0 s** | 0.53 / 13.18 / 9.77 / 115.7 s |
-| RTX 3060 | 1024x1024 | `qwen-image-2.1-turbo-q8` | 2.85 s | 2.27 s | 1.04 s | **17.5 s** | 3.20 / 2.96 / 2.20 / 23.1 s |
-| RTX 3060 | 2048x2048 | `qwen-image-2.1-turbo-q8` | 2.85 s | 12.03 s | 5.06 s | **80.1 s** | 3.23 / 17.48 / 24.39 / 132.5 s |
-| RTX 3060 | 1024x1024 | `qwen-image-2.1-q8` | 3.08 s | 4.57 s | 1.12 s | **40.8 s** | 3.37 / 5.95 / 2.22 / 53.2 s |
-| RTX 3060 | 2048x2048 | `qwen-image-2.1-q8` | 3.08 s | 24.12 s | 5.52 s | **201.5 s** | 3.44 / 35.06 / 24.49 / 308.3 s |
+| RTX 5070 | 1024x1024 | `qwen-image-2.1-turbo-q8` | 0.19 s | 0.82 s | 0.36 s | **5.5 s** | 0.48 / 1.17 / 0.88 / 8.4 s |
+| RTX 5070 | 2048x2048 | `qwen-image-2.1-turbo-q8` | 0.19 s | 4.70 s | 1.67 s | **30.1 s** | 0.48 / 6.58 / 9.73 / 49.7 s |
+| RTX 5070 | 1024x1024 | `qwen-image-2.1-q8` | 0.23 s | 1.67 s | 0.35 s | **14.0 s** | 0.53 / 2.37 / 0.91 / 20.4 s |
+| RTX 5070 | 2048x2048 | `qwen-image-2.1-q8` | 0.23 s | 9.39 s | 1.66 s | **77.0 s** | 0.53 / 13.18 / 9.77 / 115.7 s |
+| RTX 3060 | 1024x1024 | `qwen-image-2.1-turbo-q8` | 2.85 s | 2.31 s | 1.05 s | **17.8 s** | 3.20 / 2.96 / 2.20 / 23.1 s |
+| RTX 3060 | 2048x2048 | `qwen-image-2.1-turbo-q8` | 2.86 s | 12.85 s | 5.07 s | **85.0 s** | 3.23 / 17.48 / 24.39 / 132.5 s |
+| RTX 3060 | 1024x1024 | `qwen-image-2.1-q8` | 3.08 s | 4.66 s | 1.07 s | **41.4 s** | 3.37 / 5.95 / 2.22 / 53.2 s |
+| RTX 3060 | 2048x2048 | `qwen-image-2.1-q8` | 3.08 s | 25.77 s | 5.07 s | **214.3 s** | 3.44 / 35.06 / 24.49 / 308.3 s |
 
-(The full model's rows are of the build before the VAE's fused norm, 0.3-0.5 s more VAE.) Peak GPU memory fell
-(5070 2048 x 2048: 11.2 -> 10.2 GiB: no im2col, no 4x upsample buffer). Matrices:
+With `NS_QI_QK16=1` (Q K^T in half sums too, off by default) the 2048 x 2048 turbo picture was 28.4 s on the 5070 and
+80.1 s on the 3060. Peak GPU memory fell (5070 2048 x 2048: 11.2 -> 10.0 GiB: no im2col, no 4x upsample buffer).
+Matrices:
 [`benchy/image-v1-2026-11-14-qi21-before`](benchy/image-v1-2026-11-14-qi21-before.md) and
 [`-after`](benchy/image-v1-2026-11-14-qi21-after.md).
 
@@ -100,7 +101,7 @@ mean |difference| 0.07-0.1 of 255, PSNR 58 dB, the few spots that move are the o
 too; the attention against float64 on the model's own q, k, v: 2.5e-4 relative rms (float32 sums 2.2e-4). The
 VAE's convolutions are an implicit GEMM on the same kernel, its tiles cut after the first two up blocks; the text
 encoder streams from pinned memory a layer ahead of its work, so the 3060's x1 link (1.7 GB/s) is now its whole time.
-At 2048 x 2048 a step is ~52 % products, ~36 % attention: half the old time would need the tensor cores' int8 path
+At 2048 x 2048 a step is ~50 % products, ~40 % attention: half the old time would need the tensor cores' int8 path
 (activations quantized - visibly different pictures), not more of the same. [`PHASES.md`](PHASES.md) has the history.
 
 ### Engine options: `--opt-NAME`

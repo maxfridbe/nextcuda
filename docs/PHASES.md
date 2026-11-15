@@ -123,8 +123,11 @@ slices added in float32 (`NS_QI_F16ACC`) - errors at the level of the output's o
   `flash2_k`, 128 rows a block, cp.async K / V, ldmatrix(.trans), half sums in P V (Q K^T's too with `NS_QI_QK16=1`: off, it moved a 3060
   picture's fine texture - mean |difference| 0.31 of 255 against float32 sums' 0.14); on the
   model's own q, k, v against float64, relative rms 2.2e-4 (float32 sums), 2.5e-4 (P V half), 5e-4 - 1.3e-3 (both);
-  82.6 -> ~50 ms a call at 2048 x 2048. The text encoder's layers pinned and copied a layer ahead (5070 0.48 -> 0.19 s;
+  82.6 -> ~61 ms a call at 2048 x 2048 (~50 with Q K^T in half too). The text encoder's layers pinned and copied a layer ahead (5070 0.48 -> 0.19 s;
   the 3060's x1 link 3.2 -> 2.7 s, the link's own speed).
+- **Clocks** ([`image.md`](image.md)): the 2048 x 2048 turbo picture 49.7 -> 30.1 s on the 5070, 132.5 -> 85.0 s on
+  the 3060; 1024 x 1024 8.4 -> 5.5 s and 23.1 -> 17.8 s; the full model at 2048 x 2048 115.7 -> 77.0 s and 308 -> 214 s.
+  Not the half asked for: at the half rate a step is ~70 % of the tensor cores' peak already.
 - **Tried, no gain (left out):** the half sums flushed every 64 or 128 deep (4 and 8 steps: no faster); tile orders of
   4 / 16 row tiles; `__launch_bounds__(.., 2)` (spills on sm_86: 10x slower); 128 x 256, 256 x 128 and BK 64 tiles on
   the 5070 (84-98 TFLOPS); Q8_0 fragments on the 3060 (31 against its 33.5 TFLOPS on dequantized slices); masking
