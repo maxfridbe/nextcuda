@@ -26,6 +26,7 @@ pub mod check;
 pub mod codec;
 pub mod encoder;
 mod ffi;
+pub mod laci;
 pub mod lm;
 pub mod markup;
 pub mod ops;
@@ -33,6 +34,7 @@ pub mod prompt;
 pub mod sample;
 pub mod spk;
 pub mod steer;
+pub mod stream;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -77,6 +79,8 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "top-p", env: "", value: "0.69", help: "sampling top-p", at: At::Request },
     EngineOption { name: "repetition-penalty", env: "", value: "2.4", help: "the repetition penalty over the last 96 frames of the first six codebooks", at: At::Request },
     EngineOption { name: "normalize", env: "", value: "on|off", help: "Zyphra's text normalizer (zyphra-textnorm) in the request's language (on; auto: the script decides, Latin English): numbers, money, dates, units said as words; off: the text as written", at: At::Request },
+    EngineOption { name: "laci", env: "", value: "on|off", help: "LACI (off): the alignment heads' reading of the text checked every step; a skipped or repeated stretch, or a take ending early, is rolled back and said again (at most 8 times) under an attention mask - needs cfg 1 and the language's heads (laci/ beside the model)", at: At::Request },
+    EngineOption { name: "short-text", env: "", value: "auto|off", help: "a text of a word or two (auto): said with a pause and a filler sentence after it under LACI, and cut where the filler starts - alone the model often says it wrong or runs on; off: as it is", at: At::Request },
     EngineOption { name: "level", env: "", value: "on|off", help: "loudness leveling (on): the take brought to -19 dBFS of speech and held there (the model drifts quieter through a long take with some voices, and a preset keeps its recording's level); off: the decoder's level less 3 dB, as Zyphra serves it", at: At::Request },
     EngineOption { name: "silence", env: "", value: "0..30", help: "codec-silence frames after the text (3: 0.2 s, decoded ahead and cut)", at: At::Request },
 ];
@@ -103,6 +107,13 @@ pub fn files_in(dir: &Path) -> Result<ModelFiles> {
                          ("edit-adapter", "edit/accents.gguf"), ("zac-encoder", "zac-encoder.gguf"), ("ssl-teacher", "ssl-teacher.gguf")] {
         if dir.join(name).is_file() {
             f.insert(role.into(), dir.join(name));
+        }
+    }
+    // LACI's alignment heads, a file a language (Zyphra's web/laci)
+    for e in std::fs::read_dir(dir.join("laci")).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        if let Some(stem) = n.strip_suffix(".json").filter(|s| s.starts_with("zonos3_mini_heads")) {
+            f.insert(format!("laci-{stem}"), e.path());
         }
     }
     if !f.contains_key("decoder") {
@@ -148,6 +159,8 @@ pub struct Zonos3 {
     pub spk: Option<SpeakerEncoder>,
     pub steer: Option<Steer>,
     pub voices: BTreeMap<String, VoiceFiles>,
+    /// LACI's alignment heads by file name (zonos3_mini_heads_de.json ...)
+    pub laci: BTreeMap<String, laci::Heads>,
     /// raw-reference cloning's files (zac-encoder.gguf, ssl-teacher.gguf): loaded for an encode and freed after it
     /// (5.6 GiB on the card), the codes kept per recording
     enc_paths: Option<(PathBuf, PathBuf)>,
@@ -360,6 +373,15 @@ pub struct Take {
     pub eos: Option<usize>,
 }
 
+/// A take's extras: LACI (its heads, and a short text's filler token) and a callback that gets the generated rows
+/// that are final (no later rollback can change them), then all of them with the end frame when the take is done
+#[derive(Default)]
+pub struct TakeOpts<'a> {
+    pub laci: Option<(&'a laci::Heads, Option<usize>)>,
+    #[allow(clippy::type_complexity)]
+    pub on_rows: Option<&'a mut dyn FnMut(&[[u32; 10]], Option<usize>) -> Result<()>>,
+}
+
 impl Zonos3 {
     pub fn load(files: &ModelFiles, gpu: &Arc<Gpu>, _o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<Zonos3> {
         let t0 = Instant::now();
@@ -397,13 +419,21 @@ impl Zonos3 {
                 None => voices.entry(name.to_string()).or_default().codes = Some(p.clone()),
             }
         }
+        let mut laci = BTreeMap::new();
+        for (r, p) in files {
+            if r.starts_with("laci-") {
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let text = std::fs::read_to_string(p).map_err(|x| Error(format!("{}: {x}", p.display())))?;
+                laci.insert(name.clone(), laci::Heads::parse(&text, &name)?);
+            }
+        }
         gpu.sync().map_err(ops::e)?;
         let load_s = t0.elapsed().as_secs_f64();
         log(format!("{ARCH} on {} in {load_s:.1} s: {} voices, decoder {}{}, speaker encoder {}, steering {}", gpu.name, voices.len(), decoders[0].variant,
                     if files.contains_key("decoder-full") { " (full_mr on request)" } else { "" },
                     if spk.is_some() { "yes" } else { "no" }, if steer.is_some() { "yes" } else { "no" }));
         Ok(Zonos3 { ops, lm, tok, decoders, full_path: files.get("decoder-full").cloned(), full: std::sync::OnceLock::new(), spk, steer, voices,
-                    enc_paths: files.get("zac-encoder").cloned().zip(files.get("ssl-teacher").cloned()), ref_codes: Mutex::new(Vec::new()),
+                    enc_paths: files.get("zac-encoder").cloned().zip(files.get("ssl-teacher").cloned()), ref_codes: Mutex::new(Vec::new()), laci,
                     lock: Mutex::new(()), load_s })
     }
 
@@ -502,6 +532,14 @@ impl Zonos3 {
     #[allow(clippy::too_many_arguments)]
     pub fn take(&self, ids: &[u32], voice: &Voice, buckets: &[Option<usize>], deltas: &[(usize, Vec<f32>)], spans: &[SpanSched], cfg: f32, s: &Sampling,
                 silence: usize, max_frames: usize, rng: &mut Rng, progress: &mut dyn FnMut(usize) -> Result<()>) -> Result<(Take, Vec<[u32; 10]>)> {
+        self.take_with(ids, voice, buckets, deltas, spans, cfg, s, silence, max_frames, rng, progress, TakeOpts::default())
+    }
+
+    /// `take` with LACI (and a short text's cut) and a callback that gets the generated rows as they become final
+    #[allow(clippy::too_many_arguments)]
+    pub fn take_with(&self, ids: &[u32], voice: &Voice, buckets: &[Option<usize>], deltas: &[(usize, Vec<f32>)], spans: &[SpanSched], cfg: f32, s: &Sampling,
+                     silence: usize, max_frames: usize, rng: &mut Rng, progress: &mut dyn FnMut(usize) -> Result<()>, mut o: TakeOpts)
+                     -> Result<(Take, Vec<[u32; 10]>)> {
         let c = &self.lm.c;
         let ids = ids.to_vec();
         let p = prompt::build(c, &ids, voice, buckets, silence)?;
@@ -511,10 +549,36 @@ impl Zonos3 {
             deltas: Vec::new(),
         };
         let cap = p.rows + max_frames + 2;
-        let mut seq = self.lm.seq(&self.ops, cap, p.rows)?;
-        self.lm.forward(&self.ops, &mut seq, &p.ids, &cond, false)?;
-        // speaker CFG: the same text without the voice, every condition unknown
-        let guided = cfg != 1.0 && !matches!(voice, Voice::None);
+        let w = c.row_width();
+        let ncb = c.ncb;
+        let np = p.prefill.len();
+        // LACI: the text span of the prompt (BOS..EOS rows), the session over the stream
+        let mut session = None;
+        let mut text_span = (0usize, 0usize);
+        if let Some((heads, short)) = o.laci {
+            let col: Vec<u32> = (0..p.rows).map(|r| p.ids[r * w + ncb]).collect();
+            let start = col.iter().position(|t| *t == c.bos).ok_or_else(|| Error("LACI: the prompt has no text BOS row".into()))?;
+            let end = start + 1 + col[start + 1..].iter().position(|t| *t == c.eos).ok_or_else(|| Error("LACI: the prompt has no text EOS row".into()))?;
+            text_span = (start, end - start + 1);
+            session = Some(laci::Session::new(heads.clone(), &p.prefill, rng.seed(), max_frames, ncb, o.on_rows.is_none(), short));
+        }
+        let probing = session.is_some();
+        let probe_heads: Vec<(usize, usize)> = o.laci.map(|(h, _)| h.heads.clone()).unwrap_or_default();
+        let new_seq = |kept: &[[u32; 10]]| -> Result<lm::Seq> {
+            let mut all = p.ids.clone();
+            for r in kept {
+                all.extend(r[..ncb].iter().copied().chain(std::iter::once(c.text_vocab)));
+            }
+            let mut sq = self.lm.seq(&self.ops, cap, p.rows + kept.len())?;
+            if probing {
+                sq.probe = Some(lm::Probe::new(text_span.0, text_span.1, probe_heads.clone()));
+            }
+            self.lm.forward(&self.ops, &mut sq, &all, &cond, false)?;
+            Ok(sq)
+        };
+        let mut seq = new_seq(&[])?;
+        // speaker CFG: the same text without the voice, every condition unknown (never under LACI)
+        let guided = cfg != 1.0 && !matches!(voice, Voice::None) && session.is_none();
         let mut twin = None;
         if guided {
             let tp = prompt::build(c, &ids, &Voice::None, &[], silence)?;
@@ -524,9 +588,12 @@ impl Zonos3 {
             twin = Some((ts, tc));
         }
         let mut step_cond = Cond { speaker: None, buckets: Vec::new(), deltas: deltas.to_vec() };
-        let mut rows: Vec<[u32; 10]> = Vec::new();
+        // the stream: the silence-prefill rows, then the generated ones
+        let mut stream: Vec<[u32; 10]> = p.prefill.clone();
         let (mut eos, mut countdown) = (None::<usize>, 0usize);
-        let ncb = c.ncb;
+        let mut step = 0usize;
+        let mut ctl = laci::Control::default();
+        let mut sent = 0usize;
         loop {
             let mut logits = self.lm.logits(&seq, 1)?;
             if let Some((ts, _)) = &twin {
@@ -535,35 +602,87 @@ impl Zonos3 {
                     *l = u + cfg * (*l - u);
                 }
             }
-            let total = rows.len();
+            if let Some(ss) = session.as_mut() {
+                // the readout of the last decode step first; a stop set there makes the row sampled now the last
+                if step > 0 {
+                    if let Some((pos, m)) = seq.probe.as_ref().and_then(|pr| pr.readout) {
+                        ss.on_step(&mut ctl, text_span.1, step, pos, m)?;
+                        if let Some(pr) = seq.probe.as_mut() {
+                            pr.windows = ctl.mask.clone().unwrap_or_default();
+                        }
+                    }
+                }
+                let boost = ss.stop_boost();
+                if boost != 0.0 {
+                    for cb in 0..ncb {
+                        logits[cb * c.audio_vocab + c.eoa as usize] += boost;
+                    }
+                }
+            }
+            let total = stream.len() - np;
             // the cold start: a codebook whose delayed stream has not begun is padding (the stream row counts the
             // silence rows; a prompt that ends in a recording's rows has begun)
-            let stream_row = if p.audio_prefix && p.prefill.is_empty() { usize::MAX } else { p.prefill.len() + total };
-            let r = sample::row(&logits, ncb, s, c.codebook, c.pad, c.eoa, &rows, stream_row, rng);
-            rows.push(r);
+            let stream_row = if p.audio_prefix && p.prefill.is_empty() { usize::MAX } else { stream.len() };
+            let r = sample::row(&logits, ncb, s, c.codebook, c.pad, c.eoa, &stream[np..], stream_row, rng);
+            stream.push(r);
             if eos.is_none() {
                 if let Some(mc) = (0..ncb).rev().find(|cb| r[*cb] == c.eoa) {
                     eos = Some(total.saturating_sub(mc));
                     countdown = ncb + 1;
                 }
             }
-            let mut finished = rows.len() >= max_frames;
+            let attempt_rows = stream.len() - session.as_ref().map_or(np, |ss| ss.attempt_start);
+            let mut finished = stream.len() - np >= max_frames || attempt_rows >= max_frames;
             if countdown > 0 {
                 countdown -= 1;
                 if countdown == 0 {
                     finished = true;
                 }
             }
-            if rows.len() % 15 == 0 || finished {
-                progress(rows.len())?;
+            if let Some(ss) = session.as_mut() {
+                ss.append(r, eos.map(|e| e + np));
+                finished |= ctl.stop;
+            }
+            if (stream.len() - np) % 15 == 0 || finished {
+                progress(stream.len() - np)?;
             }
             if finished {
+                if let Some(ss) = session.as_mut() {
+                    if let Some(cont) = ss.finish_attempt() {
+                        let f = ss.failures.last().cloned();
+                        eprintln!("{ARCH}: LACI {} (bin {}) at row {}, back to row {}, retry {}", f.as_ref().map_or("?", |f| f.kind), f.as_ref().map_or(0, |f| f.bin),
+                                  f.as_ref().map_or(0, |f| f.detect_row), cont.n_rows, ss.attempts);
+                        stream.truncate(cont.n_rows);
+                        *rng = Rng::new(cont.seed);
+                        seq = new_seq(&stream[np..])?;
+                        if let Some(pr) = seq.probe.as_mut() {
+                            pr.windows = ss.probe_mask().unwrap_or_default();
+                        }
+                        ctl = laci::Control::default();
+                        eos = None;
+                        countdown = 0;
+                        step = 0;
+                        continue;
+                    }
+                    eprintln!("{ARCH}: LACI {}", ss.summary());
+                }
                 break;
+            }
+            // the rows no later rollback can change go downstream
+            let fin = match session.as_mut() {
+                Some(ss) => ss.drain(false).1,
+                None => stream.len(),
+            };
+            if let Some(cb) = o.on_rows.as_mut() {
+                if fin > np + sent {
+                    sent = fin - np;
+                    cb(&stream[np..fin], None)?;
+                }
             }
             let ids: Vec<u32> = r[..ncb].iter().copied().chain(std::iter::once(c.text_vocab)).collect();
             // the request's constant deltas and the spans active at this generated frame (Zyphra's steer_fn)
             if !spans.is_empty() {
-                let f = rows.len() as f32;
+                let f = (stream.len() - np) as f32;
                 let mut d = deltas.to_vec();
                 for (start, end, sd) in spans {
                     let w = markup::span_weight(*start, *end, f);
@@ -580,11 +699,50 @@ impl Zonos3 {
                 step_cond.deltas = d;
             }
             self.lm.forward(&self.ops, &mut seq, &ids, &step_cond, false)?;
+            step += 1;
             if let Some((ts, _)) = twin.as_mut() {
                 self.lm.forward(&self.ops, ts, &ids, &step_cond, false)?;
             }
         }
+        let mut rows: Vec<[u32; 10]> = stream[np..].to_vec();
+        if let Some(ss) = session.as_ref() {
+            if let Some(e) = ss.eos_frame() {
+                eos = Some(e);
+                rows.truncate((e + ncb).min(rows.len()));
+            }
+        }
+        if let Some(cb) = o.on_rows.as_mut() {
+            cb(&rows, Some(eos.unwrap_or(rows.len())))?;
+        }
         Ok((Take { rows, eos }, p.prefill))
+    }
+
+    /// Frames [from, to) of delayed rows (frame f's codebook c on row f + c), codes outside the codebook as 0
+    fn undelay(&self, buffer: &[[u32; 10]], from: usize, to: usize) -> Vec<[u32; 10]> {
+        let c = &self.lm.c;
+        (from..to).map(|f| {
+            let mut fr = [0u32; 10];
+            for (cb, x) in fr.iter_mut().enumerate().take(c.ncb) {
+                let v = buffer.get(f + cb).map_or(c.pad, |r| r[cb]);
+                *x = if (v as usize) < c.codebook { v } else { 0 };
+            }
+            fr
+        }).collect()
+    }
+
+    /// The final frame count of a take's buffer (prefill + rows): complete frames, before its end and any end of audio
+    fn target_frames(&self, buffer: &[[u32; 10]], eos: Option<usize>, np: usize) -> usize {
+        let c = &self.lm.c;
+        let mut target = buffer.len().saturating_sub(c.ncb - 1);
+        if let Some(e) = eos {
+            target = target.min(e + np);
+        }
+        for (i, r) in buffer.iter().enumerate() {
+            if let Some(mc) = (0..c.ncb).rev().find(|cb| r[*cb] == c.eoa) {
+                target = target.min(i.saturating_sub(mc));
+            }
+        }
+        target
     }
 
     /// A take's rows to PCM: undelayed (frame f's codebook c on row f + c), the complete frames before the end, the
@@ -605,14 +763,7 @@ impl Zonos3 {
         if target <= prefill.len() {
             return Ok(Vec::new());
         }
-        let codes: Vec<[u32; 10]> = (0..target).map(|f| {
-            let mut fr = [0u32; 10];
-            for (cb, x) in fr.iter_mut().enumerate().take(ncb) {
-                let v = buffer.get(f + cb).map_or(c.pad, |r| r[cb]);
-                *x = if (v as usize) < c.codebook { v } else { 0 };
-            }
-            fr
-        }).collect();
+        let codes = self.undelay(&buffer, 0, target);
         let pcm = dec.decode(&self.ops, &codes)?;
         Ok(pcm[(prefill.len() * dec.hop).min(pcm.len())..].to_vec())
     }
@@ -652,6 +803,27 @@ impl AudioEngine for Zonos3 {
     }
 
     fn generate(&self, req: &AudioRequest, progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Audio> {
+        self.run(req, progress, None)
+    }
+
+    fn streams(&self) -> bool {
+        true
+    }
+
+    fn generate_stream(&self, req: &AudioRequest, progress: &mut dyn FnMut(Step) -> Result<()>, sink: &mut dyn FnMut(&Audio) -> Result<()>) -> Result<Audio> {
+        let rate = self.decoders[0].rate;
+        self.run(req, progress, Some(&mut |pcm: &[f32]| sink(&Audio { rate, channels: 1, samples: pcm.to_vec() })))
+    }
+
+    fn report(&self) -> Vec<String> {
+        vec![format!("{ARCH} on {}: backbone {:.0} MiB, decoders {}, {} voices", self.ops.gpu.name, self.lm.bytes as f64 / (1u64 << 20) as f64,
+                     self.decoders.iter().map(|d| d.variant.clone()).collect::<Vec<_>>().join(", "), self.voices.len())]
+    }
+}
+
+impl Zonos3 {
+    /// The request's sound; `sink`: handed over in pieces as it is made (streaming)
+    fn run(&self, req: &AudioRequest, progress: &mut dyn FnMut(Step) -> Result<()>, sink: Option<&mut dyn FnMut(&[f32]) -> Result<()>>) -> Result<Audio> {
         let _one = self.lock.lock().unwrap_or_else(|p| p.into_inner());
         let t0 = Instant::now();
         let text = req.prompt.trim();
@@ -733,12 +905,49 @@ impl AudioEngine for Zonos3 {
         let chars: Vec<char> = clean.chars().collect();
         let parts = stretch_ranges(&clean, MAX_CHARS);
         let mut rng = Rng::new(req.seed);
+        // LACI (option laci on) and short texts (option short-text auto, the default): the language's alignment heads
+        let server_lang = laci::server_language(&lang);
+        let heads = self.laci.get(laci::heads_file(&server_lang));
+        let laci_on = match given(req, "laci") {
+            None | Some("off") | Some("0") | Some("false") => false,
+            Some("on") | Some("1") | Some("true") => true,
+            Some(v) => return Err(Error(format!("laci {v:?}: on or off"))),
+        };
+        let short_auto = match given(req, "short-text") {
+            None | Some("auto") | Some("on") => true,
+            Some("off") => false,
+            Some(v) => return Err(Error(format!("short-text {v:?}: auto or off"))),
+        };
+        if laci_on && heads.is_none() {
+            return Err(Error(format!("laci: no alignment heads for language {server_lang} (the model's laci/ files: {})",
+                                     if self.laci.is_empty() { "none - pull the model again".to_string() } else { self.laci.keys().cloned().collect::<Vec<_>>().join(", ") })));
+        }
+        if laci_on && cfg != 1.0 {
+            return Err(Error("laci: needs cfg 1 (the probe reads the conditional take alone)".into()));
+        }
+        let mut sink = sink;
+        let mut out_stream = sink.as_mut().map(|s| stream::Out { level: leveled.then(|| stream::Leveler::new(dec.rate, TARGET_DBFS)), headroom_db: dec.headroom_db,
+                                                                sink: &mut **s, all: Vec::new() });
         let mut out = Vec::new();
         let mut frames_done = 0usize;
         let budget = (seconds * FPS) as usize;
         for (i, (a, b)) in parts.iter().copied().enumerate() {
             let part: String = chars[a..b].iter().collect();
-            let ids = markup::text_ids(&self.tok, c, &spec, &part)?;
+            let mut ids = markup::text_ids(&self.tok, c, &spec, &part)?;
+            let mut short = None;
+            if let Some(h) = heads.filter(|_| short_auto && cfg == 1.0 && spans.iter().all(|s| s.start >= b || s.end <= a)) {
+                let payload = |t: &str| -> Result<Vec<u32>> {
+                    let v = markup::text_ids(&self.tok, c, &spec, t)?;
+                    Ok(v[1..v.len() - 1].to_vec())
+                };
+                let blank = |id: u32| id >= c.offset && self.tok.decode(&[id - c.offset]).trim().is_empty();
+                if let Some((full, filler)) = laci::short_prompt(&part, &server_lang, &payload, &blank)? {
+                    eprintln!("{ARCH}: short text {part:?}: under LACI with the filler, cut where it starts (token {filler})");
+                    ids = markup::text_ids(&self.tok, c, &spec, &full)?;
+                    short = Some((h, Some(filler)));
+                }
+            }
+            let laci_opt = short.or_else(|| heads.filter(|_| laci_on).map(|h| (h, None)));
             // this stretch's spans, shifted to it and placed by its characters
             let local: Vec<markup::Span> = spans.iter().filter(|s| s.start < b && s.end > a)
                 .map(|s| markup::Span { start: s.start.max(a) - a, end: s.end.min(b) - a, controls: s.controls.clone() }).collect();
@@ -758,11 +967,39 @@ impl AudioEngine for Zonos3 {
             // a take that never ends (no end-of-audio drawn) stops at four rows a byte of its text and a few
             // seconds more: the slowest steered pace says about three
             let max_frames = left.min(MAX_FRAMES).min(4 * part.len() + 90);
-            let (take, prefill) = self.take(&ids, &voice, &buckets, &deltas, &sched, cfg, &s, silence, max_frames, &mut rng, &mut |n| {
+            if let Some(o) = out_stream.as_mut() {
+                if i > 0 {
+                    o.send(&vec![0.0f32; (GAP * RATE as f32) as usize])?;
+                }
+            }
+            // streaming: the final rows decoded as they come (prefix decode behind a left context)
+            let silence_rows = prompt::build(c, &ids, &voice, &buckets, silence)?.prefill;
+            let mut prefix = stream::Prefix::new(silence_rows.len());
+            let streaming = out_stream.is_some();
+            let mut on_rows = |rows: &[[u32; 10]], end: Option<usize>| -> Result<()> {
+                let Some(o) = out_stream.as_mut() else { return Ok(()) };
+                let buffer: Vec<[u32; 10]> = silence_rows.iter().chain(rows).copied().collect();
+                let complete = buffer.len().saturating_sub(c.ncb - 1);
+                let last = end.map(|e| self.target_frames(&buffer, Some(e), silence_rows.len()));
+                if let Some((from, emitted, to, end)) = prefix.due(complete, last) {
+                    let pcm = dec.decode(&self.ops, &self.undelay(&buffer, from, end))?;
+                    let a = ((emitted - from) * dec.hop).min(pcm.len());
+                    let z = ((to - from) * dec.hop).min(pcm.len());
+                    prefix.emitted = to;
+                    o.send(&pcm[a..z])?;
+                }
+                Ok(())
+            };
+            let opts = TakeOpts { laci: laci_opt, on_rows: if streaming { Some(&mut on_rows) } else { None } };
+            let (take, prefill) = self.take_with(&ids, &voice, &buckets, &deltas, &sched, cfg, &s, silence, max_frames, &mut rng, &mut |n| {
                 progress(Step { phase: "tokens", at: (frames_done + n) as u32, of: budget as u32, seconds: t0.elapsed().as_secs_f64() })
-            })?;
+            }, opts)?;
             frames_done += take.rows.len();
             let t_gen = t0.elapsed().as_secs_f64();
+            if out_stream.is_some() {
+                eprintln!("{ARCH}: stretch {}/{} streamed: {} rows by {:.2} s", i + 1, parts.len(), take.rows.len(), t_gen);
+                continue;
+            }
             progress(Step { phase: "decode", at: i as u32, of: parts.len() as u32, seconds: t_gen })?;
             let mut pcm = self.decode_take(dec, &take, &prefill)?;
             eprintln!("{ARCH}: stretch {}/{}: {} rows ({:.1} s of sound), generated by {:.2} s, decoded ({}) by {:.2} s", i + 1, parts.len(), take.rows.len(),
@@ -775,17 +1012,15 @@ impl AudioEngine for Zonos3 {
             }
             out.extend(pcm);
         }
-        if leveled {
+        if let Some(mut o) = out_stream {
+            o.finish()?;
+            out = o.all;
+        } else if leveled {
             level(&mut out, RATE, TARGET_DBFS);
             output(&mut out, 0.0);
         }
         progress(Step { phase: "decode", at: parts.len() as u32, of: parts.len() as u32, seconds: t0.elapsed().as_secs_f64() })?;
         Ok(Audio { rate: dec.rate, channels: 1, samples: out })
-    }
-
-    fn report(&self) -> Vec<String> {
-        vec![format!("{ARCH} on {}: backbone {:.0} MiB, decoders {}, {} voices", self.ops.gpu.name, self.lm.bytes as f64 / (1u64 << 20) as f64,
-                     self.decoders.iter().map(|d| d.variant.clone()).collect::<Vec<_>>().join(", "), self.voices.len())]
     }
 }
 

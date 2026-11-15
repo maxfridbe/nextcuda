@@ -403,6 +403,38 @@ impl LoadOptions {
     }
 }
 
+/// A speech edit: a recording, the words it says, the words it should say
+#[derive(Clone, Debug, Default)]
+pub struct EditRequest {
+    /// the recording (mono, any rate)
+    pub samples: Vec<f32>,
+    pub rate: u32,
+    /// what the recording says (its transcript)
+    pub original: String,
+    /// what it should say
+    pub target: String,
+    pub language: Option<String>,
+    pub seed: u64,
+    /// the engine's own options (as AudioRequest::extra)
+    pub extra: BTreeMap<String, String>,
+}
+
+/// An edit's answer: the whole recording with the edit, and the changed regions (seconds in the original, seconds in
+/// the answer, the words)
+#[derive(Clone, Debug)]
+pub struct Edited {
+    pub audio: Audio,
+    pub regions: Vec<EditedRegion>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EditedRegion {
+    pub original: (f64, f64),
+    pub edited: (f64, f64),
+    pub old_words: String,
+    pub new_words: String,
+}
+
 /// The runtime one audio architecture brings
 pub trait AudioEngine: Send + Sync {
     /// its architecture (the registry entry's "arch")
@@ -432,6 +464,28 @@ pub trait AudioEngine: Send + Sync {
     fn load_seconds(&self) -> f64;
     /// make the request's sound, reporting as it goes; an error from `progress` stops it (a cancel)
     fn generate(&self, req: &AudioRequest, progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Audio>;
+    /// whether `generate_stream` hands the sound over in pieces as it is made (false: one piece, when it is done)
+    fn streams(&self) -> bool {
+        false
+    }
+    /// `generate`, handing the sound to `sink` as it is made: pieces at the take's rate and channels, in order, whose
+    /// concatenation is the take (the returned Audio). An error from `sink` stops it (the listener went away). The
+    /// default makes it whole and hands it over once
+    fn generate_stream(&self, req: &AudioRequest, progress: &mut dyn FnMut(Step) -> Result<()>, sink: &mut dyn FnMut(&Audio) -> Result<()>) -> Result<Audio> {
+        let a = self.generate(req, progress)?;
+        sink(&a)?;
+        Ok(a)
+    }
+    /// edit a recording's speech: `EditRequest` (None: this engine does not edit speech)
+    fn edits(&self) -> bool {
+        false
+    }
+    /// change the words of a recording: the recording, what it says (or none: the engine's recogniser is not here, so
+    /// the caller transcribes), and what it should say; the answer is the whole recording with the changed words
+    /// spoken anew in its voice
+    fn edit(&self, _req: &EditRequest, _progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Edited> {
+        Err(Error(format!("{} does not edit speech", self.arch())))
+    }
     /// a recogniser's languages and abilities (None: it makes sound, it does not listen)
     fn recogniser(&self) -> Option<Recogniser> {
         None

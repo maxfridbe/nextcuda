@@ -56,6 +56,9 @@ pub struct Api {
     pub attn_rel: unsafe extern "C" fn(G, F, F, F, i64, i64, i64, i64, F, i64, i64, F, f32, c_int, W) -> c_int,
     pub bf16: unsafe extern "C" fn(G, W, i64) -> c_int,
     pub add_rows: unsafe extern "C" fn(G, W, F, i64, i64) -> c_int,
+    pub rope_tab: unsafe extern "C" fn(G, W, i64, i64, i64, i64, F, F) -> c_int,
+    pub col2im: unsafe extern "C" fn(G, F, i64, i64, i64, i64, i64, F, i64, W) -> c_int,
+    pub attn_window: unsafe extern "C" fn(G, F, F, F, i64, i64, i64, i64, i64, f32, *const i32, i64, i64, i64, W) -> c_int,
     pub dwconv_centred: unsafe extern "C" fn(G, F, i64, i64, F, i64, F, W) -> c_int,
     /// q3t's: x [R, C] += scale[c] y [R, C]
     pub scale_add: unsafe extern "C" fn(G, W, F, F, i64, i64) -> c_int,
@@ -126,6 +129,9 @@ pub fn api() -> nextcuda_core::Result<&'static Api> {
             attn_rel: sym!("ns_audio_z3_attn_rel"),
             bf16: sym!("ns_audio_z3_bf16"),
             add_rows: sym!("ns_audio_z3_add_rows"),
+            rope_tab: sym!("ns_audio_z3_rope_tab"),
+            col2im: sym!("ns_audio_z3_col2im"),
+            attn_window: sym!("ns_audio_z3_attn_window"),
             dwconv_centred: sym!("ns_audio_z3_dwconv_same"),
             scale_add: sym!("ns_audio_q3t_scale_add"),
         })

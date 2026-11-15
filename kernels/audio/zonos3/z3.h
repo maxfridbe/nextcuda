@@ -180,6 +180,17 @@ int ns_audio_z3_attn_rel(ns_gpu* g, const float* q, const float* k, const float*
 /* x rounded to bfloat16 values (nearest, ties to even), in place */
 int ns_audio_z3_bf16(ns_gpu* g, float* x, int64_t n);
 
+/* LACI's ACI mask on one decode row: the n masked heads (spec: head, lo, hi as absolute key positions) recomputed over
+ * keys 0..keys-1 with the text keys [ts, te) outside [lo, hi] blocked; out [Hq hd] overwritten at those heads */
+int ns_audio_z3_attn_window(ns_gpu* g, const float* q, const float* k, const float* v, int64_t kvs, int64_t keys, int64_t Hq, int64_t Hk, int64_t hd,
+                            float scale, const int* spec, int64_t n, int64_t ts, int64_t te, float* out);
+
+/* rotate-half RoPE from host tables cos / sin [rows, D] on x [rows, H D] (rows xs apart) */
+int ns_audio_z3_rope_tab(ns_gpu* g, float* x, int64_t xs, int64_t rows, int64_t H, int64_t D, const float* cs, const float* sn);
+
+/* ConvTranspose1d's scatter: cols [T, K, C] -> y [To, C] (+ bias; NULL: none), stride S, padding P */
+int ns_audio_z3_col2im(ns_gpu* g, const float* cols, int64_t T, int64_t K, int64_t C, int64_t S, int64_t P, const float* bias, int64_t To, float* y);
+
 /* channels-first x [rows, cols] += bias[row] */
 int ns_audio_z3_add_rows(ns_gpu* g, float* x, const float* bias, int64_t rows, int64_t cols);
 

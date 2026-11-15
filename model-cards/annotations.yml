@@ -14,7 +14,7 @@ zonos3:
     - syntax: '[pause] [pause 0.25|0.5|1|2]'
       keep: '\[pause(?: [0-9.]+s?)?\]'
       does: 'a pause after a word (the nearest of the model''s four trained buckets, nominally 0.25 / 0.5 / 1 / 2 s); the model shortens long ones'
-      tested: 'verified 2026-11-15: [pause 2] after a word gave 0.88 and 1.0 s of silence against 0.5 and 0.7 s unmarked; Zyphra''s runtime with the same marker 0.49-0.69 s; never read aloud'
+      tested: 'verified 2026-11-15: "One.[pause 2] Two.[pause 2] Three, and four." in Rupert''s embedding, 8 seeds: the two longest pauses 0.53 s on average (0.30 s unmarked); Zyphra''s runtime, same text, voice and seeds: 0.52 s (0.28 s unmarked) - the model says a 2 s pause marker as about half a second, in both; never read aloud'
     - syntax: '[start]'
       keep: '\[start\]'
       does: 'first in the text, once: speech from the first frame (no lead-in silence)'

@@ -274,6 +274,24 @@ impl Ops {
         call!(self, bf16, "bf16 round", x, n as i64)
     }
 
+    /// LACI's ACI mask on a decode row: `n` masked heads (`spec` on the card: head, lo, hi absolute key positions)
+    /// recomputed over `keys` keys with the text keys [ts, te) outside their window blocked
+    pub fn attn_window(&self, q: F, k: F, v: F, kvs: usize, keys: usize, hq: usize, hk: usize, hd: usize, scale: f32, spec: &DevBuf, n: usize, ts: usize,
+                       te: usize, out: W) -> Result<()> {
+        call!(self, attn_window, "windowed attention", q, k, v, kvs as i64, keys as i64, hq as i64, hk as i64, hd as i64, scale, spec.ptr().cast::<i32>() as *const i32,
+              n as i64, ts as i64, te as i64, out)
+    }
+
+    /// rotate-half RoPE from host tables cos / sin [rows, d] on x [rows, h d] (rows xs apart)
+    pub fn rope_tab(&self, x: W, xs: usize, rows: usize, h: usize, d: usize, cs: F, sn: F) -> Result<()> {
+        call!(self, rope_tab, "rope (tables)", x, xs as i64, rows as i64, h as i64, d as i64, cs, sn)
+    }
+
+    /// ConvTranspose1d's scatter: cols [t, k, c] -> y [to, c] (+ bias), stride s, padding p
+    pub fn col2im(&self, cols: F, t: usize, k: usize, c: usize, s: usize, p: usize, bias: F, to: usize, y: W) -> Result<()> {
+        call!(self, col2im, "col2im", cols, t as i64, k as i64, c as i64, s as i64, p as i64, bias, to as i64, y)
+    }
+
     /// channels-first x [rows, cols] += bias[row]
     pub fn add_rows(&self, x: W, bias: F, rows: usize, cols: usize) -> Result<()> {
         call!(self, add_rows, "row bias", x, bias, rows as i64, cols as i64)

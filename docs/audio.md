@@ -110,12 +110,14 @@ nextcuda audio check <dump dir> --model zonos3-mini --stages prompt,lm,forced,de
   for the last 64 recordings. Encode 1.0 s for 13 s; the card peaked at 8.5 GiB. A take cloned this way measures 0.839
   against the recording by the speaker encoder (the shipped preset codes 0.845, the embedding 0.884), Whisper word
   for word.
-- **Not ported:** LACI and short-text handling (LACI reads alignment heads' attention over the text each step and rolls a take back on a
-  skip or a stall: a per-step attention probe on the two attention layers and a rollback of the gated-DeltaNet state,
-  which the engine does not snapshot; short texts run under LACI), speech editing (it needs the FuseAlign aligner and a
-  recogniser on the edited clip around the edit backbone and its LoRA - `edit/accents.gguf` holds only that `edit`
-  adapter: Zyphra ships no accent adapters, accents are the steering bundle's `accents_*` directions, which work) and
-  streaming decode (the audio contract answers a whole take; a stretch-at-a-time hook would be its first step).
+- **LACI, short texts, streaming** (2026-11-15): `options.laci on` checks the alignment heads' reading of the text at
+  every step and rolls a skipped, stalled or truncated stretch back (Zyphra's detector, ACI mask, re-prefill); a text of
+  a word or two (`short-text`, auto) is said with a pause and a filler sentence and cut where the filler starts - 18 of
+  18 short texts said exactly against 10 of 18 without (Zyphra's server: 18 and 9); the probe matches Zyphra's at 97 %
+  of the steps. `/v1/audio/speech` with `stream` gets the sound as it is decoded (identical to the whole take, rel
+  1.2e-6; first sound after 0.08 s of a 0.78 s take).
+- **Not ported yet:** speech editing (in progress). Accent adapters: Zyphra ships none (`edit/accents.gguf` is the
+  speech-edit adapter); accents are the steering bundle's `accents_*` directions.
 
 ## Conversation: VibeVoice 1.5B
 

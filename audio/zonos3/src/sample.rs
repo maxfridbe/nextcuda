@@ -28,15 +28,21 @@ impl Default for Sampling {
 pub struct Rng {
     state: u64,
     inc: u64,
+    seed: u64,
 }
 
 impl Rng {
     pub fn new(seed: u64) -> Rng {
-        let mut r = Rng { state: 0, inc: (seed << 1) | 1 };
+        let mut r = Rng { state: 0, inc: (seed << 1) | 1, seed };
         r.next();
         r.state = r.state.wrapping_add(seed ^ 0x853c_49e6_748f_ea9b);
         r.next();
         r
+    }
+
+    /// the seed it started from
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     pub fn next(&mut self) -> u32 {

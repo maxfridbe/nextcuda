@@ -22,12 +22,13 @@ in the port; the source files carry origin notes.
 | reference encoder | `zac-encoder.gguf` (zac-encoder), `ssl-teacher.gguf` (ssl-teacher); loaded for an encode, freed after | host frontends and RVQ, GPU networks | raw-reference cloning (`speaker-mode: reference` with a recording): lanes of 300 frames with 150 of left context; acoustic: 44160 Hz by the file's kernel, a causal conv, two blocks of three Snake residual units (dilations 1 / 3 / 9) and a strided conv (x2, x4), patch-down 23 and four MOSS stages (x2 each) -> [300, 1024]; semantic: the lane at 16 kHz, SeamlessM4T fbank (float64, the C++ order), the teacher's 16 conformer layers (half-step FFNs, relative-position attention clip -64..8, a GLU depthwise conv module of 31) pooled onto the 300 frames by box windows, the semantic encoder (projection, 4 ConvNeXt) and RVQ 0; the semantic head's prediction subtracted, RVQ 1-9 on the residual. The production BF16 recipe throughout (z3.cu `bf16`, `attn_rel` with bf) |
 | text | `zyphra-textnorm` (crates.io, pure Rust) and the edit backbone's spec | host | the normalizer in the request's language (`normalize`); the markup `[pause]`, `[start]`, `[ipa ...]`, `[steer ...]...[/steer]` to the release rows' markers, as `superbpe.payload_ids`; a span's steering scheduled by its characters (the bundle's pace table), ramped over 3 frames |
 
-Not ported: LACI and short-text handling (LACI reads alignment heads' attention over the text each step and rolls a take back on a
-skip or a stall: a per-step attention probe on the two attention layers and a rollback of the gated-DeltaNet state,
-which the engine does not snapshot; short texts run under LACI), speech editing (it needs the FuseAlign aligner and a
-recogniser on the edited clip around the edit backbone and its LoRA - `edit/accents.gguf` holds only that `edit`
-adapter: Zyphra ships no accent adapters, accents are the steering bundle's `accents_*` directions, which work) and
-streaming decode (the audio contract answers a whole take; a stretch-at-a-time hook would be its first step). Steer-then-hold: the shipped bundle has no release block.
+| LACI | `laci/zonos3_mini_heads*.json` (laci-*: a language a file) | GPU probe, host session | `options.laci on` (off by default, cfg 1): on every decode row the alignment heads' (layer 3 / 7 q heads) softmax over the prompt's BOS..EOS text keys, summed: the reading position (argmax) and centroid; Zyphra's Detector (bins of 8 tokens: a skip, a stall - hallucination -, a truncation) rolls the take back to the failure's onset and regenerates it (seed + 1000 an attempt, at most 8) re-prefilled from the prompt and the kept rows (as Zyphra's ggml server: no state snapshot, the gated-DeltaNet state is rebuilt by the prefill), under ACI's mask on those heads (`attn_window`: text keys outside the window blocked) until the reading passes the failure; once the text is read the end-of-audio logit is raised (+3) and the take ends 15 frames on |
+| short texts | the same, and Zyphra's short_text.json (built in) | as LACI | `options.short-text auto` (the default; off): a text of at most 2 words, short beside its language's filler, is said as the text, the 0.5 s pause marker and the filler sentence under LACI and cut at the first frame the codes-only silence classifier calls silent after the reading reaches the filler (a take that runs into the filler is made again, twice at most) |
+| streaming | - | GPU | `generate_stream` (the audio contract's streaming hook): the rows that no rollback can change are decoded as they come - every decodable frame behind 300 frames of left context, the last one only as the right context of the frame before it - in chunks of 4, 8, 15, 15 ... frames; a causal form of the leveling; the server's /v1/audio/speech stream sends each piece as it is made |
+
+Not ported yet: speech editing (in progress: FuseAlign, the edit LoRA and Zyphra's edit runtime). Accent adapters:
+`edit/accents.gguf` holds only the speech-edit adapter - Zyphra ships no accent adapters; accents are the steering
+bundle's `accents_*` directions, which work. Steer-then-hold: the shipped bundle has no release block.
 
 ## Checked
 
@@ -43,6 +44,9 @@ Against Zyphra's ggml runtime built for the CPU on the same GGUFs (`reference/zo
 | decoder PCM (60 frames) | cosine 1.000000, rel 3.3e-5 |
 | speaker embedding (13 s) | cosine 1.000000, rel 1.2e-6 |
 | markup and normalized text (English, German; start, pause, IPA) | ids identical to `zonos3-cli --request` |
+| alignment probe, a 67-step take of the reference's (teacher-forced, `forced` with probe_heads.json) | argmax the same at 97.0 % of the steps, centroid within 0.17 tokens |
+| short texts: Yes / No way! / Hello / Thank you / Absolutely / Good morning, Rupert's embedding, seeds 1-3 | said exactly (Whisper) 18 of 18 with short-text auto, 10 of 18 off; Zyphra's server on the same texts, voice and seeds: 18 of 18 auto, 9 of 18 off; 0.86 s on average in both |
+| streaming (`stream`: the same take whole and streamed) | rel 1.2e-6; the first piece after 0.08 s against 0.78 s for the whole take |
 | reference encoder, Rupert's 13 s (`--stages encoder`, against `zac-encoder-cli --dump`) | acoustic latent rel 4.3e-3, teacher 1.9e-2, codes the same in 97.5 / 95.5 / 89 / 85 / 86 / 80 / 79 / 78 / 76 / 77 % by codebook (the reference's own encoder against Zyphra's shipped codes: 98.0 / 95.5 / 89 / 88 / 81 / 82 / 78 / 76 / 75 / 77 %) |
 
 The backbone's distance is the reference's own: its CPU products over Q8_0 / Q4_0 blocks quantize the activations to

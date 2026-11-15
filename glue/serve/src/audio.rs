@@ -529,44 +529,73 @@ impl AudioServer {
             vec![Some(whole)]
         };
         let gone = AtomicBool::new(false);
-        // speech's stretches are not kept (they are not the whole of anything); a song is, as before
-        let one = |x: &Value| -> Result<stream::Pcm, (u16, String)> {
-            let (_, wav) = self.generate_as(x, &base, !speech, Some(&gone))?;
-            let (samples, rate) = nextcuda_audio::decode_wav(&wav).map_err(|e| (500u16, e))?;
-            Ok(stream::Pcm { samples, rate })
-        };
-        // the first stretch decides: its sound starts the answer, its error is the answer
-        let first = match one(pieces[0].as_ref().expect("a text first")) {
-            Ok(p) => p,
-            Err((code, m)) => {
-                cx.json(code, &err(m));
-                return true;
-            }
-        };
-        let first_rate = first.rate;
         let label = format!("{}, {} stretches, {} characters", w.name, pieces.len(), text.chars().count());
-        let mut rest = pieces[1..].iter();
-        let mut next = || {
-            rest.next().map(|x| match x {
-                Some(x) => one(x).map_err(|(_, m)| m),
-                None => Ok(stream::Pcm { samples: vec![0.0; (gap * first_rate as f64) as usize], rate: first_rate }),
-            })
-        };
-        let cors = cx.cors.clone();
-        if let Err(e) = stream::send(&mut cx.s, w, speed, out_rate, &cors, first, &mut next, &gone) {
-            // the answer has begun: it ends without its closing chunk, and why is said here
-            eprintln!("nextcuda audio: a streamed answer stopped early ({label}): {e}");
-        }
+        // the stretches spoken in turn on a thread of their own, their sound handed over in pieces as the engine makes
+        // it (an engine that streams: as its rows are decoded; any other: each stretch whole); speech's stretches are not
+        // kept (they are not the whole of anything), a song is, as before
+        std::thread::scope(|sc| {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Result<stream::Pcm, (u16, String)>>(256);
+            let (gone_p, base_p, pieces_p) = (&gone, &base, &pieces);
+            sc.spawn(move || {
+                let mut rate = 0u32;
+                for x in pieces_p {
+                    if gone_p.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    match x {
+                        None => {
+                            if tx.send(Ok(stream::Pcm { samples: vec![0.0; (gap * rate.max(1) as f64) as usize], rate: rate.max(1) })).is_err() {
+                                return;
+                            }
+                        }
+                        Some(x) => {
+                            let mut sink = |a: &nextcuda_audio::Audio| -> nextcuda_audio::Result<()> {
+                                rate = a.rate;
+                                let ch = a.channels.max(1) as usize;
+                                let samples: Vec<f32> = if ch == 1 { a.samples.clone() } else { a.samples.chunks(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect() };
+                                tx.send(Ok(stream::Pcm { samples, rate: a.rate })).map_err(|_| nextcuda_audio::Error("the listener went away".into()))
+                            };
+                            if let Err(e) = self.generate_as(x, base_p, !speech, Some(gone_p), Some(&mut sink)) {
+                                let _ = tx.send(Err(e));
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+            // the first piece decides: its sound starts the answer, its error is the answer
+            let first = match rx.recv() {
+                Ok(Ok(p)) => p,
+                Ok(Err((code, m))) => {
+                    cx.json(code, &err(m));
+                    return;
+                }
+                Err(_) => {
+                    cx.json(500, &err("no sound was made"));
+                    return;
+                }
+            };
+            let mut next = || rx.recv().ok().map(|r| r.map_err(|(_, m)| m));
+            let cors = cx.cors.clone();
+            if let Err(e) = stream::send(&mut cx.s, w, speed, out_rate, &cors, first, &mut next, &gone) {
+                // the answer has begun: it ends without its closing chunk, and why is said here
+                eprintln!("nextcuda audio: a streamed answer stopped early ({label}): {e}");
+            }
+            gone.store(true, Ordering::Relaxed);
+            drop(rx);
+        });
         true
     }
 
     fn generate(&self, b: &Value, base: &str) -> Result<(Option<Value>, Vec<u8>), (u16, String)> {
-        self.generate_as(b, base, true, None)
+        self.generate_as(b, base, true, None, None)
     }
 
     /// `generate`; `keep` false: nothing saved to the output directory (a streamed answer's stretches), `stop` set:
     /// the request stops at its next step (the client of a streamed answer went away)
-    fn generate_as(&self, b: &Value, base: &str, keep: bool, stop: Option<&AtomicBool>) -> Result<(Option<Value>, Vec<u8>), (u16, String)> {
+    #[allow(clippy::type_complexity)]
+    fn generate_as(&self, b: &Value, base: &str, keep: bool, stop: Option<&AtomicBool>, sink: Option<&mut dyn FnMut(&nextcuda_audio::Audio) -> nextcuda_audio::Result<()>>)
+                   -> Result<(Option<Value>, Vec<u8>), (u16, String)> {
         let bad = |m: String| (400u16, m);
         // OpenAI's model names (tts-1, gpt-4o-mini-tts ...) mean the model served here
         if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty() && *m != self.model && *m != "MiniMaxAI/MiniMax-Music3" && !m.starts_with("Qwen/Qwen3-TTS")
@@ -748,13 +777,17 @@ impl AudioServer {
         let p = &self.progress;
         let want = req.seconds.unwrap_or(d.seconds);
         *p.lock().unwrap() = json!({"busy": true, "prompt": prompt, "phase": "prompt", "at": 0, "of": 1, "seconds": 0, "want": want});
-        let out = engine.generate(&req, &mut |st| {
+        let mut tick = |st: nextcuda_audio::Step| {
             *p.lock().unwrap() = json!({"busy": true, "prompt": prompt, "phase": st.phase, "at": st.at, "of": st.of, "seconds": st.seconds, "want": want});
             if self.cancel.stopping() || stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
                 return Err(nextcuda_core::Error("cancelled".into()));
             }
             Ok(())
-        });
+        };
+        let out = match sink {
+            Some(sink) => engine.generate_stream(&req, &mut tick, sink),
+            None => engine.generate(&req, &mut tick),
+        };
         *p.lock().unwrap() = json!({"busy": false});
         // the score the song was sung over (an engine that writes one: YuE2) - given back with the same seed, style and
         // new words, the melody stays

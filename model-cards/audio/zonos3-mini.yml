@@ -5,7 +5,8 @@
 # LM with the phoneme, start and pause rows and speech editing's vocabulary - on plain text the release LM bit for bit), the ZAC codec's MR-iSTFT
 # decoders (keep2_plain, the default; full_mr, loaded on the first request that names it), the MECT-B2 speaker
 # encoder, the reference encoder and its Wav2Vec2-BERT teacher (raw-reference cloning: a recording's own codes, loaded
-# for the encode and freed after it), the steering bundle, and the 27 preset voices' codes (.codes.npy: the reference prefix, the model's default)
+# for the encode and freed after it), LACI's alignment heads (laci/, a language a file: LACI and short texts), the steering
+# bundle, and the 27 preset voices' codes (.codes.npy: the reference prefix, the model's default)
 # and speaker embeddings (.embedding.npy). Apache-2.0 (the weights; the runtime this port follows is MIT).
 id: zonos3-mini
 kind: audio
@@ -62,6 +63,264 @@ files:
     size: 1548700000
     sha256: 59e4f150e1ccdf54e6349b06605c2274f2262139678688025b6614f1393e415a
     path: zonos3-mini/ssl-teacher.gguf
+  laci-zonos3_mini_heads:
+    key: zonos3-laci-heads
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads.json
+    size: 7495
+    sha256: 407e47472224c603b9c3a969e7175f35b637e0c1995eb606d5128ec1b2e88528
+    path: zonos3-mini/laci/zonos3_mini_heads.json
+  laci-zonos3_mini_heads_ar:
+    key: zonos3-laci-heads-ar
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_ar.json
+    size: 7661
+    sha256: e8d283a8eb0647015e26e2c6d49d2ec6fa2bd9941e5390e7b30396ca5e035ed6
+    path: zonos3-mini/laci/zonos3_mini_heads_ar.json
+  laci-zonos3_mini_heads_bg:
+    key: zonos3-laci-heads-bg
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_bg.json
+    size: 7608
+    sha256: 1c4820a421ab318cd62ecc49e52ea4ec9aff520fe510ab54e31a654e394f6828
+    path: zonos3-mini/laci/zonos3_mini_heads_bg.json
+  laci-zonos3_mini_heads_bn:
+    key: zonos3-laci-heads-bn
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_bn.json
+    size: 7654
+    sha256: 9b49a48f9b7bfaf8857ee759736b786f3940c1890c394a4cdbe679e1f522e45e
+    path: zonos3-mini/laci/zonos3_mini_heads_bn.json
+  laci-zonos3_mini_heads_cs:
+    key: zonos3-laci-heads-cs
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_cs.json
+    size: 7571
+    sha256: 97ce6b22613053a17463deccbcd4943c1450c4f73210b09e93eec7679683eff1
+    path: zonos3-mini/laci/zonos3_mini_heads_cs.json
+  laci-zonos3_mini_heads_da:
+    key: zonos3-laci-heads-da
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_da.json
+    size: 7616
+    sha256: bc1971f6054b465b939141bb06d0d07682501e74652fa0023d3f0a2db0c70146
+    path: zonos3-mini/laci/zonos3_mini_heads_da.json
+  laci-zonos3_mini_heads_de:
+    key: zonos3-laci-heads-de
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_de.json
+    size: 7539
+    sha256: 5029f11f7a75c02f68229f87f774e0440dc7bc98c091e8086828a1645d200645
+    path: zonos3-mini/laci/zonos3_mini_heads_de.json
+  laci-zonos3_mini_heads_el:
+    key: zonos3-laci-heads-el
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_el.json
+    size: 7603
+    sha256: 511ccc46c94476a01a0fe3fd96ee2b7e8926b1e5852772000faa9df54e92cee7
+    path: zonos3-mini/laci/zonos3_mini_heads_el.json
+  laci-zonos3_mini_heads_es:
+    key: zonos3-laci-heads-es
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_es.json
+    size: 7571
+    sha256: 20f0e8fae411ca651ddf6ae7fcab63e6b2d94340aa5497ca541b349feeb2d754
+    path: zonos3-mini/laci/zonos3_mini_heads_es.json
+  laci-zonos3_mini_heads_fi:
+    key: zonos3-laci-heads-fi
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_fi.json
+    size: 7580
+    sha256: 7b7ece889fef904c39ca569d882746d61b105c37a348838041a72aa2164c43ef
+    path: zonos3-mini/laci/zonos3_mini_heads_fi.json
+  laci-zonos3_mini_heads_fr:
+    key: zonos3-laci-heads-fr
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_fr.json
+    size: 7571
+    sha256: 6ceacd45c4618504350532eb5c2628aec69ac8f18911256fa4378653216733d3
+    path: zonos3-mini/laci/zonos3_mini_heads_fr.json
+  laci-zonos3_mini_heads_gu:
+    key: zonos3-laci-heads-gu
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_gu.json
+    size: 7362
+    sha256: 2282bc9873b50cd86e0fe84e0d4478df0558cbfbea9f5e0683f80de6fbe1383f
+    path: zonos3-mini/laci/zonos3_mini_heads_gu.json
+  laci-zonos3_mini_heads_he:
+    key: zonos3-laci-heads-he
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_he.json
+    size: 7639
+    sha256: 4cb8baae3d74b3099a68c07e9c69dc388b5c05755ee3544bd2da0860e1ba3956
+    path: zonos3-mini/laci/zonos3_mini_heads_he.json
+  laci-zonos3_mini_heads_hi:
+    key: zonos3-laci-heads-hi
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_hi.json
+    size: 7579
+    sha256: 0ef8179db4db8e29014faaebdbab9494d33a2974cf21405a884d6269eca1630a
+    path: zonos3-mini/laci/zonos3_mini_heads_hi.json
+  laci-zonos3_mini_heads_hu:
+    key: zonos3-laci-heads-hu
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_hu.json
+    size: 7614
+    sha256: 8d42f5c087bb205a2e67509324ce999c5cdb56b26fd29685664bc8fe10dce143
+    path: zonos3-mini/laci/zonos3_mini_heads_hu.json
+  laci-zonos3_mini_heads_id:
+    key: zonos3-laci-heads-id
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_id.json
+    size: 7597
+    sha256: 0b2fe2fbc497b4f821d83488061ca32e6283ce2080975d4986e7c209a619dbad
+    path: zonos3-mini/laci/zonos3_mini_heads_id.json
+  laci-zonos3_mini_heads_it:
+    key: zonos3-laci-heads-it
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_it.json
+    size: 7557
+    sha256: bd1ab97819057fd0b7c1cb6577a646118b42e1ba7568dff4ee379e925a74e2e7
+    path: zonos3-mini/laci/zonos3_mini_heads_it.json
+  laci-zonos3_mini_heads_ja:
+    key: zonos3-laci-heads-ja
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_ja.json
+    size: 7584
+    sha256: 1da810b373a7ddc591ffc654de363d8024821a407665083748c3eef5bf3e233a
+    path: zonos3-mini/laci/zonos3_mini_heads_ja.json
+  laci-zonos3_mini_heads_ka:
+    key: zonos3-laci-heads-ka
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_ka.json
+    size: 7568
+    sha256: 854646c45094c81f5ff1cd7719a6eba1e13d45ed05676b3b4d2fe68ce14649cf
+    path: zonos3-mini/laci/zonos3_mini_heads_ka.json
+  laci-zonos3_mini_heads_kn:
+    key: zonos3-laci-heads-kn
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_kn.json
+    size: 7698
+    sha256: 0a0cf44eab3ebd28266e91750b32383d1e0ac5aa7a87a1e3d812145530b74307
+    path: zonos3-mini/laci/zonos3_mini_heads_kn.json
+  laci-zonos3_mini_heads_ko:
+    key: zonos3-laci-heads-ko
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_ko.json
+    size: 7566
+    sha256: b5ef1551a418333ddc37a74078a825da718ac6434400a46efa98f5e5472c9fb9
+    path: zonos3-mini/laci/zonos3_mini_heads_ko.json
+  laci-zonos3_mini_heads_ml:
+    key: zonos3-laci-heads-ml
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_ml.json
+    size: 7639
+    sha256: 99d02ad7afeebe8f08b51ad2b6cde84c2a689c49c5644aab1693ff4937a1b66f
+    path: zonos3-mini/laci/zonos3_mini_heads_ml.json
+  laci-zonos3_mini_heads_mr:
+    key: zonos3-laci-heads-mr
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_mr.json
+    size: 7591
+    sha256: 94d5414ef4c5a76a37b9bce02045e08b5f9a75bffca8379e9411301fcece8a27
+    path: zonos3-mini/laci/zonos3_mini_heads_mr.json
+  laci-zonos3_mini_heads_ms:
+    key: zonos3-laci-heads-ms
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_ms.json
+    size: 7564
+    sha256: 723dd6e8c6a63f7eb157c12e9676d7b8ee44de2253a32887bb64483df874a70e
+    path: zonos3-mini/laci/zonos3_mini_heads_ms.json
+  laci-zonos3_mini_heads_nl:
+    key: zonos3-laci-heads-nl
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_nl.json
+    size: 7626
+    sha256: 5a28c72337284768512d274052e76e06a2b804447fcb0b7840740bbf77b631fe
+    path: zonos3-mini/laci/zonos3_mini_heads_nl.json
+  laci-zonos3_mini_heads_no:
+    key: zonos3-laci-heads-no
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_no.json
+    size: 7566
+    sha256: 2ce69edde434697ce97e10e4b7c65fbc90bd1d075533dbd1abd27e99d1774a6f
+    path: zonos3-mini/laci/zonos3_mini_heads_no.json
+  laci-zonos3_mini_heads_or:
+    key: zonos3-laci-heads-or
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_or.json
+    size: 7434
+    sha256: ce438e2cdcfa6e21ee9cddddeb03ea3fae519e8c81ed5a6b485ac03c356490b5
+    path: zonos3-mini/laci/zonos3_mini_heads_or.json
+  laci-zonos3_mini_heads_pa:
+    key: zonos3-laci-heads-pa
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_pa.json
+    size: 7582
+    sha256: 06ab88201f37b55b5f8ec87fcf9f28e002fc2ca3d983e5257bc2359d3aba531a
+    path: zonos3-mini/laci/zonos3_mini_heads_pa.json
+  laci-zonos3_mini_heads_pl:
+    key: zonos3-laci-heads-pl
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_pl.json
+    size: 7569
+    sha256: 627b2d45c108d7be9afe0d603c24bdff69504145b750b1e3ef06065bad940e45
+    path: zonos3-mini/laci/zonos3_mini_heads_pl.json
+  laci-zonos3_mini_heads_pt:
+    key: zonos3-laci-heads-pt
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_pt.json
+    size: 7557
+    sha256: cd675f1943ef3b06ee4d33a9c8fc55c0b3d0b41aedcf538889c89965b75036fb
+    path: zonos3-mini/laci/zonos3_mini_heads_pt.json
+  laci-zonos3_mini_heads_ro:
+    key: zonos3-laci-heads-ro
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_ro.json
+    size: 7574
+    sha256: f42815de5929d821cbba40497e97d9cae284791b0651445d825f67e15f1205c9
+    path: zonos3-mini/laci/zonos3_mini_heads_ro.json
+  laci-zonos3_mini_heads_ru:
+    key: zonos3-laci-heads-ru
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_ru.json
+    size: 7573
+    sha256: 63be82dca8a36445affdfd6483f31b5f4d3c0770a37b98cb791857a91d7fea3c
+    path: zonos3-mini/laci/zonos3_mini_heads_ru.json
+  laci-zonos3_mini_heads_sk:
+    key: zonos3-laci-heads-sk
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_sk.json
+    size: 7578
+    sha256: a9323f447a98d91af68d1f5d69f703f833f14f23467ddfe122ff052761127422
+    path: zonos3-mini/laci/zonos3_mini_heads_sk.json
+  laci-zonos3_mini_heads_sv:
+    key: zonos3-laci-heads-sv
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_sv.json
+    size: 7584
+    sha256: b710183a79178c6aa2ebe2699ec5947f6e1308d21107c166caf161f98c59af3b
+    path: zonos3-mini/laci/zonos3_mini_heads_sv.json
+  laci-zonos3_mini_heads_ta:
+    key: zonos3-laci-heads-ta
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_ta.json
+    size: 7452
+    sha256: 4b441fdbfa47587b560c1e3cef388aa0842191fc15c651b81cd65e3c88a6b8e0
+    path: zonos3-mini/laci/zonos3_mini_heads_ta.json
+  laci-zonos3_mini_heads_te:
+    key: zonos3-laci-heads-te
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_te.json
+    size: 7459
+    sha256: c93da663899e460d08de7b158f765e963e231137369c2f7458240aaf3b4a2acf
+    path: zonos3-mini/laci/zonos3_mini_heads_te.json
+  laci-zonos3_mini_heads_th:
+    key: zonos3-laci-heads-th
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_th.json
+    size: 7630
+    sha256: b882630f4dfd28a1f610b99a9cdc3f8b22ce3abaa1b6b84d273149e32bbc0c92
+    path: zonos3-mini/laci/zonos3_mini_heads_th.json
+  laci-zonos3_mini_heads_tl:
+    key: zonos3-laci-heads-tl
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_tl.json
+    size: 7602
+    sha256: 6e76d81cff51edff3acf96b3bc52891e7c9aa02b1b217d5c8561287bafffb381
+    path: zonos3-mini/laci/zonos3_mini_heads_tl.json
+  laci-zonos3_mini_heads_tr:
+    key: zonos3-laci-heads-tr
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_tr.json
+    size: 7679
+    sha256: f48baeea20cdb4bb84b84175a00a8a2307fcb4c5e0978bbb77aa7c856ed7a22e
+    path: zonos3-mini/laci/zonos3_mini_heads_tr.json
+  laci-zonos3_mini_heads_uk:
+    key: zonos3-laci-heads-uk
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_uk.json
+    size: 7631
+    sha256: f5f6c66f31281e287b21b45cf6b4ab722349e8299c48ed1c0396135edb44c6cc
+    path: zonos3-mini/laci/zonos3_mini_heads_uk.json
+  laci-zonos3_mini_heads_ur:
+    key: zonos3-laci-heads-ur
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_ur.json
+    size: 7628
+    sha256: bc2c557897ceafcfa8494f8321fa87c22b4b1ce5ae14b2407a91d843a3ffae32
+    path: zonos3-mini/laci/zonos3_mini_heads_ur.json
+  laci-zonos3_mini_heads_vi:
+    key: zonos3-laci-heads-vi
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_vi.json
+    size: 7644
+    sha256: 0ed6768e0fa3aa1a5c444319dbbe813137d0a4083bc0c1dc53bedb06b9635030
+    path: zonos3-mini/laci/zonos3_mini_heads_vi.json
+  laci-zonos3_mini_heads_zh:
+    key: zonos3-laci-heads-zh
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/web/laci/zonos3_mini_heads_zh.json
+    size: 7558
+    sha256: e8ef4f98d7738ca3a5768a125cad4a7362297580f9fcc46581c3eb025fd9273f
+    path: zonos3-mini/laci/zonos3_mini_heads_zh.json
   steer:
     key: zonos3-steer
     url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/gguf/steer.gguf

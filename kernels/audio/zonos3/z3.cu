@@ -710,6 +710,84 @@ __global__ void add_rows_k(float* x, const float* bias, int64_t rows, int64_t co
     if (i < rows * cols) x[i] += bias[i / cols];
 }
 
+// LACI's ACI mask (arXiv 2404.19723) on a decode row: the masked heads' attention recomputed over every key of the row
+// (keys 0..keys-1) with the text keys outside each head's window blocked. One block a masked head; spec[m] = (head,
+// lo, hi) in absolute key positions, text keys [ts, te). q [Hq hd], k / v rows kvs apart, out [Hq hd] overwritten.
+constexpr int WB = 256;
+__global__ void attn_window_k(const float* q, const float* k, const float* v, int64_t kvs, int64_t keys, int Hq, int Hk, int hd, float scale,
+                              const int* spec, int64_t ts, int64_t te, float* out) {
+    const int head = spec[blockIdx.x * 3], lo = spec[blockIdx.x * 3 + 1], hi = spec[blockIdx.x * 3 + 2];
+    const int kv = head / (Hq / Hk);
+    const float* qh = q + (int64_t) head * hd;
+    __shared__ float red[WB];
+    __shared__ float acc[64];
+    auto score = [&](int64_t j) -> float {
+        if (j >= ts && j < te && (j < lo || j > hi)) return -INFINITY;
+        const float* kj = k + j * kvs + (int64_t) kv * hd;
+        float s = 0.0f;
+        for (int d = 0; d < hd; ++d) s += qh[d] * kj[d];
+        return s * scale;
+    };
+    float m = -INFINITY;
+    for (int64_t j = threadIdx.x; j < keys; j += WB) m = fmaxf(m, score(j));
+    red[threadIdx.x] = m;
+    __syncthreads();
+    for (int s = WB / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) red[threadIdx.x] = fmaxf(red[threadIdx.x], red[threadIdx.x + s]);
+        __syncthreads();
+    }
+    m = red[0];
+    __syncthreads();
+    if (threadIdx.x < 64) acc[threadIdx.x] = 0.0f;
+    float l = 0.0f;
+    __syncthreads();
+    for (int64_t j = threadIdx.x; j < keys; j += WB) {
+        const float sc = score(j);
+        if (sc == -INFINITY) continue;
+        const float p = expf(sc - m);
+        l += p;
+        const float* vj = v + j * kvs + (int64_t) kv * hd;
+        for (int d = 0; d < hd; ++d) atomicAdd(&acc[d], p * vj[d]);
+    }
+    red[threadIdx.x] = l;
+    __syncthreads();
+    for (int s = WB / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x < hd) out[(int64_t) head * hd + threadIdx.x] = red[0] > 0.0f ? acc[threadIdx.x] / red[0] : 0.0f;
+}
+
+// rotate-half RoPE from host tables (FuseAlign, Dia): x[r, h, :] = x * cos[r] + rotate_half(x) * sin[r], rotate_half =
+// (-x2, x1); cos / sin [rows, D] (the angles of fractional positions, computed on the host as torch does)
+__global__ void rope_tab_k(float* x, int64_t xs, int64_t rows, int H, int D, const float* cs, const float* sn) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    const int half = D / 2;
+    if (i >= rows * H * half) return;
+    const int64_t r = i / ((int64_t) H * half);
+    const int h = (int) ((i / half) % H), p = (int) (i % half);
+    float* e = x + r * xs + (int64_t) h * D;
+    const float a = e[p], b = e[p + half];
+    e[p] = a * cs[r * D + p] - b * sn[r * D + p];
+    e[p + half] = b * cs[r * D + p + half] + a * sn[r * D + p + half];
+}
+
+// ConvTranspose1d (kernel K, stride S, padding P) after its product: cols [T, K, C] (cols[t, k, c] = sum_i W[i, c, k]
+// x[t, i]) -> y [To, C] + bias, y[j] = sum over (t, k) with t S - P + k = j
+__global__ void col2im_k(const float* cols, int64_t T, int K, int64_t C, int S, int P, const float* bias, int64_t To, float* y) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= To * C) return;
+    const int64_t j = i / C, c = i % C;
+    float acc = bias ? bias[c] : 0.0f;
+    for (int k = 0; k < K; ++k) {
+        const int64_t n = j + P - k;
+        if (n < 0 || n % S) continue;
+        const int64_t t = n / S;
+        if (t < T) acc += cols[(t * K + k) * C + c];
+    }
+    y[i] = acc;
+}
+
 }  // namespace
 
 extern "C" {
@@ -1047,6 +1125,29 @@ int ns_audio_z3_attn_rel(ns_gpu* g, const float* q, const float* k, const float*
 int ns_audio_z3_bf16(ns_gpu* g, float* x, int64_t n) {
     Z3_BEGIN(n);
     bf16_k<<<blocks(n), 256, 0, g->q>>>(x, n);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_attn_window(ns_gpu* g, const float* q, const float* k, const float* v, int64_t kvs, int64_t keys, int64_t Hq, int64_t Hk, int64_t hd,
+                            float scale, const int* spec, int64_t n, int64_t ts, int64_t te, float* out) {
+    Z3_BEGIN(n);
+    if (hd > 64) return ns_fail("ns_audio_z3_attn_window: heads of at most 64");
+    attn_window_k<<<(unsigned) n, WB, 0, g->q>>>(q, k, v, kvs, keys, (int) Hq, (int) Hk, (int) hd, scale, spec, ts, te, out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_rope_tab(ns_gpu* g, float* x, int64_t xs, int64_t rows, int64_t H, int64_t D, const float* cs, const float* sn) {
+    Z3_BEGIN(rows * H * (D / 2));
+    rope_tab_k<<<blocks(rows * H * (D / 2)), 256, 0, g->q>>>(x, xs, rows, (int) H, (int) D, cs, sn);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_col2im(ns_gpu* g, const float* cols, int64_t T, int64_t K, int64_t C, int64_t S, int64_t P, const float* bias, int64_t To, float* y) {
+    Z3_BEGIN(To * C);
+    col2im_k<<<blocks(To * C), 256, 0, g->q>>>(cols, T, (int) K, C, (int) S, (int) P, bias, To, y);
     NS_LAUNCH_CHECK();
     return 0;
 }

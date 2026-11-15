@@ -180,6 +180,43 @@ pub struct Seq {
     hist: Vec<DevBuf>,
     rows: usize,
     s: Scratch,
+    /// LACI's alignment probe (decode steps only)
+    pub probe: Option<Probe>,
+}
+
+/// LACI's alignment probe (zonos3.tts.probe.readout; ggml build_probe): on every decode row, each probed head's
+/// softmax over the text keys (BOS..EOS, inside its window when it has one), summed over the heads -> the reading
+/// position (argmax) and its centroid. Masked heads (`windows`, the ACI mask while LACI is on probation) also have
+/// their attention output recomputed with the text keys outside the window blocked.
+pub struct Probe {
+    pub text_start: usize,
+    pub text_len: usize,
+    /// (model layer, q head), each weighted 1
+    pub heads: Vec<(usize, usize)>,
+    /// (model layer, q head, lo, hi): inclusive text windows of the masked heads
+    pub windows: Vec<(usize, usize, usize, usize)>,
+    /// the last decode row's (argmax, centroid)
+    pub readout: Option<(usize, f64)>,
+    keys: Vec<Option<Vec<f32>>>,
+    acc: Vec<f64>,
+    spec: Option<DevBuf>,
+}
+
+impl Probe {
+    pub fn new(text_start: usize, text_len: usize, heads: Vec<(usize, usize)>) -> Probe {
+        Probe { text_start, text_len, heads, windows: Vec::new(), readout: None, keys: Vec::new(), acc: vec![0.0; text_len], spec: None }
+    }
+
+    /// clip_window: an inclusive window inside [0, text_len)
+    fn window(&self, layer: usize, head: usize) -> (usize, usize) {
+        match self.windows.iter().find(|w| w.0 == layer && w.1 == head) {
+            Some(&(_, _, lo, hi)) => {
+                let lo = lo.min(self.text_len - 1);
+                (lo, hi.max(lo).min(self.text_len - 1))
+            }
+            None => (0, self.text_len - 1),
+        }
+    }
 }
 
 struct Scratch {
@@ -391,7 +428,7 @@ impl Lm {
             wts: ops.f32(rows * c.topk)?,
             logits: ops.f32(rows * c.logits())?,
         };
-        Ok(Seq { pos: 0, cap, kc, vc, state, hist, rows, s })
+        Ok(Seq { pos: 0, cap, kc, vc, state, hist, rows, s, probe: None })
     }
 
     /// The rows `ids` [n, ncb + 1] at the sequence's next positions: the state advanced, the logits of the last row (or
@@ -479,6 +516,11 @@ impl Lm {
                     sq.vc[ai].copy_within(lo * kvw * 4, &s.v, 0, n * kvw * 4).map_err(e)?;
                     ops.attention(fp(&s.q, 0), hq * hd, n, sq.kc[ai].fp(), sq.vc[ai].fp(), kvw, lo + n, hq, hk, hd, (hd as f32).powf(-0.5), lo, true, 0,
                                   fp(&s.att, 0))?;
+                    if n == 1 {
+                        if let Some(pr) = sq.probe.as_mut() {
+                            probe_layer(ops, pr, l, ai, &s.q, &sq.kc[ai], &sq.vc[ai], &s.att, lo + 1, hq, hk, hd)?;
+                        }
+                    }
                     ops.head_gate(fp(&s.att, 0), fp(&s.gate, 0), n, hq, hd)?;
                     ai += 1;
                 }
@@ -509,12 +551,31 @@ impl Lm {
             add_source(2 * l + 2)?;
         }
         // the final mix (the last source's query) - already in `mixed` - through the output norm and the heads
+        if n == 1 {
+            if let Some(pr) = sq.probe.as_mut() {
+                let acc = std::mem::replace(&mut pr.acc, vec![0.0; pr.text_len]);
+                let mut best = 0;
+                for (j, a) in acc.iter().enumerate() {
+                    if *a > acc[best] {
+                        best = j;
+                    }
+                }
+                let total: f64 = acc.iter().sum();
+                let m = acc.iter().enumerate().map(|(j, a)| j as f64 * a).sum::<f64>() / total.max(1e-30);
+                pr.readout = Some((best, m));
+            }
+        }
         let (r0, m) = if all { (0, n) } else { (n - 1, 1) };
         ops.rms(fp(&s.mixed, r0 * d), d, m, d, self.out_norm.fp(), c.eps, fp(&s.xin, 0))?;
         ops.linear(fp(&s.xin, 0), m, &self.head, nulf(), fp(&s.logits, 0))?;
         ops.softcap(fp(&s.logits, 0), m * c.logits(), c.softcap)?;
         sq.pos = lo + n;
         Ok(m)
+    }
+
+    /// The q heads of the model's attention layers (layer ids)
+    pub fn attention_layers(&self) -> Vec<usize> {
+        (0..self.c.layers).filter(|l| !self.c.uses_gdn(*l)).collect()
     }
 
     /// The logits of the last forward's `m` rows: [m, ncb, audio_vocab]
@@ -526,4 +587,61 @@ impl Lm {
         sq.s.logits.read(0, bytes).map_err(e)?;
         Ok(v)
     }
+}
+
+/// One attention layer's part of the probe on a decode row (keys 0..keys-1): the masked heads recomputed, the probed
+/// heads' text distributions added to the readout
+#[allow(clippy::too_many_arguments)]
+fn probe_layer(ops: &Ops, pr: &mut Probe, layer: usize, slot: usize, q: &DevBuf, kc: &DevBuf, vc: &DevBuf, att: &DevBuf, keys: usize, hq: usize, hk: usize,
+               hd: usize) -> Result<()> {
+    let kvw = hk * hd;
+    let scale = (hd as f32).powf(-0.5);
+    let (ts, tl) = (pr.text_start, pr.text_len);
+    let masked: Vec<(usize, usize, usize)> = pr.windows.iter().filter(|w| w.0 == layer).map(|w| {
+        let (lo, hi) = pr.window(w.0, w.1);
+        (w.1, ts + lo, ts + hi)
+    }).collect();
+    if !masked.is_empty() {
+        if pr.spec.is_none() {
+            pr.spec = Some(DevBuf::new(&ops.gpu, 64 * 3 * 4).map_err(e)?);
+        }
+        let spec = pr.spec.as_ref().unwrap();
+        let b: Vec<u8> = masked.iter().flat_map(|(h, lo, hi)| [*h as i32, *lo as i32, *hi as i32]).flat_map(|v| v.to_le_bytes()).collect();
+        spec.write(0, &b).map_err(e)?;
+        ops.attn_window(q.fp(), kc.fp(), vc.fp(), kvw, keys, hq, hk, hd, scale, spec, masked.len(), ts, ts + tl, att.fp())?;
+    }
+    let heads: Vec<usize> = pr.heads.iter().filter(|h| h.0 == layer).map(|h| h.1).collect();
+    if heads.is_empty() {
+        return Ok(());
+    }
+    if pr.keys.len() <= slot {
+        pr.keys.resize(slot + 1, None);
+    }
+    if pr.keys[slot].is_none() {
+        let mut v = vec![0f32; tl * kvw];
+        // SAFETY: v is tl * kvw floats, viewed as their bytes
+        let bytes = unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr().cast::<u8>(), v.len() * 4) };
+        kc.read(ts * kvw * 4, bytes).map_err(e)?;
+        pr.keys[slot] = Some(v);
+    }
+    let mut qv = vec![0f32; hq * hd];
+    // SAFETY: as above
+    let bytes = unsafe { std::slice::from_raw_parts_mut(qv.as_mut_ptr().cast::<u8>(), qv.len() * 4) };
+    q.read(0, bytes).map_err(e)?;
+    let keys_h = pr.keys[slot].as_ref().unwrap();
+    for h in heads {
+        let (lo, hi) = pr.window(layer, h);
+        let kv = h / (hq / hk);
+        let qh = &qv[h * hd..(h + 1) * hd];
+        let logits: Vec<f64> = (lo..=hi).map(|j| {
+            let kj = &keys_h[j * kvw + kv * hd..j * kvw + (kv + 1) * hd];
+            qh.iter().zip(kj).map(|(a, b)| (*a * *b) as f64).sum::<f64>() * scale as f64
+        }).collect();
+        let m = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let z: f64 = logits.iter().map(|x| (x - m).exp()).sum();
+        for (i, x) in logits.iter().enumerate() {
+            pr.acc[lo + i] += (x - m).exp() / z;
+        }
+    }
+    Ok(())
 }

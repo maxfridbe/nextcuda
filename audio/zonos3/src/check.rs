@@ -9,6 +9,7 @@
 //!   decoder   codes.npy [frames, 10]                                            -> nc_pcm.npy (44.1 kHz, before the gain)
 //!   speaker   speaker.wav (any rate; the reference's input: 44.1 kHz)           -> nc_embedding.npy [192], nc_fbank.npy
 //!   encoder   reference.wav (any rate)                                        -> nc_codes.npy [frames, 10] (raw-reference codes)
+//!   stream    prompt.txt (+ options.json)                                      -> nc_whole.npy, nc_stream.npy (the same take whole and streamed)
 //!   prompt    prompt.txt (+ voice.codes.npy | voice.embedding.npy)              -> nc_ids.npy [rows, 11]
 //! ```
 
@@ -20,7 +21,7 @@ use crate::lm::Cond;
 use crate::prompt::{self, Voice};
 use crate::Zonos3;
 
-pub const STAGES: &[&str] = &["lm", "forced", "decoder", "speaker", "encoder", "prompt"];
+pub const STAGES: &[&str] = &["lm", "forced", "decoder", "speaker", "encoder", "stream", "prompt"];
 
 /// A float32 .npy of `shape`
 pub fn npy(path: &Path, shape: &[usize], v: &[f32]) -> Result<()> {
@@ -85,6 +86,15 @@ pub fn run(z: &Zonos3, dir: &Path, stages: &[String], log: &mut dyn FnMut(String
                 let steps = if shape.len() == 2 { shape[0] } else { 0 };
                 let gen: Vec<u32> = gen.iter().map(|x| *x as u32).collect();
                 let mut seq = z.lm.seq(&z.ops, rows + steps + 1, rows)?;
+                // the alignment probe of every step when probe_heads.json is here (LACI's heads): nc_probe.npy
+                let heads = std::fs::read_to_string(dir.join("probe_heads.json")).ok().map(|t| crate::laci::Heads::parse(&t, "probe_heads.json")).transpose()?;
+                if let Some(h) = &heads {
+                    let col: Vec<u32> = (0..rows).map(|r| ids[r * c.row_width() + c.ncb]).collect();
+                    let st = col.iter().position(|t| *t == c.bos).ok_or_else(|| Error("no BOS row".into()))?;
+                    let en = st + 1 + col[st + 1..].iter().position(|t| *t == c.eos).ok_or_else(|| Error("no EOS row".into()))?;
+                    seq.probe = Some(crate::lm::Probe::new(st, en - st + 1, h.heads.clone()));
+                }
+                let mut probe_out: Vec<f32> = Vec::new();
                 z.lm.forward(&z.ops, &mut seq, &ids, &cond, false)?;
                 let mut out = z.lm.logits(&seq, 1)?;
                 let step = Cond::default();
@@ -94,6 +104,12 @@ pub fn run(z: &Zonos3, dir: &Path, stages: &[String], log: &mut dyn FnMut(String
                     debug_assert_eq!(r.len(), w);
                     z.lm.forward(&z.ops, &mut seq, &r, &step, false)?;
                     out.extend(z.lm.logits(&seq, 1)?);
+                    if let Some((p, m)) = seq.probe.as_ref().and_then(|pr| pr.readout) {
+                        probe_out.extend([p as f32, m as f32]);
+                    }
+                }
+                if heads.is_some() {
+                    npy(&dir.join("nc_probe.npy"), &[probe_out.len() / 2, 2], &probe_out)?;
                 }
                 npy(&dir.join("nc_forced.npy"), &[1 + steps, c.ncb, c.audio_vocab], &out)?;
                 log(format!("forced: {rows} prompt rows + {steps} rows -> nc_forced.npy"));
@@ -117,6 +133,33 @@ pub fn run(z: &Zonos3, dir: &Path, stages: &[String], log: &mut dyn FnMut(String
                 let f: Vec<f32> = codes.iter().flat_map(|r| r.iter().map(|x| *x as f32)).collect();
                 npy(&dir.join("nc_codes.npy"), &[codes.len(), 10], &f)?;
                 log(format!("encoder: {} samples at {rate} Hz -> nc_codes.npy ({} frames)", samples.len(), codes.len()));
+            }
+            "stream" => {
+                use nextcuda_audio::AudioEngine;
+                let text = String::from_utf8_lossy(&read(dir, "prompt.txt")?).trim().to_string();
+                let mut req = nextcuda_audio::AudioRequest { prompt: text, seed: 7, voice: Some("rupert".into()), ..Default::default() };
+                if let Ok(b) = read(dir, "options.json") {
+                    let v: serde_json::Value = serde_json::from_slice(&b).map_err(|x| Error(x.to_string()))?;
+                    for (k, x) in v.as_object().into_iter().flatten() {
+                        req.extra.insert(k.clone(), x.as_str().map_or_else(|| x.to_string(), str::to_string));
+                    }
+                }
+                let t0 = std::time::Instant::now();
+                let whole = z.generate(&req, &mut |_| Ok(()))?;
+                let tw = t0.elapsed().as_secs_f64();
+                let t1 = std::time::Instant::now();
+                let mut first: Option<f64> = None;
+                let mut pieces = 0usize;
+                let streamed = z.generate_stream(&req, &mut |_| Ok(()), &mut |a| {
+                    first.get_or_insert(t1.elapsed().as_secs_f64());
+                    pieces += 1;
+                    let _ = a;
+                    Ok(())
+                })?;
+                npy(&dir.join("nc_whole.npy"), &[whole.samples.len()], &whole.samples)?;
+                npy(&dir.join("nc_stream.npy"), &[streamed.samples.len()], &streamed.samples)?;
+                log(format!("stream: whole {} samples in {tw:.2} s; streamed {} samples in {pieces} pieces, the first after {:.2} s, all by {:.2} s",
+                            whole.samples.len(), streamed.samples.len(), first.unwrap_or(0.0), t1.elapsed().as_secs_f64()));
             }
             "prompt" => {
                 let text = String::from_utf8_lossy(&read(dir, "prompt.txt")?).trim().to_string();

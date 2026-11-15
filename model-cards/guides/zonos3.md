@@ -35,6 +35,10 @@ Doses of named directions, `"controls": "delivery.tempo=2, emotions.happy=4"` (a
   `texture.husky` (`.raspy`, `.deep`, `.soft` ...), `room.clean`
 
 ## Other options
+`short-text` (auto): a text of a word or two is said with a pause and a filler sentence after it and cut where the
+filler starts (alone, the model often says it wrong or runs on); `laci` (off; needs cfg 1): the reading of the text is
+checked at every step and a skipped or repeated stretch is said again. `stream: true` on /v1/audio/speech: the sound
+comes as it is made.
 `level` (on): every take is brought to -19 dBFS of speech and held there (the model drifts quieter through a long
 take with some voices); `off` keeps the model's own level, 3 dB down.
 `speaking-rate` (UTF-8 bytes a second, ~14 is ordinary English), `loudness` (LUFS), `fmax` (Hz): the model's
