@@ -843,6 +843,14 @@ template<int J, bool SUMS, int XN = 1> struct MSt {
     static constexpr int W = 0, WS = W + MI * CH, WM = WS + MI * 16, WD = WM + MI * 16, X = WD + MI * 8, XD = X + J * SV, XS = XD + J * 4 * XN,
                          BYTES = XS + (SUMS ? J * 16 : 0);
 };
+// Q8_0's 4 pieces a half unrolled, from 33 input rows, by this many: all 4 on the 5070 (its loads, products and scaling
+// interleaved - 6% faster at 512 rows), 2 on the 3060 (all 4 spill there: 3-5% slower); all 4 at any J of one block an
+// SM (MMQ's own loop is unrolled whole)
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+constexpr int Q8U = 4;
+#else
+constexpr int Q8U = 2;
+#endif
 // x's values a scale for a type in mq_k: Q8_0's 32 (its weights scaled a piece at a time anyway: MMQ's q8_1 numerics)
 template<int T> __host__ __device__ constexpr int mqg() { return T == nsq::Q8_0 ? 32 : SV; }
 // (the codebook in shared memory where it is 4 KB or less: IQ2_S's 8 KB would leave room for one block an SM)
@@ -1029,7 +1037,7 @@ __global__ void __launch_bounds__(256, J <= 64 ? 2 : 1) mq_k(const uint8_t* __re
             else if (c + 1 < c1) xload(c + 1, 0);
             if constexpr (Q8) {
                 // 4 pieces: the warp's MW m-tiles' A fragments, its NTW n-tiles' B, each piece's sums scaled on their own
-#pragma unroll (J <= 32 ? 4 : 1)
+#pragma unroll (J <= 32 || J > 64 ? 4 : Q8U)
                 for (int pl = 0; pl < 4; ++pl) {
                     const int p = 4 * hh + pl;
                     int a[MW][4];
@@ -1237,7 +1245,9 @@ void mq_go(const uint8_t* W, size_t rb, int64_t n_out, int64_t K, const uint8_t*
     // slot, each its share of the iterations across the tiles - MMQ's stream-k - not a last wave of few tiles; measured
     // slower on the 5070, and for the other types the plain tiles kept as they were measured)
     const bool spread = T == nsq::Q8_0 && major[dev & 63] < 9;
-    int nb = 100 * ntiles / (slots * waves) >= 90 ? ntiles : spread && ntiles >= slots ? slots : std::max(ntiles, std::min(slots, total / 8));
+    // (Q8_0's blocks at least 2 chunks: the narrow k / v matrices' short prompts on every slot, as MMQ - 3-5% there)
+    const int minch = T == nsq::Q8_0 ? 2 : 8;
+    int nb = 100 * ntiles / (slots * waves) >= 90 ? ntiles : spread && ntiles >= slots ? slots : std::max(ntiles, std::min(slots, total / minch));
     if ((size_t) nb * MI * J > wsp.floats) nb = ntiles;   // (no room reserved: plain tiling)
     mq_k<T, J><<<nb, 256, sm, s>>>(W, rb, x, y, (int) K, (int) n_out, (int) ntok, (int) tpad(ntok), wsp.p);
     if (nb != ntiles) mq_fixup_k<J><<<dim3((unsigned) nb, (unsigned) (MI * J / 256)), 256, 0, s>>>(y, wsp.p, (int) n_out, (int) ntok, (int) (K / CH), nb);
