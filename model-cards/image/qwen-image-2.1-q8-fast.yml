@@ -1,0 +1,30 @@
+# Fast mode: the same files as qwen-image-2.1-q8, the DiT's block matrices as int8 ConvRot (NS_QI_INT8=1, the card's int8
+# tensor cores). 2048x2048 on the 5070: turbo 30.1 -> 24.2 s, full 77.0 -> 61.5 s (2026-11-14). The pictures differ
+# from qwen-image-2.1-q8's at the same seed: turbo by fine detail (PSNR 33-38 dB), the full model can change the layout.
+# Qwen-Image 2.1 Q8_0 (text to image, RGBA, edits; Rust + CUDA)
+# model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets.
+# Files: the GGUF transformer, Qwen3-VL as a GGUF (+ its projector for edits), the VAE.
+id: qwen-image-2.1-q8-fast
+kind: image
+arch: qwen-image-2.1
+license: qwen-research
+commercial: false
+license_note: 'Qwen Research Licence: the weights may be used for non-commercial purposes only (research or evaluation); commercial use needs a separate licence from Qwen.'
+title: 'Qwen-Image 2.1 Q8_0 (fast mode, int8; text to image, RGBA, edits; Rust + CUDA)'
+about: 'Qwen''s 7B single-stream DiT as leejet''s Q8_0 GGUF, the Qwen3-VL 8B text encoder as Q4_K_M with its vision projector, the 64-channel RGBA VAE. Fast mode: int8 matrices, 20-40% quicker; the same seed gives a slightly different picture'
+gpus: '0'
+vram_gib: 11.0                 # the Rust engine keeps the transformer on the card, with the VAE and 1024x1024's activations
+defaults:
+  steps: 40
+  cfg: 4.0
+  sampler: euler
+  schedule: shift
+  size: 1024x1024
+env:
+  NS_QI_INT8: '1'
+files:
+  transformer: qwen-image-21-q80
+  text-encoder: qwen-image-21-llm-q4km
+  llm-vision: qwen-image-21-llm-mmproj
+  vae: qwen-image-21-vae
+guide: guides/qwen-image-2.1.md
