@@ -242,6 +242,49 @@ impl Ops {
     pub fn tanh(&self, x: W, n: usize) -> Result<()> {
         call!(self, tanh, "tanh", x, n as i64)
     }
+
+    pub fn snake_cf(&self, x: F, c: usize, l: usize, alpha: F, inv_alpha: F, out: W) -> Result<()> {
+        call!(self, snake_cf, "snake", x, c as i64, l as i64, alpha, inv_alpha, out)
+    }
+
+    pub fn add(&self, x: W, y: F, n: usize) -> Result<()> {
+        call!(self, add, "add", x, y, n as i64)
+    }
+
+    pub fn patch_down(&self, x: F, t: usize, c: usize, h: usize, out: W) -> Result<()> {
+        call!(self, patch_down, "patch down", x, t as i64, c as i64, h as i64, out)
+    }
+
+    pub fn glu(&self, x: F, t: usize, c: usize, out: W) -> Result<()> {
+        call!(self, glu, "glu", x, t as i64, c as i64, out)
+    }
+
+    pub fn silu(&self, x: W, n: usize) -> Result<()> {
+        call!(self, silu, "silu", x, n as i64)
+    }
+
+    pub fn attn_rel(&self, q: F, k: F, v: F, qs: usize, t: usize, h: usize, d: usize, dist: F, left: usize, right: usize, valid: F, scale: f32, bf: bool,
+                    out: W) -> Result<()> {
+        call!(self, attn_rel, "relative attention", q, k, v, qs as i64, t as i64, h as i64, d as i64, dist, left as i64, right as i64, valid, scale,
+              bf as std::os::raw::c_int, out)
+    }
+
+    /// x rounded to bfloat16 values in place (the reference encoder's BF16 recipe)
+    pub fn bf16(&self, x: W, n: usize) -> Result<()> {
+        call!(self, bf16, "bf16 round", x, n as i64)
+    }
+
+    /// channels-first x [rows, cols] += bias[row]
+    pub fn add_rows(&self, x: W, bias: F, rows: usize, cols: usize) -> Result<()> {
+        call!(self, add_rows, "row bias", x, bias, rows as i64, cols as i64)
+    }
+
+    /// A 1-D convolution of channels-first x [ci, l] with w [co, ci, k] (nsd's: unfold + SGEMM), no padding: out [co, lo]
+    pub fn conv1d(&self, x: F, ci: usize, l: usize, w: F, co: usize, k: usize, bias: F, stride: usize, dil: usize, out: W) -> Result<usize> {
+        let lo = (l - dil * (k - 1) - 1) / stride + 1;
+        self.nsd.conv1d(x.cast(), 1, ci, l, w.cast(), co, k, bias.cast(), stride, dil, 0, out.cast(), lo).map_err(e)?;
+        Ok(lo)
+    }
 }
 
 /// A matrix [n, k] on the card in float32
@@ -329,6 +372,16 @@ impl Weights {
     pub fn f32(&self, name: &str) -> Result<Vec<f32>> {
         let t = self.find(name)?;
         to_f32(t, &self.g.read(t).map_err(|x| Error(x.0))?)
+    }
+
+    /// A tensor as float64: F64 as stored (the teacher's frontend tables), any other type through float32
+    pub fn f64(&self, name: &str) -> Result<Vec<f64>> {
+        let t = self.find(name)?;
+        let b = self.g.read(t).map_err(|x| Error(x.0))?;
+        if t.ty == GType::F64 {
+            return Ok(b.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap_or_default())).collect());
+        }
+        Ok(to_f32(t, &b)?.into_iter().map(|x| x as f64).collect())
     }
 
     pub fn bytes(&self, name: &str) -> Result<Vec<u8>> {

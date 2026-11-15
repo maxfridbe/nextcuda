@@ -594,6 +594,122 @@ __global__ void tanh_k(float* x, int64_t n) {
     if (i < n) x[i] = tanhf(x[i]);
 }
 
+// ---------------------------------------------------------------------------------------------------- reference encoder
+
+__global__ void snake_cf_k(const float* x, int64_t C, int64_t L, const float* alpha, const float* inv_alpha, float* out) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= C * L) return;
+    const int64_t c = i / L;
+    const float sn = sinf(alpha[c] * x[i]);
+    out[i] = x[i] + inv_alpha[c] * sn * sn;
+}
+
+__global__ void add_k(float* x, const float* y, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) x[i] += y[i];
+}
+
+__global__ void patch_down_k(const float* x, int64_t T, int64_t C, int64_t h, float* out) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t To = T / h;
+    if (i >= To * C * h) return;
+    const int64_t t = i / (C * h), r = i % (C * h), c = r / h, j = r % h;
+    out[i] = x[(t * h + j) * C + c];
+}
+
+__global__ void glu_k(const float* x, int64_t T, int64_t C, float* out) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * C) return;
+    const int64_t t = i / C, c = i % C;
+    out[i] = x[t * 2 * C + c] * sigmoidf_(x[t * 2 * C + C + c]);
+}
+
+__global__ void silu_k(float* x, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) x[i] = siluf_(x[i]);
+}
+
+// full attention with Wav2Vec2-BERT's relative positions: score = scale q . k_j + scale q . dist[clip(j - i, -left,
+// right) + left], keys with valid[j] == 0 masked; q, k, v [T, H, 64] (rows qs apart), dist [left + right + 1, 64].
+// Two passes over the keys (the row's max and sum, then the normalized probabilities times v), so that with bf != 0
+// the scores, the probabilities and the products round to bfloat16 where the reference's BF16 recipe rounds them
+// (ssl-encoder.cpp: content and relative scores each after the matmul and after the scale, their sum, the
+// probabilities).
+constexpr int RD = 64, RQ = 64, RK = 32;
+__device__ __forceinline__ float bf16r(float x) {
+    unsigned u = __float_as_uint(x);
+    if ((u & 0x7f800000u) == 0x7f800000u) return x;  // inf, nan
+    u += 0x7fffu + ((u >> 16) & 1u);
+    return __uint_as_float(u & 0xffff0000u);
+}
+__global__ void attn_rel_k(const float* q, const float* k, const float* v, int64_t qs, int64_t T, int H, const float* dist, int left, int right,
+                           const float* valid, float scale, int bf, float* out) {
+    __shared__ float ks[RK][RD], vs[RK][RD];
+    const int h = blockIdx.y;
+    const int64_t i = (int64_t) blockIdx.x * RQ + threadIdx.x;
+    const bool live = i < T;
+    float qv[RD], acc[RD];
+    float m = -INFINITY, l = 0.0f;
+    for (int d = 0; d < RD; ++d) {
+        qv[d] = live ? q[i * qs + (int64_t) h * RD + d] : 0.0f;
+        acc[d] = 0.0f;
+    }
+    auto R = [bf](float x) { return bf ? bf16r(x) : x; };
+    for (int pass = 0; pass < 2; ++pass) {
+        const float inv = l > 0.0f ? 1.0f / l : 0.0f;
+        for (int64_t t0 = 0; t0 < T; t0 += RK) {
+            __syncthreads();
+            for (int e = threadIdx.x; e < RK * RD; e += blockDim.x) {
+                const int kk = e / RD, d = e % RD;
+                const int64_t j = t0 + kk;
+                ks[kk][d] = j < T ? k[j * qs + (int64_t) h * RD + d] : 0.0f;
+                vs[kk][d] = j < T ? v[j * qs + (int64_t) h * RD + d] : 0.0f;
+            }
+            __syncthreads();
+            if (!live) continue;
+            const int n = (int) min((int64_t) RK, T - t0);
+            for (int kk = 0; kk < n; ++kk) {
+                const int64_t j = t0 + kk;
+                if (valid && valid[j] == 0.0f) continue;
+                int64_t r = j - i;
+                r = r < -left ? -left : (r > right ? right : r);
+                const float* dr = dist + (r + left) * RD;
+                float c = 0.0f, rr = 0.0f;
+#pragma unroll
+                for (int d = 0; d < RD; ++d) {
+                    c += qv[d] * ks[kk][d];
+                    rr += qv[d] * dr[d];
+                }
+                const float s = R(R(R(c) * scale) + R(R(rr) * scale));
+                if (pass == 0) {
+                    if (s > m) {
+                        l *= expf(m - s);
+                        m = s;
+                    }
+                    l += expf(s - m);
+                } else {
+                    const float p = R(expf(s - m) * inv);
+#pragma unroll
+                    for (int d = 0; d < RD; ++d) acc[d] += p * vs[kk][d];
+                }
+            }
+        }
+    }
+    if (!live) return;
+    for (int d = 0; d < RD; ++d) out[i * (int64_t) H * RD + (int64_t) h * RD + d] = R(acc[d]);
+}
+
+__global__ void bf16_k(float* x, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) x[i] = bf16r(x[i]);
+}
+
+// channels-first x [rows, cols] += bias[row]
+__global__ void add_rows_k(float* x, const float* bias, int64_t rows, int64_t cols) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < rows * cols) x[i] += bias[i / cols];
+}
+
 }  // namespace
 
 extern "C" {
@@ -880,6 +996,64 @@ int ns_audio_z3_astp(ns_gpu* g, const float* x, const float* att, int64_t T, int
 int ns_audio_z3_tanh(ns_gpu* g, float* x, int64_t n) {
     Z3_BEGIN(n);
     tanh_k<<<blocks(n), 256, 0, g->q>>>(x, n);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_snake_cf(ns_gpu* g, const float* x, int64_t C, int64_t L, const float* alpha, const float* inv_alpha, float* out) {
+    Z3_BEGIN(C * L);
+    snake_cf_k<<<blocks(C * L), 256, 0, g->q>>>(x, C, L, alpha, inv_alpha, out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_add(ns_gpu* g, float* x, const float* y, int64_t n) {
+    Z3_BEGIN(n);
+    add_k<<<blocks(n), 256, 0, g->q>>>(x, y, n);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_patch_down(ns_gpu* g, const float* x, int64_t T, int64_t C, int64_t h, float* out) {
+    Z3_BEGIN(T / h * C * h);
+    patch_down_k<<<blocks(T / h * C * h), 256, 0, g->q>>>(x, T, C, h, out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_glu(ns_gpu* g, const float* x, int64_t T, int64_t C, float* out) {
+    Z3_BEGIN(T * C);
+    glu_k<<<blocks(T * C), 256, 0, g->q>>>(x, T, C, out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_silu(ns_gpu* g, float* x, int64_t n) {
+    Z3_BEGIN(n);
+    silu_k<<<blocks(n), 256, 0, g->q>>>(x, n);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_attn_rel(ns_gpu* g, const float* q, const float* k, const float* v, int64_t qs, int64_t T, int64_t H, int64_t D, const float* dist,
+                         int64_t left, int64_t right, const float* valid, float scale, int bf, float* out) {
+    Z3_BEGIN(T);
+    if (D != RD) return ns_fail("ns_audio_z3_attn_rel: heads of 64");
+    attn_rel_k<<<dim3((unsigned) ((T + RQ - 1) / RQ), (unsigned) H), RQ, 0, g->q>>>(q, k, v, qs, T, (int) H, dist, (int) left, (int) right, valid, scale, (int) bf, out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_bf16(ns_gpu* g, float* x, int64_t n) {
+    Z3_BEGIN(n);
+    bf16_k<<<blocks(n), 256, 0, g->q>>>(x, n);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_add_rows(ns_gpu* g, float* x, const float* bias, int64_t rows, int64_t cols) {
+    Z3_BEGIN(rows * cols);
+    add_rows_k<<<blocks(rows * cols), 256, 0, g->q>>>(x, bias, rows, cols);
     NS_LAUNCH_CHECK();
     return 0;
 }

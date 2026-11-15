@@ -19,10 +19,15 @@ in the port; the source files carry origin notes.
 | steering | `steer.gguf` (steer) | host | raw sets move the speaker embedding (summed, rescaled to its norm); attnres_source sets add to bank source 19 (L9's attention output; mandarin_hidden 15) on every generated row |
 | voices | `voice-<name>` (.codes.npy), `voice-<name>-emb` (.embedding.npy) | - | 27 presets; codes = the reference prefix (the checkpoint's default mode), embedding = the speaker row |
 
-Not ported: raw-reference cloning of a new recording (`zac-encoder.gguf` 4 GB + `ssl-teacher.gguf` 1.5 GB: the
-acoustic encoder and a Wav2Vec2-BERT teacher - a recording is cloned by its embedding instead, which the reference also
-serves), text normalization (zyphra-textnorm; the server's speech text pass runs first), LACI and short-text handling,
-speech editing, accent adapters, control spans, steer-then-hold (the shipped bundle has no release block), streaming.
+| reference encoder | `zac-encoder.gguf` (zac-encoder), `ssl-teacher.gguf` (ssl-teacher); loaded for an encode, freed after | host frontends and RVQ, GPU networks | raw-reference cloning (`speaker-mode: reference` with a recording): lanes of 300 frames with 150 of left context; acoustic: 44160 Hz by the file's kernel, a causal conv, two blocks of three Snake residual units (dilations 1 / 3 / 9) and a strided conv (x2, x4), patch-down 23 and four MOSS stages (x2 each) -> [300, 1024]; semantic: the lane at 16 kHz, SeamlessM4T fbank (float64, the C++ order), the teacher's 16 conformer layers (half-step FFNs, relative-position attention clip -64..8, a GLU depthwise conv module of 31) pooled onto the 300 frames by box windows, the semantic encoder (projection, 4 ConvNeXt) and RVQ 0; the semantic head's prediction subtracted, RVQ 1-9 on the residual. The production BF16 recipe throughout (z3.cu `bf16`, `attn_rel` with bf) |
+| text | `zyphra-textnorm` (crates.io, pure Rust) and the edit backbone's spec | host | the normalizer in the request's language (`normalize`); the markup `[pause]`, `[start]`, `[ipa ...]`, `[steer ...]...[/steer]` to the release rows' markers, as `superbpe.payload_ids`; a span's steering scheduled by its characters (the bundle's pace table), ramped over 3 frames |
+
+Not ported: LACI and short-text handling (LACI reads alignment heads' attention over the text each step and rolls a take back on a
+skip or a stall: a per-step attention probe on the two attention layers and a rollback of the gated-DeltaNet state,
+which the engine does not snapshot; short texts run under LACI), speech editing (it needs the FuseAlign aligner and a
+recogniser on the edited clip around the edit backbone and its LoRA - `edit/accents.gguf` holds only that `edit`
+adapter: Zyphra ships no accent adapters, accents are the steering bundle's `accents_*` directions, which work) and
+streaming decode (the audio contract answers a whole take; a stretch-at-a-time hook would be its first step). Steer-then-hold: the shipped bundle has no release block.
 
 ## Checked
 
@@ -37,6 +42,8 @@ Against Zyphra's ggml runtime built for the CPU on the same GGUFs (`reference/zo
 | teacher-forced, a 68-step take of the reference's | cosine 0.99984 mean, 0.9984 worst, rel 1.8e-2, argmax 92.9 %; the take's drawn codes in our top-80 99.8 % |
 | decoder PCM (60 frames) | cosine 1.000000, rel 3.3e-5 |
 | speaker embedding (13 s) | cosine 1.000000, rel 1.2e-6 |
+| markup and normalized text (English, German; start, pause, IPA) | ids identical to `zonos3-cli --request` |
+| reference encoder, Rupert's 13 s (`--stages encoder`, against `zac-encoder-cli --dump`) | acoustic latent rel 4.3e-3, teacher 1.9e-2, codes the same in 97.5 / 95.5 / 89 / 85 / 86 / 80 / 79 / 78 / 76 / 77 % by codebook (the reference's own encoder against Zyphra's shipped codes: 98.0 / 95.5 / 89 / 88 / 81 / 82 / 78 / 76 / 75 / 77 %) |
 
 The backbone's distance is the reference's own: its CPU products over Q8_0 / Q4_0 blocks quantize the activations to
 8 bits (ours are float32 over the same blocks); Zyphra's notes give cosine 0.99995 and argmax 96-97 % between their
@@ -62,11 +69,13 @@ Requests are the audio kind's (`audio.speak`, `/v1/audio/speech`); `AudioRequest
 |---|---|
 | `input` / prompt | the text (any of 43 languages; no language tag: `language` is accepted and not used) |
 | `voice` | a preset (savannah - the default -, wyatt, rupert, imogen, cillian, jett, morgana, sakura, thaddeus, willow, gaspard, liesel, wolfgang, ananya, arjun, ginevra, lorenzo, minjun, seoyeon, haoran, meilin, leonor, thiago, rodrigo, ximena, chaitanya, sravya; `none`: unconditioned), or a saved voice (cloned) |
-| `ref_audio` (reference) | a recording to clone (any rate; its first 60 s), by its speaker embedding; no transcript |
+| `ref_audio` (reference) | a recording to clone (any rate; its first 60 s): by its speaker embedding, or with `speaker-mode: reference` by its own codes (the reference encoder); no transcript |
 | `cfg` | speaker guidance `uncond + cfg (cond - uncond)` against a twin without the voice and with every condition unknown (1: off) |
 | `seconds` | the most to make (60 by default, 600 at most; 2000 rows a stretch) |
 | `seed` | the draws |
-| `options.speaker-mode` | `reference` (a preset's codes as the prefix; the default) or `embedding` (its speaker row) |
+| `options.speaker-mode` | `reference` (a preset's codes as the prefix - the default -, a recording's own codes when given explicitly) or `embedding` (the speaker row; a recording's default) |
+| `options.normalize` | `on` (default; Zyphra's normalizer in `language`, else by the script) or `off` |
+| `options.level` | `on` (default: -19 dBFS of speech, held through the take) or `off` (the decoder's level less 3 dB) |
 | `options.controls` | `ID=DOSE,...` steering: `delivery.tempo`, `delivery.whisper`, `mood.valence`, `emotions.happy`, `identity.gender`, `accents_en.british` ... (raw ones need an embedding) |
 | `options.speaking-rate`, `loudness`, `fmax` | the condition rows' values (bucketed by the backbone's edges, bisect right; unset: unknown) |
 | `options.decoder` | `keep2` (default) or `full` |

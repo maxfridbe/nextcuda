@@ -24,6 +24,7 @@
 
 pub mod check;
 pub mod codec;
+pub mod encoder;
 mod ffi;
 pub mod lm;
 pub mod markup;
@@ -65,7 +66,7 @@ const GAP: f32 = 0.25;
 const KNEE: f32 = 0.891_250_9;
 
 pub const OPTIONS: &[EngineOption] = &[
-    EngineOption { name: "speaker-mode", env: "", value: "reference|embedding", help: "how a preset voice comes in: its codes as a reference prefix (reference, the model's default) or its speaker embedding (embedding; steering's voice controls need it). A recording is always cloned by its embedding", at: At::Request },
+    EngineOption { name: "speaker-mode", env: "", value: "reference|embedding", help: "how the voice comes in: its codes as a reference prefix (reference, the model's default) or its speaker embedding (embedding; steering's voice controls need it). A recording is cloned by its embedding unless speaker-mode is reference: then by its own codes through the reference encoder (raw-reference cloning, its first 60 s; needs zac-encoder.gguf and ssl-teacher.gguf, about 5.6 GiB more on the card while it encodes)", at: At::Request },
     EngineOption { name: "controls", env: "", value: "ID=DOSE,...", help: "steering: doses of the bundle's directions, e.g. delivery.tempo=2 (faster), mood.valence=3, emotions.happy=4, delivery.whisper=3; identity.*, pitch.*, accents_*, texture.* and room.* move the speaker embedding (speaker-mode embedding or a recording)", at: At::Request },
     EngineOption { name: "speaking-rate", env: "", value: "BYTES/S", help: "the speaking-rate condition: UTF-8 bytes of text a second (about 14 is ordinary English; unset: the model's choice)", at: At::Request },
     EngineOption { name: "loudness", env: "", value: "LUFS", help: "the loudness condition (-30 to -15; unset: unknown)", at: At::Request },
@@ -147,6 +148,10 @@ pub struct Zonos3 {
     pub spk: Option<SpeakerEncoder>,
     pub steer: Option<Steer>,
     pub voices: BTreeMap<String, VoiceFiles>,
+    /// raw-reference cloning's files (zac-encoder.gguf, ssl-teacher.gguf): loaded for an encode and freed after it
+    /// (5.6 GiB on the card), the codes kept per recording
+    enc_paths: Option<(PathBuf, PathBuf)>,
+    ref_codes: Mutex<Vec<(u64, Vec<[u32; 10]>)>>,
     /// one request at a time on the card
     lock: Mutex<()>,
     load_s: f64,
@@ -382,6 +387,7 @@ impl Zonos3 {
                     if files.contains_key("decoder-full") { " (full_mr on request)" } else { "" },
                     if spk.is_some() { "yes" } else { "no" }, if steer.is_some() { "yes" } else { "no" }));
         Ok(Zonos3 { ops, lm, tok, decoders, full_path: files.get("decoder-full").cloned(), full: std::sync::OnceLock::new(), spk, steer, voices,
+                    enc_paths: files.get("zac-encoder").cloned().zip(files.get("ssl-teacher").cloned()), ref_codes: Mutex::new(Vec::new()),
                     lock: Mutex::new(()), load_s })
     }
 
@@ -411,9 +417,46 @@ impl Zonos3 {
         }
     }
 
-    /// The request's voice: a recording (its embedding), a preset (its codes, or its embedding), or the default preset
+    /// A recording's own codes [frames, 10] (raw-reference cloning: its first 60 s through the reference encoder),
+    /// kept for the last 64 recordings
+    pub fn reference_codes(&self, samples: &[f32], rate: u32, log: &mut dyn FnMut(String)) -> Result<Vec<[u32; 10]>> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        rate.hash(&mut h);
+        samples.iter().for_each(|x| x.to_bits().hash(&mut h));
+        let key = h.finish();
+        if let Some((_, c)) = self.ref_codes.lock().unwrap_or_else(|p| p.into_inner()).iter().find(|(k, _)| *k == key) {
+            return Ok(c.clone());
+        }
+        let (ep, sp) = self.enc_paths.as_ref().ok_or_else(|| Error(format!("{ARCH}: raw-reference cloning needs zac-encoder.gguf and ssl-teacher.gguf")))?;
+        // mono, peak-normalized when it clips (Zyphra's prepare_reference)
+        let peak = samples.iter().fold(0f32, |m, x| m.max(x.abs()));
+        let pcm: Vec<f32> = if peak > 1.0 { samples.iter().map(|x| x / peak).collect() } else { samples.to_vec() };
+        let t0 = Instant::now();
+        let enc = encoder::RefEncoder::load(&self.ops, &Weights::open(ep)?, &Weights::open(sp)?, log)?;
+        let t1 = Instant::now();
+        let codes = enc.encode(&self.ops, &pcm, rate)?;
+        drop(enc);
+        log(format!("{ARCH}: reference encoded: {} frames in {:.1} s (+ {:.1} s loading the encoder)", codes.len(), t1.elapsed().as_secs_f64(),
+                    (t1 - t0).as_secs_f64()));
+        let mut cache = self.ref_codes.lock().unwrap_or_else(|p| p.into_inner());
+        cache.push((key, codes.clone()));
+        if cache.len() > 64 {
+            cache.remove(0);
+        }
+        Ok(codes)
+    }
+
+    /// The request's voice: a recording (its embedding, or with speaker-mode reference its own codes), a preset (its
+    /// codes, or its embedding), or the default preset
     pub fn voice(&self, req: &AudioRequest, embedding_mode: bool) -> Result<Voice> {
         if let Some(r) = &req.reference {
+            if !embedding_mode && given(req, "speaker-mode") == Some("reference") {
+                if r.samples.len() < r.rate.max(1) as usize / 2 {
+                    return Err(Error("the recording is shorter than half a second".into()));
+                }
+                return Ok(Voice::Reference(self.reference_codes(&r.samples, r.rate, &mut |m| eprintln!("{m}"))?));
+            }
             let spk = self.spk.as_ref().ok_or_else(|| Error(format!("{ARCH}: cloning a recording needs the speaker encoder (spk-encoder.gguf)")))?;
             if r.samples.len() < r.rate.max(1) as usize / 2 {
                 return Err(Error("the recording is shorter than half a second".into()));

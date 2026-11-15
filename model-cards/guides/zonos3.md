@@ -18,7 +18,10 @@ languages (no language tag needed: the text decides), about 15x real time on the
   language; its own is its most natural. A preset comes in as its recording's codes (the reference prefix, the model's
   default); `options: {"speaker-mode": "embedding"}` uses its speaker embedding instead.
 - **Cloned** (`ref_audio`, or a saved voice): 5-30 s of one person speaking clearly. Its timbre is taken by the
-  MECT-B2 speaker encoder (a 192-d embedding; a transcript is not needed and not used).
+  MECT-B2 speaker encoder (a 192-d embedding; a transcript is not needed and not used). With
+  `options: {"speaker-mode": "reference"}` the recording itself is the voice's prefix instead (raw-reference cloning,
+  the model's own way: its first 60 s encoded to the codec's codes; 5.6 GiB more on the card for a second or two, once
+  per recording).
 - `cfg` (1 = off): speaker guidance against a pass without the voice; 1.5 holds a voice closer, at twice the cost.
 
 ## Steering (`options.controls`)

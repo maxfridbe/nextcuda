@@ -15,19 +15,19 @@ use crate::ops::{fp, nulf, Mat, Ops, Weights};
 
 pub const ARCH: &str = "mossdual_istft";
 
-struct Block {
-    dw: DevBuf,
-    k: usize,
-    dw_b: DevBuf,
-    ln_w: DevBuf,
-    ln_b: DevBuf,
-    pw1: Mat,
-    pw1_b: DevBuf,
-    pw2: Mat,
-    pw2_b: DevBuf,
+pub struct Block {
+    pub(crate) dw: DevBuf,
+    pub(crate) k: usize,
+    pub(crate) dw_b: DevBuf,
+    pub(crate) ln_w: DevBuf,
+    pub(crate) ln_b: DevBuf,
+    pub(crate) pw1: Mat,
+    pub(crate) pw1_b: DevBuf,
+    pub(crate) pw2: Mat,
+    pub(crate) pw2_b: DevBuf,
 }
 
-struct MossLayer {
+pub struct MossLayer {
     n1_w: DevBuf,
     n1_b: DevBuf,
     qkv: Mat,
@@ -35,7 +35,7 @@ struct MossLayer {
     attn_scale: DevBuf,
     n2_w: DevBuf,
     n2_b: DevBuf,
-    ffn1: Mat,
+    pub(crate) ffn1: Mat,
     ffn2: Mat,
     ffn_scale: DevBuf,
 }
@@ -48,6 +48,77 @@ struct Stage {
     heads: usize,
     context: usize,
     patch: usize,
+}
+
+/// One MOSS transformer layer in place on x [t, d] (stage positions 0..t): pre-LN windowed-causal attention (adjacent-pair
+/// RoPE, keys within `context` before each query) and a GELU FFN, each added through its layer scale. `a`, `b` [t, d] and
+/// `big` [t, max(3d, ffn)] scratch
+#[allow(clippy::too_many_arguments)]
+/// One MOSS layer in place on x [t, d]; `bf`: the reference encoder's BF16 recipe (every matmul's operands and output,
+/// the rotated q and k and the attention output rounded to bfloat16; codec_decoder.py moss_layer's `rnd`)
+pub fn moss_layer(ops: &Ops, ly: &MossLayer, x: &DevBuf, t: usize, d: usize, heads: usize, context: usize, ln_eps: f32, a: &DevBuf, b: &DevBuf, big: &DevBuf,
+                  bf: bool) -> Result<()> {
+    let r = |p: *mut f32, n: usize| if bf { ops.bf16(p, n) } else { Ok(()) };
+    let hd = d / heads;
+    ops.layer_norm(x.fp(), t, d, ly.n1_w.fp(), ly.n1_b.fp(), ln_eps, a.fp())?;
+    r(a.fp(), t * d)?;
+    ops.linear(a.fp(), t, &ly.qkv, nulf(), big.fp())?;
+    r(big.fp(), t * 3 * d)?;
+    ops.rope(big.fp(), 3 * d, t, heads, hd, 10000.0, 0)?;
+    ops.rope(fp(big, d), 3 * d, t, heads, hd, 10000.0, 0)?;
+    r(big.fp(), t * 3 * d)?;
+    ops.attention(big.fp(), 3 * d, t, fp(big, d), fp(big, 2 * d), 3 * d, t, heads, heads, hd, (hd as f32).powf(-0.5), 0, true, context, a.fp())?;
+    r(a.fp(), t * d)?;
+    ops.linear(a.fp(), t, &ly.wo, nulf(), b.fp())?;
+    r(b.fp(), t * d)?;
+    ops.scale_add(x.fp(), b.fp(), ly.attn_scale.fp(), t, d)?;
+    ops.layer_norm(x.fp(), t, d, ly.n2_w.fp(), ly.n2_b.fp(), ln_eps, a.fp())?;
+    r(a.fp(), t * d)?;
+    ops.linear(a.fp(), t, &ly.ffn1, nulf(), big.fp())?;
+    r(big.fp(), t * ly.ffn1.n)?;
+    ops.gelu(big.fp(), t * ly.ffn1.n, false)?;
+    r(big.fp(), t * ly.ffn1.n)?;
+    ops.linear(big.fp(), t, &ly.ffn2, nulf(), b.fp())?;
+    r(b.fp(), t * d)?;
+    ops.scale_add(x.fp(), b.fp(), ly.ffn_scale.fp(), t, d)
+}
+
+impl MossLayer {
+    /// The matrices' values rounded to bfloat16 (the reference encoder's BF16 operands)
+    pub fn round_bf16(&self, ops: &Ops) -> Result<()> {
+        for m in [&self.qkv, &self.wo, &self.ffn1, &self.ffn2] {
+            ops.bf16(m.w.fp(), m.n * m.k)?;
+        }
+        Ok(())
+    }
+}
+
+/// A MOSS layer's weights (`<p>.norm1` ... `<p>.ffn_scale`)
+pub fn moss_weights(ops: &Ops, w: &Weights, p: &str) -> Result<MossLayer> {
+    let q = |x: &str| format!("{p}.{x}");
+    Ok(MossLayer {
+        n1_w: w.dev(ops, &q("norm1.weight"))?,
+        n1_b: w.dev(ops, &q("norm1.bias"))?,
+        qkv: w.mat(ops, &q("qkv.weight"))?,
+        wo: w.mat(ops, &q("wo.weight"))?,
+        attn_scale: w.dev(ops, &q("attn_scale"))?,
+        n2_w: w.dev(ops, &q("norm2.weight"))?,
+        n2_b: w.dev(ops, &q("norm2.bias"))?,
+        ffn1: w.mat(ops, &q("ffn1.weight"))?,
+        ffn2: w.mat(ops, &q("ffn2.weight"))?,
+        ffn_scale: w.dev(ops, &q("ffn_scale"))?,
+    })
+}
+
+/// x += pw2(gelu(pw1(LN(causal dwconv(x))))): `a`, `b` [t, c] and `big` [t, hidden] scratch
+#[allow(clippy::too_many_arguments)]
+pub fn convnext(ops: &Ops, blk: &Block, x: &DevBuf, t: usize, c: usize, eps: f32, ones: &DevBuf, a: &DevBuf, b: &DevBuf, big: &DevBuf) -> Result<()> {
+    ops.dwconv_causal(x.fp(), t, c, blk.dw.fp(), blk.k, blk.dw_b.fp(), a.fp())?;
+    ops.layer_norm(a.fp(), t, c, blk.ln_w.fp(), blk.ln_b.fp(), eps, b.fp())?;
+    ops.linear(b.fp(), t, &blk.pw1, blk.pw1_b.fp(), big.fp())?;
+    ops.gelu(big.fp(), t * blk.pw1.n, false)?;
+    ops.linear(big.fp(), t, &blk.pw2, blk.pw2_b.fp(), a.fp())?;
+    ops.scale_add(x.fp(), a.fp(), ones.fp(), t, c)
 }
 
 pub struct Decoder {
@@ -86,7 +157,7 @@ pub struct Decoder {
     pub bytes: usize,
 }
 
-fn block(ops: &Ops, w: &Weights, p: &str, bytes: &mut usize) -> Result<Block> {
+pub fn block(ops: &Ops, w: &Weights, p: &str, bytes: &mut usize) -> Result<Block> {
     let pw1 = w.mat(ops, &format!("{p}.pw1.weight"))?;
     let pw2 = w.mat(ops, &format!("{p}.pw2.weight"))?;
     *bytes += pw1.bytes() + pw2.bytes();
@@ -270,21 +341,8 @@ impl Decoder {
             ops.linear(cur.fp(), t, &st.inp, nulf(), a.fp())?;
             std::mem::swap(&mut cur, &mut a);
             let d = st.d;
-            let hd = d / st.heads;
             for ly in &st.layers {
-                ops.layer_norm(cur.fp(), t, d, ly.n1_w.fp(), ly.n1_b.fp(), self.ln_eps, a.fp())?;
-                ops.linear(a.fp(), t, &ly.qkv, nulf(), big.fp())?;
-                ops.rope(big.fp(), 3 * d, t, st.heads, hd, 10000.0, 0)?;
-                ops.rope(fp(&big, d), 3 * d, t, st.heads, hd, 10000.0, 0)?;
-                ops.attention(big.fp(), 3 * d, t, fp(&big, d), fp(&big, 2 * d), 3 * d, t, st.heads, st.heads, hd, (hd as f32).powf(-0.5), 0, true,
-                              st.context, a.fp())?;
-                ops.linear(a.fp(), t, &ly.wo, nulf(), b.fp())?;
-                ops.scale_add(cur.fp(), b.fp(), ly.attn_scale.fp(), t, d)?;
-                ops.layer_norm(cur.fp(), t, d, ly.n2_w.fp(), ly.n2_b.fp(), self.ln_eps, a.fp())?;
-                ops.linear(a.fp(), t, &ly.ffn1, nulf(), big.fp())?;
-                ops.gelu(big.fp(), t * ly.ffn1.n, false)?;
-                ops.linear(big.fp(), t, &ly.ffn2, nulf(), b.fp())?;
-                ops.scale_add(cur.fp(), b.fp(), ly.ffn_scale.fp(), t, d)?;
+                moss_layer(ops, ly, &cur, t, d, st.heads, st.context, self.ln_eps, &a, &b, &big, false)?;
             }
             let mut width = d;
             if let Some(out) = &st.out {

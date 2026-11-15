@@ -95,9 +95,26 @@ nextcuda audio check <dump dir> --model zonos3-mini --stages prompt,lm,forced,de
   limiter. Measured on the same takes, the gated level per 5 s spreads 0.9-2.0 dB (it spread 2.9-21 dB): a 70 s Rupert
   take -16.5 to -17.4, Savannah -16.9 to -18.0, the full decoder -16.7 to -17.6, the user's clone (the take that faded
   21 dB) -16.8 to -18.8. `level: off` gives the decoder's level less 3 dB, as Zyphra serves it.
-- **Not ported:** raw-reference cloning of a new recording (it needs the 4 GB acoustic encoder and the 1.5 GB SSL
-  teacher; the presets' shipped codes are used as they are), Zyphra's text normalizer (the server's speech text pass
-  runs first), LACI, speech editing, accent adapters, control spans and streaming decode.
+- **Text** (2026-11-15): Zyphra's normalizer (`zyphra-textnorm`, pure Rust; option `normalize`) and the edit build's
+  markup - `[pause]` / `[pause 0.25|0.5|1|2]`, `[start]`, `[ipa ...]`, and control spans `[steer ID=DOSE,...]words[/steer]`
+  (steering over those words alone, ramped in and out) - token ids identical to Zyphra's `zonos3-cli --request`.
+- **Raw-reference cloning** (2026-11-15; `options.speaker-mode: reference` with a recording): the recording's first
+  60 s through Zyphra's reference encoder (`zac-encoder.gguf`: Snake residual convs, five MOSS stages, a semantic
+  encoder and RVQ, with the 16-layer Wav2Vec2-BERT teacher `ssl-teacher.gguf`) to the codec's own codes, read as the
+  prefix as a preset's are - in the reference's production BF16 recipe (operands and tensor boundaries rounded to
+  bfloat16; float32 differs from it by 24 % at the teacher's output). Codes against Zyphra's `zac-encoder-cli` on
+  Rupert's 13 s: codebook 0 the same in 97.5 %, 1: 95.5 %, 2-9: 76-89 % (Zyphra's own CPU encoder against the codes
+  Zyphra ships for that recording: 98.0, 95.5, 75-89 %); the teacher in float32 matches the reference's float32
+  teacher to 1e-5. The encoders load for the encode (5.6 GiB, 1.4-2.1 s) and are freed after it; the codes are kept
+  for the last 64 recordings. Encode 1.0 s for 13 s; the card peaked at 8.5 GiB. A take cloned this way measures 0.839
+  against the recording by the speaker encoder (the shipped preset codes 0.845, the embedding 0.884), Whisper word
+  for word.
+- **Not ported:** LACI and short-text handling (LACI reads alignment heads' attention over the text each step and rolls a take back on a
+  skip or a stall: a per-step attention probe on the two attention layers and a rollback of the gated-DeltaNet state,
+  which the engine does not snapshot; short texts run under LACI), speech editing (it needs the FuseAlign aligner and a
+  recogniser on the edited clip around the edit backbone and its LoRA - `edit/accents.gguf` holds only that `edit`
+  adapter: Zyphra ships no accent adapters, accents are the steering bundle's `accents_*` directions, which work) and
+  streaming decode (the audio contract answers a whole take; a stretch-at-a-time hook would be its first step).
 
 ## Conversation: VibeVoice 1.5B
 

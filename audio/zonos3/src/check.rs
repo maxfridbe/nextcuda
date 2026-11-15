@@ -8,6 +8,7 @@
 //!             the prompt's last row, then each row fed back (teacher forcing)
 //!   decoder   codes.npy [frames, 10]                                            -> nc_pcm.npy (44.1 kHz, before the gain)
 //!   speaker   speaker.wav (any rate; the reference's input: 44.1 kHz)           -> nc_embedding.npy [192], nc_fbank.npy
+//!   encoder   reference.wav (any rate)                                        -> nc_codes.npy [frames, 10] (raw-reference codes)
 //!   prompt    prompt.txt (+ voice.codes.npy | voice.embedding.npy)              -> nc_ids.npy [rows, 11]
 //! ```
 
@@ -19,7 +20,7 @@ use crate::lm::Cond;
 use crate::prompt::{self, Voice};
 use crate::Zonos3;
 
-pub const STAGES: &[&str] = &["lm", "forced", "decoder", "speaker", "prompt"];
+pub const STAGES: &[&str] = &["lm", "forced", "decoder", "speaker", "encoder", "prompt"];
 
 /// A float32 .npy of `shape`
 pub fn npy(path: &Path, shape: &[usize], v: &[f32]) -> Result<()> {
@@ -109,6 +110,13 @@ pub fn run(z: &Zonos3, dir: &Path, stages: &[String], log: &mut dyn FnMut(String
                 let e = spk.embed(&z.ops, &samples, rate)?;
                 npy(&dir.join("nc_embedding.npy"), &[e.len()], &e)?;
                 log(format!("speaker: {} samples at {rate} Hz -> nc_embedding.npy (norm {:.3})", samples.len(), e.iter().map(|x| x * x).sum::<f32>().sqrt()));
+            }
+            "encoder" => {
+                let (samples, rate) = nextcuda_audio::decode_audio(&read(dir, "reference.wav")?).map_err(Error)?;
+                let codes = z.reference_codes(&samples, rate, log)?;
+                let f: Vec<f32> = codes.iter().flat_map(|r| r.iter().map(|x| *x as f32)).collect();
+                npy(&dir.join("nc_codes.npy"), &[codes.len(), 10], &f)?;
+                log(format!("encoder: {} samples at {rate} Hz -> nc_codes.npy ({} frames)", samples.len(), codes.len()));
             }
             "prompt" => {
                 let text = String::from_utf8_lossy(&read(dir, "prompt.txt")?).trim().to_string();

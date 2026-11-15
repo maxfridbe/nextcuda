@@ -4,18 +4,20 @@
 # experts, Q8_0 mixers, the tokenizer, condition tables and the codec's silence frame inside; the edit build: the release
 # LM with the phoneme, start and pause rows and speech editing's vocabulary - on plain text the release LM bit for bit), the ZAC codec's MR-iSTFT
 # decoders (keep2_plain, the default; full_mr, loaded on the first request that names it), the MECT-B2 speaker
-# encoder, the steering bundle, and the 27 preset voices' codes (.codes.npy: the reference prefix, the model's default)
+# encoder, the reference encoder and its Wav2Vec2-BERT teacher (raw-reference cloning: a recording's own codes, loaded
+# for the encode and freed after it), the steering bundle, and the 27 preset voices' codes (.codes.npy: the reference prefix, the model's default)
 # and speaker embeddings (.embedding.npy). Apache-2.0 (the weights; the runtime this port follows is MIT).
 id: zonos3-mini
 kind: audio
 arch: zonos3
 title: 'ZONOS3-Mini (speech in 43 languages at 44.1 kHz: 27 preset voices, a voice cloned from a recording, steering of pace and emotion)'
-about: 'Zyphra''s ZONOS3-Mini in Rust and CUDA: an 11-layer backbone of 1024 (gated DeltaNet mixers with a global-attention layer in four, Full AttnRes instead of the residual stream, a top-2-of-64 latent MoE) reads SuperBPE text after a voice and writes ten 4096-code books at 15 Hz; the ZAC codec''s MR-iSTFT decoder makes 44.1 kHz. Voices: a preset (voice: savannah, rupert, ...; its shipped codes as a reference prefix, or option speaker-mode embedding), or a recording (ref_audio, a saved voice) cloned by the MECT-B2 speaker encoder''s embedding. options: controls (steering: delivery.tempo, emotions.*, mood.*, delivery.whisper ...), speaking-rate, decoder full, temperature; cfg is speaker guidance (1: off)'
+about: 'Zyphra''s ZONOS3-Mini in Rust and CUDA: an 11-layer backbone of 1024 (gated DeltaNet mixers with a global-attention layer in four, Full AttnRes instead of the residual stream, a top-2-of-64 latent MoE) reads SuperBPE text after a voice and writes ten 4096-code books at 15 Hz; the ZAC codec''s MR-iSTFT decoder makes 44.1 kHz. Voices: a preset (voice: savannah, rupert, ...; its shipped codes as a reference prefix, or option speaker-mode embedding), or a recording (ref_audio, a saved voice) cloned by the MECT-B2 speaker encoder''s embedding, or with option speaker-mode reference by its own codes (raw-reference cloning: the reference encoder, 5.6 GiB more for about 3 s, then freed). options: controls (steering: delivery.tempo, emotions.*, mood.*, delivery.whisper ...), speaking-rate, decoder full, temperature; cfg is speaker guidance (1: off)'
 license: apache-2.0
 commercial: true
 gpus: '0'
 vram_gib: 2.5                    # measured on the 5070: 2.1 GiB at the peak of a 53 s take (the backbone 0.8, the decoder 0.7)
-headroom_gib: 1.0                # a long take's decoder activations and the speaker encoder's (a minute of recording)
+headroom_gib: 1.0                # a long take's decoder activations and the speaker encoder's (a minute of recording);
+                                 # raw-reference cloning loads 5.6 GiB more for its encode (the card peaked at 8.5 GiB)
 speech:
 - voices
 - clone
@@ -48,6 +50,18 @@ files:
     size: 45385728
     sha256: 9539f340b70be246005403b9c254732e180e85e0b3c57fb1973f0d6bc6c59bdc
     path: zonos3-mini/spk-encoder.gguf
+  zac-encoder:
+    key: zonos3-zac-encoder
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/gguf/zac-encoder.gguf
+    size: 4034646368
+    sha256: 4c4335196486fd24cc56b24a40ac4548f8cc58a6400bce8e4af4e72160b18053
+    path: zonos3-mini/zac-encoder.gguf
+  ssl-teacher:
+    key: zonos3-ssl-teacher
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/gguf/ssl-teacher.gguf
+    size: 1548700000
+    sha256: 59e4f150e1ccdf54e6349b06605c2274f2262139678688025b6614f1393e415a
+    path: zonos3-mini/ssl-teacher.gguf
   steer:
     key: zonos3-steer
     url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/gguf/steer.gguf

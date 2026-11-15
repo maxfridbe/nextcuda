@@ -154,6 +154,35 @@ int ns_audio_z3_astp(ns_gpu* g, const float* x, const float* att, int64_t T, int
 /* x = tanh(x) */
 int ns_audio_z3_tanh(ns_gpu* g, float* x, int64_t n);
 
+/* ---- the reference encoder (raw-reference cloning: the acoustic encoder and the SSL teacher) */
+
+/* Snake over channels-first x [C, L]: x + inv_alpha[c] sin^2(alpha[c] x) */
+int ns_audio_z3_snake_cf(ns_gpu* g, const float* x, int64_t C, int64_t L, const float* alpha, const float* inv_alpha, float* out);
+
+/* x += y (n values) */
+int ns_audio_z3_add(ns_gpu* g, float* x, const float* y, int64_t n);
+
+/* Patch downsampling: out[t, c h + j] = x[t h + j, c] (x [T, C] -> out [T / h, C h]) */
+int ns_audio_z3_patch_down(ns_gpu* g, const float* x, int64_t T, int64_t C, int64_t h, float* out);
+
+/* GLU: out[t, c] = x[t, c] sigmoid(x[t, C + c]) (x [T, 2C]) */
+int ns_audio_z3_glu(ns_gpu* g, const float* x, int64_t T, int64_t C, float* out);
+
+/* x = silu(x) */
+int ns_audio_z3_silu(ns_gpu* g, float* x, int64_t n);
+
+/* Wav2Vec2-BERT attention with relative positions (heads of 64): score = scale (q.k_j + q.dist[clip(j - i, -left, right)
+ * + left]); keys with valid[j] == 0 masked (valid NULL: none); q, k, v rows qs apart, out [T, H 64]; bf != 0: the
+ * reference's BF16 recipe (scores, probabilities and the output rounded to bfloat16) */
+int ns_audio_z3_attn_rel(ns_gpu* g, const float* q, const float* k, const float* v, int64_t qs, int64_t T, int64_t H, int64_t D, const float* dist,
+                         int64_t left, int64_t right, const float* valid, float scale, int bf, float* out);
+
+/* x rounded to bfloat16 values (nearest, ties to even), in place */
+int ns_audio_z3_bf16(ns_gpu* g, float* x, int64_t n);
+
+/* channels-first x [rows, cols] += bias[row] */
+int ns_audio_z3_add_rows(ns_gpu* g, float* x, const float* bias, int64_t rows, int64_t cols);
+
 #ifdef __cplusplus
 }
 #endif
