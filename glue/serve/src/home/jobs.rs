@@ -173,6 +173,36 @@ impl Jobs {
 }
 
 /// A request's reentrant_id (reentrantid is read too)
+/// A file's identity for a fingerprint: its size and modification time
+fn stamp(p: &std::path::Path) -> String {
+    std::fs::metadata(p).map(|m| format!("{}:{:?}", m.len(), m.modified().ok())).unwrap_or_default()
+}
+
+/// FNV-1a 64 (stable across runs and builds, unlike the standard hasher)
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3))
+}
+
+/// The fingerprint of a request against a model entry (see `Home::fingerprint`)
+pub fn fingerprint_of(b: &Value, entry: Option<&Value>) -> String {
+    static EXE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let exe = EXE.get_or_init(|| std::env::current_exe().map(|p| stamp(&p)).unwrap_or_default());
+    let mut body = b.clone();
+    if let Some(o) = body.as_object_mut() {
+        for k in ["wait", "label", "title", "reentrant_id", "reentrantid", "priority", "held", "queue", "project", "batch"] {
+            o.remove(k);
+        }
+    }
+    let mut files = String::new();
+    if let Some(m) = entry {
+        files.push_str(&m["arch"].to_string());
+        for p in super::registry::paths(m) {
+            files.push_str(&format!("|{}={}", p.display(), stamp(&p)));
+        }
+    }
+    format!("{:016x}", fnv(format!("{body}\n{exe}\n{files}").as_bytes()))
+}
+
 pub fn reentrant(b: &Value) -> Option<String> {
     ["reentrant_id", "reentrantid"].iter().find_map(|k| b[*k].as_str()).map(str::trim).filter(|r| !r.is_empty()).map(|r| r.chars().take(200).collect())
 }
@@ -251,6 +281,16 @@ impl Home {
         }
     }
 
+    /// What a job's result is made of: its request (without the job's own bookkeeping: wait, label, title, reentrant_id,
+    /// priority ...), this server's build (its executable: size and time) and the model's files as they are on disk
+    /// (their sizes and times: a pull of another revision changes them). A reentrant_id answers with an earlier job only
+    /// when the fingerprints agree
+    pub(crate) fn fingerprint(&self, b: &Value) -> String {
+        let model = s(b, "model");
+        let entry = if model.is_empty() { None } else { super::registry::find(&self.o.cfg, &model).ok().flatten() };
+        fingerprint_of(b, entry.as_ref())
+    }
+
     /// Whether a cancel was asked for the job
     pub(crate) fn job_cancelled(&self, id: &str) -> bool {
         self.jobs.get(id).is_some_and(|j| j["cancel"] == true)
@@ -261,13 +301,16 @@ impl Home {
         let kind = kind_of_method(name);
         let rid = reentrant(b);
         let wait = b["wait"] != false;
+        let fp = self.fingerprint(b);
         // the job its reentrant_id names - unless it failed, was cancelled, or is done but its file is gone (then it is made
-        // again under the same id: a link that answers 404 forever is not an answer)
+        // again under the same id: a link that answers 404 forever is not an answer), or it was made from another request,
+        // by another build of this server or from other model files (its fingerprint: an old take is never the answer to
+        // a request it was not made for)
         let again = rid.as_deref().and_then(|r| {
             self.jobs.list.lock().unwrap().iter().rev()
                 .find(|j| j["kind"] == kind && j["reentrant_id"] == r && !matches!(j["state"].as_str(), Some("failed" | "cancelled")))
                 .cloned()
-        }).filter(|j| self.result_gone(j).is_none());
+        }).filter(|j| self.result_gone(j).is_none() && j["fingerprint"] == fp.as_str());
         let reentered = again.is_some();
         let job = match again {
             Some(j) => j,
@@ -288,7 +331,7 @@ impl Home {
                         o.remove(k);
                     }
                 }
-                let mut j = json!({"id": id, "kind": kind, "method": name, "label": label, "title": title, "reentrant_id": rid, "state": "queued",
+                let mut j = json!({"id": id, "kind": kind, "method": name, "label": label, "title": title, "reentrant_id": rid, "fingerprint": fp, "state": "queued",
                                    "created": now(), "started": null, "ended": null, "priority": priority, "held": b["held"] == true,
                                    "project": text("project"), "batch": text("batch"), "body": body});
                 {
@@ -785,6 +828,32 @@ mod tests {
         assert!(clean_title(&json!({"title": "   "})).is_null());
         assert!(clean_title(&json!({"title": 5})).is_null());
         assert!(clean_title(&json!({})).is_null());
+    }
+
+    #[test]
+    fn a_reentrant_take_is_one_of_the_same_request_build_and_files() {
+        let a = json!({"input": "Hello.", "model": "zonos3-mini", "seed": 1, "reentrant_id": "tts-1", "wait": false});
+        // the bookkeeping does not change it
+        let mut b = a.clone();
+        b["wait"] = json!(true);
+        b["label"] = json!("x");
+        assert_eq!(fingerprint_of(&a, None), fingerprint_of(&b, None));
+        // anything that changes the sound does: an option, the seed, the text
+        for (k, v) in [("options", json!({"level": "off"})), ("seed", json!(2)), ("input", json!("Hello!")), ("voice", json!("rupert"))] {
+            let mut c = a.clone();
+            c[k] = v;
+            assert_ne!(fingerprint_of(&a, None), fingerprint_of(&c, None), "{k}");
+        }
+        // and so do the model's files (another revision pulled)
+        let d = std::env::temp_dir().join(format!("ns-fp-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("m.gguf");
+        std::fs::write(&f, b"one").unwrap();
+        let entry = json!({"id": "zonos3-mini", "arch": "zonos3", "file": f.display().to_string()});
+        let before = fingerprint_of(&a, Some(&entry));
+        std::fs::write(&f, b"two two").unwrap();
+        assert_ne!(before, fingerprint_of(&a, Some(&entry)));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
