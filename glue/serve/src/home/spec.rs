@@ -187,6 +187,8 @@ const MODEL_STATE: &str = r#"{"type": "object", "properties": {"id": {"type": "s
   "commercial": {"type": "boolean", "description": "false: the licence forbids commercial use (the pages tag the model non-commercial)"},
   "license_note": {"type": "string", "description": "the conditions the licence puts on commercial use (territories, user or revenue limits, a notice to show)"},
   "page": {"type": "integer", "description": "the port of its own page"},
+  "annotations": {"type": "array", "description": "what its text may carry inline (speech and songs): syntax, what it does (does), how it was checked (tested), and the pattern the speech text pass keeps as it is (keep)", "items": {"type": "object", "properties": {"syntax": {"type": "string"}, "does": {"type": "string"}, "tested": {"type": "string"}, "keep": {"type": "string"}}}},
+  "annotations_note": {"type": "string", "description": "what else to know about the text it takes (what is read aloud, what is dropped)"},
   "capabilities": {"type": "array", "items": {"type": "string"}, "description": "what it does, in neutral words: chat, stream, tools; generate, edit, compose, img2img, loras, few_step; ocr, read_pages, pdf; song, lyrics, instrumental; speech, builtin_voices, clone, saved_voices, continue_from, voice_design, voice_direction, vocal_events; text_to_video, image_to_video, sound, chain, first_last_frame, voice_reference, controlnet, inpaint, reference_images, reference_videos"},
   "methods": {"type": "array", "items": {"type": "string"}, "description": "the /rpc methods that take it as model"}}}"#;
 

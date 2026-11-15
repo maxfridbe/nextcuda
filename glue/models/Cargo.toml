@@ -11,3 +11,6 @@ backplane-scheduler.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 serde_yaml = "0.9"
+
+[dev-dependencies]
+fancy-regex = "0.14"

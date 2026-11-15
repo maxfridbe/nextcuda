@@ -52,6 +52,14 @@ Other keys: `local` (role: what it is - a part made on the machine rather than d
 or another registry entry), `base` (a lora: the model it rides on), `defaults` (image / video / audio: the
 request's defaults - steps, cfg, size, seconds ...), `speech` (audio: `voices`, `design`, `clone`).
 
+### Inline annotations
+
+`annotations.yml` says, per architecture, what a speech or song model's text may carry inline: the syntax, what it
+does, how it was checked (each claim tested on the box; anything not measured says so) and a `keep` pattern. It is the
+one source: every card of the architecture gets it (`annotations`, `annotations_note`), the speech text pass keeps the
+spans the patterns match (where it would otherwise make brackets into pauses), the served guide ends with it as a
+table, and `system.models` rows carry it for the platform's legend. A card's own `annotations` win.
+
 ### Concurrency and coexistence
 
 Every card may carry what was measured about running it next to itself and next to others (`nextcuda models bench`

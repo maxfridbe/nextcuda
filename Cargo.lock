@@ -1190,6 +1190,7 @@ name = "nextcuda-models"
 version = "0.0.0"
 dependencies = [
  "backplane-scheduler",
+ "fancy-regex",
  "nextcuda-gguf",
  "serde_json",
  "serde_yaml",
@@ -1232,6 +1233,7 @@ name = "nextcuda-serve"
 version = "0.0.0"
 dependencies = [
  "backplane-scheduler",
+ "fancy-regex",
  "image",
  "nextcuda-audio",
  "nextcuda-core",

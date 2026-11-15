@@ -67,9 +67,10 @@ fn save(cfg: &Config, path: &Path, models: &[Value]) -> Result<(), String> {
 /// Every entry, one registered before cards carried a licence with its card's (read from the cards, never written back)
 pub fn all(cfg: &Config) -> Result<Vec<Value>, String> {
     let mut models = load(&registry(cfg))?;
-    if models.iter().any(|m| m.get("license").is_none() && m.get("catalog").is_some()) {
+    if models.iter().any(|m| m.get("catalog").is_some()) {
         if let Ok(cat) = crate::catalog::Catalog::load(cfg) {
             cat.fill_license(&mut models);
+            cat.fill_annotations(&mut models);
         }
     }
     Ok(models)

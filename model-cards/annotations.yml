@@ -1,0 +1,102 @@
+# What each model reads inline in its text: one entry per architecture (every card of that arch gets it as its
+# `annotations`, unless the card has its own). The one source for: the speech text pass (the server keeps every span a
+# `keep` pattern matches as it is, where it would otherwise make brackets into pauses), the guide's "Inline annotations"
+# section, and the platform's legend where the text is written (system.models rows carry them).
+#   syntax  what to write          does  what it does
+#   keep    a regex of the spans the server must leave alone (speech only; none: the server may rewrite them)
+#   tested  how it was checked: "verified <date>: <what was measured>", or "unverified: <why>"
+# `note` is said under the table. Tests: nextcuda audio gen on the box at the engine (no server text pass), each take
+# heard by Whisper large-v3-turbo; read aloud = Whisper wrote the tag's word.
+
+zonos3:
+  note: 'Any other bracketed text (`(laugh)`, `[laugh]`, `<laugh/>`) is not a tag: ZONOS3-Mini has no trained non-verbal tags (Zyphra: angle-bracket strings are ordinary text). Numbers, money, dates, times and units are said as words by Zyphra''s normalizer in the request''s language (option normalize off: as written).'
+  list:
+    - syntax: '[pause] [pause 0.25|0.5|1|2]'
+      keep: '\[pause(?: [0-9.]+s?)?\]'
+      does: 'a pause after a word (the nearest of the model''s four trained buckets, nominally 0.25 / 0.5 / 1 / 2 s); the model shortens long ones'
+      tested: 'verified 2026-11-15: [pause 2] after a word gave 0.88 and 1.0 s of silence against 0.5 and 0.7 s unmarked; Zyphra''s runtime with the same marker 0.49-0.69 s; never read aloud'
+    - syntax: '[start]'
+      keep: '\[start\]'
+      does: 'first in the text, once: speech from the first frame (no lead-in silence)'
+      tested: 'verified 2026-11-15: becomes the start token, ids identical to Zyphra''s runtime; audible onset not measured'
+    - syntax: '[ipa təmɑːtoʊ]'
+      keep: '\[ipa [^\]]*\]'
+      does: 'a word said as the IPA written (the model''s 136 phone symbols; stress marks and syllable dots dropped)'
+      tested: 'verified 2026-11-15: token ids identical to Zyphra''s runtime; Whisper heard "tomato" where written - the vowel itself not measured'
+    - syntax: '[steer ID=DOSE, ...]words[/steer]'
+      keep: '\[steer [^\]]*\]|\[/steer\]'
+      does: 'hidden-space steering over these words alone, ramped in and out over 0.2 s: emotions.* (happy, sad, angry ...), mood.valence / arousal / ..., delivery.whisper / loud / tempo / conversational, expressive.expressive, disfluency.disfluent, emphasis_nv_nodur.emphasis (doses about -4..4)'
+      tested: 'verified 2026-11-15: [steer delivery.whisper=4] over a clause dropped its voicing (autocorrelation 0.22-0.35 against 0.72-0.77 unsteered) and it came back after the span'
+    - syntax: '(laugh) [laugh] <laugh/>'
+      does: 'nothing trained: (laugh) is read aloud; [laugh] and <laugh/> were dropped on the take tested'
+      tested: 'verified 2026-11-15: Whisper heard "Loth" for (laugh) and no word for [laugh] or <laugh/>'
+
+breeze-tts-2:
+  note: 'Other tags in parentheses or brackets are dropped silently, not read. A direction for the whole line goes in instructions, not in the text.'
+  list:
+    - syntax: '(laugh) (sigh) (cough) (clears throat)'
+      keep: '\((?:laugh|sigh|cough|clears throat)\)'
+      does: 'English vocal events: the sound, where the tag stands'
+      tested: 'verified 2026-11-15: not read aloud; (laugh) and (sigh) each added 0.64 s and (clears throat) 1.2 s of non-word sound against the same line without; (cough) not read, its sound not measured'
+    - syntax: '[笑] [叹气] [咳嗽] [清嗓子]'
+      keep: '\[(?:笑|叹气|咳嗽|清嗓子)\]'
+      does: 'Chinese vocal events (laugh, sigh, cough, clears throat)'
+      tested: 'partly verified 2026-11-15: [叹气] heard by Whisper as a sigh (唉); [笑] gave a take Whisper could not transcribe; [咳嗽] and [清嗓子] unverified'
+    - syntax: '(gasp) [laugh]'
+      does: 'undocumented tags: dropped (not read, no sound measured)'
+      tested: 'verified 2026-11-15: Whisper heard neither'
+
+qwen3-tts:
+  note: 'Qwen3-TTS reads inline tags as words: style a line with instructions (CustomVoice, VoiceDesign), not in the text. Write numbers, dates and abbreviations as they are said.'
+  list:
+    - syntax: '[laugh] (laughs) [whisper]'
+      does: 'read aloud as words'
+      tested: 'verified 2026-11-15 (CustomVoice, ryan): Whisper heard "laugh", "laughs", "whisper"'
+    - syntax: '<sigh>'
+      does: 'dropped'
+      tested: 'verified 2026-11-15: Whisper heard no word for it'
+
+voxcpm2:
+  note: 'VoxCPM2 has no tag vocabulary: its lever is a description of the voice and delivery in parentheses at the very start (what instructions become).'
+  list:
+    - syntax: '(a calm, unhurried voice) at the start'
+      keep: '^\s*\([^)\n]{1,300}\)'
+      does: 'the voice and delivery described, not spoken'
+      tested: 'verified 2026-11-15: a leading (laughing) was not read aloud; the delivery change not measured'
+    - syntax: '(sighs) mid-text'
+      does: 'dropped by the model (the server''s speech text pass makes it a pause)'
+      tested: 'verified 2026-11-15: not read aloud'
+    - syntax: '[laugh]'
+      does: 'mangles the words around it: avoid'
+      tested: 'verified 2026-11-15: "Well [laugh] that is" heard as "Wow, that is"'
+
+vibevoice:
+  note: 'A script of "Speaker N:" lines, one turn a line (Speaker 1 is the first recording given). Plain text without them is Speaker 1''s.'
+  list:
+    - syntax: 'Speaker 1: ... / Speaker 2: ... (a line each)'
+      does: 'whose voice says the line (up to four speakers, each cloned from its recording)'
+      tested: 'verified 2026-11-15: a two-speaker script was heard as both lines; the labels never read aloud'
+    - syntax: '[laugh] (laughs)'
+      does: 'not tags: they garble the words around them'
+      tested: 'verified 2026-11-15: "Well [laugh] that is really funny" heard as "Bound up last! That is really funny", "(laughs)" read as "laugh"'
+
+acestep:
+  note: 'Lyrics only (the description is the style).'
+  list:
+    - syntax: '[Verse] [Pre-Chorus] [Chorus] [Bridge] [Outro] (a line of their own)'
+      does: 'song structure: the section''s lines are sung as that section'
+      tested: 'verified 2026-11-15: a 30 s take sang "Walking down the river road" under [verse]; no tag word sung'
+
+yue2:
+  note: 'Lyrics only (the description is the style). Lines under a section the score lacks are scatted, not sung.'
+  list:
+    - syntax: '[Intro] [Verse] [Pre-Chorus] [Chorus] [Bridge] [Interlude] [Outro] (a line of their own)'
+      does: 'song structure: the score''s sections; the words sung under them'
+      tested: 'verified 2026-11-15: a 60 s take sang every line of [verse] and [chorus] (the chorus repeated); no tag word sung'
+
+minimax-music3:
+  note: 'Lyrics only (the description is the style). Text after a tag on the same line is dropped.'
+  list:
+    - syntax: '[intro] [verse] [pre-chorus] [chorus] [bridge] [instrumental] [solo] [outro] (a line of their own)'
+      does: 'song structure: the section''s lines sung as that section; [instrumental] and [solo] are played'
+      tested: 'verified 2026-11-15 (int8, both cards): a 33 s take sang all four lines of [verse] and [chorus] in order (then repeated and ad-libbed); no tag word sung'

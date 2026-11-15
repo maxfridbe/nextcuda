@@ -109,6 +109,27 @@ impl Catalog {
                 return Err(format!("{}: files.{role} names {key}, which no card defines", p.display()));
             }
         }
+        // the inline annotations of each architecture (annotations.yml), on every card of it that has none of its own
+        let ann_path = dir.join("annotations.yml");
+        if let Ok(text) = std::fs::read_to_string(&ann_path) {
+            let by_arch: Value = serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", ann_path.display()))?;
+            for (arch, a) in by_arch.as_object().into_iter().flatten() {
+                let list = a.get("list").and_then(Value::as_array).ok_or_else(|| format!("{}: {arch}: no list", ann_path.display()))?;
+                for (i, x) in list.iter().enumerate() {
+                    for k in ["syntax", "does", "tested"] {
+                        if x.get(k).and_then(Value::as_str).is_none_or(str::is_empty) {
+                            return Err(format!("{}: {arch}: entry {i} has no {k}", ann_path.display()));
+                        }
+                    }
+                }
+                for m in models.iter_mut().filter(|m| s(m, "arch") == *arch && m.get("annotations").is_none()) {
+                    m["annotations"] = Value::Array(list.clone());
+                    if let Some(n) = a.get("note") {
+                        m["annotations_note"] = n.clone();
+                    }
+                }
+            }
+        }
         let mut ids = BTreeSet::new();
         for m in &models {
             if !ids.insert(s(m, "id")) {
@@ -126,7 +147,11 @@ impl Catalog {
         let card = [s(entry, "catalog"), s(entry, "id")].iter().find_map(|id| self.models.iter().filter(has).find(|m| !id.is_empty() && s(m, "id") == *id))
             .or_else(|| self.models.iter().filter(has).find(|m| s(m, "kind") == kind && s(m, "arch") == s(entry, "arch")))
             .or_else(|| self.models.iter().filter(has).find(|m| s(m, "kind") == kind))?;
-        std::fs::read_to_string(self.dir.join(s(card, "guide"))).ok()
+        let text = std::fs::read_to_string(self.dir.join(s(card, "guide"))).ok()?;
+        Some(match Self::annotations_md(card) {
+            Some(md) => text.trim_end().to_string() + &md,
+            None => text,
+        })
     }
 
     pub fn model(&self, id: &str) -> Option<&Value> {
@@ -144,6 +169,34 @@ impl Catalog {
                 }
             }
         }
+    }
+
+    /// Every entry's inline annotations from its card (the card is their one source: the server keeps their spans
+    /// through its speech text pass, the guide lists them, the platform shows them where the text is written)
+    pub fn fill_annotations(&self, entries: &mut [Value]) {
+        for e in entries.iter_mut() {
+            let Some(card) = self.model(&s(e, "catalog")) else { continue };
+            if let Some(a) = card.get("annotations") {
+                e["annotations"] = a.clone();
+            }
+            if let Some(n) = card.get("annotations_note") {
+                e["annotations_note"] = n.clone();
+            }
+        }
+    }
+
+    /// A card's annotations as Markdown (the guide's last section): each syntax, what it does, how it was checked
+    pub fn annotations_md(card: &Value) -> Option<String> {
+        let list = card.get("annotations")?.as_array()?;
+        let mut md = String::from("\n\n## Inline annotations (what the text may carry)\n\n| write | what it does | checked |\n|---|---|---|\n");
+        for a in list {
+            let cell = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("").replace('|', "\\|").replace('\n', " ");
+            md.push_str(&format!("| `{}` | {} | {} |\n", cell("syntax"), cell("does"), cell("tested")));
+        }
+        if let Some(n) = card.get("annotations_note").and_then(Value::as_str) {
+            md.push_str(&format!("\n{n}\n"));
+        }
+        Some(md)
     }
 
     /// A model's files: (role, key, the file's entry)
@@ -470,7 +523,7 @@ fn entry(m: &Value, paths: &BTreeMap<String, PathBuf>, local: &BTreeMap<String, 
         "files": files, "gpus": m.get("gpus").cloned().unwrap_or(json!("0")), "env": env, "enabled": true,
         "catalog": m["id"],
     });
-    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "does", "silo", "vram_gib", "headroom_gib", "streams", "split", "split_vram_gib", "concurrency", "coexistence"].iter().chain(LICENSE_KEYS) {
+    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "annotations", "annotations_note", "does", "silo", "vram_gib", "headroom_gib", "streams", "split", "split_vram_gib", "concurrency", "coexistence"].iter().chain(LICENSE_KEYS) {
         if let Some(v) = m.get(k) {
             e[k] = v.clone();
         }
@@ -603,10 +656,31 @@ mod tests {
     }
 
     #[test]
+    fn every_speech_and_song_card_says_what_its_text_may_carry() {
+        let cat = repo_cards();
+        for m in cat.models.iter().filter(|m| s(m, "kind") == "audio" && s(m, "arch") != "whisper") {
+            let a = m["annotations"].as_array().unwrap_or_else(|| panic!("{}: no annotations", s(m, "id")));
+            assert!(!a.is_empty());
+            for x in a {
+                if let Some(k) = x["keep"].as_str() {
+                    assert!(fancy_regex::Regex::new(k).is_ok(), "{}: keep {k}", s(m, "id"));
+                }
+            }
+        }
+        let g = cat.guide(&json!({"id": "zonos3-mini", "catalog": "zonos3-mini", "kind": "audio", "arch": "zonos3"})).unwrap();
+        assert!(g.contains("## Inline annotations") && g.contains("`[pause] [pause 0.25\\|0.5\\|1\\|2]`"), "{g}");
+        let card = cat.model("zonos3-mini").unwrap();
+        let e = entry(card, &BTreeMap::new(), &BTreeMap::new());
+        assert!(e["annotations"].is_array() && e["annotations_note"].is_string());
+    }
+
+    #[test]
     fn a_guide_falls_back_to_its_architecture_then_its_kind() {
         let cat = repo_cards();
         let tts = cat.guide(&json!({"id": "mine", "kind": "audio", "arch": "qwen3-tts"})).unwrap();
-        assert_eq!(tts, std::fs::read_to_string(cat.dir.join("guides/qwen3-tts.md")).unwrap());
+        // the guide's file, then its architecture's inline annotations
+        assert!(tts.starts_with(std::fs::read_to_string(cat.dir.join("guides/qwen3-tts.md")).unwrap().trim_end()));
+        assert!(tts.contains("## Inline annotations"));
         let chat = cat.guide(&json!({"id": "mine", "kind": "llm", "arch": "new"})).unwrap();
         assert_eq!(chat, std::fs::read_to_string(cat.dir.join("guides/chat.md")).unwrap());
     }

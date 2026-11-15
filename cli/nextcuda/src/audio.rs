@@ -540,6 +540,7 @@ fn serve_here(m: &Value, files: ModelFiles, args: &[String], out: PathBuf, cfg: 
     let mut srv = nextcuda_serve::audio::AudioServer::new(m["id"].as_str().unwrap_or("audio").to_string(), g, e, Some(out), wfe, cors)?;
     srv.idle = crate::served::idle_exit(args)?;
     srv.license = nextcuda_serve::page::licence_of(m);
+    srv.keep = nextcuda_serve::audio::keep_patterns(m);
     Arc::new(srv).run(&addr)
 }
 

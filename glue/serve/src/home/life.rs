@@ -610,6 +610,12 @@ impl Home {
                                                       .find(|x| x.model.as_deref() == Some(id.as_str())).map_or(self.port_of(&kind), |x| x.port)),
                                                   "video" => json!(self.o.ports.video), _ => json!(self.o.ports.chat_ui) }});
             row.as_object_mut().unwrap().extend(licence);
+            // what its text may carry inline (model-cards/annotations.yml): the platform's legend where text is written
+            for k in ["annotations", "annotations_note"] {
+                if let Some(v) = m.get(k).or_else(|| card.and_then(|c| c.get(k))) {
+                    row[k] = v.clone();
+                }
+            }
             // its concurrency profile (the card's; "unmeasured" until a bench says otherwise) and the copies running now
             let prof = if m.get("concurrency").is_some() || m.get("coexistence").is_some() { Profile::of_entry(m) }
                        else { card.map_or_else(Profile::default, Profile::of_entry) };
