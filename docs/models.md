@@ -36,6 +36,7 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 | speech | `qwen3-tts-design` | Qwen3-TTS VoiceDesign: a voice made up from a description | 4.2 GiB | download |
 | speech | `vibevoice-1.5b` | VibeVoice 1.5B: a script of up to four speakers, each cloned from a recording | 5.1 GiB | served |
 | speech | `vibevoice-1.5b-int8` | VibeVoice, its language model in int8 | (the above's) | served |
+| speech | `zonos3-mini` | ZONOS3-Mini (Zyphra, Apache-2.0): 43 languages at 44.1 kHz, 27 preset voices, a voice cloned from a recording, steering of pace and emotion; ~15x real time | 2.5 GiB | served |
 | listening | `whisper-large-v3-turbo` | Whisper large-v3-turbo: speech to text in 99 languages, words timed, the language detected (MIT) | 1.5 GiB | served |
 | songs | `minimax-music3-int8` | MiniMax Music 3, its language model in int8: songs from lyrics and a description, up to 6 minutes, 44.1 kHz stereo | (music3's) | served, both cards |
 | songs | `minimax-music3` | MiniMax Music 3 in half | 26.6 GiB | too big (23 GB a card) |
@@ -69,7 +70,7 @@ Each model's guide (how to ask it, what it takes, what it answers) is in `model-
 |---|---|---|
 | chat | `qwen35` (Qwen3.8: DeltaNet + attention, MTP drafts, vision), `nemotron_h_moe` | Qwen3.8 over both, pipelined; Nemotron on the 5070 |
 | image, OCR | our Rust + CUDA engines (Qwen-Image 2.1 and 2512, Ming-Image, Z-Image-Turbo, Unlimited-OCR, PaddleOCR-VL, olmOCR-2) | one card each; olmOCR-2 the decoder on one, the vision tower on the other; Ming-Image the DiT on the 5070, its text encoder on the 3060 |
-| speech | `breeze-tts-2`, `qwen3-tts`, `voxcpm2`, `vibevoice` (several speakers) | one card each; VoxCPM2 int8 fits beside the chat model |
+| speech | `breeze-tts-2`, `qwen3-tts`, `voxcpm2`, `vibevoice` (several speakers), `zonos3` | one card each; VoxCPM2 int8 fits beside the chat model |
 | songs | `minimax-music3` (int8), `acestep-1.5` | MiniMax: the language model on the 5070, the flow stage and decoder on the 3060 |
 | video | `minimax-h3` (the native daemon, `--span`), `ltx2` (LTX-2.5: Gemma-4 text stage, a 22B audio-video DiT, VAEs, vocoder, latent upsampler) and the video studio (scenes, plans, a film's clips joined) | the denoiser over both cards, nothing streamed: an H3 clip in ~62 s from the SSD; LTX-2.5's DiT resident, 32 blocks on the 5070 and 16 on the 3060, its text stage loaded for a clip and released |
 | 3D | TRELLIS.2, Hunyuan3D-2mini and 2.1 (its paint alone too), UniRig, SkinTokens, RigNet, AnimateAnyMesh, UniMate | one card each |

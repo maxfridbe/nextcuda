@@ -97,6 +97,7 @@ repository's `cardData.license` and its licence text (2026-10-27):
 | vibevoice-1.5b, vibevoice-1.5b-int8 | mit | yes | https://huggingface.co/microsoft/VibeVoice-1.5B, https://huggingface.co/gguf-org/vibevoice-gguf (tokenizer: Qwen2.5-1.5B, Apache-2.0) |
 | voxcpm2, voxcpm2-int8 | apache-2.0 | yes | https://huggingface.co/openbmb/VoxCPM2 |
 | whisper-large-v3-turbo | mit | yes | https://huggingface.co/openai/whisper-large-v3-turbo |
+| zonos3-mini | apache-2.0 | yes | https://huggingface.co/Zyphra/ZONOS3-Mini (the weights; the reference runtime github.com/Zyphra/ZONOS3-Mini: MIT) |
 | depth-anything-v2-small | apache-2.0 | yes | https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf (Base and Large: CC-BY-NC-4.0, not offered) |
 | ming-image-0.1-design | mit | yes | https://huggingface.co/inclusionAI/Ming-Image-0.1-Design, https://huggingface.co/Comfy-Org/Ming-Image |
 | z-image-turbo | apache-2.0 | yes | https://huggingface.co/Tongyi-MAI/Z-Image-Turbo (the GGUF https://huggingface.co/unsloth/Z-Image-Turbo-GGUF and Qwen3-4B https://huggingface.co/Qwen/Qwen3-4B-GGUF: Apache-2.0) |

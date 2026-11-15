@@ -683,6 +683,7 @@ dependencies = [
  "nextcuda-audio-voxcpm2",
  "nextcuda-audio-whisper",
  "nextcuda-audio-yue2",
+ "nextcuda-audio-zonos3",
  "nextcuda-core",
  "nextcuda-gguf",
  "nextcuda-image",
@@ -831,6 +832,18 @@ dependencies = [
  "nextcuda-tok",
  "serde_json",
  "unicode-normalization",
+]
+
+[[package]]
+name = "nextcuda-audio-zonos3"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-audio",
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-tok",
+ "serde_json",
 ]
 
 [[package]]

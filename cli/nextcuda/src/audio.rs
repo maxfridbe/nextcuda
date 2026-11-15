@@ -37,7 +37,8 @@ nextcuda audio engines | selftest [--gpu N]";
 /// The audio engines this program has (audio/<arch>)
 pub fn engines() -> Vec<nextcuda_audio::AudioKind> {
     vec![nextcuda_audio_minimaxmusic3::kind(), nextcuda_audio_breezetts2::kind(), nextcuda_audio_qwen3tts::kind(), nextcuda_audio_voxcpm2::kind(),
-         nextcuda_audio_whisper::kind(), nextcuda_audio_vibevoice::kind(), nextcuda_audio_acestep::kind(), nextcuda_audio_yue2::kind()]
+         nextcuda_audio_whisper::kind(), nextcuda_audio_vibevoice::kind(), nextcuda_audio_acestep::kind(), nextcuda_audio_yue2::kind(),
+         nextcuda_audio_zonos3::kind()]
 }
 
 /// Every `--speaker FILE` (a recording a speaker, Speaker 1 first: a multi-speaker script's voices)
@@ -66,7 +67,10 @@ fn model(cfg: &Config, args: &[String]) -> Result<(Value, ModelFiles), String> {
         let whisper = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"whisper\""));
         let vibevoice = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"vibevoice\""));
         let yue2 = std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| e.file_name().to_string_lossy().starts_with("yue2-lm-"));
-        let (arch, files) = if yue2 {
+        let zonos3 = dir.join("backbone-ptq.gguf").is_file() || dir.join("backbone-f16.gguf").is_file();
+        let (arch, files) = if zonos3 {
+            (nextcuda_audio_zonos3::ARCH, nextcuda_audio_zonos3::files_in(dir).map_err(|e| e.0)?)
+        } else if yue2 {
             (nextcuda_audio_yue2::ARCH, nextcuda_audio_yue2::files_in(dir).map_err(|e| e.0)?)
         } else if vibevoice {
             (nextcuda_audio_vibevoice::ARCH, nextcuda_audio_vibevoice::files_in(dir).map_err(|e| e.0)?)
@@ -402,6 +406,11 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         let stages: Vec<&str> = opt(args, "--stages").unwrap_or("tokens,ar,neg,noise,vel,steps,solve,vae").split(',').collect();
         let e = nextcuda_audio_yue2::Yue2::load(&files, &gs, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
         nextcuda_audio_yue2::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
+    } else if m["arch"] == nextcuda_audio_zonos3::ARCH {
+        let stages: Vec<String> = opt(args, "--stages").unwrap_or("lm,decoder").split(',').map(str::to_string).collect();
+        let e = nextcuda_audio_zonos3::Zonos3::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
+        nextcuda_audio_zonos3::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?;
+        0.0
     } else {
         return Err(format!("check knows {}, {}, {}, {}, {}, {} and {}", nextcuda_audio_yue2::ARCH, nextcuda_audio_minimaxmusic3::ARCH, nextcuda_audio_breezetts2::ARCH, nextcuda_audio_qwen3tts::ARCH,
                            nextcuda_audio_voxcpm2::ARCH, nextcuda_audio_whisper::ARCH, nextcuda_audio_acestep::ARCH));

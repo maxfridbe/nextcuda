@@ -54,6 +54,43 @@ nextcuda audio check <reference dump dir> --model breeze-tts-2        # referenc
   "Q dot K to the T, divided by square root of d sub k"), markdown's marks go, dashes and brackets are pauses
   (`NS_SPEECH_NORMALIZE=0` or `normalize: false` for the text as sent) - one such line had a voice loop for 18 s.
 
+## Speech: ZONOS3-Mini
+
+`audio.speak` with `model: zonos3-mini`: Zyphra's ZONOS3-Mini (Apache-2.0) in Rust and CUDA (`audio/zonos3`,
+`kernels/audio/zonos3/z3.cu`; the port's record and its API for other runtimes: [ports/zonos3.md](ports/zonos3.md)).
+43 languages at 44.1 kHz: 27 preset voices (`voice`), a voice cloned from a recording (`ref_audio`, saved voices: the
+MECT-B2 speaker encoder's embedding), steering (`options.controls`: pace, mood, emotions, the voice's identity), speaker
+guidance (`cfg`). An 11-layer backbone of 1024 (gated DeltaNet with global attention a layer in four, Full AttnRes, a
+top-2-of-64 latent MoE kept in its Q4_0 blocks) writes ten 4096-code books at 15 Hz; the ZAC codec's MR-iSTFT decoder
+makes the sound. Zyphra's own GGUFs, every file a role of the card (`zonos3-mini`). The guide:
+`model-cards/guides/zonos3.md`.
+
+```sh
+nextcuda models pull zonos3-mini
+nextcuda audio gen "Good morning." --model zonos3-mini --voice rupert --out a.wav
+nextcuda audio gen "Good morning." --model zonos3-mini --ref-audio me.wav --opt-controls delivery.tempo=1,emotions.happy=3 --out b.wav
+nextcuda audio check <dump dir> --model zonos3-mini --stages prompt,lm,forced,decoder,speaker   # reference/zonos3/ makes the dumps
+```
+
+- **Checked** (2026-11-15) against Zyphra's ggml runtime (`zonos3-cli`, `zac-cli`, `spk-encoder-cli` built on the
+  CPU, the same GGUFs; `reference/zonos3`): the prompt's ids identical (SuperBPE, the speaker / condition / silence
+  rows); the backbone's logits over a 26-row speaker-embedding prompt cosine 0.99969 mean (0.9959 at the worst row;
+  rel 2.1e-2; argmax the same in 96.9 %), over a 232-row reference-prefix prompt 0.99983 (94.2 %); teacher-forced over
+  a 68-step take of the reference's own 0.99984 mean (0.9984 worst), argmax 92.9 % - the reference's CPU products
+  quantize the activations to 8 bits, ours are float32 over the same blocks; the decoder's PCM cosine 1.000000 (rel
+  3.3e-5); the speaker embedding cosine 1.000000 (rel 1.2e-6).
+- **Heard** (Whisper large-v3-turbo on the box): preset voices in both speaker modes, a clone, steered takes (tempo
+  +2: 6.9 s, -2: 13.9 s against 7.7 s; happy: Whisper writes the lines with exclamation marks), speaker CFG 1.5, the
+  full decoder and German - word for word; 53 s of long-form English in three stretches with one slip. A clone of
+  Rupert's recording measures 0.884 against it by the speaker encoder (0.13 against Savannah's).
+- **Speed** (RTX 5070): 7.7 s of speech in 0.55 s, 53 s in 3.2 s (~240 frames a second, about 16x real time); a
+  clone's speaker encoding of 13 s of recording 0.1 s. 2.1 GiB at the peak with the keep2 decoder (the backbone 0.8
+  GiB, the decoder 0.7); the full decoder adds 4 GiB on the card when a request first names it (2.5 s to load), then
+  decodes a 9 s take in 0.1 s as the default one does.
+- **Not ported:** raw-reference cloning of a new recording (it needs the 4 GB acoustic encoder and the 1.5 GB SSL
+  teacher; the presets' shipped codes are used as they are), Zyphra's text normalizer (the server's speech text pass
+  runs first), LACI, speech editing, accent adapters, control spans and streaming decode.
+
 ## Conversation: VibeVoice 1.5B
 
 `audio.speak` with `model: vibevoice-1.5b` (or `speakers` and no model): a script of `Speaker N: words` lines in up to
