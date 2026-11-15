@@ -788,6 +788,52 @@ __global__ void col2im_k(const float* cols, int64_t T, int K, int64_t C, int S, 
     y[i] = acc;
 }
 
+// Full (non-causal) attention for heads of up to 128 (Dia's text encoder): one block a (query, head), keys over the
+// threads; q, k, v [T, H hd] (rows qs apart), out [T, H hd]
+constexpr int FB = 128;
+__global__ void attn_full_k(const float* q, const float* k, const float* v, int64_t qs, int64_t T, int H, int hd, float scale, float* out) {
+    const int64_t i = blockIdx.x;
+    const int h = blockIdx.y;
+    __shared__ float qv[128], red[FB], acc[128];
+    for (int d = threadIdx.x; d < hd; d += FB) {
+        qv[d] = q[i * qs + (int64_t) h * hd + d];
+        acc[d] = 0.0f;
+    }
+    __syncthreads();
+    float m = -INFINITY;
+    for (int64_t j = threadIdx.x; j < T; j += FB) {
+        const float* kj = k + j * qs + (int64_t) h * hd;
+        float s = 0.0f;
+        for (int d = 0; d < hd; ++d) s += qv[d] * kj[d];
+        m = fmaxf(m, s * scale);
+    }
+    red[threadIdx.x] = m;
+    __syncthreads();
+    for (int s = FB / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) red[threadIdx.x] = fmaxf(red[threadIdx.x], red[threadIdx.x + s]);
+        __syncthreads();
+    }
+    m = red[0];
+    __syncthreads();
+    float l = 0.0f;
+    for (int64_t j = threadIdx.x; j < T; j += FB) {
+        const float* kj = k + j * qs + (int64_t) h * hd;
+        float s = 0.0f;
+        for (int d = 0; d < hd; ++d) s += qv[d] * kj[d];
+        const float p = expf(s * scale - m);
+        l += p;
+        const float* vj = v + j * qs + (int64_t) h * hd;
+        for (int d = 0; d < hd; ++d) atomicAdd(&acc[d], p * vj[d]);
+    }
+    red[threadIdx.x] = l;
+    __syncthreads();
+    for (int s = FB / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
+        __syncthreads();
+    }
+    for (int d = threadIdx.x; d < hd; d += FB) out[i * (int64_t) H * hd + (int64_t) h * hd + d] = acc[d] / red[0];
+}
+
 }  // namespace
 
 extern "C" {
@@ -1148,6 +1194,14 @@ int ns_audio_z3_rope_tab(ns_gpu* g, float* x, int64_t xs, int64_t rows, int64_t 
 int ns_audio_z3_col2im(ns_gpu* g, const float* cols, int64_t T, int64_t K, int64_t C, int64_t S, int64_t P, const float* bias, int64_t To, float* y) {
     Z3_BEGIN(To * C);
     col2im_k<<<blocks(To * C), 256, 0, g->q>>>(cols, T, (int) K, C, (int) S, (int) P, bias, To, y);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_attn_full(ns_gpu* g, const float* q, const float* k, const float* v, int64_t qs, int64_t T, int64_t H, int64_t hd, float scale, float* out) {
+    Z3_BEGIN(T);
+    if (hd > 128) return ns_fail("ns_audio_z3_attn_full: heads of at most 128");
+    attn_full_k<<<dim3((unsigned) T, (unsigned) H), FB, 0, g->q>>>(q, k, v, qs, T, (int) H, (int) hd, scale, out);
     NS_LAUNCH_CHECK();
     return 0;
 }

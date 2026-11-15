@@ -282,6 +282,11 @@ impl Ops {
               n as i64, ts as i64, te as i64, out)
     }
 
+    /// full attention, heads of up to 128: q, k, v [t, h hd] rows qs apart
+    pub fn attn_full(&self, q: F, k: F, v: F, qs: usize, t: usize, h: usize, hd: usize, scale: f32, out: W) -> Result<()> {
+        call!(self, attn_full, "attention (full)", q, k, v, qs as i64, t as i64, h as i64, hd as i64, scale, out)
+    }
+
     /// rotate-half RoPE from host tables cos / sin [rows, d] on x [rows, h d] (rows xs apart)
     pub fn rope_tab(&self, x: W, xs: usize, rows: usize, h: usize, d: usize, cs: F, sn: F) -> Result<()> {
         call!(self, rope_tab, "rope (tables)", x, xs as i64, rows as i64, h as i64, d as i64, cs, sn)

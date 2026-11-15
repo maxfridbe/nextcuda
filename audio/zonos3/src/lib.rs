@@ -23,6 +23,7 @@
 //! accent adapters, control spans and streaming decode.
 
 pub mod check;
+pub mod align;
 pub mod codec;
 pub mod encoder;
 mod ffi;

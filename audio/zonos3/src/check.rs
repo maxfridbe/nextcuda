@@ -10,6 +10,7 @@
 //!   speaker   speaker.wav (any rate; the reference's input: 44.1 kHz)           -> nc_embedding.npy [192], nc_fbank.npy
 //!   encoder   reference.wav (any rate)                                        -> nc_codes.npy [frames, 10] (raw-reference codes)
 //!   stream    prompt.txt (+ options.json)                                      -> nc_whole.npy, nc_stream.npy (the same take whole and streamed)
+//!   align     align.wav + align.txt (+ the aligner: fusealign.gguf path in aligner.txt) -> nc_align.json (FuseAlign words)
 //!   prompt    prompt.txt (+ voice.codes.npy | voice.embedding.npy)              -> nc_ids.npy [rows, 11]
 //! ```
 
@@ -21,7 +22,7 @@ use crate::lm::Cond;
 use crate::prompt::{self, Voice};
 use crate::Zonos3;
 
-pub const STAGES: &[&str] = &["lm", "forced", "decoder", "speaker", "encoder", "stream", "prompt"];
+pub const STAGES: &[&str] = &["lm", "forced", "decoder", "speaker", "encoder", "stream", "align", "prompt"];
 
 /// A float32 .npy of `shape`
 pub fn npy(path: &Path, shape: &[usize], v: &[f32]) -> Result<()> {
@@ -160,6 +161,19 @@ pub fn run(z: &Zonos3, dir: &Path, stages: &[String], log: &mut dyn FnMut(String
                 npy(&dir.join("nc_stream.npy"), &[streamed.samples.len()], &streamed.samples)?;
                 log(format!("stream: whole {} samples in {tw:.2} s; streamed {} samples in {pieces} pieces, the first after {:.2} s, all by {:.2} s",
                             whole.samples.len(), streamed.samples.len(), first.unwrap_or(0.0), t1.elapsed().as_secs_f64()));
+            }
+            "align" => {
+                let path = std::fs::read_to_string(dir.join("aligner.txt")).map_err(|x| Error(format!("aligner.txt: {x}")))?;
+                let t0 = std::time::Instant::now();
+                let fa = crate::align::FuseAlign::load(&z.ops, &crate::ops::Weights::open(std::path::Path::new(path.trim()))?)?;
+                let t1 = std::time::Instant::now();
+                let (samples, rate) = nextcuda_audio::decode_audio(&read(dir, "align.wav")?).map_err(Error)?;
+                let text = String::from_utf8_lossy(&read(dir, "align.txt")?).to_string();
+                let words: Vec<String> = text.split_whitespace().map(str::to_string).collect();
+                let placed = fa.align(&z.ops, &samples, rate, &words)?;
+                let j: Vec<serde_json::Value> = placed.iter().map(|p| serde_json::json!({"word": p.word, "start": p.start, "end": p.end, "presence": p.presence, "placed": p.placed})).collect();
+                std::fs::write(dir.join("nc_align.json"), serde_json::to_string(&j).unwrap_or_default()).map_err(|x| Error(x.to_string()))?;
+                log(format!("align: {} words in {:.2} s (+ {:.1} s loading)", words.len(), t1.elapsed().as_secs_f64(), (t1 - t0).as_secs_f64()));
             }
             "prompt" => {
                 let text = String::from_utf8_lossy(&read(dir, "prompt.txt")?).trim().to_string();

@@ -191,6 +191,9 @@ int ns_audio_z3_rope_tab(ns_gpu* g, float* x, int64_t xs, int64_t rows, int64_t 
 /* ConvTranspose1d's scatter: cols [T, K, C] -> y [To, C] (+ bias; NULL: none), stride S, padding P */
 int ns_audio_z3_col2im(ns_gpu* g, const float* cols, int64_t T, int64_t K, int64_t C, int64_t S, int64_t P, const float* bias, int64_t To, float* y);
 
+/* full attention, heads of up to 128: q, k, v [T, H hd] rows qs apart -> out [T, H hd] */
+int ns_audio_z3_attn_full(ns_gpu* g, const float* q, const float* k, const float* v, int64_t qs, int64_t T, int64_t H, int64_t hd, float scale, float* out);
+
 /* channels-first x [rows, cols] += bias[row] */
 int ns_audio_z3_add_rows(ns_gpu* g, float* x, const float* bias, int64_t rows, int64_t cols);
 
