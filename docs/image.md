@@ -93,10 +93,11 @@ average power are in the full tables: the 5070 draws about 220 W while sampling,
 What the clocks say: the step is compute (a resident transformer gave the same 1.27 s/step), and on a GeForce the
 tensor cores' float32-accumulate rate is half their half-accumulate rate (5070: 71.5 against 143 TFLOPS; 3060: 25.8
 against 51.6) - cuBLAS already ran the linears at 66-70, ~95 % of the float32 rate. So the silo sums in half, a
-32-deep slice at a time added to float32 (`NS_QI_F16ACC`, `NS_QI_QK16`): its products run at ~100 TFLOPS on the 5070
-(34 on the 3060), the fused attention at ~88 (its float32 kernel 54). Against the old build's pictures (same seeds):
+32-deep slice at a time added to float32 (`NS_QI_F16ACC`): its products run at ~100 TFLOPS on the 5070 (34 on the
+3060), the fused attention at ~72 with P V in half sums (the first kernel 54; ~88 with Q K^T's too, `NS_QI_QK16=1`,
+off: it moved a 3060 picture's fine texture). Against the old build's pictures (same seeds):
 mean |difference| 0.07-0.1 of 255, PSNR 58 dB, the few spots that move are the ones float32 sums in another order move
-too; the attention against float64 on the model's own q, k, v: 5e-4 - 1.3e-3 relative rms (float32 sums 2.2e-4). The
+too; the attention against float64 on the model's own q, k, v: 2.5e-4 relative rms (float32 sums 2.2e-4). The
 VAE's convolutions are an implicit GEMM on the same kernel, its tiles cut after the first two up blocks; the text
 encoder streams from pinned memory a layer ahead of its work, so the 3060's x1 link (1.7 GB/s) is now its whole time.
 At 2048 x 2048 a step is ~52 % products, ~36 % attention: half the old time would need the tensor cores' int8 path

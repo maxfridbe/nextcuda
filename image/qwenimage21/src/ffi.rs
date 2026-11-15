@@ -144,12 +144,13 @@ pub fn f16acc() -> bool {
 }
 
 /// The silo attention's mode: its 128-row kernel, with `f16acc` the P V product's sums in half (the same error as
-/// float32's on the model's own q, k, v) and the Q K^T product's (`NS_QI_QK16=0`: float32; 4-6x the scores' rounding,
-/// pictures within a summation order's difference of float32's, about 5 % a step at 2048 x 2048)
+/// float32's on the model's own q, k, v); the Q K^T product's too with `NS_QI_QK16=1` (4-6x the scores' rounding,
+/// about 5 % a step at 2048 x 2048 - off: on the 3060 it moved a picture's fine texture, mean |difference| 0.31 of
+/// 255 against float32's 0.14)
 pub fn attention_mode() -> i32 {
     static F: OnceLock<i32> = OnceLock::new();
     *F.get_or_init(|| {
-        let qk16 = f16acc() && std::env::var("NS_QI_QK16").map_or(true, |v| v != "0");
+        let qk16 = f16acc() && std::env::var("NS_QI_QK16").is_ok_and(|v| v == "1");
         1 | if qk16 { 2 } else { 0 } | if f16acc() { 4 } else { 0 }
     })
 }

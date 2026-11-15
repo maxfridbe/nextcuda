@@ -294,7 +294,7 @@ Qwen-Image 2.1 (`image/qwenimage21`).
 | `NS_QI_DUMP` | off | Debug: a directory: what the denoiser is given (embeds, pads, cond latents, noise) written there as raw float32 files | image qwenimage21 |
 | `NS_QI_INT8` | 0 | 1: the DiT's block matrices in int8 ConvRot (~1.4x a step, half the VRAM) (--opt-int8) | image qwenimage21 |
 | `NS_QI_F16ACC` | 1 | 0: the silo's products (the DiT's linears, the VAE's 3 x 3 convolutions) and attention's P V sum in float32 throughout; 1: each 32-deep slice summed in half on the tensor cores (twice their float32 rate on a GeForce), the slices in float32 | image qwenimage21 |
-| `NS_QI_QK16` | 1 | 0: the silo attention's Q K^T in float32 sums even with NS_QI_F16ACC=1 (half sums a 32-feature slice at a time are 4-6x the scores' rounding, about 5 % a step at 2048 x 2048; the pictures within a summation order's difference) | image qwenimage21 |
+| `NS_QI_QK16` | 0 | 1: the silo attention's Q K^T in half sums too (a 32-feature slice at a time: 4-6x the scores' rounding, about 5 % a step at 2048 x 2048; on the 3060 it moved a picture's fine texture, so it is off) | image qwenimage21 |
 | `NS_MOSS_INT8` | 1 | 0: MOSS-Image's block matrices as stored (Q8_0, about twice as long a step) instead of int8 ConvRot rows; LoRAs need the int8 ones | image mossimage |
 | `NS_MOSS_ATTN` | half | the silo's attention: half (scores accumulated in half), float, fp8 or fp8v (sm_89 and up, the 5070's silo; no faster there and less exact) | image mossimage |
 | `NS_MOSS_ATTN_WARPS` | the silo's own | warps a block for the silo's attention (a tuning A/B) | image mossimage |

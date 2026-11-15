@@ -120,7 +120,8 @@ slices added in float32 (`NS_QI_F16ACC`) - errors at the level of the output's o
   pass); the gated residual adds in the out / down epilogues. The VAE's 3 x 3 convolutions as an implicit GEMM through
   it (the 2x upsample folded into the gather; 3.1 -> 1.3 s of conv at 2048 x 2048; a 5-D weight shape had kept most
   of them on im2col at first), and its tiles cut after the first two up blocks (2.7x -> 1.2x the area). Attention:
-  `flash2_k`, 128 rows a block, cp.async K / V, ldmatrix(.trans), half sums in P V and Q K^T (`NS_QI_QK16`); on the
+  `flash2_k`, 128 rows a block, cp.async K / V, ldmatrix(.trans), half sums in P V (Q K^T's too with `NS_QI_QK16=1`: off, it moved a 3060
+  picture's fine texture - mean |difference| 0.31 of 255 against float32 sums' 0.14); on the
   model's own q, k, v against float64, relative rms 2.2e-4 (float32 sums), 2.5e-4 (P V half), 5e-4 - 1.3e-3 (both);
   82.6 -> ~50 ms a call at 2048 x 2048. The text encoder's layers pinned and copied a layer ahead (5070 0.48 -> 0.19 s;
   the 3060's x1 link 3.2 -> 2.7 s, the link's own speed).
