@@ -116,8 +116,13 @@ nextcuda audio check <dump dir> --model zonos3-mini --stages prompt,lm,forced,de
   18 short texts said exactly against 10 of 18 without (Zyphra's server: 18 and 9); the probe matches Zyphra's at 97 %
   of the steps. `/v1/audio/speech` with `stream` gets the sound as it is decoded (identical to the whole take, rel
   1.2e-6; first sound after 0.08 s of a 0.78 s take).
-- **Not ported yet:** speech editing (in progress). Accent adapters: Zyphra ships none (`edit/accents.gguf` is the
-  speech-edit adapter); accents are the steering bundle's `accents_*` directions.
+- **Speech editing** (2026-11-15, `audio.edit`): a recording of up to 30 s, its transcript and the words it should say;
+  the changed words are said anew in its voice by the edit LM (the edit backbone with its LoRA), the rest kept frame for
+  frame. Word timings by Zyphra's FuseAlign in Rust and CUDA (within 1 ms of Zyphra's on every boundary measured); the
+  edit LM matches Zyphra's runtime with the adapter at cosine 0.99987. The transcript is the caller's: the box's Whisper
+  (`audio.transcribe`) makes one - Zyphra's own pipeline takes the transcript as given, its Qwen3-ASR is optional.
+- Accent adapters: Zyphra ships none (`edit/accents.gguf` is the speech-edit adapter); accents are the steering bundle's
+  `accents_*` directions.
 
 ## Conversation: VibeVoice 1.5B
 

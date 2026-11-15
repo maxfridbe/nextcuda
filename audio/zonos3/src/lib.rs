@@ -25,6 +25,7 @@
 pub mod check;
 pub mod align;
 pub mod codec;
+pub mod edit;
 pub mod encoder;
 mod ffi;
 pub mod laci;
@@ -105,7 +106,8 @@ pub fn files_in(dir: &Path) -> Result<ModelFiles> {
         .ok_or_else(|| Error(format!("{}: no backbone-ptq.gguf", dir.display())))?;
     f.insert("model".into(), model);
     for (role, name) in [("decoder", "zac-keep2.gguf"), ("decoder-full", "zac.gguf"), ("speaker-encoder", "spk-encoder.gguf"), ("steer", "steer.gguf"),
-                         ("edit-adapter", "edit/accents.gguf"), ("zac-encoder", "zac-encoder.gguf"), ("ssl-teacher", "ssl-teacher.gguf")] {
+                         ("edit-adapter", "edit/accents.gguf"), ("zac-encoder", "zac-encoder.gguf"), ("ssl-teacher", "ssl-teacher.gguf"),
+                         ("aligner", "fusealign-multilingual-ns4-step60000-f32.gguf")] {
         if dir.join(name).is_file() {
             f.insert(role.into(), dir.join(name));
         }
@@ -165,6 +167,8 @@ pub struct Zonos3 {
     /// raw-reference cloning's files (zac-encoder.gguf, ssl-teacher.gguf): loaded for an encode and freed after it
     /// (5.6 GiB on the card), the codes kept per recording
     enc_paths: Option<(PathBuf, PathBuf)>,
+    /// FuseAlign (speech editing's word timings): loaded for an edit and freed after it
+    aligner_path: Option<PathBuf>,
     ref_codes: Mutex<Vec<(u64, Vec<[u32; 10]>)>>,
     /// one request at a time on the card
     lock: Mutex<()>,
@@ -401,7 +405,12 @@ impl Zonos3 {
         }
         let ops = Ops::new(gpu)?;
         let w = Weights::open(&model)?;
-        let lm = Lm::load(&ops, &w, log)?;
+        let mut lm = Lm::load(&ops, &w, log)?;
+        // the speech-edit adapter (edit/accents.gguf) on the edit backbone (its span-end and marker rows)
+        if let (Some(p), true) = (files.get("edit-adapter"), lm.c.audio_vocab > lm.c.pad as usize + 1) {
+            lm.attach_edit(&ops, &Weights::open(p)?)?;
+            log(format!("{ARCH}: speech-edit adapter, {:.0} MiB", lm.edit.as_ref().map_or(0, |e| e.bytes) as f64 / (1u64 << 20) as f64));
+        }
         let tok = Tokenizer::from_hf_json_text_keep_gaps(&lm.c.tokenizer).map_err(Error)?;
         let decoders = vec![Decoder::load(&ops, &Weights::open(&dec)?, log)?];
         let spk = match files.get("speaker-encoder") {
@@ -434,7 +443,7 @@ impl Zonos3 {
                     if files.contains_key("decoder-full") { " (full_mr on request)" } else { "" },
                     if spk.is_some() { "yes" } else { "no" }, if steer.is_some() { "yes" } else { "no" }));
         Ok(Zonos3 { ops, lm, tok, decoders, full_path: files.get("decoder-full").cloned(), full: std::sync::OnceLock::new(), spk, steer, voices,
-                    enc_paths: files.get("zac-encoder").cloned().zip(files.get("ssl-teacher").cloned()), ref_codes: Mutex::new(Vec::new()), laci,
+                    enc_paths: files.get("zac-encoder").cloned().zip(files.get("ssl-teacher").cloned()), ref_codes: Mutex::new(Vec::new()), laci, aligner_path: files.get("aligner").cloned(),
                     lock: Mutex::new(()), load_s })
     }
 
@@ -811,6 +820,15 @@ impl AudioEngine for Zonos3 {
         true
     }
 
+    fn edits(&self) -> bool {
+        self.lm.edit.is_some() && self.aligner_path.is_some() && self.enc_paths.is_some() && self.spk.is_some()
+    }
+
+    fn edit(&self, req: &nextcuda_audio::EditRequest, progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<nextcuda_audio::Edited> {
+        let _one = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        self.edit_speech(req, progress)
+    }
+
     fn generate_stream(&self, req: &AudioRequest, progress: &mut dyn FnMut(Step) -> Result<()>, sink: &mut dyn FnMut(&Audio) -> Result<()>) -> Result<Audio> {
         let rate = self.decoders[0].rate;
         self.run(req, progress, Some(&mut |pcm: &[f32]| sink(&Audio { rate, channels: 1, samples: pcm.to_vec() })))
@@ -823,6 +841,152 @@ impl AudioEngine for Zonos3 {
 }
 
 impl Zonos3 {
+    /// Speech editing (edit.rs): the regions of `req.original` the target changes said anew by the edit LM, the rest
+    /// of the recording's codes kept, the whole decoded once
+    fn edit_speech(&self, req: &nextcuda_audio::EditRequest, progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<nextcuda_audio::Edited> {
+        use crate::edit as ed;
+        let t0 = Instant::now();
+        let c = &self.lm.c;
+        let span_end = c.pad + 1;
+        if self.lm.edit.is_none() || c.audio_vocab <= span_end as usize {
+            return Err(Error(format!("{ARCH}: speech editing needs the edit backbone (backbone-ptq-edit.gguf) and its adapter (edit/accents.gguf)")));
+        }
+        let ap = self.aligner_path.as_ref().ok_or_else(|| Error(format!("{ARCH}: speech editing needs FuseAlign (fusealign-multilingual-ns4-step60000-f32.gguf)")))?;
+        let spk = self.spk.as_ref().ok_or_else(|| Error(format!("{ARCH}: speech editing needs the speaker encoder")))?;
+        let (orig, target) = (req.original.trim(), req.target.trim());
+        if orig.is_empty() || target.is_empty() {
+            return Err(Error("an edit needs the recording's transcript (original) and the words it should say (target)".into()));
+        }
+        let pcm = if req.rate == RATE { req.samples.clone() } else { spk::resample_any(&req.samples, req.rate, RATE) };
+        let duration = pcm.len() as f64 / RATE as f64;
+        if duration > 30.0 {
+            return Err(Error(format!("the recording is {duration:.1} s; an edit takes at most 30 s (FuseAlign aligns 30 s at once)")));
+        }
+        if duration < 0.5 {
+            return Err(Error("the recording is shorter than half a second".into()));
+        }
+        let step = |p: &mut dyn FnMut(Step) -> Result<()>, phase: &'static str, at: u32, of: u32| p(Step { phase, at, of, seconds: t0.elapsed().as_secs_f64() });
+        // the words of the original, placed
+        step(progress, "align", 0, 1)?;
+        let placed = {
+            let fa = align::FuseAlign::load(&self.ops, &Weights::open(ap)?)?;
+            fa.align(&self.ops, &pcm, RATE, &ed::align_tokens(orig))?
+        };
+        let words = ed::aligned_words(&placed.iter().map(|p| (p.word.clone(), p.start, p.end, p.presence)).collect::<Vec<_>>());
+        // the recording's codes and its voice
+        step(progress, "encode", 0, 1)?;
+        let codes = self.reference_codes(&pcm, RATE, &mut |m| eprintln!("{m}"))?;
+        let emb = spk.embed(&self.ops, &pcm, RATE)?;
+        let total = codes.len();
+        let (tall, twords) = ed::target_tokens(target);
+        let target_words: Vec<String> = target.split_whitespace().map(str::to_string).collect();
+        let spans = ed::diff_spans(&words, &tall, total, 0.08, 3)?;
+        ed::validate_spans(&spans, total, 3)?;
+        let windowed = total as f64 / ed::FRAME_RATE > 16.0;
+        let windows = if windowed {
+            ed::plan_windows(&spans, &words, &target_words, &twords, total, 4.0, target)?
+        } else {
+            vec![ed::Window { start: 0, end: total, regions: (0..spans.len()).collect(), text: target.to_string() }]
+        };
+        let expected = ed::expected_seconds(&spans, &words, &twords);
+        let max_span = 30.0;
+        let min_frames: Vec<usize> = expected.iter().map(|s| ((0.7 * s * ed::FRAME_RATE) as usize).min((max_span * ed::FRAME_RATE) as usize)).collect();
+        let max_tokens = ((max_span * ed::FRAME_RATE) as usize + c.ncb + 1).min(MAX_FRAMES);
+        let s = Sampling { temperature: num(&AudioRequest { extra: req.extra.clone(), ..Default::default() }, "temperature")?.unwrap_or(0.75), ..Sampling::default() };
+        let spec = markup::Spec::read(&c.spec);
+        let mut fills: Vec<Vec<[u32; 10]>> = vec![Vec::new(); spans.len()];
+        let mut ended = vec![false; spans.len()];
+        let voice = Voice::Embedding(emb);
+        for w in &windows {
+            let wcodes = &codes[w.start..w.end];
+            let rel: Vec<ed::Span> = w.regions.iter().map(|k| (spans[*k].0 - w.start, spans[*k].1)).collect();
+            let ids = markup::text_ids(&self.tok, c, &spec, &w.text)?;
+            let p = prompt::build(c, &ids, &voice, &[], 0)?;
+            let cond = Cond { speaker: p.speaker.as_ref().map(|(r, v)| Ok::<_, Error>((*r, self.lm.project_speaker(v)?))).transpose()?, buckets: p.buckets.clone(),
+                              deltas: Vec::new() };
+            let mut wfills: Vec<Vec<[u32; 10]>> = Vec::new();
+            for (ri, region) in w.regions.iter().enumerate() {
+                step(progress, "tokens", *region as u32, spans.len() as u32)?;
+                let pid = ed::edit_prompt(&p.ids, wcodes, &rel, &wfills, c.ncb, c.pad, c.text_vocab, c.eoa, span_end)?;
+                let rows = pid.len() / c.row_width();
+                if rows + max_tokens > c.ctx {
+                    return Err(Error(format!("the edit prompt is {rows} rows; the model holds {}", c.ctx)));
+                }
+                // NC_Z3_EDIT_DUMP=<dir>: the first region's prompt for the reference (ids.npy, ids.cond.json)
+                if let (Ok(d), true) = (std::env::var("NC_Z3_EDIT_DUMP"), *region == 0) {
+                    let d = std::path::Path::new(&d);
+                    let f: Vec<f32> = pid.iter().map(|x| *x as f32).collect();
+                    check::npy(&d.join("ids.npy"), &[rows, c.row_width()], &f)?;
+                    let (srow, semb) = match (&p.speaker, &voice) {
+                        (Some((r, _)), Voice::Embedding(e)) => (*r as i64, e.clone()),
+                        _ => (-1, Vec::new()),
+                    };
+                    let j = serde_json::json!({"condition_buckets": p.buckets.iter().map(|b| b.1).collect::<Vec<_>>(), "condition_row": p.buckets.first().map_or(0, |b| b.0),
+                                               "prefill_frames": 0, "speaker_embedding": semb, "speaker_row": srow});
+                    std::fs::write(d.join("ids.cond.json"), j.to_string()).map_err(|x| Error(x.to_string()))?;
+                }
+                let mut seq = self.lm.seq_edit(&self.ops, rows + max_tokens + 2, rows)?;
+                self.lm.forward(&self.ops, &mut seq, &pid, &cond, false)?;
+                let mut rng = Rng::new(req.seed);
+                let mut gen: Vec<[u32; 10]> = Vec::new();
+                let (mut eos, mut countdown) = (None::<usize>, 0usize);
+                loop {
+                    let mut logits = self.lm.logits(&seq, 1)?;
+                    // span-end waits for min_frames (+ the codebook's delay)
+                    for cb in 0..c.ncb {
+                        if gen.len() < min_frames[*region] + cb {
+                            logits[cb * c.audio_vocab + span_end as usize] = f32::NEG_INFINITY;
+                        }
+                    }
+                    let r = sample::row(&logits, c.ncb, &s, c.codebook, c.pad, span_end, &gen, gen.len(), &mut rng);
+                    let row = gen.len();
+                    gen.push(r);
+                    if eos.is_none() {
+                        if let Some(mc) = (0..c.ncb).rev().find(|cb| r[*cb] == span_end) {
+                            eos = Some(row.saturating_sub(mc));
+                            countdown = c.ncb + 1;
+                        }
+                    }
+                    let mut done = gen.len() >= max_tokens;
+                    if countdown > 0 {
+                        countdown -= 1;
+                        done |= countdown == 0;
+                    }
+                    if done {
+                        break;
+                    }
+                    let next: Vec<u32> = r[..c.ncb].iter().copied().chain(std::iter::once(c.text_vocab)).collect();
+                    self.lm.forward(&self.ops, &mut seq, &next, &Cond::default(), false)?;
+                }
+                gen.pop();
+                let (fill, end) = ed::extract_fill(&gen, eos, c.ncb, c.codebook as u32);
+                eprintln!("{ARCH}: edit region {} of {}: {} frames (expected {:.2} s, at least {} frames){}", region + 1, spans.len(), fill.len(), expected[*region],
+                          min_frames[*region], if end { "" } else { ", no span-end" });
+                fills[*region] = fill.clone();
+                ended[*region] = end;
+                wfills.push(fill);
+                let _ = ri;
+            }
+        }
+        step(progress, "decode", 0, 1)?;
+        let spliced = ed::splice(&codes, &spans, &fills);
+        let dec = &self.decoders[0];
+        let mut out = dec.decode(&self.ops, &spliced)?;
+        output(&mut out, dec.headroom_db);
+        let mut regions = Vec::new();
+        let mut shift: i64 = 0;
+        let tok_words = |a: f64, b: f64| -> String { words.iter().filter(|w| w.end > a && w.start < b).map(|w| w.word.clone()).collect::<Vec<_>>().join(" ") };
+        for (j, (st, len)) in spans.iter().enumerate() {
+            let n = fills[j].len() as i64;
+            let (o0, o1) = (*st as f64 / ed::FRAME_RATE, (st + len) as f64 / ed::FRAME_RATE);
+            let e0 = (*st as i64 + shift) as f64 / ed::FRAME_RATE;
+            regions.push(nextcuda_audio::EditedRegion { original: (o0, o1), edited: (e0, e0 + n as f64 / ed::FRAME_RATE), old_words: tok_words(o0, o1), new_words: String::new() });
+            shift += n - *len as i64;
+        }
+        eprintln!("{ARCH}: edit of {duration:.1} s: {} regions, {:.1} s by {:.2} s", spans.len(), out.len() as f64 / RATE as f64, t0.elapsed().as_secs_f64());
+        Ok(nextcuda_audio::Edited { audio: Audio { rate: dec.rate, channels: 1, samples: out }, regions })
+    }
+
     /// The request's sound; `sink`: handed over in pieces as it is made (streaming)
     fn run(&self, req: &AudioRequest, progress: &mut dyn FnMut(Step) -> Result<()>, sink: Option<&mut dyn FnMut(&[f32]) -> Result<()>>) -> Result<Audio> {
         let _one = self.lock.lock().unwrap_or_else(|p| p.into_inner());

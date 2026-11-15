@@ -1537,6 +1537,44 @@ pub struct AudioSpeakBody {
     pub rest: serde_json::Map<String, serde_json::Value>,
 }
 
+/// What audio.edit takes.
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct AudioEditReq {
+    #[serde(flatten)]
+    pub job: JobOpts,
+    #[serde(flatten)]
+    pub body: AudioEditBody,
+}
+
+/// What audio.edit edits: the body its kind's server takes.
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct AudioEditBody {
+    /// the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); at most 30 s of one speaker
+    pub audio: String,
+    /// what the recording says (its transcript: audio.transcribe makes one)
+    pub original_text: String,
+    /// what it should say: the words that differ are said anew, the rest kept
+    pub target_text: String,
+    /// the model's id (one whose speech has edit: zonos3-mini); none: the first enabled
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// the draws (the same seed, the same edit)
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    pub seed: Option<i64>,
+    /// a code or a name; none: the text decides
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// the engine's own (temperature ...)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Map<String, serde_json::Value>>,
+    /// wav (the file) or url (JSON with its link, the default)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<String>,
+    /// what else the caller sent: passed on as it came
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
 /// What audio.transcribe takes.
 #[derive(Deserialize, Serialize, Rpc)]
 pub struct AudioTranscribeReq {
@@ -2966,6 +3004,14 @@ fn audio_transcribe(h: &Arc<Home>, req: AudioTranscribeReq) -> Answer {
     h.legacy("audio.transcribe", req)
 }
 
+/// Speech editing (a speech model whose card says edit: ZONOS3-Mini): a recording, what it says and what it should
+/// say; the words that change are said anew in the recording's voice and the rest kept frame for frame. Clips of at
+/// most 30 s; the transcript is the caller's (audio.transcribe makes one). A job like audio.speak
+#[rpc(name = "audio.edit", tags = "audio", example = r#"{"audio": "upload:up_1792400000_take2.wav", "original_text": "It runs on weaker hardware.", "target_text": "It runs on older laptops."}"#)]
+fn audio_edit(h: &Arc<Home>, req: AudioEditReq) -> Answer {
+    h.legacy("audio.edit", req)
+}
+
 /// The saved voices (cloned or designed): name, owner, what the sample says, its description, length, whether it can be spoken now (ready) and by which enabled models; sample: its WAV
 #[rpc(name = "audio.voices.list", tags = "audio", example = r#"{"owner": "film-app"}"#)]
 fn audio_voices_list(h: &Arc<Home>, req: AudioVoicesListReq) -> Answer {
@@ -3293,7 +3339,7 @@ rpcgen::rpc_methods![sync Arc<Home>, RpcFail;
     image_upscale, image_vectorize, image_svg_fit, image_svg_generate, image_remove_background, image_describe, image_describers, video_upscale, image_ocr, image_info, image_status,
     image_jobs, image_queue_list, image_queue_move, image_queue_pause, image_queue_resume, image_upload,
     image_cancel, image_canvases_list, image_progress, image_history, image_describe_prompt_guide_md, audio_generate,
-    audio_speak, audio_transcribe, audio_voices_list, audio_voices_add, audio_voices_design, audio_voices_remove,
+    audio_speak, audio_transcribe, audio_edit, audio_voices_list, audio_voices_add, audio_voices_design, audio_voices_remove,
     audio_info, audio_progress, audio_history, audio_status, audio_jobs, audio_queue_list,
     audio_queue_move, audio_queue_pause, audio_queue_resume, audio_upload, audio_cancel, audio_describe_prompt_guide_md,
     model3d_generate, model3d_rig, model3d_tool, model3d_info, model3d_progress, model3d_history,

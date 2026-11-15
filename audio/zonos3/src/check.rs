@@ -11,6 +11,8 @@
 //!   encoder   reference.wav (any rate)                                        -> nc_codes.npy [frames, 10] (raw-reference codes)
 //!   stream    prompt.txt (+ options.json)                                      -> nc_whole.npy, nc_stream.npy (the same take whole and streamed)
 //!   align     align.wav + align.txt (+ the aligner: fusealign.gguf path in aligner.txt) -> nc_align.json (FuseAlign words)
+//!   edit      edit.wav + original.txt + target.txt                             -> nc_edit.wav, nc_edit.json (the regions)
+//!   (forced with a file `edit` here: the speech-edit LM - the adapter on)
 //!   prompt    prompt.txt (+ voice.codes.npy | voice.embedding.npy)              -> nc_ids.npy [rows, 11]
 //! ```
 
@@ -22,7 +24,7 @@ use crate::lm::Cond;
 use crate::prompt::{self, Voice};
 use crate::Zonos3;
 
-pub const STAGES: &[&str] = &["lm", "forced", "decoder", "speaker", "encoder", "stream", "align", "prompt"];
+pub const STAGES: &[&str] = &["lm", "forced", "decoder", "speaker", "encoder", "stream", "align", "edit", "prompt"];
 
 /// A float32 .npy of `shape`
 pub fn npy(path: &Path, shape: &[usize], v: &[f32]) -> Result<()> {
@@ -86,7 +88,7 @@ pub fn run(z: &Zonos3, dir: &Path, stages: &[String], log: &mut dyn FnMut(String
                 let w = c.row_width();
                 let steps = if shape.len() == 2 { shape[0] } else { 0 };
                 let gen: Vec<u32> = gen.iter().map(|x| *x as u32).collect();
-                let mut seq = z.lm.seq(&z.ops, rows + steps + 1, rows)?;
+                let mut seq = if dir.join("edit").exists() { z.lm.seq_edit(&z.ops, rows + steps + 1, rows)? } else { z.lm.seq(&z.ops, rows + steps + 1, rows)? };
                 // the alignment probe of every step when probe_heads.json is here (LACI's heads): nc_probe.npy
                 let heads = std::fs::read_to_string(dir.join("probe_heads.json")).ok().map(|t| crate::laci::Heads::parse(&t, "probe_heads.json")).transpose()?;
                 if let Some(h) = &heads {
@@ -174,6 +176,18 @@ pub fn run(z: &Zonos3, dir: &Path, stages: &[String], log: &mut dyn FnMut(String
                 let j: Vec<serde_json::Value> = placed.iter().map(|p| serde_json::json!({"word": p.word, "start": p.start, "end": p.end, "presence": p.presence, "placed": p.placed})).collect();
                 std::fs::write(dir.join("nc_align.json"), serde_json::to_string(&j).unwrap_or_default()).map_err(|x| Error(x.to_string()))?;
                 log(format!("align: {} words in {:.2} s (+ {:.1} s loading)", words.len(), t1.elapsed().as_secs_f64(), (t1 - t0).as_secs_f64()));
+            }
+            "edit" => {
+                use nextcuda_audio::AudioEngine;
+                let (samples, rate) = nextcuda_audio::decode_audio(&read(dir, "edit.wav")?).map_err(Error)?;
+                let text = |n: &str| -> Result<String> { Ok(String::from_utf8_lossy(&read(dir, n)?).trim().to_string()) };
+                let req = nextcuda_audio::EditRequest { samples, rate, original: text("original.txt")?, target: text("target.txt")?, seed: 7, ..Default::default() };
+                let t0 = std::time::Instant::now();
+                let e = z.edit(&req, &mut |_| Ok(()))?;
+                e.audio.write_wav(&dir.join("nc_edit.wav"), &[]).map_err(Error)?;
+                let regions: Vec<serde_json::Value> = e.regions.iter().map(|r| serde_json::json!({"original": [r.original.0, r.original.1], "edited": [r.edited.0, r.edited.1], "old_words": r.old_words})).collect();
+                std::fs::write(dir.join("nc_edit.json"), serde_json::to_string(&regions).unwrap_or_default()).map_err(|x| Error(x.to_string()))?;
+                log(format!("edit: {} regions, {:.1} s of sound in {:.2} s", regions.len(), e.audio.seconds(), t0.elapsed().as_secs_f64()));
             }
             "prompt" => {
                 let text = String::from_utf8_lossy(&read(dir, "prompt.txt")?).trim().to_string();

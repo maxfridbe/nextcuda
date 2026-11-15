@@ -35,6 +35,9 @@ Doses of named directions, `"controls": "delivery.tempo=2, emotions.happy=4"` (a
   `texture.husky` (`.raspy`, `.deep`, `.soft` ...), `room.clean`
 
 ## Other options
+**Editing** (`audio.edit`): a recording of up to 30 s, what it says (`original_text`; `audio.transcribe` makes it)
+and what it should say (`target_text`): the words that differ (at most three places) are said anew in the recording's
+voice, everything else is kept as it was.
 `short-text` (auto): a text of a word or two is said with a pause and a filler sentence after it and cut where the
 filler starts (alone, the model often says it wrong or runs on); `laci` (off; needs cfg 1): the reading of the text is
 checked at every step and a skipped or repeated stretch is said again. `stream: true` on /v1/audio/speech: the sound

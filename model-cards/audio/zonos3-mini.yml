@@ -5,7 +5,8 @@
 # LM with the phoneme, start and pause rows and speech editing's vocabulary - on plain text the release LM bit for bit), the ZAC codec's MR-iSTFT
 # decoders (keep2_plain, the default; full_mr, loaded on the first request that names it), the MECT-B2 speaker
 # encoder, the reference encoder and its Wav2Vec2-BERT teacher (raw-reference cloning: a recording's own codes, loaded
-# for the encode and freed after it), LACI's alignment heads (laci/, a language a file: LACI and short texts), the steering
+# for the encode and freed after it), speech editing's adapter (edit/accents.gguf: the edit LoRA) and Zyphra's FuseAlign
+# aligner (Zyphra/fusealign, Apache-2.0: word timings; loaded for an edit), LACI's alignment heads (laci/, a language a file: LACI and short texts), the steering
 # bundle, and the 27 preset voices' codes (.codes.npy: the reference prefix, the model's default)
 # and speaker embeddings (.embedding.npy). Apache-2.0 (the weights; the runtime this port follows is MIT).
 id: zonos3-mini
@@ -22,6 +23,7 @@ headroom_gib: 1.0                # a long take's decoder activations and the spe
 speech:
 - voices
 - clone
+- edit
 defaults:
   seconds: 60.0
   cfg: 1.0
@@ -51,6 +53,18 @@ files:
     size: 45385728
     sha256: 9539f340b70be246005403b9c254732e180e85e0b3c57fb1973f0d6bc6c59bdc
     path: zonos3-mini/spk-encoder.gguf
+  edit-adapter:
+    key: zonos3-edit-adapter
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/gguf/edit/accents.gguf
+    size: 256592064
+    sha256: ac77fc95e91a6b0c28135f27ee3e4fef1411b8ac3dba969e06f99ce9f84e7376
+    path: zonos3-mini/edit/accents.gguf
+  aligner:
+    key: zonos3-fusealign
+    url: https://huggingface.co/Zyphra/fusealign/resolve/a4d58de4f0c6aff1e00f36e27bc58c901a39c359/fusealign-multilingual-ns4-step60000-f32.gguf
+    size: 1345210432
+    sha256: 4c68ca23fed8dac1ca2eed49ddd3d68e796123aac9fe19da3feb39c5988587b9
+    path: zonos3-mini/fusealign-multilingual-ns4-step60000-f32.gguf
   zac-encoder:
     key: zonos3-zac-encoder
     url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/gguf/zac-encoder.gguf

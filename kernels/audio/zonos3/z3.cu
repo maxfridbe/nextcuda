@@ -834,6 +834,70 @@ __global__ void attn_full_k(const float* q, const float* k, const float* v, int6
     for (int d = threadIdx.x; d < hd; d += FB) out[i * (int64_t) H * hd + (int64_t) h * hd + d] = acc[d] / red[0];
 }
 
+// The speech-edit LoRA on the routed experts (accents.gguf zonos-accent-lora/3: every routed (row, expert) pair adds
+// up[e] @ (down[e] @ x) to its gate / up pre-activations and to its expert output).
+// t[rs, r] = down[e, r, :] . x (x a row's: per_slot 0 -> row rs / k, 1 -> row rs); one warp a (rs, r)
+__global__ void moe_lora_t_k(const float* x, int64_t In, const int32_t* idx, int k, int per_slot, const float* down, int R, float* t) {
+    const int64_t rs = blockIdx.x;
+    const int r = blockIdx.y * M_NW + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    if (r >= R) return;
+    const int64_t e = idx[rs];
+    const float* d = down + (e * R + r) * In;
+    const float* xr = x + (per_slot ? rs : rs / k) * In;
+    float acc = 0.0f;
+    for (int64_t i = lane; i < In; i += 32) acc += d[i] * xr[i];
+    acc = warp_sum(acc);
+    if (lane == 0) t[rs * R + r] = acc;
+}
+
+// moe_up_k with the LoRA terms: gate += upg[e, f, :] . tg[rs], up += upu[e, f, :] . tu[rs]
+__global__ void moe_up_lora_k(const float* x, int64_t L, const uint8_t* gate, const uint8_t* up, const int32_t* idx, int k, int64_t F, const float* tg,
+                              const float* tu, const float* upg, const float* upu, int R, float* h) {
+    const int64_t rs = blockIdx.x;
+    const int64_t f = (int64_t) blockIdx.y * M_NW + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    if (f >= F) return;
+    const int64_t e = idx[rs];
+    const int64_t row_bytes = L / 32 * Q4B;
+    const uint8_t* gr = gate + (e * F + f) * row_bytes;
+    const uint8_t* ur = up + (e * F + f) * row_bytes;
+    const float* xr = x + (rs / k) * L;
+    float sg = 0.0f, su = 0.0f;
+    for (int64_t c = lane; c < L / 8; c += 32) {
+        sg += q4_dot8(gr, c * 8, xr + c * 8);
+        su += q4_dot8(ur, c * 8, xr + c * 8);
+    }
+    for (int r = lane; r < R; r += 32) {
+        sg += upg[(e * F + f) * R + r] * tg[rs * R + r];
+        su += upu[(e * F + f) * R + r] * tu[rs * R + r];
+    }
+    sg = warp_sum(sg);
+    su = warp_sum(su);
+    if (lane == 0) h[rs * F + f] = siluf_(sg) * su;
+}
+
+// moe_down_k with the LoRA term: an expert's output += upd[e, l, :] . td[rs]
+__global__ void moe_down_lora_k(const float* h, int k, int64_t F, const uint8_t* down, const int32_t* idx, const float* w, int64_t L, const float* td,
+                                const float* upd, int R, float* out) {
+    const int64_t r = blockIdx.x;
+    const int64_t l = (int64_t) blockIdx.y * M_NW + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    if (l >= L) return;
+    const int64_t row_bytes = F / 32 * Q4B;
+    float acc = 0.0f;
+    for (int s = 0; s < k; ++s) {
+        const int64_t e = idx[r * k + s];
+        const uint8_t* dr = down + (e * L + l) * row_bytes;
+        const float* hr = h + (r * k + s) * F;
+        float d = 0.0f;
+        for (int64_t c = lane; c < F / 8; c += 32) d += q4_dot8(dr, c * 8, hr + c * 8);
+        for (int q = lane; q < R; q += 32) d += upd[(e * L + l) * R + q] * td[(r * k + s) * R + q];
+        acc += w[r * k + s] * warp_sum(d);
+    }
+    if (lane == 0) out[r * L + l] = acc;
+}
+
 }  // namespace
 
 extern "C" {
@@ -1202,6 +1266,34 @@ int ns_audio_z3_attn_full(ns_gpu* g, const float* q, const float* k, const float
     Z3_BEGIN(T);
     if (hd > 128) return ns_fail("ns_audio_z3_attn_full: heads of at most 128");
     attn_full_k<<<dim3((unsigned) T, (unsigned) H), FB, 0, g->q>>>(q, k, v, qs, T, (int) H, (int) hd, scale, out);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_moe_lora_t(ns_gpu* g, const float* x, int64_t rows, int64_t In, const int32_t* idx, int64_t k, int64_t per_slot, const float* down,
+                           int64_t R, float* t) {
+    Z3_BEGIN(rows);
+    moe_lora_t_k<<<dim3((unsigned) (rows * k), (unsigned) ((R + M_NW - 1) / M_NW)), WARP * M_NW, 0, g->q>>>(x, In, idx, (int) k, (int) per_slot, down, (int) R, t);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_moe_up_lora(ns_gpu* g, const float* x, int64_t rows, int64_t L, const void* gate, const void* up, const int32_t* idx, int64_t k, int64_t F,
+                            const float* tg, const float* tu, const float* upg, const float* upu, int64_t R, float* h) {
+    Z3_BEGIN(rows);
+    if (L % 32) return ns_fail("ns_audio_z3_moe_up_lora: rows of whole Q4_0 blocks");
+    moe_up_lora_k<<<dim3((unsigned) (rows * k), (unsigned) ((F + M_NW - 1) / M_NW)), WARP * M_NW, 0, g->q>>>(x, L, (const uint8_t*) gate, (const uint8_t*) up,
+                                                                                                             idx, (int) k, F, tg, tu, upg, upu, (int) R, h);
+    NS_LAUNCH_CHECK();
+    return 0;
+}
+
+int ns_audio_z3_moe_down_lora(ns_gpu* g, const float* h, int64_t rows, int64_t k, int64_t F, const void* down, const int32_t* idx, const float* w, int64_t L,
+                              const float* td, const float* upd, int64_t R, float* out) {
+    Z3_BEGIN(rows);
+    if (F % 32) return ns_fail("ns_audio_z3_moe_down_lora: rows of whole Q4_0 blocks");
+    moe_down_lora_k<<<dim3((unsigned) rows, (unsigned) ((L + M_NW - 1) / M_NW)), WARP * M_NW, 0, g->q>>>(h, (int) k, F, (const uint8_t*) down, idx, w, L, td,
+                                                                                                         upd, (int) R, out);
     NS_LAUNCH_CHECK();
     return 0;
 }

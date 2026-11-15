@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn unplaced_words_share_their_gap() {
         let f = fill_unplaced(&[Some((0.1, 0.3)), None, None, Some((0.9, 1.0)), None], 2.0);
-        assert_eq!(f[1], (0.3, 0.6));
+        assert!((f[1].0 - 0.3).abs() < 1e-12 && (f[1].1 - 0.6).abs() < 1e-12, "{:?}", f[1]);
         assert!((f[2].0 - 0.6).abs() < 1e-12 && f[2].1 == 0.9);
         assert_eq!(f[4], (1.0, 2.0));
     }

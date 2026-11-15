@@ -18,7 +18,7 @@ type Fail = (u16, String);
 /// cancels, guides, uploads, unloading - answer as always
 pub(super) fn starts_work(method: &str) -> bool {
     matches!(method, "system.enable" | "system.load" | "system.pin" | "llm.chat" | "image.generate" | "image.edit" | "image.ocr" | "audio.generate" | "audio.speak"
-                     | "audio.transcribe" | "audio.voices.design" | "video.generate" | "model3d.generate" | "model3d.rig"
+                     | "audio.transcribe" | "audio.edit" | "audio.voices.design" | "video.generate" | "model3d.generate" | "model3d.rig"
                      | "image.upscale" | "video.upscale" | "image.vectorize" | "image.svg_fit" | "image.svg_generate" | "image.remove_background" | "image.describe"
                      | "video.control")
 }

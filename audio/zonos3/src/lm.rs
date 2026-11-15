@@ -167,6 +167,23 @@ pub struct Lm {
     /// the condition tables on the host: table i [counts[i] + 1, dim]
     cond: Vec<Vec<f32>>,
     pub bytes: usize,
+    /// the speech-edit LoRA (edit/accents.gguf), applied on a sequence made with `edit`
+    pub edit: Option<EditLora>,
+}
+
+/// The speech-edit adapter (zonos-accent-lora/3, rank 64; rank 16 on the experts) at strength 1: every adapted linear
+/// adds up @ (down @ x), every routed (row, expert) pair its experts' factors, the MoE routers shift their balancing
+/// biases (Zyphra's zonos3-accent.h; the ggml / MLX servers apply it at run time as here)
+pub struct EditLora {
+    linear: std::collections::HashMap<String, (Mat, Mat)>,
+    /// per layer: the router bias with the adapter's shift
+    router_bias: Vec<Option<DevBuf>>,
+    /// per layer: gate / up / down experts' (down [E, R, in], up [E, out, R])
+    experts: Vec<Option<[(DevBuf, DevBuf); 3]>>,
+    rank: usize,
+    erank: usize,
+    max_out: usize,
+    pub bytes: usize,
 }
 
 /// One sequence's state: its position, the global layers' caches, each GDN layer's recurrent state and convolution
@@ -182,6 +199,17 @@ pub struct Seq {
     s: Scratch,
     /// LACI's alignment probe (decode steps only)
     pub probe: Option<Probe>,
+    /// run the speech-edit LoRA (made with `seq_edit`)
+    pub edit: bool,
+    lora: Option<LoraScratch>,
+}
+
+struct LoraScratch {
+    t: DevBuf,
+    u: DevBuf,
+    tg: DevBuf,
+    tu: DevBuf,
+    td: DevBuf,
 }
 
 /// LACI's alignment probe (zonos3.tts.probe.readout; ggml build_probe): on every decode row, each probed head's
@@ -355,9 +383,97 @@ impl Lm {
             cond,
             bytes,
             c,
+            edit: None,
         };
         log(format!("{ARCH}: backbone {} layers of {}, {:.0} MiB on the card", lm.c.layers, lm.c.dim, lm.bytes as f64 / (1u64 << 20) as f64));
         Ok(lm)
+    }
+
+    /// Loads the speech-edit adapter (accents.gguf's zonos-accent-lora/3 slot)
+    pub fn attach_edit(&mut self, ops: &Ops, w: &Weights) -> Result<()> {
+        let formats = w.ss("zonos3_accents.format")?;
+        let slot = formats.iter().position(|f| f == "zonos-accent-lora/3").ok_or_else(|| Error(format!("{}: no speech-edit adapter (zonos-accent-lora/3)", w.name())))?;
+        let p = format!("acc.{slot}.");
+        let mut linear = std::collections::HashMap::new();
+        let (mut rank, mut max_out, mut bytes) = (0usize, 0usize, 0usize);
+        let mut bases: Vec<String> = Vec::new();
+        for l in 0..self.c.layers {
+            for b in ["attn_q", "attn_k", "attn_v", "attn_output", "attn_gate", "gdn_in", "ffn_up", "ffn_gate", "ffn_down", "ffn_latent_down", "ffn_latent_up", "router"] {
+                bases.push(format!("blk.{l}.{b}"));
+            }
+        }
+        bases.push("output".into());
+        for b in bases {
+            let dn = format!("{p}{b}.lora_down");
+            if !w.has(&dn) {
+                continue;
+            }
+            let down = w.mat(ops, &dn)?;
+            let up = w.mat(ops, &format!("{p}{b}.lora_up"))?;
+            rank = rank.max(down.n);
+            max_out = max_out.max(up.n);
+            bytes += down.bytes() + up.bytes();
+            linear.insert(b, (down, up));
+        }
+        let mut router_bias = Vec::new();
+        let mut experts = Vec::new();
+        let mut erank = 0;
+        for (l, ly) in self.layers.iter().enumerate() {
+            let shift = format!("{p}blk.{l}.router_bias");
+            match &ly.ffn {
+                Ffn::Moe { router_bias: rb, .. } if w.has(&shift) => {
+                    let base = rb.to_f32().map_err(e)?;
+                    let sh = w.f32(&shift)?;
+                    router_bias.push(Some(ops.from_f32(&base.iter().zip(&sh).map(|(a, b)| a + b).collect::<Vec<_>>())?));
+                }
+                _ => router_bias.push(None),
+            }
+            let e = |n: &str| -> Result<(DevBuf, DevBuf)> {
+                Ok((w.dev(ops, &format!("{p}blk.{l}.{n}.lora_down"))?, w.dev(ops, &format!("{p}blk.{l}.{n}.lora_up"))?))
+            };
+            if w.has(&format!("{p}blk.{l}.ffn_gate_exps.lora_down")) {
+                erank = w.shape(&format!("{p}blk.{l}.ffn_gate_exps.lora_down"))?[1];
+                let f = [e("ffn_gate_exps")?, e("ffn_up_exps")?, e("ffn_down_exps")?];
+                bytes += f.iter().map(|(a, b)| a.len + b.len).sum::<usize>();
+                experts.push(Some(f));
+            } else {
+                experts.push(None);
+            }
+        }
+        self.edit = Some(EditLora { linear, router_bias, experts, rank, erank, max_out, bytes });
+        Ok(())
+    }
+
+    /// A sequence that runs the speech-edit adapter
+    pub fn seq_edit(&self, ops: &Ops, cap: usize, rows: usize) -> Result<Seq> {
+        let lora = self.edit.as_ref().ok_or_else(|| Error(format!("{ARCH}: speech editing needs the edit adapter (edit/accents.gguf)")))?;
+        let mut sq = self.seq(ops, cap, rows)?;
+        let r = rows.max(1);
+        sq.lora = Some(LoraScratch {
+            t: ops.f32(r * lora.rank.max(1))?,
+            u: ops.f32(r * lora.max_out.max(1))?,
+            tg: ops.f32(r * self.c.topk * lora.erank.max(1))?,
+            tu: ops.f32(r * self.c.topk * lora.erank.max(1))?,
+            td: ops.f32(r * self.c.topk * lora.erank.max(1))?,
+        });
+        sq.edit = true;
+        Ok(sq)
+    }
+
+    /// A product, and the edit adapter's term of its module on an edit sequence
+    #[allow(clippy::too_many_arguments)]
+    fn lin(&self, ops: &Ops, sq: &Seq, base: &str, x: *const f32, n: usize, m: &Mat, bias: *const f32, out: *mut f32) -> Result<()> {
+        ops.linear(x, n, m, bias, out)?;
+        if sq.edit {
+            if let (Some(l), Some(sc)) = (&self.edit, &sq.lora) {
+                if let Some((d, u)) = l.linear.get(base) {
+                    ops.linear(x, n, d, nulf(), sc.t.fp())?;
+                    ops.linear(sc.t.fp(), n, u, nulf(), sc.u.fp())?;
+                    ops.add(out, sc.u.fp(), n * u.n)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// speaker_projection(v): the speaker row's embedding
@@ -428,7 +544,7 @@ impl Lm {
             wts: ops.f32(rows * c.topk)?,
             logits: ops.f32(rows * c.logits())?,
         };
-        Ok(Seq { pos: 0, cap, kc, vc, state, hist, rows, s, probe: None })
+        Ok(Seq { pos: 0, cap, kc, vc, state, hist, rows, s, probe: None, edit: false, lora: None })
     }
 
     /// The rows `ids` [n, ncb + 1] at the sequence's next positions: the state advanced, the logits of the last row (or
@@ -493,7 +609,7 @@ impl Lm {
                     let (hh, sd) = (c.gdn_heads, c.gdn_dim);
                     let inner = hh * sd;
                     let p = proj.n;
-                    ops.linear(x, n, proj, nulf(), fp(&s.proj, 0))?;
+                    self.lin(ops, sq, &format!("blk.{l}.gdn_in"), x, n, proj, nulf(), fp(&s.proj, 0))?;
                     ops.gdn_conv(fp(&s.proj, 0), n, p, 3 * inner, conv.fp(), c.gdn_kernel, sq.hist[gi].fp(), fp(&s.conv, 0))?;
                     ops.gdn_prep(fp(&s.conv, 0), fp(&s.proj, 0), n, p, 4 * inner, hh, sd, a_log.fp(), dt_bias.fp(), fp(&s.q, 0), fp(&s.k, 0), fp(&s.v, 0),
                                  fp(&s.decay, 0), fp(&s.beta, 0))?;
@@ -504,10 +620,10 @@ impl Lm {
                 Mixer::Attn { q, k, v, gate, temp } => {
                     let (hq, hk, hd) = (c.heads, c.kv_heads, c.head_dim);
                     let kvw = hk * hd;
-                    ops.linear(x, n, gate, nulf(), fp(&s.gate, 0))?;
-                    ops.linear(x, n, q, nulf(), fp(&s.q, 0))?;
-                    ops.linear(x, n, k, nulf(), fp(&s.k, 0))?;
-                    ops.linear(x, n, v, nulf(), fp(&s.v, 0))?;
+                    self.lin(ops, sq, &format!("blk.{l}.attn_gate"), x, n, gate, nulf(), fp(&s.gate, 0))?;
+                    self.lin(ops, sq, &format!("blk.{l}.attn_q"), x, n, q, nulf(), fp(&s.q, 0))?;
+                    self.lin(ops, sq, &format!("blk.{l}.attn_k"), x, n, k, nulf(), fp(&s.k, 0))?;
+                    self.lin(ops, sq, &format!("blk.{l}.attn_v"), x, n, v, nulf(), fp(&s.v, 0))?;
                     ops.head_rms(fp(&s.q, 0), hq * hd, n, hq, hd, temp.fp(), c.qk_eps)?;
                     ops.head_rms(fp(&s.k, 0), kvw, n, hk, hd, nulf(), c.qk_eps)?;
                     ops.rope(fp(&s.q, 0), hq * hd, n, hq, hd, c.theta, lo)?;
@@ -525,27 +641,40 @@ impl Lm {
                     ai += 1;
                 }
             }
-            ops.linear(fp(&s.att, 0), n, &ly.out, nulf(), bank(2 * l + 1))?;
+            self.lin(ops, sq, &format!("blk.{l}.attn_output"), fp(&s.att, 0), n, &ly.out, nulf(), bank(2 * l + 1))?;
             add_source(2 * l + 1)?;
             ops.rms(fp(&s.mixed, 0), d, n, d, ly.ffn_norm.fp(), c.eps, fp(&s.xin, 0))?;
             let x = fp(&s.xin, 0);
             match &ly.ffn {
                 Ffn::Dense { up, gate, down } => {
-                    ops.linear(x, n, up, nulf(), fp(&s.h1, 0))?;
-                    ops.linear(x, n, gate, nulf(), fp(&s.h2, 0))?;
+                    self.lin(ops, sq, &format!("blk.{l}.ffn_up"), x, n, up, nulf(), fp(&s.h1, 0))?;
+                    self.lin(ops, sq, &format!("blk.{l}.ffn_gate"), x, n, gate, nulf(), fp(&s.h2, 0))?;
                     ops.silu_mul(fp(&s.h2, 0), fp(&s.h1, 0), fp(&s.h2, 0), n * up.n)?;
-                    ops.linear(fp(&s.h2, 0), n, down, nulf(), bank(2 * l + 2))?;
+                    self.lin(ops, sq, &format!("blk.{l}.ffn_down"), fp(&s.h2, 0), n, down, nulf(), bank(2 * l + 2))?;
                 }
                 Ffn::Moe { router, router_norm, router_bias, latent_down, latent_up, gate, up, down } => {
                     let lat = latent_down.n;
                     let f = gate.len / 18 * 32 / c.experts / lat;
                     ops.rms(x, d, n, d, router_norm.fp(), c.eps, fp(&s.mixed, 0))?;
-                    ops.linear(fp(&s.mixed, 0), n, router, nulf(), fp(&s.gate, 0))?;
-                    ops.topk(fp(&s.gate, 0), router_bias.fp(), n, c.experts, c.topk, &s.idx, fp(&s.wts, 0))?;
-                    ops.linear(x, n, latent_down, nulf(), fp(&s.y, 0))?;
-                    ops.moe_up(fp(&s.y, 0), n, lat, gate, up, &s.idx, c.topk, f, fp(&s.h1, 0))?;
-                    ops.moe_down(fp(&s.h1, 0), n, c.topk, f, down, &s.idx, fp(&s.wts, 0), lat, fp(&s.h2, 0))?;
-                    ops.linear(fp(&s.h2, 0), n, latent_up, nulf(), bank(2 * l + 2))?;
+                    self.lin(ops, sq, &format!("blk.{l}.router"), fp(&s.mixed, 0), n, router, nulf(), fp(&s.gate, 0))?;
+                    let edit = if sq.edit { self.edit.as_ref() } else { None };
+                    let bias = edit.and_then(|e| e.router_bias[l].as_ref()).unwrap_or(router_bias);
+                    ops.topk(fp(&s.gate, 0), bias.fp(), n, c.experts, c.topk, &s.idx, fp(&s.wts, 0))?;
+                    self.lin(ops, sq, &format!("blk.{l}.ffn_latent_down"), x, n, latent_down, nulf(), fp(&s.y, 0))?;
+                    match (edit.and_then(|e| e.experts[l].as_ref().map(|x| (x, e.erank))), &sq.lora) {
+                        (Some(([(gd, gu), (ud, uu), (dd, du)], r)), Some(sc)) => {
+                            ops.moe_lora_t(fp(&s.y, 0), n, lat, &s.idx, c.topk, false, gd, r, sc.tg.fp())?;
+                            ops.moe_lora_t(fp(&s.y, 0), n, lat, &s.idx, c.topk, false, ud, r, sc.tu.fp())?;
+                            ops.moe_up_lora(fp(&s.y, 0), n, lat, gate, up, &s.idx, c.topk, f, sc.tg.fp(), sc.tu.fp(), gu, uu, r, fp(&s.h1, 0))?;
+                            ops.moe_lora_t(fp(&s.h1, 0), n, f, &s.idx, c.topk, true, dd, r, sc.td.fp())?;
+                            ops.moe_down_lora(fp(&s.h1, 0), n, c.topk, f, down, &s.idx, fp(&s.wts, 0), lat, sc.td.fp(), du, r, fp(&s.h2, 0))?;
+                        }
+                        _ => {
+                            ops.moe_up(fp(&s.y, 0), n, lat, gate, up, &s.idx, c.topk, f, fp(&s.h1, 0))?;
+                            ops.moe_down(fp(&s.h1, 0), n, c.topk, f, down, &s.idx, fp(&s.wts, 0), lat, fp(&s.h2, 0))?;
+                        }
+                    }
+                    self.lin(ops, sq, &format!("blk.{l}.ffn_latent_up"), fp(&s.h2, 0), n, latent_up, nulf(), bank(2 * l + 2))?;
                 }
             }
             add_source(2 * l + 2)?;
@@ -567,7 +696,7 @@ impl Lm {
         }
         let (r0, m) = if all { (0, n) } else { (n - 1, 1) };
         ops.rms(fp(&s.mixed, r0 * d), d, m, d, self.out_norm.fp(), c.eps, fp(&s.xin, 0))?;
-        ops.linear(fp(&s.xin, 0), m, &self.head, nulf(), fp(&s.logits, 0))?;
+        self.lin(ops, sq, "output", fp(&s.xin, 0), m, &self.head, nulf(), fp(&s.logits, 0))?;
         ops.softcap(fp(&s.logits, 0), m * c.logits(), c.softcap)?;
         sq.pos = lo + n;
         Ok(m)

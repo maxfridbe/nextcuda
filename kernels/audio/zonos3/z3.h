@@ -194,6 +194,15 @@ int ns_audio_z3_col2im(ns_gpu* g, const float* cols, int64_t T, int64_t K, int64
 /* full attention, heads of up to 128: q, k, v [T, H hd] rows qs apart -> out [T, H hd] */
 int ns_audio_z3_attn_full(ns_gpu* g, const float* q, const float* k, const float* v, int64_t qs, int64_t T, int64_t H, int64_t hd, float scale, float* out);
 
+/* the speech-edit LoRA on the routed experts: t [rows k, R] = down[e] (E, R, In) . x (per_slot: x [rows k, In], else x
+ * [rows, In]); moe_up / moe_down with the up factors' terms (upg / upu [E, F, R], upd [E, L, R]) */
+int ns_audio_z3_moe_lora_t(ns_gpu* g, const float* x, int64_t rows, int64_t In, const int32_t* idx, int64_t k, int64_t per_slot, const float* down,
+                           int64_t R, float* t);
+int ns_audio_z3_moe_up_lora(ns_gpu* g, const float* x, int64_t rows, int64_t L, const void* gate, const void* up, const int32_t* idx, int64_t k, int64_t F,
+                            const float* tg, const float* tu, const float* upg, const float* upu, int64_t R, float* h);
+int ns_audio_z3_moe_down_lora(ns_gpu* g, const float* h, int64_t rows, int64_t k, int64_t F, const void* down, const int32_t* idx, const float* w, int64_t L,
+                              const float* td, const float* upd, int64_t R, float* out);
+
 /* channels-first x [rows, cols] += bias[row] */
 int ns_audio_z3_add_rows(ns_gpu* g, float* x, const float* bias, int64_t rows, int64_t cols);
 

@@ -167,6 +167,25 @@ impl Ops {
         call!(self, moe_down, "experts down", h, rows as i64, k as i64, f as i64, down.ptr(), idx.ptr().cast(), w, l as i64, out)
     }
 
+    /// the edit LoRA's expert projections t [rows k, r] = down[e] . x (per_slot: x a (row, slot)'s, else its row's)
+    pub fn moe_lora_t(&self, x: F, rows: usize, inn: usize, idx: &DevBuf, k: usize, per_slot: bool, down: &DevBuf, r: usize, t: W) -> Result<()> {
+        call!(self, moe_lora_t, "experts lora", x, rows as i64, inn as i64, idx.ptr().cast(), k as i64, per_slot as i64, down.fp(), r as i64, t)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_up_lora(&self, x: F, rows: usize, l: usize, gate: &DevBuf, up: &DevBuf, idx: &DevBuf, k: usize, f: usize, tg: F, tu: F, upg: &DevBuf, upu: &DevBuf,
+                       r: usize, h: W) -> Result<()> {
+        call!(self, moe_up_lora, "experts up (lora)", x, rows as i64, l as i64, gate.ptr(), up.ptr(), idx.ptr().cast(), k as i64, f as i64, tg, tu, upg.fp(),
+              upu.fp(), r as i64, h)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_down_lora(&self, h: F, rows: usize, k: usize, f: usize, down: &DevBuf, idx: &DevBuf, w: F, l: usize, td: F, upd: &DevBuf, r: usize, out: W)
+                         -> Result<()> {
+        call!(self, moe_down_lora, "experts down (lora)", h, rows as i64, k as i64, f as i64, down.ptr(), idx.ptr().cast(), w, l as i64, td, upd.fp(), r as i64,
+              out)
+    }
+
     pub fn lookup(&self, codes: &DevBuf, t: usize, ncol: usize, col: usize, table: F, c: usize, bias: F, acc: bool, out: W) -> Result<()> {
         call!(self, lookup, "lookup", codes.ptr().cast(), t as i64, ncol as i64, col as i64, table, c as i64, bias, acc as i32, out)
     }

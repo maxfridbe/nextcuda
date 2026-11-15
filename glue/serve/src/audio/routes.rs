@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use super::{err, AudioServer};
-use crate::home::methods::{AudioTranscribeBody, SongFields, SpeechFields};
+use crate::home::methods::{AudioEditBody, AudioTranscribeBody, SongFields, SpeechFields};
 use crate::page::{CancelReq, Cancelled, Cx, Fail, FileName, Gpu, Health, ModelList};
 
 /// The engine's own defaults (a request's absent fields)
@@ -516,8 +516,23 @@ fn speech(s: &AudioServer, cx: &mut Cx, req: AudioSpeechBody) -> Result<Sent<Sou
     Ok(Sent::new())
 }
 
+/// Speech editing (a model that edits: zonos3-mini): the recording with the words the target changes said anew in its
+/// voice, the rest kept frame for frame; JSON with its link and the regions (response_format wav: the file)
+#[route(post = "/v1/audio/edit", tags = "audio", produces = "application/json, audio/wav")]
+fn edit(s: &AudioServer, cx: &mut Cx, req: AudioEditBody) -> Result<Sent<Value>, Fail> {
+    let b = serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?;
+    let base = cx.base();
+    match s.edit_speech(&b, &base) {
+        Ok((Some(v), _)) => cx.json(200, &v),
+        Ok((None, wav)) => cx.bytes(200, "audio/wav", &wav, ""),
+        Err((code, m)) => cx.json(code, &err(m)),
+    }
+    s.maybe_retire();
+    Ok(Sent::new())
+}
+
 routes![sync AudioServer, Cx, Fail; gpu, health, models, info, progress, history, cancel, file, voices, voice_sample, voice_add, voice_remove,
-        transcriptions, speech];
+        transcriptions, speech, edit];
 
 /// The table, made once
 pub fn table() -> &'static [rpcgen::SyncRoute<AudioServer, Cx, Fail>] {

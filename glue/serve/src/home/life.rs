@@ -236,6 +236,11 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
                 c.push("vocal_events");
             }
             let mut methods = vec!["audio.speak"];
+            // its words changed in a recording, the rest kept (speech editing: ZONOS3-Mini)
+            if speech("edit") {
+                c.push("speech_edit");
+                methods.push("audio.edit");
+            }
             if speech("design") {
                 methods.push("audio.voices.design");
             }
@@ -1650,6 +1655,14 @@ pub(crate) fn job_of_proc(p: &Value, by_port: &std::collections::HashMap<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_speech_model_whose_card_says_edit_edits() {
+        let (caps, methods) = capabilities(&json!({"id": "zonos3-mini", "kind": "audio", "arch": "zonos3", "speech": ["voices", "clone", "edit"]}));
+        assert!(caps.contains(&"speech_edit") && methods.contains(&"audio.edit") && methods.contains(&"audio.speak"));
+        let (caps, methods) = capabilities(&json!({"id": "voxcpm2", "kind": "audio", "arch": "voxcpm2", "speech": ["clone"]}));
+        assert!(!caps.contains(&"speech_edit") && !methods.contains(&"audio.edit"));
+    }
 
     #[test]
     fn a_recogniser_transcribes_and_speaks_nothing() {

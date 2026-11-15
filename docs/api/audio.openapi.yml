@@ -304,8 +304,76 @@ paths:
           description: 'an error: the body''s `error` says what'
       x-aliases:
       - /audio/speech
+  /v1/audio/edit:
+    post:
+      operationId: edit
+      summary: 'Speech editing (a model that edits: zonos3-mini): the recording with the words the target changes said anew in its'
+      tags:
+      - audio
+      description: 'Speech editing (a model that edits: zonos3-mini): the recording with the words the target changes said anew in its voice, the rest kept frame for frame; JSON with its link and the regions (response_format wav: the file)'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AudioEditBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {}
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
 components:
   schemas:
+    AudioEditBody:
+      type: object
+      properties:
+        audio:
+          type: string
+          description: 'the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); at most 30 s of one speaker'
+        original_text:
+          type: string
+          description: 'what the recording says (its transcript: audio.transcribe makes one)'
+        target_text:
+          type: string
+          description: 'what it should say: the words that differ are said anew, the rest kept'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id (one whose speech has edit: zonos3-mini); none: the first enabled'
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: the draws (the same seed, the same edit)
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a code or a name; none: the text decides'
+        options:
+          anyOf:
+          - type: object
+          - type: 'null'
+          description: the engine's own (temperature ...)
+        response_format:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: wav (the file) or url (JSON with its link, the default)
+      required:
+      - audio
+      - original_text
+      - target_text
+      additionalProperties: true
+      description: 'What audio.edit edits: the body its kind''s server takes.'
     AudioSpeechBody:
       type: object
       properties:
