@@ -295,6 +295,12 @@ impl Vae {
     fn norm_silu(&self, nsd: &Nsd, x: &DevBuf, px: usize, c: usize, gamma: &DevBuf) -> Result<DevBuf> {
         let k = ffi::api()?;
         let out = DevBuf::new(&self.gpu, px * c * 2)?;
+        if let Some(f) = ffi::silo().and_then(|s| s.rms_silu) {
+            // SAFETY: px x c halves each way, gamma c floats.
+            ffi::check(unsafe { f(self.gpu.raw(), x.ptr(), px as i64, c as i64, gamma.fp(), EPS, out.ptr()) }, "silo rms + silu")?;
+            prof::mark(nsd, "vae norm + silu")?;
+            return Ok(out);
+        }
         nsd.rms_norm_mod(x.ptr(), Dt::F16, px, c, gamma.ptr(), EPS, none(), none(), none(), out.ptr(), Dt::F16)?;
         // SAFETY: px x c halves.
         ffi::check(unsafe { (k.silu)(self.gpu.raw(), out.ptr(), (px * c) as i64) }, "silu")?;

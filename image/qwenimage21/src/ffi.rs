@@ -96,6 +96,8 @@ pub struct Silo {
     /// out, 1 float32, 2 float32 out += gate * the product
     #[allow(clippy::type_complexity)]
     pub gemm_q8: Option<unsafe extern "C" fn(G, P, i64, i64, i64, P, P, i64, *const f32, M, c_int, i64, c_int) -> c_int>,
+    /// rms_silu(gpu, x, P, C, gamma, eps, out): silu(rms norm(x) * gamma), half
+    pub rms_silu: Option<unsafe extern "C" fn(G, P, i64, i64, *const f32, f32, M) -> c_int>,
     /// conv3x3(gpu, x, H, W, Ci, up, w, Co, bias, out, f16acc): a 3 x 3 convolution of x's nearest `up` x upsample,
     /// channels last, weights [Co, 3, 3, Ci]
     #[allow(clippy::type_complexity)]
@@ -125,6 +127,7 @@ pub fn silo() -> Option<&'static Silo> {
                 attention_ex: (!x.is_null()).then(|| std::mem::transmute(x)),
                 gemm: (!g.is_null()).then(|| std::mem::transmute(g)),
                 conv3x3: (!c.is_null()).then(|| std::mem::transmute(c)),
+                rms_silu: { let p = lib.symbol("ns_image_qi21_silo_rms_silu"); (!p.is_null()).then(|| std::mem::transmute(p)) },
                 q8_split: { let p = lib.symbol("ns_image_qi21_silo_q8_split"); (!p.is_null()).then(|| std::mem::transmute(p)) },
                 gemm_q8: { let p = lib.symbol("ns_image_qi21_silo_gemm_q8"); (!p.is_null()).then(|| std::mem::transmute(p)) },
             }
