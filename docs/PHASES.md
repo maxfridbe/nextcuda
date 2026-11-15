@@ -65,8 +65,8 @@ NVIDIA behind it instead of SYCL. The platform talks to it with the same `/rpc/<
   sd.cpp link in `kernels/build.sh` and `crates/sys`, `libstable-diffusion.so` from deploy. Its rows in the tables
   here and in image.md are history.
 - **Not done:** `image check` stage dumps (no reference dumps exist for CUDA), int8 at the quality nextsycl documents (30.4 dB PSNR against half here, about 39 dB
-  there; the picture looks right, the cause is not found), attention at nextsycl's ~110 TFLOPS (ldmatrix and
-  cp.async not used yet, about 50 now).
+  there; the picture looks right, the cause is not found), attention at nextsycl's ~110 TFLOPS (about 88 with half
+  sums since 2026-11-14, below).
 
 ### Rust engine clocks (RTX 5070, 8 steps guided, `nextcuda image bench`, 3 seeds, warm median)
 
@@ -106,6 +106,32 @@ The phase 1 worker made the 2.1 picture in 31.8 s; in process it is 19.6 s becau
 reference nextsycl's B70 makes Qwen-Image 2.1 at 1024x1024 in 0.6 s/step (0.41 with int8 weights), with about twice
 the tokens of the 768 picture here: the 5070 has room for roughly 3x. Where it goes is the silo's first target
 (the quantized matmuls and attention at 2,400-4,400 tokens).
+
+## Qwen-Image 2.1 speed (2026-11-14)
+
+The step was compute at ~80 % of what the cards do with float32 sums: the 5070's mma.sync peaks at 71.5 TFLOPS with
+float32 accumulators and 143 with half ones (the 3060: 25.8 / 51.6), and cuBLAS already ran the linears at 66-70. So
+the speed is in half sums, kept short: each 32-deep slice of a product summed in half on the tensor cores and the
+slices added in float32 (`NS_QI_F16ACC`) - errors at the level of the output's own rounding to half.
+
+- **Done:** `silo/gemm.cu` (our own: cp.async 3-4 stages, ldmatrix from swizzled shared memory, a 128 x 128 tile of 4
+  warps on the 5070, 128 x 256 of 8 on the 3060) for the DiT's linears - 103-106 TFLOPS on the 5070 against cuBLAS's
+  70, 34 on the 3060 against 27; Q8_0 read as int8 + scales by the tensor cores' fragments on the 5070 (no dequant
+  pass); the gated residual adds in the out / down epilogues. The VAE's 3 x 3 convolutions as an implicit GEMM through
+  it (the 2x upsample folded into the gather; 3.1 -> 1.3 s of conv at 2048 x 2048; a 5-D weight shape had kept most
+  of them on im2col at first), and its tiles cut after the first two up blocks (2.7x -> 1.2x the area). Attention:
+  `flash2_k`, 128 rows a block, cp.async K / V, ldmatrix(.trans), half sums in P V and Q K^T (`NS_QI_QK16`); on the
+  model's own q, k, v against float64, relative rms 2.2e-4 (float32 sums), 2.5e-4 (P V half), 5e-4 - 1.3e-3 (both);
+  82.6 -> ~50 ms a call at 2048 x 2048. The text encoder's layers pinned and copied a layer ahead (5070 0.48 -> 0.19 s;
+  the 3060's x1 link 3.2 -> 2.7 s, the link's own speed).
+- **Tried, no gain (left out):** the half sums flushed every 64 or 128 deep (4 and 8 steps: no faster); tile orders of
+  4 / 16 row tiles; `__launch_bounds__(.., 2)` (spills on sm_86: 10x slower); 128 x 256, 256 x 128 and BK 64 tiles on
+  the 5070 (84-98 TFLOPS); Q8_0 fragments on the 3060 (31 against its 33.5 TFLOPS on dequantized slices); masking
+  only edge tiles / max on raw scores / rescale skipped when no row's maximum moved in the attention (within noise:
+  kept, it is not slower).
+- **Not done:** the text encoder resident on the card (the 7.3 GB DiT and its 2048 x 2048 activations leave the 12 GB
+  cards ~1.5 GB: 7 of 36 layers, ~0.5 s on the 3060, against a no_room risk at 2048 x 2048); the swiglu in the gate|up
+  product's epilogue (gate and up rows would have to be interleaved, LoRA slots with them; ~2 %).
 
 ## Phase 2: nextsycl's Rust-only runtime setup
 

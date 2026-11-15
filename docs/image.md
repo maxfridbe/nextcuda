@@ -10,9 +10,9 @@ The image kind (Qwen-Image 2.1 and 2512 on Rust + CUDA engines) and the models t
   pipeline is Rust, the kernels CUDA (cuBLAS and our own), the transformer kept on the card in its stored GGUF type.
   stable-diffusion.cpp and the phase 1 sd-cli worker are gone from it (2026-11-13).
 - **2048 x 2048 on a 12 GB card:** the feed-forward runs 4,096 rows at a time, the kernels' scratch is let go between
-  the stages, an edit's text and picture prefix spills to host memory when the card has not the room, and the VAE's
-  up path runs in tiles of 64 latents with a 14-latent margin (its reach) above 1024 x 1024 - within one level of the
-  whole picture's (the products' rounding). An edit of one picture at 2048 x 2048 peaks at 11.0 GiB on the 3060 (41 s
+  the stages, an edit's text and picture prefix spills to host memory when the card has not the room, and above 1024 x
+  1024 the VAE's first two up blocks run over the whole picture and the rest in tiles with a 13-pixel margin at that
+  scale (their reach) - within one level of the whole picture's (the products' rounding). An edit of one picture at 2048 x 2048 peaks at 11.0 GiB on the 3060 (41 s
   a guided step there); through the front door on the 5070, 12 steps took 199 s, peak 10.4 GiB.
 - **Out of card memory is `no_room`:** a picture the card has not the room for (a model loaded beside it, a size
   too big for what is free) answers 503 `no_room`, retryable - the front door frees idle work on the card and tries
@@ -41,6 +41,29 @@ The image kind (Qwen-Image 2.1 and 2512 on Rust + CUDA engines) and the models t
 Measured by `nextcuda image bench` (8 steps, true guidance: two passes a step; warm pictures, the first after a load in
 brackets in the full tables of [`benchy/`](benchy/)), weights offloaded to host memory, in process:
 
+**Rust + CUDA with the silo's half-sum kernels (2026-11-14)** - warm medians of 3 pictures, a new prompt each
+(`image bench --fresh-prompts`, the text encoder runs every time); turbo 6 steps, the full model 8 steps guided (two
+passes a step); before = the build of that morning (cuBLAS products, the first fused attention, im2col VAE):
+
+| card | picture | model | text encode | per step | VAE | total | before: encode / step / VAE / total |
+|---|---|---|---:|---:|---:|---:|---|
+| RTX 5070 | 1024x1024 | `qwen-image-2.1-turbo-q8` | 0.20 s | 0.81 s | 0.35 s | **5.4 s** | 0.48 / 1.17 / 0.88 / 8.4 s |
+| RTX 5070 | 2048x2048 | `qwen-image-2.1-turbo-q8` | 0.19 s | 4.42 s | 1.67 s | **28.4 s** | 0.48 / 6.58 / 9.73 / 49.7 s |
+| RTX 5070 | 1024x1024 | `qwen-image-2.1-q8` | 0.24 s | 1.67 s | 0.42 s | **14.0 s** | 0.53 / 2.37 / 0.91 / 20.4 s |
+| RTX 5070 | 2048x2048 | `qwen-image-2.1-q8` | 0.24 s | 8.98 s | 1.94 s | **74.0 s** | 0.53 / 13.18 / 9.77 / 115.7 s |
+| RTX 3060 | 1024x1024 | `qwen-image-2.1-turbo-q8` | 2.85 s | 2.27 s | 1.04 s | **17.5 s** | 3.20 / 2.96 / 2.20 / 23.1 s |
+| RTX 3060 | 2048x2048 | `qwen-image-2.1-turbo-q8` | 2.85 s | 12.03 s | 5.06 s | **80.1 s** | 3.23 / 17.48 / 24.39 / 132.5 s |
+| RTX 3060 | 1024x1024 | `qwen-image-2.1-q8` | 3.08 s | 4.57 s | 1.12 s | **40.8 s** | 3.37 / 5.95 / 2.22 / 53.2 s |
+| RTX 3060 | 2048x2048 | `qwen-image-2.1-q8` | 3.08 s | 24.12 s | 5.52 s | **201.5 s** | 3.44 / 35.06 / 24.49 / 308.3 s |
+
+(The full model's rows are of the build before the VAE's fused norm, 0.3-0.5 s more VAE.) Peak GPU memory fell
+(5070 2048 x 2048: 11.2 -> 10.2 GiB: no im2col, no 4x upsample buffer). Matrices:
+[`benchy/image-v1-2026-11-14-qi21-before`](benchy/image-v1-2026-11-14-qi21-before.md) and
+[`-after`](benchy/image-v1-2026-11-14-qi21-after.md).
+
+The older tables below are the history they were (8 steps guided, the same prompt each picture: the encoder's time is
+the cold run's):
+
 **RTX 5070, 12 GB, PCIe gen4 x16**
 
 | id | engine | picture | text encode | per step | VAE | total | peak GPU memory |
@@ -67,11 +90,17 @@ brackets in the full tables of [`benchy/`](benchy/)), weights offloaded to host 
 The first picture after a load is slower (the weights page in: the 2512 takes 70-85 s on either card). Energy and
 average power are in the full tables: the 5070 draws about 220 W while sampling, the 3060 about 140 W.
 
-What the clocks say: the step is compute, not PCIe (a resident transformer gave the same 1.27 s/step); the Rust
-engine's VAE is 3x faster than ggml's and its steps are 1.7-2.3x slower, which is where the silo goes (attention at
-4,000 tokens is cuBLAS and a score table today, a fused kernel in the silo); its text encoder streams the layers
-over PCIe on every prompt, so it costs 2.7 s on the 5070 and 7.8 s on the 3060's x1 link (a host-resident cache of
-the encoder is the fix). [`PHASES.md`](PHASES.md) has the history of the numbers.
+What the clocks say: the step is compute (a resident transformer gave the same 1.27 s/step), and on a GeForce the
+tensor cores' float32-accumulate rate is half their half-accumulate rate (5070: 71.5 against 143 TFLOPS; 3060: 25.8
+against 51.6) - cuBLAS already ran the linears at 66-70, ~95 % of the float32 rate. So the silo sums in half, a
+32-deep slice at a time added to float32 (`NS_QI_F16ACC`, `NS_QI_QK16`): its products run at ~100 TFLOPS on the 5070
+(34 on the 3060), the fused attention at ~88 (its float32 kernel 54). Against the old build's pictures (same seeds):
+mean |difference| 0.07-0.1 of 255, PSNR 58 dB, the few spots that move are the ones float32 sums in another order move
+too; the attention against float64 on the model's own q, k, v: 5e-4 - 1.3e-3 relative rms (float32 sums 2.2e-4). The
+VAE's convolutions are an implicit GEMM on the same kernel, its tiles cut after the first two up blocks; the text
+encoder streams from pinned memory a layer ahead of its work, so the 3060's x1 link (1.7 GB/s) is now its whole time.
+At 2048 x 2048 a step is ~52 % products, ~36 % attention: half the old time would need the tensor cores' int8 path
+(activations quantized - visibly different pictures), not more of the same. [`PHASES.md`](PHASES.md) has the history.
 
 ### Engine options: `--opt-NAME`
 
