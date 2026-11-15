@@ -289,6 +289,14 @@ impl Gpu {
             }
         }
     }
+    /// The GPU's stream waits (on the device; the host goes on) for the work before `ticket` - a copy lane's
+    pub fn await_ticket(&self, ticket: i64) -> Result<()> {
+        match self.dev {
+            // SAFETY: a live handle.
+            Some((a, r)) => check(a, unsafe { (a.await_)(r, ticket) }, "ordering the GPU's queue after a copy"),
+            None => Ok(()),
+        }
+    }
     /// The host waits for the work before `ticket`
     pub fn wait_ticket(&self, ticket: i64) -> Result<()> {
         match self.dev {
@@ -374,6 +382,24 @@ impl DevBuf {
     pub fn write_async(&self, at: usize, src: &[u8]) -> Result<()> {
         // a pageable source is staged by the driver before the call returns: no ring needed
         self.write(at, src)
+    }
+    /// `len` bytes of pinned `src` (from `src_at`) into this buffer at `at`, on the GPU's copy lane after the tickets
+    /// `after`: the host goes on; the ticket it returns is the copy's (`Gpu::await_ticket` orders the stream after it).
+    /// `src` stays alive and unchanged until the copy is done (the caller's).
+    pub fn copy_from_host_async(&self, at: usize, src: &HostBuf, src_at: usize, len: usize, after: &[i64]) -> Result<i64> {
+        self.bounds(at, len)?;
+        if src_at.checked_add(len).is_none_or(|e| e > src.len) {
+            return Err(Error(format!("host bytes {src_at}..{} of {}", src_at.saturating_add(len), src.len)));
+        }
+        if let (Some((a, r)), Some(p)) = (self.gpu.dev, src.pin) {
+            let mut t = 0i64;
+            // SAFETY: both ranges in bounds (checked); the source pinned and kept by the caller; tickets from this GPU.
+            check(a, unsafe { (a.stream_copy)(r, self.ptr.cast::<u8>().add(at).cast(), p.add(src_at).cast(), len, after.as_ptr(), after.len() as std::ffi::c_int, 0, &mut t) },
+                  "copying to the GPU")?;
+            return Ok(t);
+        }
+        self.write(at, &src.as_slice()[src_at..src_at + len])?;
+        Ok(0)
     }
     pub fn read(&self, at: usize, dst: &mut [u8]) -> Result<()> {
         self.bounds(at, dst.len())?;
@@ -528,6 +554,15 @@ impl HostBuf {
             return Ok(HostBuf { pin: Some(ptr.cast()), data: Vec::new(), len, gpu: gpu.clone() });
         }
         Ok(HostBuf { pin: None, data: vec![0; len.max(1)], len, gpu: gpu.clone() })
+    }
+    /// Ordinary (pageable) host memory in the shape of a HostBuf: when pinning is refused (copies from it are the
+    /// driver's staged ones)
+    pub fn pageable(gpu: &Arc<Gpu>, len: usize) -> HostBuf {
+        HostBuf { pin: None, data: vec![0; len.max(1)], len, gpu: gpu.clone() }
+    }
+    /// Whether the memory is page-locked (a copy from it runs beside the GPU's work)
+    pub fn pinned(&self) -> bool {
+        self.pin.is_some()
     }
     fn base(&mut self) -> *mut u8 {
         self.pin.unwrap_or_else(|| self.data.as_mut_ptr())

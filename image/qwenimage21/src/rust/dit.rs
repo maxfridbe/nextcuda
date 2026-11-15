@@ -47,6 +47,9 @@ struct Part {
     w: DevBuf,
     qtype: u32,
     rows: usize,
+    /// a Q8_0 part split for the silo's Q8 products: `w` its int8 rows [rows, k] (each block's bytes in the
+    /// fragments' order), these the blocks' half scales [k / 32, rows]
+    scales: Option<DevBuf>,
 }
 
 /// A module a LoRA may name inside a matrix: its key, its rows and where they start in the matrix's output (a fused
@@ -79,12 +82,98 @@ struct Mat {
     active: Mutex<Vec<(usize, LoraPair)>>,
 }
 
+/// The silo's products for the stored matrices: a slice of rows made half into `slice` (the shared dequant), then
+/// the silo's GEMM (tensor cores, half sums a 32-deep slice when `ffi::f16acc`) - cuBLAS's float32 sums run at half the
+/// tensor cores' rate on a GeForce
+struct Gemm {
+    gemm: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, i64, i64, i64, *const std::ffi::c_void, i64, *const f32,
+                               *mut std::ffi::c_void, std::ffi::c_int, i64, std::ffi::c_int) -> std::ffi::c_int,
+    #[allow(clippy::type_complexity)]
+    gemm_q8: Option<unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, i64, i64, i64, *const std::ffi::c_void, *const std::ffi::c_void,
+                                         i64, *const f32, *mut std::ffi::c_void, std::ffi::c_int, i64, std::ffi::c_int) -> std::ffi::c_int>,
+    f16acc: bool,
+    slice: Mutex<Option<DevBuf>>,
+}
+
+/// A slice of a matrix made half at a time: about 64 MiB of it, whole tiles of 256 rows
+const SLICE_BYTES: usize = 64 << 20;
+
+impl Gemm {
+    fn new() -> Option<Gemm> {
+        let s = ffi::silo()?;
+        Some(Gemm { gemm: s.gemm?, gemm_q8: s.gemm_q8, f16acc: ffi::f16acc(), slice: Mutex::new(None) })
+    }
+
+    /// out [m, rows] (row stride `ldo`) = x [m, k] half . W^T for W's `rows` stored rows of GGUF type `qtype`
+    #[allow(clippy::too_many_arguments)]
+    /// `gate`: out is float32 rows the product (rounded to half) is added into, times gate[column] - the block's gated
+    /// residual add in the product's epilogue
+    #[allow(clippy::too_many_arguments)]
+    fn product(&self, nsd: &Nsd, x: *const std::ffi::c_void, m: usize, k: usize, p: &Part, out: *mut std::ffi::c_void, out_dt: Dt, ldo: usize,
+               gate: Option<*const f32>) -> Result<()> {
+        let (w, qtype, rows) = (&p.w, p.qtype, p.rows);
+        let esz = if out_dt == Dt::F32 { 4 } else { 2 };
+        let gpu = nsd.gpu.clone();
+        let epi = if gate.is_some() { 2 } else { (out_dt == Dt::F32) as i32 };
+        if let (Some(d), Some(q8)) = (&p.scales, self.gemm_q8) {
+            // SAFETY: x holds m x k halves, the split matrix rows x k bytes and its scales, out m rows of ldo values, the gate rows floats.
+            return ffi::check(unsafe { q8(gpu.raw(), x, m as i64, k as i64, k as i64, w.ptr(), d.ptr(), rows as i64, gate.unwrap_or(std::ptr::null()), out, epi,
+                                          ldo as i64, self.f16acc as i32) }, "silo gemm (Q8_0)");
+        }
+        let call = |wp: *const std::ffi::c_void, n: usize, col: usize| -> Result<()> {
+            let o = out.cast::<u8>().wrapping_add(col * esz).cast();
+            let g = gate.map_or(std::ptr::null(), |g| g.wrapping_add(col));
+            // SAFETY: x holds m x k halves, wp n x k, o m rows of ldo values from it, the gate n floats from col.
+            ffi::check(unsafe { (self.gemm)(gpu.raw(), x, m as i64, k as i64, k as i64, wp, n as i64, g, o, epi, ldo as i64, self.f16acc as i32) }, "silo gemm")
+        };
+        if qtype == 1 {
+            return call(w.ptr(), rows, 0);
+        }
+        let rb = GType::from_code(qtype).and_then(|t| t.bytes(k as u64)).ok_or_else(|| Error(format!("type {qtype}: no row size")))? as usize;
+        let per = ((SLICE_BYTES / (k * 2)) / 256 * 256).clamp(256, rows.div_ceil(256) * 256);
+        let mut slot = self.slice.lock().unwrap();
+        if slot.as_ref().is_none_or(|b| b.len < per * k * 2) {
+            *slot = None;
+            *slot = Some(DevBuf::new(&gpu, per * k * 2)?);
+        }
+        let sl = slot.as_ref().expect("the slice buffer");
+        for r0 in (0..rows).step_by(per) {
+            let n = per.min(rows - r0);
+            nsd.dequant(w.ptr().cast::<u8>().wrapping_add(r0 * rb).cast(), qtype, n * k, sl.ptr(), Dt::F16)?;
+            call(sl.ptr(), n, r0)?;
+        }
+        Ok(())
+    }
+}
+
 impl Mat {
+    /// x [m, n] float32 += gate[column] * (h [m, k] (half) . W^T) in the silo's product epilogue: false (nothing done)
+    /// when it cannot (no silo products, int8, a LoRA beside the matrix) - the caller then multiplies and adds apart
+    #[allow(clippy::too_many_arguments)]
+    fn apply_gated(&self, nsd: &Nsd, g: Option<&Gemm>, h: *const std::ffi::c_void, m: usize, k: usize, x: *mut f32, gate: *const f32) -> Result<bool> {
+        let Some(g) = g else { return Ok(false) };
+        if self.int8.is_some() || !self.active.lock().unwrap().is_empty() {
+            return Ok(false);
+        }
+        let mut off = 0usize;
+        for p in &self.parts {
+            g.product(nsd, h, m, k, p, x.wrapping_add(off).cast(), Dt::F32, self.n, Some(gate.wrapping_add(off)))?;
+            off += p.rows;
+        }
+        Ok(true)
+    }
+
     /// out [m, n] = x [m, k] (half) . W^T, each part's rows written beside the others'
-    fn apply(&self, nsd: &Nsd, x: *const std::ffi::c_void, m: usize, k: usize, out: *mut std::ffi::c_void, out_dt: Dt) -> Result<()> {
+    fn apply(&self, nsd: &Nsd, g: Option<&Gemm>, x: *const std::ffi::c_void, m: usize, k: usize, out: *mut std::ffi::c_void, out_dt: Dt) -> Result<()> {
         let esz = if out_dt == Dt::F32 { 4 } else { 2 };
         if let Some((w, s)) = &self.int8 {
             nsd.int8_linear(x, Dt::F16, m, k, w.ptr(), self.n, s.ptr(), none(), out, out_dt, GROUP, self.n)?;
+        } else if let Some(g) = g {
+            let mut off = 0usize;
+            for p in &self.parts {
+                g.product(nsd, x, m, k, p, out.cast::<u8>().wrapping_add(off * esz).cast(), out_dt, self.n, None)?;
+                off += p.rows;
+            }
         } else {
             let mut off = 0usize;
             for p in &self.parts {
@@ -160,6 +249,8 @@ pub struct Dit {
     proj_out: DevBuf,
     /// the small linears a LoRA was merged into (their float32 weights are changed in place): the originals, by field
     saved: Mutex<Vec<(&'static str, DevBuf)>>,
+    /// the silo's products, when it has them (`NS_SILO=0`: cuBLAS)
+    gemm: Option<Gemm>,
 }
 
 enum Kv {
@@ -224,7 +315,18 @@ impl Dit {
             }
             let w = DevBuf::new(&gpu, bytes.len())?;
             w.write(0, &bytes)?;
-            Ok(Part { w, qtype: code, rows })
+            // Q8_0 for the silo's products: split into int8 rows and scales, read by the tensor cores as they are
+            let k = t.shape.get(1).copied().unwrap_or(0) as usize;
+            if let (false, 8, Some(split), Some(_)) = (int8, code, ffi::silo().and_then(|s| s.q8_split), ffi::silo().and_then(|s| s.gemm_q8)) {
+                if k % 32 == 0 && rows % 8 == 0 {
+                    let (q, d) = (DevBuf::new(&gpu, rows * k)?, DevBuf::new(&gpu, rows * k / 32 * 2)?);
+                    // SAFETY: w holds rows x k / 32 blocks of 34 bytes; q rows x k bytes, d k / 32 x rows halves.
+                    ffi::check(unsafe { split(gpu.raw(), w.ptr(), rows as i64, k as i64, q.ptr(), d.ptr()) }, "q8 split")?;
+                    nsd.wait()?;
+                    return Ok(Part { w: q, qtype: code, rows, scales: Some(d) });
+                }
+            }
+            Ok(Part { w, qtype: code, rows, scales: None })
         };
         // `slots`: the modules a LoRA may name in it, as (module path, rows); the stored parts' names when None
         let mat = |names: &[&str], perm: &[bool], slots: Option<&[(String, usize)]>, k: usize| -> Result<Mat> {
@@ -317,6 +419,7 @@ impl Dit {
             norm_out: single("norm_out.linear.weight")?,
             proj_out: single("proj_out.weight")?,
             saved: Mutex::new(Vec::new()),
+            gemm: Gemm::new(),
         };
         log(format!("qwen-image 2.1: {n_blocks} blocks on {} ({}) in {:.1} s", gpu.name, if int8 { "int8 ConvRot" } else { "as stored" }, t0.elapsed().as_secs_f64()));
         Ok(dit)
@@ -436,8 +539,12 @@ impl Dit {
             // SAFETY: a pure check of the shape.
             if unsafe { (si.attention_supported)(HEAD as i64, qs as i64, kvs as i64) } == 1 {
                 // SAFETY: q, k, v, out are the sizes named, on this GPU.
-                let rc = unsafe { (si.attention)(self.gpu.raw(), q, k, v, sq as i64, skv as i64, HEADS as i64, HEADS as i64, qs as i64, kvs as i64,
-                                                 causal as i32, row0 as i64, out) };
+                let rc = match si.attention_ex {
+                    Some(ex) => unsafe { ex(self.gpu.raw(), q, k, v, sq as i64, skv as i64, HEADS as i64, HEADS as i64, qs as i64, kvs as i64, causal as i32,
+                                            row0 as i64, out, ffi::attention_mode()) },
+                    None => unsafe { (si.attention)(self.gpu.raw(), q, k, v, sq as i64, skv as i64, HEADS as i64, HEADS as i64, qs as i64, kvs as i64,
+                                                    causal as i32, row0 as i64, out) },
+                };
                 return ffi::check(rc, "attention (silo)");
             }
         }
@@ -524,16 +631,23 @@ impl Dit {
         // the feed-forward a slice of rows at a time: the slice `gp` and `act` have room for (ffn_rows)
         let cap = (gp.len / (2 * FFN * 2)).max(1);
         let half_at = |buf: &DevBuf, at: usize| -> *mut std::ffi::c_void { buf.ptr().cast::<u16>().wrapping_add(at).cast() };
+        let mut fused = true;
         for r0 in (0..m).step_by(cap) {
             let r = cap.min(m - r0);
-            b.gp.apply(nsd, half_at(h, r0 * DIM), r, DIM, gp.ptr(), Dt::F16)?;
+            b.gp.apply(nsd, self.gemm.as_ref(), half_at(h, r0 * DIM), r, DIM, gp.ptr(), Dt::F16)?;
             prof::mark(nsd, "gate|up linear")?;
             nsd.swiglu(gp.ptr(), Dt::F16, r, FFN, act.ptr(), Dt::F16)?;
             prof::mark(nsd, "swiglu")?;
-            b.down.apply(nsd, act.ptr(), r, FFN, half_at(o, r0 * DIM), Dt::F16)?;
+            // the gated residual add in the product's epilogue when it can, else the product's rows, added after
+            fused = fused && b.down.apply_gated(nsd, self.gemm.as_ref(), act.ptr(), r, FFN, x.fp().wrapping_add(r0 * DIM), off(&md[3]))?;
+            if !fused {
+                b.down.apply(nsd, self.gemm.as_ref(), act.ptr(), r, FFN, half_at(o, r0 * DIM), Dt::F16)?;
+            }
             prof::mark(nsd, "down linear")?;
         }
-        nsd.gate_add(x.ptr(), Dt::F32, m, DIM, o.ptr(), Dt::F16, zeros.ptr(), off(&md[3]).cast())?;
+        if !fused {
+            nsd.gate_add(x.ptr(), Dt::F32, m, DIM, o.ptr(), Dt::F16, zeros.ptr(), off(&md[3]).cast())?;
+        }
         prof::mark(nsd, "gate add")
     }
 
@@ -627,7 +741,7 @@ impl Dit {
         for b in &self.blocks {
             // SAFETY: x holds p x 4096 floats, h as many halves; the scale row 4096 floats.
             ffi::check(unsafe { (k.ln_mod)(gpu.raw(), x.fp(), p as i64, DIM as i64, EPS, off(&md[0]), h.ptr()) }, "norm + modulate")?;
-            b.qkv.apply(nsd, h.ptr(), p, DIM, qkv.ptr(), Dt::F16)?;
+            b.qkv.apply(nsd, self.gemm.as_ref(), h.ptr(), p, DIM, qkv.ptr(), Dt::F16)?;
             nsd.rms_rope(qkv.ptr(), Dt::F16, p, HEADS, HEAD, 3 * DIM, b.norm_q.ptr(), EPS, cs.ptr(), HEAD)?;
             nsd.rms_rope(half_at(&qkv, DIM), Dt::F16, p, HEADS, HEAD, 3 * DIM, b.norm_k.ptr(), EPS, cs.ptr(), HEAD)?;
             if text_only {
@@ -653,8 +767,10 @@ impl Dit {
             } else {
                 kv.push(Kv::Dev(keep));
             }
-            b.out.apply(nsd, att.ptr(), p, DIM, o.ptr(), Dt::F16)?;
-            nsd.gate_add(x.ptr(), Dt::F32, p, DIM, o.ptr(), Dt::F16, zeros.ptr(), off(&md[1]).cast())?;
+            if !b.out.apply_gated(nsd, self.gemm.as_ref(), att.ptr(), p, DIM, x.fp(), off(&md[1]))? {
+                b.out.apply(nsd, self.gemm.as_ref(), att.ptr(), p, DIM, o.ptr(), Dt::F16)?;
+                nsd.gate_add(x.ptr(), Dt::F32, p, DIM, o.ptr(), Dt::F16, zeros.ptr(), off(&md[1]).cast())?;
+            }
             self.block_ffn(nsd, b, &x, p, &md, 1, &zeros, &h, &gp, &act, &o)?;
         }
         nsd.wait()?;
@@ -702,17 +818,18 @@ impl Dit {
             // SAFETY: x holds n x 4096 floats, h as many halves; the scale row 4096 floats.
             ffi::check(unsafe { (k.ln_mod)(gpu.raw(), x.fp(), n as i64, DIM as i64, EPS, md[0].fp(), h.ptr()) }, "norm + modulate")?;
             prof::mark(nsd, "norm + modulate")?;
-            b.qkv.apply(nsd, h.ptr(), n, DIM, half_at(&all, img), Dt::F16)?;
+            b.qkv.apply(nsd, self.gemm.as_ref(), h.ptr(), n, DIM, half_at(&all, img), Dt::F16)?;
             prof::mark(nsd, "qkv linear")?;
             nsd.rms_rope(half_at(&all, img), Dt::F16, n, HEADS, HEAD, 3 * DIM, b.norm_q.ptr(), EPS, cs.ptr(), HEAD)?;
             nsd.rms_rope(half_at(&all, img + DIM), Dt::F16, n, HEADS, HEAD, 3 * DIM, b.norm_k.ptr(), EPS, cs.ptr(), HEAD)?;
             prof::mark(nsd, "rms + rope")?;
             self.attend(nsd, half_at(&all, img), half_at(&all, DIM), half_at(&all, 2 * DIM), n, tt + n, 3 * DIM, 3 * DIM, false, 0, att.ptr())?;
             prof::mark(nsd, "attention")?;
-            b.out.apply(nsd, att.ptr(), n, DIM, o.ptr(), Dt::F16)?;
+            if !b.out.apply_gated(nsd, self.gemm.as_ref(), att.ptr(), n, DIM, x.fp(), md[1].fp())? {
+                b.out.apply(nsd, self.gemm.as_ref(), att.ptr(), n, DIM, o.ptr(), Dt::F16)?;
+                nsd.gate_add(x.ptr(), Dt::F32, n, DIM, o.ptr(), Dt::F16, zeros.ptr(), md[1].ptr())?;
+            }
             prof::mark(nsd, "out linear")?;
-            nsd.gate_add(x.ptr(), Dt::F32, n, DIM, o.ptr(), Dt::F16, zeros.ptr(), md[1].ptr())?;
-            prof::mark(nsd, "gate add")?;
             self.block_ffn(nsd, b, &x, n, &md, 0, &zeros, &h, &gp, &act, &o)?;
             if bi == 0 {
                 if let Some(keep) = block0 {

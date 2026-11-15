@@ -3,13 +3,15 @@
 //! memory, power and energy sampled beside it, and the matrix written as `matrix.md` and `matrix.jsonl`.
 //!
 //!     nextcuda image bench [--models ID,ID] [--sizes 768x768,1024x1024] [--steps 12] [--runs 3] [--gpu 0]
-//!                          [--prompt TEXT] [--out DIR] [--note TEXT] [--opt-NAME VALUE]...
+//!                          [--prompt TEXT] [--out DIR] [--note TEXT] [--fresh-prompts] [--opt-NAME VALUE]...
 //!
 //! - **Each model** is loaded once (its load time is a row), then each size makes `--runs` pictures: the first is
 //!   the cold one (the weights paged in, the graphs built), the rest the warm ones; the table gives the cold run
 //!   in brackets beside the warm median, as nextsycl's decode table does.
 //! - **Stages** (seconds): text encode, the first sampling step (it builds the graph and stages the weights) and the
 //!   mean of the others, the sampler, the VAE decode, the whole picture.
+//! - **`--fresh-prompts`:** each picture's prompt ends with its own words (", take N"), so the text encoder runs
+//!   for every picture, not once (the engine keeps the last prompts' embeddings).
 //! - **Peaks:** `nvidia-smi` sampled every 250 ms for the run's window: the highest memory used on each card (less
 //!   the idle reading before the load: the model's own), the power drawn, its integral as joules, the average watts;
 //!   the process's peak resident host memory (VmHWM).
@@ -136,6 +138,8 @@ pub fn run(cfg: &nextcuda_models::Config, args: &[String]) -> Result<(), String>
         })
         .collect::<Result<_, String>>()?;
     let prompt = opt(args, "--prompt").unwrap_or(PROMPT).to_string();
+    let fresh = args.iter().any(|a| a == "--fresh-prompts");
+    let mut taken = 1usize;
     let models: Vec<String> = match opt(args, "--models") {
         Some(m) => m.split(',').map(str::to_string).collect(),
         None => nextcuda_models::registry::all(cfg)?
@@ -199,7 +203,9 @@ pub fn run(cfg: &nextcuda_models::Config, args: &[String]) -> Result<(), String>
                 let from = sampler.len();
                 let t = Instant::now();
                 let stamps: std::cell::RefCell<Vec<(u32, f64)>> = std::cell::RefCell::new(Vec::new());
-                let req = ImageRequest { prompt: prompt.clone(), width: Some(w), height: Some(h), steps: Some(steps), seed: 1 + r as u64, n: 1, ..Default::default() };
+                let asked = if fresh { format!("{prompt}, take {}", taken) } else { prompt.clone() };
+                taken += 1;
+                let req = ImageRequest { prompt: asked, width: Some(w), height: Some(h), steps: Some(steps), seed: 1 + r as u64, n: 1, ..Default::default() };
                 engine
                     .generate(&req, &mut |s| {
                         stamps.borrow_mut().push((s.at, s.seconds));

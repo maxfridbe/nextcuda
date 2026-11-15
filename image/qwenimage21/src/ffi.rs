@@ -84,6 +84,22 @@ pub struct Silo {
     #[allow(clippy::type_complexity)]
     pub attention: unsafe extern "C" fn(G, P, P, P, i64, i64, i64, i64, i64, i64, c_int, i64, M) -> c_int,
     pub attention_supported: unsafe extern "C" fn(i64, i64, i64) -> c_int,
+    /// attention_ex(..., out, mode): mode 1 the 128-row kernel, + 2 half sums in Q K^T, + 4 half sums in P V
+    #[allow(clippy::type_complexity)]
+    pub attention_ex: Option<unsafe extern "C" fn(G, P, P, P, i64, i64, i64, i64, i64, i64, c_int, i64, M, c_int) -> c_int>,
+    /// gemm(gpu, x, M, K, lda, w, N, bias, out, out_f32, ldo, f16acc): out [M, N] = x . w^T + bias, half operands
+    #[allow(clippy::type_complexity)]
+    pub gemm: Option<unsafe extern "C" fn(G, P, i64, i64, i64, P, i64, *const f32, M, c_int, i64, c_int) -> c_int>,
+    /// q8_split(gpu, src, N, K, q, d): a Q8_0 matrix split for gemm_q8
+    pub q8_split: Option<unsafe extern "C" fn(G, P, i64, i64, M, M) -> c_int>,
+    /// gemm_q8(gpu, x, M, K, lda, q, d, N, gate, out, epi, ldo, f16acc): gemm with a split Q8_0 matrix; epi 0 half
+    /// out, 1 float32, 2 float32 out += gate * the product
+    #[allow(clippy::type_complexity)]
+    pub gemm_q8: Option<unsafe extern "C" fn(G, P, i64, i64, i64, P, P, i64, *const f32, M, c_int, i64, c_int) -> c_int>,
+    /// conv3x3(gpu, x, H, W, Ci, up, w, Co, bias, out, f16acc): a 3 x 3 convolution of x's nearest `up` x upsample,
+    /// channels last, weights [Co, 3, 3, Ci]
+    #[allow(clippy::type_complexity)]
+    pub conv3x3: Option<unsafe extern "C" fn(G, P, i64, i64, i64, c_int, P, i64, *const f32, M, c_int) -> c_int>,
 }
 
 // SAFETY: function pointers into a library that stays loaded for the process.
@@ -99,9 +115,38 @@ pub fn silo() -> Option<&'static Silo> {
         if a.is_null() || s.is_null() {
             return None;
         }
-        // SAFETY: declared in the silo's attn.cu with these signatures.
+        let (g, c, x) = (lib.symbol("ns_image_qi21_silo_gemm"), lib.symbol("ns_image_qi21_silo_conv3x3"), lib.symbol("ns_image_qi21_silo_attention_ex"));
+        // SAFETY: declared in the silo's attn.cu and gemm.cu with these signatures.
         #[allow(clippy::missing_transmute_annotations)]
-        Some(unsafe { Silo { attention: std::mem::transmute(a), attention_supported: std::mem::transmute(s) } })
+        Some(unsafe {
+            Silo {
+                attention: std::mem::transmute(a),
+                attention_supported: std::mem::transmute(s),
+                attention_ex: (!x.is_null()).then(|| std::mem::transmute(x)),
+                gemm: (!g.is_null()).then(|| std::mem::transmute(g)),
+                conv3x3: (!c.is_null()).then(|| std::mem::transmute(c)),
+                q8_split: { let p = lib.symbol("ns_image_qi21_silo_q8_split"); (!p.is_null()).then(|| std::mem::transmute(p)) },
+                gemm_q8: { let p = lib.symbol("ns_image_qi21_silo_gemm_q8"); (!p.is_null()).then(|| std::mem::transmute(p)) },
+            }
+        })
     })
     .as_ref()
+}
+
+/// Half sums in the silo's products (`NS_QI_F16ACC`, default 1): each 32-deep slice of a product summed in half on
+/// the tensor cores (twice their float32 rate on a GeForce), the slices' sums in float32
+pub fn f16acc() -> bool {
+    static F: OnceLock<bool> = OnceLock::new();
+    *F.get_or_init(|| std::env::var("NS_QI_F16ACC").map_or(true, |v| v != "0"))
+}
+
+/// The silo attention's mode: its 128-row kernel, with `f16acc` the P V product's sums in half (the same error as
+/// float32's on the model's own q, k, v) and the Q K^T product's (`NS_QI_QK16=0`: float32; 4-6x the scores' rounding,
+/// pictures within a summation order's difference of float32's, about 5 % a step at 2048 x 2048)
+pub fn attention_mode() -> i32 {
+    static F: OnceLock<i32> = OnceLock::new();
+    *F.get_or_init(|| {
+        let qk16 = f16acc() && std::env::var("NS_QI_QK16").map_or(true, |v| v != "0");
+        1 | if qk16 { 2 } else { 0 } | if f16acc() { 4 } else { 0 }
+    })
 }
