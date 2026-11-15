@@ -317,7 +317,8 @@ impl Dit {
             w.write(0, &bytes)?;
             // Q8_0 for the silo's products: split into int8 rows and scales, read by the tensor cores as they are
             let k = t.shape.get(1).copied().unwrap_or(0) as usize;
-            if let (false, 8, Some(split), Some(_)) = (int8, code, ffi::silo().and_then(|s| s.q8_split), ffi::silo().and_then(|s| s.gemm_q8)) {
+            // (the 5070's: on the 3060 the fragments' conversion costs more than the slices' dequant, 31 against 34 TFLOPS)
+            if let (false, 8, true, Some(split), Some(_)) = (int8, code, gpu.cc >= 120, ffi::silo().and_then(|s| s.q8_split), ffi::silo().and_then(|s| s.gemm_q8)) {
                 if k % 32 == 0 && rows % 8 == 0 {
                     let (q, d) = (DevBuf::new(&gpu, rows * k)?, DevBuf::new(&gpu, rows * k / 32 * 2)?);
                     // SAFETY: w holds rows x k / 32 blocks of 34 bytes; q rows x k bytes, d k / 32 x rows halves.

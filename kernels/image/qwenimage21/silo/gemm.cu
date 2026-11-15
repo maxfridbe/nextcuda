@@ -107,7 +107,7 @@ struct Shape {
 // the blocks' half scales [K / 32, N]; a fragment is made half on its way to the tensor cores (q * d rounded once: the
 // shared dequant's numbers)
 template <class S, bool Q8> struct Stage {
-    static constexpr int B_BYTES = Q8 ? S::BN * S::BK + S::BN * 2 : S::B_HALVES * 2;
+    static constexpr int B_BYTES = Q8 ? S::BN * S::BK + (S::BK / 32) * S::BN * 2 : S::B_HALVES * 2;
     static constexpr int BYTES = S::A_HALVES * 2 + B_BYTES;
     static constexpr int SMEM = S::STAGES * BYTES;
 };
@@ -118,7 +118,8 @@ __global__ void __launch_bounds__(S::THREADS) gemm_k(A a, const void* __restrict
     extern __shared__ __align__(128) unsigned char smem[];
     constexpr int BM = S::BM, BN = S::BN, BK = S::BK, STAGES = S::STAGES, MI = S::MI, NI = S::NI, CH = S::CH;
     constexpr int STAGE_BYTES = Stage<S, Q8>::BYTES;
-    static_assert(!Q8 || BK == 32, "a Q8_0 block a stage");
+    static_assert(!Q8 || BK % 32 == 0, "whole Q8_0 blocks a stage");
+    constexpr int NB = BK / 32;
     const __half* w = (const __half*) wv;
     const int8_t* wq = (const int8_t*) wv;
     const uint32_t sbase = smem_u32(smem);
@@ -143,8 +144,8 @@ __global__ void __launch_bounds__(S::THREADS) gemm_k(A a, const void* __restrict
         wok[i] = n < N;
         wp[i] = w + (long) min(n, N - 1) * K;
     }
-    // Q8: a stage's W is BN rows of 32 bytes (2 chunks each) and BN half scales (BN / 8 chunks)
-    constexpr int QCH = Q8 ? (BN * 2 + S::THREADS - 1) / S::THREADS : 1;
+    // Q8: a stage's W is NB blocks of BN rows of 32 bytes (2 chunks each), then NB x BN half scales (BN / 8 chunks each)
+    constexpr int QCH = Q8 ? (NB * BN * 2 + S::THREADS - 1) / S::THREADS : 1;
     const int KT = (K + BK - 1) / BK;
 
     auto load = [&](int stage, int kt) {
@@ -159,10 +160,13 @@ __global__ void __launch_bounds__(S::THREADS) gemm_k(A a, const void* __restrict
         if constexpr (Q8) {
 #pragma unroll
             for (int i = 0; i < QCH; ++i) {
-                const int idx = tid + i * S::THREADS, row = idx >> 1, n = n0 + row;
-                if (idx < BN * 2) cp16(sb + idx * 16, n < N ? wq + (long) n * K + kt * 32 + (idx & 1) * 16 : wq, n < N);
+                const int idx = tid + i * S::THREADS, b = idx / (BN * 2), rem = idx % (BN * 2), n = n0 + (rem >> 1);
+                if (idx < NB * BN * 2) cp16(sb + idx * 16, n < N ? wq + (long) n * K + (kt * NB + b) * 32 + (rem & 1) * 16 : wq, n < N);
             }
-            if (tid < BN / 8) cp16(sb + BN * 32 + tid * 16, n0 + tid * 8 < N ? wd + (long) kt * N + n0 + tid * 8 : wd, n0 + tid * 8 < N);
+            if (tid < NB * BN / 8) {
+                const int b = tid / (BN / 8), c = tid % (BN / 8), n = n0 + c * 8;
+                cp16(sb + NB * BN * 32 + tid * 16, n < N ? wd + (long) (kt * NB + b) * N + n : wd, n < N);
+            }
         } else {
             const bool kin = k < K;
 #pragma unroll
@@ -189,30 +193,6 @@ __global__ void __launch_bounds__(S::THREADS) gemm_k(A a, const void* __restrict
         if (kt + STAGES - 1 < KT) load((kt + STAGES - 1) % STAGES, kt + STAGES - 1);
         cp_commit();
         const uint32_t sa = sbase + (kt % STAGES) * STAGE_BYTES, sb = sa + S::A_HALVES * 2;
-        // Q8: this stage's W fragments for both 16-deep halves, made half: row wn + j * 8 + g, bytes 8t..8t+7
-        uint32_t qf[Q8 ? NI : 1][2][2];
-        if constexpr (Q8) {
-            const unsigned char* sq = smem + (sb - sbase);
-            const __half* sd = (const __half*) (sq + BN * 32);
-            const int g = lane >> 2, t = lane & 3;
-#pragma unroll
-            for (int j = 0; j < NI; ++j) {
-                const int row = wn + j * 8 + g;
-                const uint2 u = *reinterpret_cast<const uint2*>(sq + row * 32 + t * 8);
-                const __half2 d2 = __half2half2(sd[row]);
-                const __half2 off = __float2half2_rn(1152.0f);
-#pragma unroll
-                for (int hh = 0; hh < 2; ++hh) {
-                    const uint32_t x = (hh ? u.y : u.x) ^ 0x80808080u;
-                    // 0x64XX is half 1024 + XX: the byte (q + 128) as a half, less 1152, is q exactly
-                    uint32_t lo = __byte_perm(x, 0x64646464u, 0x4140), hi = __byte_perm(x, 0x64646464u, 0x4342);
-                    __half2 l2 = __hmul2(__hsub2(*reinterpret_cast<__half2*>(&lo), off), d2);
-                    __half2 h2 = __hmul2(__hsub2(*reinterpret_cast<__half2*>(&hi), off), d2);
-                    qf[j][hh][0] = *reinterpret_cast<uint32_t*>(&l2);
-                    qf[j][hh][1] = *reinterpret_cast<uint32_t*>(&h2);
-                }
-            }
-        }
 #pragma unroll
         for (int ks = 0; ks < BK / 16; ++ks) {
             // half accumulators: zeroed at the start of each 32-deep slice, added to float32 at its end
@@ -228,8 +208,23 @@ __global__ void __launch_bounds__(S::THREADS) gemm_k(A a, const void* __restrict
             for (int i = 0; i < MI; ++i)
                 ldsm_x4(af[i][0], af[i][1], af[i][2], af[i][3], sa + S::swz(wm + i * 16 + (lane & 15), ks * 2 + (lane >> 4)));
             if constexpr (Q8) {
+                // the W fragments of this 16-deep step made half: row wn + j * 8 + g of block ks / 2, bytes 8t + 4 (ks % 2)
+                const unsigned char* sq = smem + (sb - sbase) + (ks / 2) * BN * 32;
+                const __half* sd = (const __half*) (smem + (sb - sbase) + NB * BN * 32) + (ks / 2) * BN;
+                const int g = lane >> 2, t = lane & 3;
+                const __half2 off = __float2half2_rn(1152.0f);
 #pragma unroll
-                for (int j = 0; j < NI; ++j) { bf[j][0] = qf[j][ks][0]; bf[j][1] = qf[j][ks][1]; }
+                for (int j = 0; j < NI; ++j) {
+                    const int row = wn + j * 8 + g;
+                    const uint32_t x = *reinterpret_cast<const uint32_t*>(sq + row * 32 + t * 8 + (ks % 2) * 4) ^ 0x80808080u;
+                    const __half2 d2 = __half2half2(sd[row]);
+                    // 0x64XX is half 1024 + XX: the byte (q + 128) as a half, less 1152, is q exactly
+                    uint32_t lo = __byte_perm(x, 0x64646464u, 0x4140), hi = __byte_perm(x, 0x64646464u, 0x4342);
+                    __half2 l2 = __hmul2(__hsub2(*reinterpret_cast<__half2*>(&lo), off), d2);
+                    __half2 h2 = __hmul2(__hsub2(*reinterpret_cast<__half2*>(&hi), off), d2);
+                    bf[j][0] = *reinterpret_cast<uint32_t*>(&l2);
+                    bf[j][1] = *reinterpret_cast<uint32_t*>(&h2);
+                }
             } else {
 #pragma unroll
                 for (int j = 0; j < NI / 2; ++j)
@@ -311,6 +306,15 @@ int launch(ns_gpu* g, const A& a, const void* w, int64_t N, int64_t K, const flo
 // 8 warps of 64 x 64 (34 of its 51.6; cuBLAS 27)
 using Sm120 = Shape<128, 128, 32, 2, 2, 3>;
 using Sm86 = Shape<128, 256, 32, 2, 4, 3>;
+#ifdef QI_Q8BM
+using Q8Sm120 = Shape<QI_Q8BM, QI_Q8BN, QI_Q8BK, QI_Q8WR, QI_Q8WC, QI_Q8ST>;
+using Q8Sm86 = Q8Sm120;
+#else
+// the Q8 operand's stages are 12.25 KiB: four still leave room for two blocks an SM (99.7 TFLOPS on the 5070; the
+// 3060 runs its products on dequantized slices instead - its Q8 fragments cost more than the dequant)
+using Q8Sm120 = Shape<128, 128, 32, 2, 2, 4>;
+using Q8Sm86 = Sm86;
+#endif
 
 int major_of(int dev) {
     static int major[16] = {};
@@ -411,8 +415,8 @@ int ns_image_qi21_silo_gemm_q8(ns_gpu* g, const void* x, int64_t M, int64_t K, i
 #ifdef QI_BM
     return dispatch_q8_s<Shape<QI_BM, QI_BN, QI_BK, QI_WR, QI_WC, QI_ST>>(g, a, q, d, N, K, gate, out, epi, ldo, f16acc);
 #else
-    if (major_of(g->dev) >= 12) return dispatch_q8_s<Sm120>(g, a, q, d, N, K, gate, out, epi, ldo, f16acc);
-    return dispatch_q8_s<Sm86>(g, a, q, d, N, K, gate, out, epi, ldo, f16acc);
+    if (major_of(g->dev) >= 12) return dispatch_q8_s<Q8Sm120>(g, a, q, d, N, K, gate, out, epi, ldo, f16acc);
+    return dispatch_q8_s<Q8Sm86>(g, a, q, d, N, K, gate, out, epi, ldo, f16acc);
 #endif
 }
 
