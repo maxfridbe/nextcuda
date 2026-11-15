@@ -506,7 +506,8 @@ impl AudioEngine for Zonos3 {
             return Err(Error(format!("cfg {cfg}: a scale of 0 or more (1: none)")));
         }
         let dec = self.decoder(req)?;
-        let seconds = req.seconds.unwrap_or(self.defaults().seconds).clamp(1.0, self.defaults().max_seconds);
+        // `seconds` caps the whole when given; without it a long text is said to its end (600 s at most)
+        let seconds = req.seconds.unwrap_or(self.defaults().max_seconds).clamp(1.0, self.defaults().max_seconds);
         let parts = stretches(text, MAX_CHARS);
         let mut rng = Rng::new(req.seed);
         let mut out = Vec::new();
@@ -517,7 +518,9 @@ impl AudioEngine for Zonos3 {
             if left < 15 {
                 break;
             }
-            let max_frames = left.min(MAX_FRAMES);
+            // a take that never ends (no end-of-audio drawn) stops at four rows a byte of its text and a few
+            // seconds more: the slowest steered pace says about three
+            let max_frames = left.min(MAX_FRAMES).min(4 * part.len() + 90);
             let (take, prefill) = self.take(part, &voice, &buckets, &deltas, cfg, &s, silence, max_frames, &mut rng, &mut |n| {
                 progress(Step { phase: "tokens", at: (frames_done + n) as u32, of: budget as u32, seconds: t0.elapsed().as_secs_f64() })
             })?;
