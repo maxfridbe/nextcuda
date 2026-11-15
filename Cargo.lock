@@ -844,6 +844,7 @@ dependencies = [
  "nextcuda-gguf",
  "nextcuda-tok",
  "serde_json",
+ "zyphra-textnorm",
 ]
 
 [[package]]
@@ -2044,3 +2045,9 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
+
+[[package]]
+name = "zyphra-textnorm"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f234997024883b89e4fb67a40715b020343a9bcaa44a6dd5ecedfb1b1813fc6a"

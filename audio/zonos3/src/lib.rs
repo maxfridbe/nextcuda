@@ -26,6 +26,7 @@ pub mod check;
 pub mod codec;
 mod ffi;
 pub mod lm;
+pub mod markup;
 pub mod ops;
 pub mod prompt;
 pub mod sample;
@@ -74,6 +75,7 @@ pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "top-k", env: "", value: "80", help: "sampling top-k", at: At::Request },
     EngineOption { name: "top-p", env: "", value: "0.69", help: "sampling top-p", at: At::Request },
     EngineOption { name: "repetition-penalty", env: "", value: "2.4", help: "the repetition penalty over the last 96 frames of the first six codebooks", at: At::Request },
+    EngineOption { name: "normalize", env: "", value: "on|off", help: "Zyphra's text normalizer (zyphra-textnorm) in the request's language (on; auto: the script decides, Latin English): numbers, money, dates, units said as words; off: the text as written", at: At::Request },
     EngineOption { name: "level", env: "", value: "on|off", help: "loudness leveling (on): the take brought to -19 dBFS of speech and held there (the model drifts quieter through a long take with some voices, and a preset keeps its recording's level); off: the decoder's level less 3 dB, as Zyphra serves it", at: At::Request },
     EngineOption { name: "silence", env: "", value: "0..30", help: "codec-silence frames after the text (3: 0.2 s, decoded ahead and cut)", at: At::Request },
 ];
@@ -92,10 +94,12 @@ fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], o: &LoadOptions, log: &mut dyn Fn
 /// voices/<Language>/<Name>_*.codes.npy / .embedding.npy): its files by role
 pub fn files_in(dir: &Path) -> Result<ModelFiles> {
     let mut f = ModelFiles::new();
-    let model = ["backbone-ptq.gguf", "backbone-f16.gguf", "backbone-q8_0.gguf"].iter().map(|n| dir.join(n)).find(|p| p.is_file())
+    // the edit backbone first: the release LM with the phoneme, start and pause rows (and speech editing's vocabulary)
+    let model = ["backbone-ptq-edit.gguf", "backbone-ptq.gguf", "backbone-f16.gguf", "backbone-q8_0.gguf"].iter().map(|n| dir.join(n)).find(|p| p.is_file())
         .ok_or_else(|| Error(format!("{}: no backbone-ptq.gguf", dir.display())))?;
     f.insert("model".into(), model);
-    for (role, name) in [("decoder", "zac-keep2.gguf"), ("decoder-full", "zac.gguf"), ("speaker-encoder", "spk-encoder.gguf"), ("steer", "steer.gguf")] {
+    for (role, name) in [("decoder", "zac-keep2.gguf"), ("decoder-full", "zac.gguf"), ("speaker-encoder", "spk-encoder.gguf"), ("steer", "steer.gguf"),
+                         ("edit-adapter", "edit/accents.gguf"), ("zac-encoder", "zac-encoder.gguf"), ("ssl-teacher", "ssl-teacher.gguf")] {
         if dir.join(name).is_file() {
             f.insert(role.into(), dir.join(name));
         }
@@ -278,6 +282,57 @@ pub fn level(pcm: &mut [f32], rate: u32, target: f32) {
     }
 }
 
+/// A control span placed in a take: its start and end frame and its hidden deltas by source
+pub type SpanSched = (f32, f32, Vec<(usize, Vec<f32>)>);
+
+/// The stretches of a (normalized, marked) text as character ranges: whole sentences, each at most `max` characters
+/// (a longer sentence cut at its last comma, else space, before the limit)
+pub fn stretch_ranges(text: &str, max: usize) -> Vec<(usize, usize)> {
+    let ch: Vec<char> = text.chars().collect();
+    let n = ch.len();
+    let mut ends = Vec::new();
+    for i in 0..n {
+        let end = matches!(ch[i], '.' | '!' | '?' | '\n' | '。' | '！' | '？' | '…');
+        if end && ch.get(i + 1).is_none_or(|c| c.is_whitespace() || !ch[i].is_ascii() || (markup::PAUSE0..='\u{E00A}').contains(c)) {
+            ends.push(i + 1);
+        }
+    }
+    if ends.last() != Some(&n) {
+        ends.push(n);
+    }
+    let trim = |a: usize, b: usize| -> (usize, usize) {
+        let (mut a, mut b) = (a, b);
+        while a < b && ch[a].is_whitespace() {
+            a += 1;
+        }
+        while b > a && ch[b - 1].is_whitespace() {
+            b -= 1;
+        }
+        (a, b)
+    };
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0;
+    for e in ends {
+        let (mut a, b) = trim(start, e);
+        start = e;
+        while b - a > max {
+            let cut = (a + 1..a + max).rev().find(|i| matches!(ch[*i - 1], ',' | ';' | ':')).or_else(|| (a + 1..a + max).rev().find(|i| ch[*i].is_whitespace()))
+                .unwrap_or(a + max);
+            out.push(trim(a, cut));
+            a = trim(cut, b).0;
+        }
+        if a >= b {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if b - last.0 <= max && last.1 <= a => last.1 = b,
+            _ => out.push((a, b)),
+        }
+    }
+    out.retain(|(a, b)| b > a);
+    out
+}
+
 /// One stretch's generation: the rows drawn (each ten codes) and the aligned end frame
 pub struct Take {
     pub rows: Vec<[u32; 10]>,
@@ -386,10 +441,10 @@ impl Zonos3 {
 
     /// One stretch: the prompt's rows through the backbone, then a row of codes a step until the end frame drains
     #[allow(clippy::too_many_arguments)]
-    pub fn take(&self, text: &str, voice: &Voice, buckets: &[Option<usize>], deltas: &[(usize, Vec<f32>)], cfg: f32, s: &Sampling, silence: usize,
-                max_frames: usize, rng: &mut Rng, progress: &mut dyn FnMut(usize) -> Result<()>) -> Result<(Take, Vec<[u32; 10]>)> {
+    pub fn take(&self, ids: &[u32], voice: &Voice, buckets: &[Option<usize>], deltas: &[(usize, Vec<f32>)], spans: &[SpanSched], cfg: f32, s: &Sampling,
+                silence: usize, max_frames: usize, rng: &mut Rng, progress: &mut dyn FnMut(usize) -> Result<()>) -> Result<(Take, Vec<[u32; 10]>)> {
         let c = &self.lm.c;
-        let ids = prompt::text_ids(&self.tok, c, text);
+        let ids = ids.to_vec();
         let p = prompt::build(c, &ids, voice, buckets, silence)?;
         let cond = Cond {
             speaker: p.speaker.as_ref().map(|(r, v)| Ok::<_, Error>((*r, self.lm.project_speaker(v)?))).transpose()?,
@@ -409,7 +464,7 @@ impl Zonos3 {
             self.lm.forward(&self.ops, &mut ts, &tp.ids, &tc, false)?;
             twin = Some((ts, tc));
         }
-        let step_cond = Cond { speaker: None, buckets: Vec::new(), deltas: deltas.to_vec() };
+        let mut step_cond = Cond { speaker: None, buckets: Vec::new(), deltas: deltas.to_vec() };
         let mut rows: Vec<[u32; 10]> = Vec::new();
         let (mut eos, mut countdown) = (None::<usize>, 0usize);
         let ncb = c.ncb;
@@ -447,6 +502,24 @@ impl Zonos3 {
                 break;
             }
             let ids: Vec<u32> = r[..ncb].iter().copied().chain(std::iter::once(c.text_vocab)).collect();
+            // the request's constant deltas and the spans active at this generated frame (Zyphra's steer_fn)
+            if !spans.is_empty() {
+                let f = rows.len() as f32;
+                let mut d = deltas.to_vec();
+                for (start, end, sd) in spans {
+                    let w = markup::span_weight(*start, *end, f);
+                    if w <= 0.0 {
+                        continue;
+                    }
+                    for (src, v) in sd {
+                        match d.iter_mut().find(|(s0, _)| s0 == src) {
+                            Some((_, acc)) => acc.iter_mut().zip(v).for_each(|(a, b)| *a += w * b),
+                            None => d.push((*src, v.iter().map(|b| w * b).collect())),
+                        }
+                    }
+                }
+                step_cond.deltas = d;
+            }
             self.lm.forward(&self.ops, &mut seq, &ids, &step_cond, false)?;
             if let Some((ts, _)) = twin.as_mut() {
                 self.lm.forward(&self.ops, ts, &ids, &step_cond, false)?;
@@ -556,7 +629,8 @@ impl AudioEngine for Zonos3 {
             repetition_penalty: num(req, "repetition-penalty")?.unwrap_or(2.4),
             ..Sampling::default()
         };
-        let silence: usize = num(req, "silence")?.unwrap_or(3);
+        let silence_given: Option<usize> = num(req, "silence")?;
+        let silence = silence_given.unwrap_or(3);
         if silence > 30 {
             return Err(Error("silence: 0 to 30 frames".into()));
         }
@@ -582,12 +656,42 @@ impl AudioEngine for Zonos3 {
         let dec = self.decoder(req)?;
         // `seconds` caps the whole when given; without it a long text is said to its end (600 s at most)
         let seconds = req.seconds.unwrap_or(self.defaults().max_seconds).clamp(1.0, self.defaults().max_seconds);
-        let parts = stretches(text, MAX_CHARS);
+        // the markup, the normalizer (the request's language; option normalize off: as written), the spans
+        let normalize = match given(req, "normalize") {
+            None | Some("on") | Some("1") | Some("true") => true,
+            Some("off") | Some("0") | Some("false") => false,
+            Some(v) => return Err(Error(format!("normalize {v:?}: on or off"))),
+        };
+        let parsed = markup::parse(text)?;
+        let lang = markup::grammar_language(req.language.as_deref(), text);
+        let normed = if normalize { markup::normalize(&parsed.text, &lang) } else { markup::normalize(&parsed.text, "none") };
+        let (clean, spans) = markup::take_spans(&normed, &parsed.spans)?;
+        if !spans.is_empty() && self.steer.is_none() {
+            return Err(Error(format!("{ARCH}: [steer] spans need the steering bundle (steer.gguf)")));
+        }
+        let spec = markup::Spec::read(&c.spec);
+        let global_pace = self.steer.as_ref().map_or(1.0, |st| st.duration_factor(&controls));
+        let chars: Vec<char> = clean.chars().collect();
+        let parts = stretch_ranges(&clean, MAX_CHARS);
         let mut rng = Rng::new(req.seed);
         let mut out = Vec::new();
         let mut frames_done = 0usize;
         let budget = (seconds * FPS) as usize;
-        for (i, part) in parts.iter().enumerate() {
+        for (i, (a, b)) in parts.iter().copied().enumerate() {
+            let part: String = chars[a..b].iter().collect();
+            let ids = markup::text_ids(&self.tok, c, &spec, &part)?;
+            // this stretch's spans, shifted to it and placed by its characters
+            let local: Vec<markup::Span> = spans.iter().filter(|s| s.start < b && s.end > a)
+                .map(|s| markup::Span { start: s.start.max(a) - a, end: s.end.min(b) - a, controls: s.controls.clone() }).collect();
+            let mut sched: Vec<SpanSched> = Vec::new();
+            if let Some(st) = &self.steer {
+                let place = markup::schedule(&local, b - a, markup::FRAMES_PER_CHAR * global_pace, &|ctl| st.duration_factor(ctl));
+                for (sp, (f0, f1)) in local.iter().zip(place) {
+                    sched.push((f0, f1, st.span_deltas(&sp.controls, c.dim)?));
+                }
+            }
+            // a stretch that starts with the start marker was trained without the silence prefill
+            let silence = if part.starts_with(markup::START) { silence_given.unwrap_or(0) } else { silence };
             let left = budget.saturating_sub(frames_done);
             if left < 15 {
                 break;
@@ -595,7 +699,7 @@ impl AudioEngine for Zonos3 {
             // a take that never ends (no end-of-audio drawn) stops at four rows a byte of its text and a few
             // seconds more: the slowest steered pace says about three
             let max_frames = left.min(MAX_FRAMES).min(4 * part.len() + 90);
-            let (take, prefill) = self.take(part, &voice, &buckets, &deltas, cfg, &s, silence, max_frames, &mut rng, &mut |n| {
+            let (take, prefill) = self.take(&ids, &voice, &buckets, &deltas, &sched, cfg, &s, silence, max_frames, &mut rng, &mut |n| {
                 progress(Step { phase: "tokens", at: (frames_done + n) as u32, of: budget as u32, seconds: t0.elapsed().as_secs_f64() })
             })?;
             frames_done += take.rows.len();

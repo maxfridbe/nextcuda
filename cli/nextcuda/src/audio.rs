@@ -67,7 +67,7 @@ fn model(cfg: &Config, args: &[String]) -> Result<(Value, ModelFiles), String> {
         let whisper = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"whisper\""));
         let vibevoice = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"vibevoice\""));
         let yue2 = std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| e.file_name().to_string_lossy().starts_with("yue2-lm-"));
-        let zonos3 = dir.join("backbone-ptq.gguf").is_file() || dir.join("backbone-f16.gguf").is_file();
+        let zonos3 = ["backbone-ptq-edit.gguf", "backbone-ptq.gguf", "backbone-f16.gguf"].iter().any(|f| dir.join(f).is_file());
         let (arch, files) = if zonos3 {
             (nextcuda_audio_zonos3::ARCH, nextcuda_audio_zonos3::files_in(dir).map_err(|e| e.0)?)
         } else if yue2 {

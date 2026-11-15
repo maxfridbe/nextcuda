@@ -1,7 +1,8 @@
 # ZONOS3-Mini (Zyphra: multilingual speech at 44.1 kHz in preset voices or a voice cloned from a recording; steering)
 # model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets.
 # The files are Zyphra's own GGUF conversions (Zyphra/ZONOS3-Mini, gguf/, pinned at d2d142a8): the backbone (Q4_0
-# experts, Q8_0 mixers, the tokenizer, condition tables and the codec's silence frame inside), the ZAC codec's MR-iSTFT
+# experts, Q8_0 mixers, the tokenizer, condition tables and the codec's silence frame inside; the edit build: the release
+# LM with the phoneme, start and pause rows and speech editing's vocabulary - on plain text the release LM bit for bit), the ZAC codec's MR-iSTFT
 # decoders (keep2_plain, the default; full_mr, loaded on the first request that names it), the MECT-B2 speaker
 # encoder, the steering bundle, and the 27 preset voices' codes (.codes.npy: the reference prefix, the model's default)
 # and speaker embeddings (.embedding.npy). Apache-2.0 (the weights; the runtime this port follows is MIT).
@@ -24,11 +25,11 @@ defaults:
 env: {}
 files:
   model:
-    key: zonos3-backbone-ptq
-    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/gguf/backbone-ptq.gguf
-    size: 663150624
-    sha256: 66fceb6d73a8c30bde80249e4112bb308380ab7f3384fa11c8e4048115e4ceec
-    path: zonos3-mini/backbone-ptq.gguf
+    key: zonos3-backbone-ptq-edit
+    url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/gguf/backbone-ptq-edit.gguf
+    size: 663491840
+    sha256: 7e23d261e2cef3cbbbaa33f43fbe683acb393a157ac672f2de04858aef21011f
+    path: zonos3-mini/backbone-ptq-edit.gguf
   decoder:
     key: zonos3-zac-keep2
     url: https://huggingface.co/Zyphra/ZONOS3-Mini/resolve/d2d142a86b1e6aeb4252679673c86ecd86177bf8/gguf/zac-keep2.gguf

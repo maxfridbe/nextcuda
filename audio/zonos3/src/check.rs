@@ -119,7 +119,13 @@ pub fn run(z: &Zonos3, dir: &Path, stages: &[String], log: &mut dyn FnMut(String
                 } else {
                     Voice::None
                 };
-                let tids = prompt::text_ids(&z.tok, c, &text);
+                // the engine's text path: the markup, the normalizer when normalize.txt names a language, the markers
+                let parsed = crate::markup::parse(&text)?;
+                let lang = std::fs::read_to_string(dir.join("normalize.txt")).ok().map(|l| l.trim().to_string());
+                let normed = crate::markup::normalize(&parsed.text, lang.as_deref().unwrap_or("none"));
+                let (clean, _) = crate::markup::take_spans(&normed, &parsed.spans)?;
+                std::fs::write(dir.join("nc_text.txt"), clean.as_bytes()).map_err(|e| Error(e.to_string()))?;
+                let tids = crate::markup::text_ids(&z.tok, c, &crate::markup::Spec::read(&c.spec), &clean)?;
                 let p = prompt::build(c, &tids, &voice, &[], 3)?;
                 let f: Vec<f32> = p.ids.iter().map(|x| *x as f32).collect();
                 npy(&dir.join("nc_ids.npy"), &[p.rows, c.row_width()], &f)?;

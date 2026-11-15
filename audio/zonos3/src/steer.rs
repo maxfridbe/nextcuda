@@ -18,6 +18,8 @@ pub struct Direction {
 
 pub struct Steer {
     pub dirs: Vec<Direction>,
+    /// the pace a dose sets (`zonos3_steer.timing`: id -> [(dose, duration factor)]), for placing control spans
+    pub timing: Vec<(String, Vec<(f32, f32)>)>,
 }
 
 /// A request's controls resolved: the moved speaker embedding (when raw ones were given) and the hidden deltas by
@@ -48,7 +50,47 @@ impl Steer {
             };
             dirs.push(Direction { id: id.clone(), source, v: w.f32(&format!("steer.dir.{i}"))? });
         }
-        Ok(Steer { dirs })
+        let timing = w.s("zonos3_steer.timing").ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|j| j.as_object().cloned()).unwrap_or_default().into_iter()
+            .map(|(k, v)| {
+                let mut pts: Vec<(f32, f32)> = v.as_array().into_iter().flatten()
+                    .filter_map(|p| Some((p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32))).collect();
+                pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+                (k, pts)
+            }).collect();
+        Ok(Steer { dirs, timing })
+    }
+
+    /// The expected duration factor of a set of doses (the product over the timed ones, np.interp of each table)
+    pub fn duration_factor(&self, controls: &[(String, f32)]) -> f32 {
+        let mut f = 1.0;
+        for (id, pts) in &self.timing {
+            let Some(d) = controls.iter().find(|c| &c.0 == id).map(|c| c.1).filter(|d| *d != 0.0) else { continue };
+            if pts.is_empty() {
+                continue;
+            }
+            let y = if d <= pts[0].0 {
+                pts[0].1
+            } else if d >= pts[pts.len() - 1].0 {
+                pts[pts.len() - 1].1
+            } else {
+                let k = pts.windows(2).position(|w| d >= w[0].0 && d <= w[1].0).unwrap_or(0);
+                let (a, b) = (pts[k], pts[k + 1]);
+                a.1 + (b.1 - a.1) * (d - a.0) / (b.0 - a.0)
+            };
+            f *= y;
+        }
+        f
+    }
+
+    /// A span's hidden deltas (only hidden-space directions vary inside a request)
+    pub fn span_deltas(&self, controls: &[(String, f32)], hidden: usize) -> Result<Vec<(usize, Vec<f32>)>> {
+        for (id, _) in controls {
+            if self.dirs.iter().any(|d| &d.id == id && d.source.is_none()) {
+                return Err(Error(format!("control {id} moves the speaker embedding and cannot vary inside a text; only hidden-space controls take [steer] spans")));
+            }
+        }
+        Ok(self.resolve(controls, None, hidden)?.deltas)
     }
 
     pub fn ids(&self) -> Vec<String> {
@@ -118,7 +160,10 @@ mod tests {
             Direction { id: "identity.gender".into(), source: None, v: vec![1.0, 0.0] },
             Direction { id: "mood.happy".into(), source: Some(19), v: vec![1.0, 2.0, 3.0] },
             Direction { id: "mood.sad".into(), source: Some(19), v: vec![1.0, 1.0, 1.0] },
-        ] };
+        ], timing: vec![("delivery.tempo".into(), vec![(-2.0, 2.0), (0.0, 1.0), (2.0, 0.5)])] };
+        assert_eq!(s.duration_factor(&[("delivery.tempo".into(), 1.0)]), 0.75);
+        assert_eq!(s.duration_factor(&[("delivery.tempo".into(), 9.0)]), 0.5);
+        assert!(s.span_deltas(&[("identity.gender".into(), 1.0)], 3).is_err());
         let c = parse_controls("identity.gender=2, mood.happy:1,mood.sad=-1").unwrap();
         let r = s.resolve(&c, Some(&[0.0, 3.0]), 3).unwrap();
         let e = r.embedding.unwrap();

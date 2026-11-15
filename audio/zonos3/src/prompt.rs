@@ -193,7 +193,7 @@ mod tests {
             layers: 1, ctx: 64, dim: 4, head_dim: 32, heads: 1, kv_heads: 1, ffn: 4, experts: 1, topk: 1, ncb: 10, codebook: 4096, audio_vocab: 4098,
             eoa: 4096, pad: 4097, text_vocab: 8196, text_rows: 8197, gdn_heads: 1, gdn_dim: 128, gdn_kernel: 4, speaker_dim: 3,
             cond_names: vec!["a".into(), "b".into()], cond_counts: vec![10, 30], cond_edges: vec![vec![], vec![]], theta: 1e4, eps: 1e-5,
-            qk_eps: 1e-6, softcap: 15.0, gdn_period: 4, silence: (100..110).collect(), tokenizer: String::new(), bos: 2, eos: 3, offset: 4,
+            qk_eps: 1e-6, softcap: 15.0, gdn_period: 4, silence: (100..110).collect(), tokenizer: String::new(), spec: String::new(), bos: 2, eos: 3, offset: 4,
         }
     }
 

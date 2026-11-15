@@ -12,3 +12,4 @@ nextcuda-gguf.workspace = true
 nextcuda-tok.workspace = true
 nextcuda-audio.workspace = true
 serde_json.workspace = true
+zyphra-textnorm = "0.2.0"

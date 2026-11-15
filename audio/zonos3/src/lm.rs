@@ -48,6 +48,8 @@ pub struct Config {
     pub gdn_period: usize,
     pub silence: Vec<u32>,
     pub tokenizer: String,
+    /// text_tokenizer_spec (JSON): the phoneme, start and pause rows an edit backbone adds
+    pub spec: String,
     pub bos: u32,
     pub eos: u32,
     pub offset: u32,
@@ -108,6 +110,7 @@ impl Config {
             gdn_period,
             silence: w.us(&k("silence_frame"))?.into_iter().map(|v| v as u32).collect(),
             tokenizer: w.s(&k("tokenizer.json"))?,
+            spec: w.s(&k("text_tokenizer_spec")).unwrap_or_default(),
             bos: w.u(&k("tokenizer.bos"))? as u32,
             eos: w.u(&k("tokenizer.eos"))? as u32,
             offset: w.u(&k("tokenizer.offset"))? as u32,
