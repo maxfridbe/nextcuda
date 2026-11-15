@@ -1,4 +1,4 @@
-//! The catalog of supported models: the model cards (`model-cards/<kind>/<id>.yml`, read when it is needed -
+//! The catalog of supported filter(|m| s(m, "arch") == "qwen-image-2.1" && s(m, "id").ends_with("-fast"))odels: the model cards (`model-cards/<kind>/<id>.yml`, read when it is needed -
 //! `NS_MODEL_CARDS` names another directory; model-cards/README.md has the format). A card is one model: what it is,
 //! every file it needs as a direct link pinned to a revision with its size and SHA-256, the settings its registry
 //! entry gets, its prompt guide. `nextcuda models search` lists them; `nextcuda models pull <id>` downloads what is
@@ -650,5 +650,41 @@ mod tests {
         assert_eq!(e["env"], json!({"A": "/m/x.gguf", "C": "plain"}));
         let e = entry(&m, &paths, &BTreeMap::from([("mtp".to_string(), "/d/rt".to_string())]));
         assert_eq!(e["env"]["B"], "/d/rt");
+    }
+
+    #[test]
+    fn a_fast_card_is_its_base_card_with_int8_on_and_nothing_else_changed() {
+        // a Qwen-Image 2.1 "-fast" card (int8 ConvRot) promises the same files and settings as the card it is named
+        // after, one setting more: a drift in either (a new file key, a changed default) would make the two pictures
+        // differ for a reason other than int8, and the comparison the cards offer would mislead. (Other models'
+        // "-fast" cards, like ltx-2.5-fast, are fast in their own ways.)
+        let cat = repo_cards();
+        let fast: Vec<&Value> = cat.models.iter().filter(|m| s(m, "arch") == "qwen-image-2.1" && s(m, "id").ends_with("-fast")).collect();
+        assert_eq!(fast.len(), 2, "the turbo and the full model's fast cards");
+        for f in fast {
+            let id = s(f, "id");
+            let base = cat.model(id.trim_end_matches("-fast")).unwrap_or_else(|| panic!("{id}: no base card"));
+            assert_eq!(f["env"]["NS_QI_INT8"], "1", "{id}: int8 on");
+            assert!(base["env"].get("NS_QI_INT8").is_none_or(|v| v != "1"), "{id}: the base card has int8 off");
+            let mut env = f["env"].as_object().cloned().unwrap_or_default();
+            env.remove("NS_QI_INT8");
+            assert_eq!(Value::Object(env), base["env"].as_object().cloned().map_or(json!({}), Value::Object), "{id}: otherwise the same settings");
+            assert_eq!(f["files"], base["files"], "{id}: the same file keys");
+            for k in ["kind", "arch", "license", "commercial", "license_note", "gpus", "vram_gib", "defaults", "guide", "silo", "concurrency", "coexistence"] {
+                assert_eq!(f.get(k), base.get(k), "{id}: {k} as the base card's");
+            }
+        }
+    }
+
+    #[test]
+    fn no_card_asks_for_the_removed_stable_diffusion_cpp_engine() {
+        // the Rust engines are Qwen-Image's only ones since 2026-11-13 (f9fb895, 700aefe): a card still setting the old
+        // backend's switches would do nothing now, and would read as if that path still existed
+        let gone = ["NC_IMAGE_BACKEND", "NC_IMAGE_WORKER", "NC_SDCPP_BIN", "NC_SDCPP_EXTRA_ARGS"];
+        for m in &repo_cards().models {
+            for k in gone {
+                assert!(m["env"].get(k).is_none(), "{}: {k}", s(m, "id"));
+            }
+        }
     }
 }

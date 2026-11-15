@@ -38,12 +38,16 @@ impl Isa {
         };
         #[cfg(not(target_arch = "x86_64"))]
         let have = Isa::Scalar;
-        let cap = match std::env::var("NS_NH_CPU_ISA").as_deref() {
-            Ok("scalar") => Isa::Scalar,
-            Ok("avx2") => Isa::Avx2,
+        have.min(Isa::cap_of(std::env::var("NS_NH_CPU_ISA").ok().as_deref()))
+    }
+
+    /// The widest path NS_NH_CPU_ISA allows: "scalar", "avx2", else (unset, "avx512", anything else) no cap
+    fn cap_of(v: Option<&str>) -> Isa {
+        match v {
+            Some("scalar") => Isa::Scalar,
+            Some("avx2") => Isa::Avx2,
             _ => Isa::Avx512,
-        };
-        have.min(cap)
+        }
     }
 
     pub fn name(self) -> &'static str {

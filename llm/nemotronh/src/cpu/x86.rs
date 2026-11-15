@@ -686,3 +686,23 @@ pub fn kernel_avx512(ty: i32) -> Option<Kernel> {
         _ => return None,
     })
 }
+
+/// Every vector form of IQ1_S this CPU can run, by name: kernel_avx2/kernel_avx512 keep only one of the pdep and
+/// shift forms (by fast_pdep()), so a test reaches the other one through this
+#[cfg(test)]
+pub fn iq1s_forms() -> Vec<(&'static str, Kernel)> {
+    let mut v: Vec<(&'static str, Kernel)> = Vec::new();
+    if has_avx2() {
+        v.push(("avx2", iq1s_avx2));
+        if is_x86_feature_detected!("bmi2") {
+            v.push(("avx2 pdep", iq1s_avx2_pdep));
+        }
+    }
+    if has_avx512() {
+        v.push(("avx512", iq1s_512));
+        if is_x86_feature_detected!("bmi2") {
+            v.push(("avx512 pdep", iq1s_512_pdep));
+        }
+    }
+    v
+}

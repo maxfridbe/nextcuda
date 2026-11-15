@@ -557,3 +557,35 @@ fn s32_a_saturated_card_still_serves_when_the_model_has_no_other_card() {
     ask(&h, &y, 4000, 90).unwrap();
     assert_eq!(h.count("start audio"), 1, "{:?}", h.log());
 }
+
+#[test]
+fn s33_a_saturated_card_still_serves_when_the_models_other_card_is_saturated_too() {
+    // the copy on card 1 would only move the song beside other work: no quiet card, so it shares card 0 as before
+    let h = FakeHost::new(&[CARD, CARD], &[("audio", 2), ("image", 2)]);
+    let y = h.add("yue", "audio", 4000, &[0, 1], plain());
+    let v = h.add("flashvsr", "image", 4000, &[0], plain());
+    let p = h.add("pic", "image", 4000, &[1], plain());
+    ask(&h, &y, 4000, 90).unwrap();
+    ask(&h, &v, 4000, 90).unwrap();
+    ask(&h, &p, 4000, 90).unwrap();
+    h.busy("flashvsr", 3600.0, 1);
+    h.busy("pic", 3600.0, 1);
+    ask(&h, &y, 4000, 90).unwrap();
+    assert_eq!(h.count("start audio"), 1, "{:?}", h.log());
+}
+
+#[test]
+fn s34_a_saturated_card_still_serves_when_the_quiet_card_has_no_room_for_a_copy() {
+    // card 1 is quiet but a pinned model fills it: no copy fits there, so the song shares card 0 and nothing is stopped
+    let h = FakeHost::new(&[CARD, CARD], &[("audio", 2), ("image", 2)]);
+    let y = h.add("yue", "audio", 4000, &[0, 1], plain());
+    let v = h.add("flashvsr", "image", 4000, &[0], plain());
+    let big = h.add("big", "image", 9000, &[1], plain());
+    ask(&h, &y, 4000, 90).unwrap();
+    ask(&h, &v, 4000, 90).unwrap();
+    ask(&h, &big, 9000, 90).unwrap();
+    h.pin("big", true);
+    h.busy("flashvsr", 3600.0, 1);
+    ask(&h, &y, 4000, 90).unwrap();
+    assert_eq!((h.count("start audio"), h.count("stop")), (1, 0), "{:?}", h.log());
+}

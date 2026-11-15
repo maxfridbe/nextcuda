@@ -143,6 +143,11 @@ impl FakeHost {
         self.st.lock().unwrap().unseen = on;
     }
 
+    /// The video worker making something (not idle) or not
+    pub fn video_busy(&self, busy: bool) {
+        self.st.lock().unwrap().video_idle = !busy;
+    }
+
     pub fn set_load_s(&self, s: f64) {
         self.st.lock().unwrap().load_s = s;
     }

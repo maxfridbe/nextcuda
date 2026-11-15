@@ -658,3 +658,39 @@ mod no_room_tests {
         assert_eq!(no_room_message(1, 126, "x"), "no_room[gpu=1,short_mb=126]: x");
     }
 }
+
+#[cfg(test)]
+mod host_copy_tests {
+    use super::*;
+
+    #[test]
+    fn a_copy_from_pageable_host_memory_lands_at_once_and_is_ticket_zero() {
+        // the text encoder's layer copy when the driver will not pin (and on a GPU with no device behind it): the
+        // bytes are there when the call returns, and ticket 0 orders nothing
+        let gpu = Gpu::detached("test");
+        let mut h = HostBuf::pageable(&gpu, 16);
+        assert!(!h.pinned());
+        h.as_mut_slice().copy_from_slice(&(0u8..16).collect::<Vec<_>>());
+        let d = DevBuf::new(&gpu, 32).unwrap();
+        assert_eq!(d.copy_from_host_async(8, &h, 4, 10, &[7]).unwrap(), 0);
+        gpu.await_ticket(0).unwrap();
+        let mut back = vec![0u8; 32];
+        d.read(0, &mut back).unwrap();
+        assert_eq!(&back[8..18], &(4u8..14).collect::<Vec<_>>()[..]);
+        assert!(back[..8].iter().chain(&back[18..]).all(|&b| b == 0), "nothing outside the range is written");
+    }
+
+    #[test]
+    fn a_copy_past_either_buffer_is_refused_before_anything_moves() {
+        let gpu = Gpu::detached("test");
+        let h = HostBuf::pageable(&gpu, 16);
+        let d = DevBuf::new(&gpu, 16).unwrap();
+        // past the host bytes (an offset that would overflow too)
+        assert!(d.copy_from_host_async(0, &h, 10, 8, &[]).unwrap_err().0.contains("host bytes 10..18 of 16"));
+        assert!(d.copy_from_host_async(0, &h, usize::MAX, 2, &[]).is_err());
+        // past the card's buffer
+        assert!(d.copy_from_host_async(12, &h, 0, 8, &[]).is_err());
+        // a whole-buffer copy is fine
+        assert_eq!(d.copy_from_host_async(0, &h, 0, 16, &[]).unwrap(), 0);
+    }
+}

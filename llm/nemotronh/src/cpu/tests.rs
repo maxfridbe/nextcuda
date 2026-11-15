@@ -185,3 +185,135 @@ fn the_products_on_the_files_blocks() {
         assert!(er < 2e-5 && ev < 2e-6, "{name}");
     }
 }
+
+#[test]
+fn the_vector_products_handle_an_odd_block_count_and_a_single_block() {
+    // the made-up rows above all have an even count of blocks, and the vector paths take two blocks a step with a
+    // tail for the last odd one: a row of 1, 3 and 5 blocks reaches that tail
+    let mut r = Rng(0x1234_5678_9abc_def1);
+    for ty in TYPES {
+        let qk = format(ty).unwrap().0;
+        for nb in [1, 3, 5] {
+            let cols = qk * nb;
+            let w = random_rows(ty, 4, cols, &mut r);
+            let x: Vec<f32> = (0..cols).map(|_| r.f() * 3.0).collect();
+            let (er, ev) = check(ty, &w, 4, cols, &x);
+            assert!(er < 2e-5, "type {ty}, {nb} blocks: the plain products are off by {er:e}");
+            assert!(ev < 2e-6, "type {ty}, {nb} blocks: the vector products are off by {ev:e}");
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn every_iq1_s_vector_form_agrees_with_the_plain_product() {
+    // a CPU keeps only one of IQ1_S's pdep and shift forms (fast pdep or not), so the other is never run by the
+    // checks above on that CPU: here each form this CPU can run is set against the plain product
+    let mut r = Rng(0x0dd_ba11);
+    for nb in [1, 4, 7] {
+        let cols = 256 * nb;
+        let w = random_rows(IQ1_S, 6, cols, &mut r);
+        let x: Vec<f32> = (0..cols).map(|_| r.f() * 3.0).collect();
+        let q = quantize(IQ1_S, &x);
+        let rb = blocks::row_bytes(IQ1_S, cols);
+        for row in w.chunks_exact(rb) {
+            let plain = blocks::dot(IQ1_S, row, &q);
+            let mag: f64 = dequantize(IQ1_S, row).iter().zip(act_values(&q)).map(|(a, b)| (*a as f64 * b).abs()).sum();
+            for (name, k) in super::x86::iq1s_forms() {
+                // SAFETY: iq1s_forms() lists only the forms this CPU has; row holds nb blocks, q as many blocks' values
+                let v = unsafe { k(row.as_ptr(), nb, &q) };
+                assert!(((v - plain) as f64).abs() / mag.max(1e-30) < 2e-6, "IQ1_S {name}, {nb} blocks: {v} against {plain}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_experts_are_the_weighted_sum_of_down_times_relu_squared_up() {
+    // the pool's parts split each matrix into 64-row pieces: a latent of 96 and n_ff of 160 leave short last pieces,
+    // and three experts make parts that cross experts; the answer must be the plain products put together by hand
+    let g: &'static Cpu = Box::leak(Box::new(Cpu::new(Isa::detect(), false)));
+    let pool = super::Pool::new(3);
+    let (lat, n_ff) = (96, 160);
+    let mut r = Rng(0xfeed_f00d);
+    let ups: Vec<Vec<u8>> = (0..3).map(|_| random_rows(Q8_0, n_ff, lat, &mut r)).collect();
+    let downs: Vec<Vec<u8>> = (0..3).map(|_| random_rows(IQ4_NL, lat, n_ff, &mut r)).collect();
+    let weights = [0.5f32, -0.25, 1.5];
+    let jobs: Vec<super::Job> = (0..3).map(|e| super::Job { up: ups[e].as_ptr() as usize, down: downs[e].as_ptr() as usize, w: weights[e] }).collect();
+    let x: Vec<f32> = (0..lat).map(|_| r.f() * 2.0).collect();
+    let got = super::experts(g, &pool, &jobs, Q8_0, IQ4_NL, &x, n_ff);
+
+    let xq = quantize(Q8_0, &x);
+    let mut want = vec![0f64; lat];
+    for e in 0..3 {
+        let rb_up = blocks::row_bytes(Q8_0, lat);
+        let h: Vec<f32> = (0..n_ff).map(|i| g.dot(Q8_0, &ups[e][i * rb_up..(i + 1) * rb_up], &xq).max(0.0).powi(2)).collect();
+        let hq = quantize(IQ4_NL, &h);
+        let rb_down = blocks::row_bytes(IQ4_NL, n_ff);
+        for (o, w) in want.iter_mut().enumerate() {
+            *w += weights[e] as f64 * g.dot(IQ4_NL, &downs[e][o * rb_down..(o + 1) * rb_down], &hq) as f64;
+        }
+    }
+    let scale = want.iter().fold(0f64, |m, v| m.max(v.abs())).max(1e-30);
+    for (i, (a, b)) in got.iter().zip(&want).enumerate() {
+        assert!((*a as f64 - b).abs() / scale < 1e-5, "latent {i}: {a} against {b}");
+    }
+    // no experts: a zero latent, nothing run
+    assert_eq!(super::experts(g, &pool, &[], Q8_0, IQ4_NL, &x, n_ff), vec![0.0; lat]);
+}
+
+#[test]
+fn the_pool_runs_every_part_exactly_once_and_returns_after_a_panicking_part() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let pool = super::Pool::new(4);
+    // several jobs on the same workers: each part of each job once (a stale generation must not run a part again)
+    for parts in [1usize, 7, 64, 1000] {
+        let seen: Arc<Vec<AtomicUsize>> = Arc::new((0..parts).map(|_| AtomicUsize::new(0)).collect());
+        let s = seen.clone();
+        pool.run(parts, Arc::new(move |i| {
+            s[i].fetch_add(1, Ordering::Relaxed);
+        }));
+        assert!(seen.iter().all(|c| c.load(Ordering::Relaxed) == 1), "{parts} parts: each once");
+    }
+    // zero parts: returns at once
+    pool.run(0, Arc::new(|_| unreachable!()));
+    // a part that panics still counts as done, else run would spin for ever
+    let done = Arc::new(AtomicUsize::new(0));
+    let d = done.clone();
+    pool.run(8, Arc::new(move |i| {
+        if i == 3 {
+            panic!("a part panics (expected by the test)");
+        }
+        d.fetch_add(1, Ordering::Relaxed);
+    }));
+    assert_eq!(done.load(Ordering::Relaxed), 7);
+}
+
+#[test]
+fn ns_nh_cpu_isa_caps_the_path_and_never_widens_it() {
+    assert_eq!(Isa::cap_of(Some("scalar")), Isa::Scalar);
+    assert_eq!(Isa::cap_of(Some("avx2")), Isa::Avx2);
+    // unset, "avx512" or a word it does not know: no cap (the CPU's own widest)
+    for v in [None, Some("avx512"), Some("AVX2"), Some("")] {
+        assert_eq!(Isa::cap_of(v), Isa::Avx512, "{v:?}");
+    }
+    // the cap is a ceiling: a CPU without AVX-512 asked for it stays on what it has
+    assert_eq!(Isa::Avx2.min(Isa::cap_of(Some("avx512"))), Isa::Avx2);
+}
+
+#[test]
+fn the_plain_path_names_itself_and_each_vector_path_lists_every_type() {
+    // the log line says which product each type runs; a type missing from it would run plain without a word
+    assert_eq!(Cpu::new(Isa::Scalar, false).paths(), "plain");
+    for isa in [Isa::Avx2, Isa::Avx512].into_iter().filter(|&i| i <= Isa::detect()) {
+        let p = Cpu::new(isa, false).paths();
+        for ty in TYPES {
+            assert!(p.contains(&format!("{} {}", blocks::name(ty), isa.name())), "{isa:?}: {p}");
+        }
+    }
+    let c = Cpu::new(Isa::Scalar, false);
+    assert!(TYPES.iter().all(|&t| c.supports(t)));
+    // Q4_K (12) and F16 (1): a layer of such types leaves its experts to the GPU
+    assert!(!c.supports(12) && !c.supports(1));
+}

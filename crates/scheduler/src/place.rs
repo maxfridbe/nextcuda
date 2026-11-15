@@ -411,6 +411,53 @@ mod tests {
         assert_eq!(on_cards(&[0, 1]), "GPUs 0 and 1");
         assert_eq!(on_cards(&[1]), "GPU 1");
     }
+
+    /// Two cards: card 0 holds an audio server (port 9000, the model asking) and an image server (port 9100); card 1 the
+    /// video worker. `image` is how the image server stands: (busy, inflight)
+    fn contention_box(image: (bool, usize)) -> Snapshot {
+        let proc = |kind: &str, model: &str, port: Option<u16>| crate::room::Proc { kind: Some(kind.into()), model: model.into(), port, mb: 4000 };
+        let mut snap = Snapshot::default();
+        snap.cards = vec![
+            Card { index: 0, name: "card 0".into(), total_mb: 12288, used_mb: 8000, procs: vec![proc("audio", "yue", Some(9000)), proc("image", "flashvsr", Some(9100))] },
+            Card { index: 1, name: "card 1".into(), total_mb: 12288, used_mb: 4000, procs: vec![proc("video", "h3", None)] },
+        ];
+        let server = |port, model: &str, busy, inflight| Server { slot: 0, port, model: Some(model.into()), loading: false, busy, inflight, gpu: Some(0) };
+        snap.servers.insert("audio".into(), vec![server(9000, "yue", true, 1)]);
+        snap.servers.insert("image".into(), vec![server(9100, "flashvsr", image.0, image.1)]);
+        snap
+    }
+
+    #[test]
+    fn a_card_is_contended_by_another_models_busy_server_or_one_with_requests_in_flight() {
+        let h = crate::fake::FakeHost::new(&[], &[]);
+        // the upscale working on card 0: the song asking (its own copy is port 9000) finds the card taken
+        assert!(card_contended(&contention_box((true, 0)), &h, 0, 9000));
+        // a request sent on and not yet answered counts as work too, even before the server says it is busy
+        assert!(card_contended(&contention_box((false, 1)), &h, 0, 9000));
+        // an idle server holding memory there takes no compute
+        assert!(!card_contended(&contention_box((false, 0)), &h, 0, 9000));
+    }
+
+    #[test]
+    fn the_asking_models_own_server_does_not_contend_its_card() {
+        let h = crate::fake::FakeHost::new(&[], &[]);
+        // port 9000 (busy audio) is the asker's own copy: only the idle image server is left, so card 0 is quiet
+        assert!(!card_contended(&contention_box((false, 0)), &h, 0, 9000));
+        // seen from anyone else, the busy audio server does take card 0
+        assert!(card_contended(&contention_box((false, 0)), &h, 0, 9100));
+    }
+
+    #[test]
+    fn the_video_worker_contends_its_card_only_while_it_is_making_something() {
+        let h = crate::fake::FakeHost::new(&[], &[]);
+        let snap = contention_box((false, 0));
+        // idle, it only holds memory: card 1 is quiet
+        assert!(!card_contended(&snap, &h, 1, 0));
+        h.video_busy(true);
+        assert!(card_contended(&snap, &h, 1, 0));
+        // a card the snapshot does not list is not contended (nothing known runs there)
+        assert!(!card_contended(&snap, &h, 7, 0));
+    }
 }
 
 /// A video clip about to be sent to the video daemon
