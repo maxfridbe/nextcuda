@@ -90,9 +90,10 @@ nextcuda audio check <dump dir> --model zonos3-mini --stages prompt,lm,forced,de
 - **Loudness** (2026-11-15): the model drifts quieter through a long take with some voices, and a preset keeps its
   recording's level. Zyphra's own runtime does the same on the same inputs (a cloned voice, seeds 1-3, gated speech level
   per 5 s: -24 -> -32, -29 -> -45, -24 -> -36 dB; Savannah's codes -26 to -32 dB), and serves it 3 dB down. The engine now
-  levels each take (`level`, on by default): the speech around each 50 ms frame (a 3 s window, a gate relative to the
-  take's loud frames) is brought to -19 dBFS active RMS by a gain smoothed over 0.5 s (-12 to +40 dB), then the soft
-  limiter. Measured on the same takes, the gated level per 5 s spreads 0.9-2.0 dB (it spread 2.9-21 dB): a 70 s Rupert
+  levels each take (`level`, on by default): the speech around each 50 ms frame (a 3 s window, a gate 35 dB under the
+  loud frames of the 10 s about it) is brought to -19 dBFS active RMS by a gain smoothed over 0.5 s (-12 to +50 dB), then
+  the soft limiter. (Until 2026-11-15 evening the gate was the whole take's loud frames and the gain at most +40 dB: a
+  saved clone whose take faded 40 dB and more kept its tail 5 dB low - platform job f77a24fb, -24 dB active at 35 s.) Measured on the same takes, the gated level per 5 s spreads 0.9-2.0 dB (it spread 2.9-21 dB): a 70 s Rupert
   take -16.5 to -17.4, Savannah -16.9 to -18.0, the full decoder -16.7 to -17.6, the user's clone (the take that faded
   21 dB) -16.8 to -18.8. `level: off` gives the decoder's level less 3 dB, as Zyphra serves it.
 - **Text** (2026-11-15): Zyphra's normalizer (`zyphra-textnorm`, pure Rust; option `normalize`) and the edit build's

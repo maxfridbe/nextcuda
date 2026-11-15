@@ -226,7 +226,7 @@ pub const TARGET_DBFS: f32 = -19.0;
 /// Loudness leveling: ZONOS3-Mini drifts quieter through a long take with some voices (Zyphra's own runtime does the
 /// same on the same embedding: -26 -> -32 dB, -30 -> -42 dB over 27 s), and a preset's level is its recording's (Savannah
 /// -29 dB). The level of the speech around each 50 ms frame (active frames only, a 3 s window) is brought to `target`
-/// by a gain that moves slowly (0.5 s smoothing, -12 to +40 dB), so a sentence keeps its own dynamics while the take as
+/// by a gain that moves slowly (0.5 s smoothing, -12 to +50 dB), so a sentence keeps its own dynamics while the take as
 /// a whole holds its level. Pauses keep the gain of the speech before them.
 pub fn level(pcm: &mut [f32], rate: u32, target: f32) {
     let hop = (rate as usize / 20).max(1);
@@ -239,12 +239,10 @@ pub fn level(pcm: &mut [f32], rate: u32, target: f32) {
         s.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>() / s.len().max(1) as f64
     }).collect();
     let db = |e: f64| 10.0 * (e + 1e-12).log10();
-    // active: within 35 dB of the take's loud frames (relative: a take that fades to a whisper keeps its tail), above
-    // digital silence
-    let mut sorted: Vec<f64> = energy.clone();
-    sorted.sort_by(|a, b| b.total_cmp(a));
-    let loud = db(sorted[(nf / 20).min(nf - 1)]);
-    let active: Vec<bool> = energy.iter().map(|e| db(*e) > -80.0 && db(*e) > loud - 35.0).collect();
+    // active: within 35 dB of the loud frames around it (the 95th percentile of the 10 s about the frame: a take that
+    // fades 40 dB and more keeps its tail - a gate against the whole take's loud frames took a faded tail for silence
+    // and left it 5 dB low, platform job f77a24fb), above digital silence
+    let active = active_frames(&energy);
     if !active.iter().any(|a| *a) {
         return;
     }
@@ -260,7 +258,7 @@ pub fn level(pcm: &mut [f32], rate: u32, target: f32) {
         let (lo, hi) = (f.saturating_sub(half), (f + half + 1).min(nf));
         let n = cnt[hi] - cnt[lo];
         // a window with too little speech keeps the gain before it (the first speech's for a leading pause)
-        let g = if n >= 4 { Some((target - db((sum[hi] - sum[lo]) / n as f64) as f32).clamp(-12.0, 40.0)) } else { None };
+        let g = if n >= 4 { Some((target - db((sum[hi] - sum[lo]) / n as f64) as f32).clamp(-12.0, MAX_GAIN_DB)) } else { None };
         if g.is_some() {
             last = g;
         }
@@ -285,6 +283,24 @@ pub fn level(pcm: &mut [f32], rate: u32, target: f32) {
         let g = gain_db[f0] * (1.0 - t) + gain_db[f1] * t;
         *x *= 10f32.powf(g / 20.0);
     }
+}
+
+/// The most the leveling raises (a take that fades to -64 dBFS of speech comes back)
+pub const MAX_GAIN_DB: f32 = 50.0;
+
+/// The 50 ms frames of speech among `energy` (mean squares): above -80 dBFS and within 35 dB of the 95th percentile of
+/// the 10 s about each frame
+pub fn active_frames(energy: &[f64]) -> Vec<bool> {
+    let db = |e: f64| 10.0 * (e + 1e-12).log10();
+    let nf = energy.len();
+    let half = 100;
+    (0..nf).map(|f| {
+        let (lo, hi) = (f.saturating_sub(half), (f + half + 1).min(nf));
+        let mut w: Vec<f64> = energy[lo..hi].to_vec();
+        w.sort_by(|a, b| b.total_cmp(a));
+        let loud = db(w[(w.len() / 20).min(w.len() - 1)]);
+        db(energy[f]) > -80.0 && db(energy[f]) > loud - 35.0
+    }).collect()
 }
 
 /// A control span placed in a take: its start and end frame and its hidden deltas by source
@@ -807,6 +823,23 @@ mod tests {
         let mut quiet = vec![0f32; 1000];
         level(&mut quiet, rate as u32, TARGET_DBFS);
         assert!(quiet.iter().all(|x| *x == 0.0));
+    }
+
+    #[test]
+    fn leveling_brings_back_a_tail_faded_45_db() {
+        // 30 s of a tone fading from -24 to -69 dB: the old gate (35 dB under the whole take's loud frames) took the
+        // tail for silence
+        let rate = 44100;
+        let mut v: Vec<f32> = (0..30 * rate).map(|i| {
+            let t = i as f32 / rate as f32;
+            10f32.powf((-24.0 - 1.5 * t) / 20.0) * 2f32.sqrt() * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+        }).collect();
+        level(&mut v, rate as u32, TARGET_DBFS);
+        for s in [5usize, 15, 25] {
+            let w = &v[s * rate..(s + 2) * rate];
+            let db = 10.0 * (w.iter().map(|x| (*x as f64).powi(2)).sum::<f64>() / w.len() as f64).log10();
+            assert!((db + 19.0).abs() < 1.5, "{s} s: {db}");
+        }
     }
 
     #[test]
