@@ -512,11 +512,25 @@ enum KvTy {
 /// fall back to the first's where theirs does not fit. auto (the default): q8_0 there, half on the others (no widening
 /// as the slower card's attention reads it); auto-q4: q4_0 there, half on the others; q8, q4, f16: that on every GPU
 fn kv_mode() -> (KvTy, KvTy) {
-    match std::env::var("NS_Q35_KV").as_deref() {
-        Ok("q8") => (KvTy::Q8, KvTy::Q8),
-        Ok("q4") => (KvTy::Q4, KvTy::Q4),
-        Ok("f16") => (KvTy::F16, KvTy::F16),
-        Ok("auto-q4") => (KvTy::Q4, KvTy::F16),
+    kv_mode_of(std::env::var("NS_Q35_KV").ok().as_deref().or_else(|| KV_DEFAULT.get().copied().flatten()))
+}
+
+/// A process's default attention cache when NS_Q35_KV is not set (`set_kv_default`): an engine whose model needs one
+/// (Haru-4B: half - its quantized cache doubled the worst hidden-state error against the reference)
+static KV_DEFAULT: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+
+/// The attention cache NS_Q35_KV's values name ("f16", "q8", "q4", "auto-q4"), for engines loaded in this process when
+/// NS_Q35_KV is not set; the first call wins
+pub fn set_kv_default(mode: &'static str) {
+    let _ = KV_DEFAULT.set(Some(mode));
+}
+
+fn kv_mode_of(v: Option<&str>) -> (KvTy, KvTy) {
+    match v {
+        Some("q8") => (KvTy::Q8, KvTy::Q8),
+        Some("q4") => (KvTy::Q4, KvTy::Q4),
+        Some("f16") => (KvTy::F16, KvTy::F16),
+        Some("auto-q4") => (KvTy::Q4, KvTy::F16),
         _ => (KvTy::Q8, KvTy::F16),
     }
 }

@@ -96,6 +96,9 @@ impl Lm {
         }
         let ty = f.tensor("blk.0.ffn_up.weight").map(|t| t.ty.name().to_lowercase()).unwrap_or_default();
         let lm_bytes = f.tensors.iter().map(|t| t.bytes).sum();
+        // the attention cache in half unless NS_Q35_KV says otherwise (measured against the reference: q8_0's doubled
+        // the worst hidden-state error over 12 frames, 5.4e-2 -> 1.25e-1; half costs 0.4 GiB more an hour)
+        nextcuda_qwen35::engine::set_kv_default("f16");
         let engine = Qwen35::load(f, std::slice::from_ref(gpu), false, (ctx, 1), log).map_err(|e| Error(e.0))?;
         let h = cfg.hidden;
         let mut exact = Vec::new();
