@@ -14,8 +14,8 @@ commercial: true
 license_note: 'Apache-2.0 code and weights (higurashi.ai); a pretrained base model, released for research - it holds a natural conversation but is not a reliable source of facts and does not follow instructions as an assistant does; it imitates the voice of a reference clip: clone only your own voice or one you have permission to use'
 title: 'Haru-4B (full-duplex voice conversation in lockstep; Rust + CUDA, its language model Q8_0)'
 about: 'A live voice conversation over /v1/realtime in lockstep: every 133 ms one frame of your audio in, one frame of its own out (silence included), so it listens while it speaks - back-channels, interruptions and overlaps are its own. A character card (persona, names, relationship, situation; nine languages) sets who it is, a saved voice (3 s - 3 min of one speaker) how it sounds. One card'
-gpus: '0|1'                      # 17.0 ms a frame on the 5070, 29.5 on the 3060 (real time: 133)
-vram_gib: 9.0                    # measured: 7.2 GiB in use after the load (5070), 7.9 with a conversation of an hour (28,672 positions) in a q8_0 attention cache; the half cache Haru takes by default adds 0.4
+gpus: '0|1'                      # 19.4 ms a frame on the 5070, 40.4 on the 3060 (real time: 133)
+vram_gib: 9.0                    # measured: 7.2 GiB in use after the load (5070), 8.3 with a conversation of an hour (28,672 positions, half attention cache)
 speech:
 - realtime                       # a live conversation: /v1/realtime (lockstep below; a saved voice's recording is its voice). It
                                  #   does not read text aloud: no clone / voices here, so speech requests never come to it
