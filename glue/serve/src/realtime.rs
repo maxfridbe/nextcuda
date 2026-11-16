@@ -483,6 +483,7 @@ fn describe(s: &Session, model: &str, rt: &nextcuda_audio::Realtime) -> Value {
 pub fn serve(mut c: Conn, req: &Request, engine: &Mutex<Box<dyn AudioEngine>>, model: &str, voices: VoiceLookup) -> Result<(), String> {
     let rt = engine.lock().unwrap_or_else(|x| x.into_inner()).realtime();
     let rt = rt.ok_or_else(|| format!("{model} does not hold live conversations (/v1/realtime needs a full-duplex speech model)"))?;
+    c.nodelay();
     upgrade(&mut c, req).map_err(|e| e.to_string())?;
     let out = WsOut(Arc::new(Mutex::new(c.try_clone().map_err(|e| e.to_string())?)));
     let ga = http::header(&req.head, "openai-beta").is_none() && req.target.contains("flavor=ga");

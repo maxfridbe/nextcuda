@@ -219,6 +219,8 @@ pub fn splice(client: &mut Conn, upstream: &Target, req: &Request, target: &str)
     }
     out.push_str("\r\n");
     let mut up = Conn::connect(upstream).map_err(|e| format!("{upstream} does not answer ({e})"))?;
+    up.nodelay();
+    client.nodelay();
     up.write_all(out.as_bytes()).and_then(|_| up.flush()).map_err(|e| e.to_string())?;
     if let Conn::Tls(t) = client {
         t.pump().map_err(|e| e.to_string())?;
@@ -236,6 +238,15 @@ pub fn splice(client: &mut Conn, upstream: &Target, req: &Request, target: &str)
 }
 
 impl Conn {
+    /// Small writes sent at once (TCP_NODELAY): a live conversation's frames are small messages each way, and Nagle's
+    /// wait for the last one's ACK against the peer's delayed ACK held each answer up to ~40 ms (a lockstep frame's
+    /// turnaround measured 60 ms over the front door, 18 ms beside it)
+    pub fn nodelay(&self) {
+        if let Conn::Tcp(s) = self {
+            let _ = s.set_nodelay(true);
+        }
+    }
+
     /// Both directions closed (a splice's end: the other copy's read returns)
     pub fn shutdown(&self) {
         let _ = match self {
