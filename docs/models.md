@@ -107,8 +107,8 @@ controls:
 
 | model | steps | cfg | negative | sides (multiple) | max pixels | edit | alpha | LoRAs | other |
 |---|---|---|---|---|---|---|---|---|---|
-| `qwen-image-2.1-q8`, `-q6k`, `-rrq4` | 1-100, 40 | 1-30, 4 | yes | 256-4096 (16) | 4,194,304 | 8 pictures, strength with reference false | yes | yes | |
-| `qwen-image-2.1-q8-fast` | 1-100, 40 | 1-30, 4 | yes | 256-4096 (16) | 4,194,304 | as above | yes | yes | int8: a seed's picture differs slightly |
+| `qwen-image-2.1-q8`, `-q6k`, `-rrq4` | 20-100, 40 | 1-30, 4 | yes | 256-4096 (16) | 4,194,304 | 8 pictures, strength with reference false | yes | yes | |
+| `qwen-image-2.1-q8-fast` | 20-100, 40 | 1-30, 4 | yes | 256-4096 (16) | 4,194,304 | as above | yes | yes | int8: a seed's picture differs slightly |
 | `qwen-image-2.1-turbo-q8` | 6 fixed | none | no | 256-4096 (16) | 4,194,304 | as above | yes | yes | |
 | `qwen-image-2.1-turbo-q8-fast` | 6 fixed | none | no | 256-4096 (16) | 4,194,304 | as above | yes | yes | int8 |
 | `qwen-image-2512-q4km` | 1-100, 4 (under 20 Lightning) | 1-30, 1 | yes | 256-4096 (16) | 4,194,304 | none | no | yes | |
@@ -116,7 +116,7 @@ controls:
 | `p-h3-image` | 8 fixed | none | no | 256-4096 (32), default 2912x2912 | 8,912,896 | 8 pictures, strength with or without reference (reference false: 1) | no | no | euler / lcm; eta, s_noise, deblock, deblock_strength |
 | `p-h3-image-pdmd2` | 1-8, 2 | none | no | 256-4096 (32) | 8,912,896 | as above | no | no | lcm default, eta 1 |
 | `ming-image-0.1-design` | 1-50, 12 | 1-10, 1 | no | 512-4096 (32) | 4,194,304 | none | yes | no | made at its nearest trained size, resized |
-| `moss-image-sft-q8` | 1-100, 50 | 1-30, 3 | yes | 64-4096 (16) | 4,220,160 | none | no | yes | shift 0.1-20, 5; presets |
+| `moss-image-sft-q8` | 20-100, 50 | 1-30, 3 | yes | 64-4096 (16) | 4,220,160 | none | no | yes | shift 0.1-20, 5; presets |
 | `moss-image-sft-turbo4-q8` | 1-8, 4 | none | no | 64-4096 (16) | 4,220,160 | none | no | yes | presets |
 | `moss-image-sft-turbo8-q8`, `-dmd2-q8` | 1-16, 8 | none | no | 64-4096 (16) | 4,220,160 | none | no | yes | presets |
 
@@ -125,7 +125,8 @@ Every row: seed honoured, up to 8 pictures a request. What the engines accept be
 `shift` on its `shift` schedule and a reference edit's strength; 2512 ignores sampler, schedule and shift; Z-Image, P-H3
 and Ming drop per-request LoRAs at their reload; P-H3 clamps eta, s_noise and deblock_strength; Ming reads no negative
 prompt and makes any size at its nearest trained one; MOSS's turbo cards honour cfg and shift though the engine reports
-neither. The rules leave all of that out.
+neither; the full 2.1 and MOSS models take any step count, where under 20 a picture stops half made (image job
+c989bf51: a turbo's 6 steps sent to the full 2.1). The rules leave all of that out.
 
 ## What runs where, by engine
 

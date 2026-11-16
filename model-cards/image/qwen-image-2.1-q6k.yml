@@ -31,12 +31,12 @@ files:
 guide: guides/qwen-image-2.1.md
 
 # The request rules the platform's image control enforces (docs/models.md "Image controls", schema 1); system.models
-# carries them on this model's row. Checked against the Rust engine (image/qwenimage21/src/rust/mod.rs): any step count,
-# cfg above 1 guides against the negative prompt (cfg <= 1: none, the negative unread), sides multiples of 16; an
+# carries them on this model's row. Checked against the Rust engine (image/qwenimage21/src/rust/mod.rs): it takes any
+# step count, but under 20 the full model stops half made (c989bf51: 6 steps, hazy) - 20 is the least offered; cfg above 1 guides against the negative prompt (cfg <= 1: none, the negative unread), sides multiples of 16; an
 # edit's strength below 1 needs reference false (with reference it is ignored); the server never passes a mask.
 controls:
   version: 1
-  steps: {min: 1, max: 100, default: 40}
+  steps: {min: 20, max: 100, default: 40}
   cfg: {min: 1, max: 30, default: 4}
   negative: true
   size: {min_side: 256, max_side: 4096, multiple: 16, max_pixels: 4194304, default: 1024x1024}

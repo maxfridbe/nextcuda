@@ -43,10 +43,11 @@ guide: guides/moss-image.md
 
 # The request rules the platform's image control enforces (docs/models.md "Image controls", schema 1). The engine
 # (image/mossimage/src/lib.rs) refuses sides outside 64..4096, off 16s or above 4,220,160 pixels, and pictures; it
-# merges LoRAs at load. Guidance (cfg above 1, against the negative prompt) and the shift (above 0) are honoured.
+# merges LoRAs at load. Guidance (cfg above 1, against the negative prompt) and the shift (above 0) are honoured; any step count runs, 20 is
+# the least offered (the full model is not a few-step one).
 controls:
   version: 1
-  steps: {min: 1, max: 100, default: 50}
+  steps: {min: 20, max: 100, default: 50}
   cfg: {min: 1, max: 30, default: 3}
   negative: true
   size:
