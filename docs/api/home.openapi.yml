@@ -39,6 +39,25 @@ paths:
           description: 'an error: the body''s `error` says what'
       x-aliases:
       - /openapi.yaml
+  /cert.pem:
+    get:
+      operationId: certPem
+      summary: 'The https port''s certificate (PEM; never its key): trust it once on a device instead of clicking through the'
+      tags:
+      - documents
+      description: 'The https port''s certificate (PEM; never its key): trust it once on a device instead of clicking through the browser''s warning (NS_TLS_PORT, the same routes over https)'
+      responses:
+        '200':
+          description: the file
+          content:
+            application/x-pem-file:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
+      x-aliases:
+      - /cert.crt
   /openapi.json:
     get:
       operationId: openapiJson

@@ -470,6 +470,14 @@ export function routes(base = "", fetcher: typeof fetch = (u, i) => fetch(u, i))
      */
     openapiYml: (): string => r.url("/openapi.yml", {}, true),
     /**
+     * The https port's certificate (PEM; never its key): trust it once on a device instead of clicking through the browser's warning (NS_TLS_PORT, the same routes over https)
+     * @route GET /cert.pem
+     * @alias /cert.crt
+     * @tags documents
+     * @produces application/x-pem-file
+     */
+    certPem: (): string => r.url("/cert.pem", {}, true),
+    /**
      * The same document as JSON
      * @route GET /openapi.json
      * @tags documents

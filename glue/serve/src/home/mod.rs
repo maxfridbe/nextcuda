@@ -431,6 +431,42 @@ impl Home {
         Ok(())
     }
 
+    /// The https certificate and key: NS_TLS_CERT / NS_TLS_KEY, else `tls/cert.pem` and `tls/key.pem` beside
+    /// serve.json
+    pub fn tls_files(&self) -> (PathBuf, PathBuf) {
+        let dir = self.state_file.with_file_name("tls");
+        let home = std::env::var("HOME").unwrap_or_default();
+        let set = |k: &str| {
+            let v = self.o.cfg.get(k)?.trim().to_string();
+            (!v.is_empty()).then(|| PathBuf::from(v.strip_prefix("~/").map_or(v.clone(), |r| format!("{home}/{r}"))))
+        };
+        (set("NS_TLS_CERT").unwrap_or_else(|| dir.join("cert.pem")), set("NS_TLS_KEY").unwrap_or_else(|| dir.join("key.pem")))
+    }
+
+    /// The front door over https (crate::tls): the certificate made or kept, then the same routes as `run`, each
+    /// connection's handshake in its own thread. Nothing about the http port changes.
+    pub fn run_tls(self: Arc<Self>, addr: &str) -> Result<(), String> {
+        let (cert, key) = self.tls_files();
+        let sans: Vec<String> = self.o.cfg.get("NS_TLS_SANS").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        crate::tls::ensure_cert(&cert, &key, &sans)?;
+        let cfg = crate::tls::server_config(&cert, &key)?;
+        let l = TcpListener::bind(addr).map_err(|e| format!("cannot listen on {addr}: {e}"))?;
+        eprintln!("nextcuda serve on https://{addr}/ (certificate {}; GET /cert.pem)", cert.display());
+        self.serve_tls(l, cfg);
+        Ok(())
+    }
+
+    pub(crate) fn serve_tls(self: Arc<Self>, l: TcpListener, cfg: Arc<rustls::ServerConfig>) {
+        for c in l.incoming().flatten() {
+            let (me, cfg) = (self.clone(), cfg.clone());
+            std::thread::spawn(move || match crate::tls::TlsConn::accept(c, cfg) {
+                Ok(t) => me.handle(Conn::Tls(Box::new(t))),
+                // a browser that has not accepted the certificate yet ends here: nothing to log
+                Err(_) => {}
+            });
+        }
+    }
+
     fn handle(self: &Arc<Self>, mut s: Conn) {
         let req = match http::read_request_at(&mut s) {
             Ok(r) => r,

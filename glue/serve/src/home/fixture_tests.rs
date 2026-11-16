@@ -987,3 +987,60 @@ fn video_control_depth_needs_a_depth_model_and_is_an_image_job() {
     let caps = super::life::capabilities(&w.entry("depth-anything-v2-small"));
     assert_eq!((caps.0, caps.1), (vec!["depth"], vec!["video.control"]));
 }
+
+/// One request over https to the front door: TLS trusting only `pem` (so `localhost` is checked against its SANs),
+/// the request written, the answer read to the connection's end - which must close cleanly (close_notify)
+fn https(port: u16, pem: &[u8], req: &[u8]) -> String {
+    use rustls::pki_types::pem::PemObject;
+    let mut roots = rustls::RootCertStore::empty();
+    for c in rustls::pki_types::CertificateDer::pem_slice_iter(pem) {
+        roots.add(c.unwrap()).unwrap();
+    }
+    let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls_graviola::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let conn = rustls::ClientConnection::new(Arc::new(cfg), "localhost".try_into().unwrap()).unwrap();
+    let mut s = rustls::StreamOwned::new(conn, std::net::TcpStream::connect(("127.0.0.1", port)).unwrap());
+    s.write_all(req).unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).expect("the answer, ended by close_notify");
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The https port end to end: the certificate made beside serve.json for the configured names, the front door's same
+/// routes over TLS (a page route, the certificate, an API call with a large body), and a client that does not trust
+/// the certificate refused.
+#[test]
+fn the_https_port_serves_the_same_routes_with_its_own_certificate() {
+    let w = world("tls", vec![]);
+    w.mem.settings.lock().unwrap().insert("NS_TLS_SANS".into(), "localhost,127.0.0.1".into());
+    let (cert, key) = w.home.tls_files();
+    assert_eq!(cert, w.dir.join("tls/cert.pem"));
+    crate::tls::ensure_cert(&cert, &key, &["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let cfg = crate::tls::server_config(&cert, &key).unwrap();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let h = w.home.clone();
+    std::thread::spawn(move || h.serve_tls(l, cfg));
+    let pem = std::fs::read(&cert).unwrap();
+
+    let a = https(port, &pem, b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    assert!(a.starts_with("HTTP/1.1 200") && a.contains("\"ok\""), "{a}");
+    let a = https(port, &pem, b"GET /cert.pem HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    assert!(a.starts_with("HTTP/1.1 200") && a.ends_with(std::str::from_utf8(&pem).unwrap()), "{a}");
+    // a 24 MB body read whole over TLS before the answer (no token: the API's own refusal, in its envelope)
+    let body = vec![b'x'; 24 << 20];
+    let mut req = format!("POST /rpc/system.version HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+    req.extend_from_slice(&body);
+    let a = https(port, &pem, &req);
+    assert!(a.contains("\"ok\":false") && a.contains("Bearer"), "{}", &a[..a.len().min(400)]);
+
+    // a client that trusts something else is refused at the handshake
+    let d2 = w.dir.join("other");
+    crate::tls::ensure_cert(&d2.join("c.pem"), &d2.join("k.pem"), &["localhost".into()]).unwrap();
+    let wrong = std::fs::read(d2.join("c.pem")).unwrap();
+    let r = std::panic::catch_unwind(|| https(port, &wrong, b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+    assert!(r.is_err(), "an untrusted certificate is refused");
+}

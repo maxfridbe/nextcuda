@@ -37,9 +37,11 @@ pub struct Cx {
 }
 
 impl Cx {
-    /// `http://<host>` as the request was addressed (links in an answer), or "" without a Host
+    /// `http://<host>` as the request was addressed (links in an answer; `https://` on the https port), or "" without
+    /// a Host
     pub fn base(&self) -> String {
-        self.req.host.as_deref().map(|h| format!("http://{h}")).unwrap_or_default()
+        let scheme = if self.s.is_tls() { "https" } else { "http" };
+        self.req.host.as_deref().map(|h| format!("{scheme}://{h}")).unwrap_or_default()
     }
 
     /// Bytes with their type, the CORS headers and `headers` (each ending \r\n)

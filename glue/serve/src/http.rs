@@ -27,10 +27,11 @@ impl fmt::Display for Target {
     }
 }
 
-/// A connection of either kind.
+/// A connection of any kind: TCP, a Unix socket, or TLS over TCP (the front door's https port, crate::tls).
 pub enum Conn {
     Tcp(TcpStream),
     Unix(UnixStream),
+    Tls(Box<crate::tls::TlsConn>),
 }
 
 impl Conn {
@@ -44,20 +45,27 @@ impl Conn {
         match self {
             Conn::Tcp(s) => s.set_read_timeout(d),
             Conn::Unix(s) => s.set_read_timeout(d),
+            Conn::Tls(s) => s.sock().set_read_timeout(d),
         }
     }
     pub fn try_clone(&self) -> std::io::Result<Conn> {
         Ok(match self {
             Conn::Tcp(s) => Conn::Tcp(s.try_clone()?),
             Conn::Unix(s) => Conn::Unix(s.try_clone()?),
+            // one TLS session cannot be written from two handles
+            Conn::Tls(_) => return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "a TLS connection has one handle")),
         })
     }
-    /// "socket" for the control socket, "tcp" for the API port
+    /// "socket" for the control socket, "tcp" for the API port (over https too)
     pub fn kind(&self) -> &'static str {
         match self {
-            Conn::Tcp(_) => "tcp",
+            Conn::Tcp(_) | Conn::Tls(_) => "tcp",
             Conn::Unix(_) => "socket",
         }
+    }
+    /// whether it came in on the https port
+    pub fn is_tls(&self) -> bool {
+        matches!(self, Conn::Tls(_))
     }
 }
 
@@ -66,6 +74,7 @@ impl Read for Conn {
         match self {
             Conn::Tcp(s) => s.read(b),
             Conn::Unix(s) => s.read(b),
+            Conn::Tls(s) => s.read(b),
         }
     }
 }
@@ -75,12 +84,14 @@ impl Write for Conn {
         match self {
             Conn::Tcp(s) => s.write(b),
             Conn::Unix(s) => s.write(b),
+            Conn::Tls(s) => s.write(b),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             Conn::Tcp(s) => s.flush(),
             Conn::Unix(s) => s.flush(),
+            Conn::Tls(s) => s.flush(),
         }
     }
 }

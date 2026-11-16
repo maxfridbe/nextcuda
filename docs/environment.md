@@ -109,6 +109,10 @@ Where the program, its libraries, its models and its sockets are.
 | `NS_IMAGE_PORT2` | 8096 | the second image server's port (`image start --slot 1`), as `NS_AUDIO_PORT2` | serve |
 | `NS_PORT` | 8085 | the chat server's port (also the url the registry gives chat entries) | cli (llm start), serve, switch |
 | `NS_SERVE_PORT` | 8000 | the front door's port; `audio voices design` calls it there | serve, cli (audio) |
+| `NS_TLS_PORT` | 8443 | the front door's https port: the same routes as `NS_SERVE_PORT` over TLS (rustls, the pure-Rust graviola provider), with a self-signed certificate; browsers give a page the microphone only over https. 0: none. `GET /cert.pem` hands the certificate out, to trust once on a device. The http port is unchanged (no redirect) | serve |
+| `NS_TLS_CERT` | tls/cert.pem beside serve.json | the https certificate (PEM): made on the first start (10 years, ECDSA P-256) and kept, so a browser's exception stays good; a new one only when it is missing, within 30 days of its end, or lacks a name of `NS_TLS_SANS`. A certificate made elsewhere is used as it is, never replaced | serve |
+| `NS_TLS_KEY` | tls/key.pem beside serve.json | its private key (PEM, mode 600) | serve |
+| `NS_TLS_SANS` | the names found | the names and addresses a new certificate is for, comma-separated; unset: localhost, 127.0.0.1, ::1, the hostname, the tailnet name and addresses, every stable address of the host (read when it is made) | serve |
 | `OWUI_TOKEN` | a sign-in (works as is with WEBUI_AUTH=False) | Open WebUI's admin token for `glue/openwebui/install.sh` (it installs the pp / tg speed filter) | glue (openwebui install) |
 | `NS_SWITCH_PORT` | 8001 | the model switcher's port, as the front door reaches it (the switcher itself listens on --port, 8001) | serve |
 

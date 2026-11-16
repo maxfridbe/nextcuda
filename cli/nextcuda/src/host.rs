@@ -55,10 +55,11 @@ pub fn switch(args: &[String]) -> Result<(), String> {
     std::sync::Arc::new(sw).run(&addr)
 }
 
-/// `nextcuda serve [--host 0.0.0.0] [--port 8000] [--serve-host 0.0.0.0] [--idle-minutes 10]`: the front door - the GPUs
-/// and the models, enabling and loading them, one API for all (nextcuda_serve::home). Ports from the settings:
-/// NS_PORT, NS_SWITCH_PORT, NS_IMAGE_PORT(2), NS_AUDIO_PORT(2), NS_VIDEO_PORT, NS_CHAT_UI_PORT; the API's token NS_API_TOKEN
-/// (else one made and kept beside the registry); NS_IDLE_MINUTES.
+/// `nextcuda serve [--host 0.0.0.0] [--port 8000] [--tls-port 8443] [--serve-host 0.0.0.0] [--idle-minutes 10]`: the
+/// front door - the GPUs and the models, enabling and loading them, one API for all (nextcuda_serve::home). Ports from
+/// the settings: NS_PORT, NS_SWITCH_PORT, NS_IMAGE_PORT(2), NS_AUDIO_PORT(2), NS_VIDEO_PORT, NS_CHAT_UI_PORT; the API's
+/// token NS_API_TOKEN (else one made and kept beside the registry); NS_IDLE_MINUTES. The same routes over https on
+/// NS_TLS_PORT (8443; 0: none) with a self-signed certificate (NS_TLS_CERT, NS_TLS_KEY, NS_TLS_SANS; nextcuda_serve::tls).
 /// The registry and the settings for the front door (nextcuda-models', which the glue may not depend on)
 pub(crate) struct Store(pub(crate) Config);
 
@@ -112,8 +113,25 @@ pub fn home(cfg: &Config, args: &[String]) -> Result<(), String> {
         cfg: Box::new(Store(Config::load())),
         idle_minutes: idle,
     };
-    let addr = format!("{}:{}", opt(args, "--host").unwrap_or("0.0.0.0"), opt(args, "--port").map(str::to_string).or_else(|| cfg.get("NS_SERVE_PORT")).unwrap_or("8000".into()));
-    Home::new(o)?.run(&addr)
+    let host = opt(args, "--host").unwrap_or("0.0.0.0");
+    let addr = format!("{host}:{}", opt(args, "--port").map(str::to_string).or_else(|| cfg.get("NS_SERVE_PORT")).unwrap_or("8000".into()));
+    let home = Home::new(o)?;
+    // the same routes over https beside it (NS_TLS_PORT, 0: none): browsers give a page the microphone only over https.
+    // When it cannot start, the http port serves on and the log says why.
+    let tls_port = opt(args, "--tls-port").map(str::to_string).or_else(|| cfg.get("NS_TLS_PORT")).unwrap_or("8443".into());
+    match tls_port.trim().parse::<u16>() {
+        Ok(0) => {}
+        Ok(p) => {
+            let (h, a) = (home.clone(), format!("{host}:{p}"));
+            std::thread::spawn(move || {
+                if let Err(e) = h.run_tls(&a) {
+                    eprintln!("nextcuda serve: no https on {a}: {e}");
+                }
+            });
+        }
+        Err(_) => eprintln!("nextcuda serve: NS_TLS_PORT={tls_port} is not a port: no https"),
+    }
+    home.run(&addr)
 }
 
 /// `nextcuda gpustat [--out /run/gpustat.json] [--interval 3] [--power-window 15] [--pci ADDR] [--vram-mb N] [--once]`

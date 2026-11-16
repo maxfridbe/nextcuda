@@ -23,3 +23,12 @@ sha2 = "0.10"
 fancy-regex = "0.14"
 # image.describe: a picture's size read from its header before it is decoded
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+# the front door's https port (tls.rs): rustls over the graviola provider - pure Rust, no build script, no C (aws-lc-rs
+# and ring both compile C) -, the certificate made by rcgen with no crypto backend of its own (graviola signs) and a kept
+# one read by x509-parser
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+rustls-graviola = "0.4"
+graviola = "0.4"
+rcgen = { version = "0.14", default-features = false, features = ["pem"] }
+x509-parser = { version = "0.18", default-features = false }
+time = "0.3"

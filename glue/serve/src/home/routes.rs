@@ -516,6 +516,16 @@ fn openapi_yml(h: &Arc<Home>, cx: &mut Cx) -> Result<Sent, Fail> {
     Ok(Sent::new())
 }
 
+/// The https port's certificate (PEM; never its key): trust it once on a device instead of clicking through the
+/// browser's warning (NS_TLS_PORT, the same routes over https)
+#[route(get = "/cert.pem", alias = "/cert.crt", tags = "documents", produces = "application/x-pem-file")]
+fn cert_pem(h: &Arc<Home>, cx: &mut Cx) -> Result<Sent, Fail> {
+    let (cert, _) = h.tls_files();
+    let pem = std::fs::read(&cert).map_err(|_| (404, "no https certificate: the https port is off (NS_TLS_PORT=0) or has not started".to_string()))?;
+    cx.bytes(200, "application/x-pem-file", &pem, "Content-Disposition: attachment; filename=\"nextcuda-cert.pem\"\r\nCache-Control: no-cache\r\n");
+    Ok(Sent::new())
+}
+
 /// The same document as JSON
 #[route(get = "/openapi.json", tags = "documents")]
 fn openapi_json(h: &Arc<Home>, cx: &mut Cx) -> Result<Value, Fail> {
@@ -556,7 +566,7 @@ fn action(h: &Arc<Home>, _cx: &mut Cx, req: Action) -> Result<Map<String, Value>
     }
 }
 
-routes![sync Arc<Home>, Cx, Fail; health, openapi_yml, openapi_json, state, config, spec, run, action];
+routes![sync Arc<Home>, Cx, Fail; health, openapi_yml, cert_pem, openapi_json, state, config, spec, run, action];
 
 /// The table, made once
 pub fn table() -> &'static [rpcgen::SyncRoute<Arc<Home>, Cx, Fail>] {

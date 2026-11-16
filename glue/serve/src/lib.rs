@@ -20,6 +20,7 @@ pub mod image;
 pub mod serve;
 pub mod switch;
 pub mod telemetry;
+pub mod tls;
 pub mod video;
 pub mod voices;
 pub mod wfe;

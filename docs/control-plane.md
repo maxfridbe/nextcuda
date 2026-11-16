@@ -183,6 +183,12 @@ there untouched. The method table (rpcgen), the HTTP wiring, process spawning, t
   and `image.edit` run as jobs (`wait: false`, `label`, `reentrant_id`), asked for with `image.status` /
   `image.jobs`, stopped with `image.cancel`; `image.upload`, `image.queue.*`, `system.busy`, `system.cards`,
   `system.models` and `system.version` (which lists its features) are there as they are on nextsycl.
+- **https on :8443** (`NS_TLS_PORT`; 0 turns it off): the same routes over TLS beside :8000, which is unchanged (no
+  redirect) - browsers give a page the microphone only over https. In process and all Rust (rustls with the graviola
+  provider, `glue/serve/src/tls.rs`). The certificate is self-signed, made on the first start in `tls/` beside
+  `serve.json` (the key mode 600) for localhost, 127.0.0.1, ::1, the hostname, the tailnet name and every address, and
+  kept (a new one only when it is missing, within 30 days of its 10-year end, or lacks a name of `NS_TLS_SANS`);
+  `GET /cert.pem` hands it out, to trust once on a device instead of clicking through the browser's warning.
 - **Maintenance mode** (the page's Maintenance button, `system.maintenance {on, message, eta_s, unload}`): the box set
   aside for development while callers are told. What would start work - chat, generation, edits, speech,
   `system.load` / `enable`, the OpenAI POST routes - is refused with error code `maintenance` (503, retryable,
