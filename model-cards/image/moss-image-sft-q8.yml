@@ -40,3 +40,25 @@ files:
     sha256: c3bdf94dc67ec69b30ea9fe1fa8340085679cae64d019f7c7e4a9921f1a7f17a
     path: moss-image-sft/vae/diffusion_pytorch_model.safetensors
 guide: guides/moss-image.md
+
+# The request rules the platform's image control enforces (docs/models.md "Image controls", schema 1). The engine
+# (image/mossimage/src/lib.rs) refuses sides outside 64..4096, off 16s or above 4,220,160 pixels, and pictures; it
+# merges LoRAs at load. Guidance (cfg above 1, against the negative prompt) and the shift (above 0) are honoured.
+controls:
+  version: 1
+  steps: {min: 1, max: 100, default: 50}
+  cfg: {min: 1, max: 30, default: 3}
+  negative: true
+  size:
+    min_side: 64
+    max_side: 4096
+    multiple: 16
+    max_pixels: 4220160
+    default: 1024x1024
+    presets: {ratios: ['1:8', '1:4', '1:3', '1:2', '9:16', '2:3', '3:4', '1:1', '4:3', '3:2', '16:9', '2:1', '3:1', '4:1', '8:1'], pixels: [262144, 1048576, 1572864, 2097152, 4194304]}
+  seed: true
+  n: 8
+  loras: true
+  edit: null
+  transparent: false
+  shift: {min: 0.1, max: 20, default: 5}

@@ -40,3 +40,20 @@ files:
     sha256: 7f5bed402dc8c77dc2e0ab1929a85d4df433b7cf7b599dfa8c353da98db0b90a
     path: ming-image-0.1/ming_image_vae_bf16.safetensors
 guide: guides/ming-image.md
+
+# The request rules the platform's image control enforces (docs/models.md "Image controls", schema 1). The engine
+# (image/mingimage/src/lib.rs): sides 64..4096, made at the nearest of its trained sizes (about 1 or 4 MP) and resized
+# to the size asked - so 512..4096 on 32s here, at most 4 MP; cfg above 1 guides against the zero condition (it has no
+# negative prompt); the shift is its own (6); alpha with the RGBA phrase; no pictures; LoRAs would be dropped.
+controls:
+  version: 1
+  steps: {min: 1, max: 50, default: 12}
+  cfg: {min: 1, max: 10, default: 1}
+  negative: false
+  size: {min_side: 512, max_side: 4096, multiple: 32, max_pixels: 4194304, default: 1024x1024}
+  seed: true
+  n: 8
+  loras: false
+  edit: null
+  transparent: true
+  note: 'made at the nearest of its trained sizes, then resized to the size asked'

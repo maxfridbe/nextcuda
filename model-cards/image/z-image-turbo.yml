@@ -61,3 +61,26 @@ files:
     sha256: d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101
     path: z-image-turbo/tokenizer/tokenizer_config.json
 guide: guides/z-image-turbo.md
+
+# The request rules the platform's image control enforces (docs/models.md "Image controls", schema 1), as the engine
+# (image/zimage/src/lib.rs) refuses: steps 1..50, cfg 0 or 1 only, no negative prompt, sides 256..2048 on 16s and at
+# most 2,359,296 pixels, euler / shift only, shift above 0 to 20, no pictures, no alpha; LoRAs would be dropped.
+controls:
+  version: 1
+  steps: {min: 1, max: 50, default: 8}
+  cfg: null
+  negative: false
+  size:
+    min_side: 256
+    max_side: 2048
+    multiple: 16
+    max_pixels: 2359296
+    default: 1024x1024
+    presets: {ratios: ['9:21', '9:16', '2:3', '3:4', '7:9', '1:1', '9:7', '4:3', '3:2', '16:9', '21:9'], pixels: [1048576, 1638400, 2359296]}
+  seed: true
+  n: 8
+  loras: false
+  edit: null
+  transparent: false
+  sampler: {values: [euler], default: euler}
+  shift: {min: 0.1, max: 20, default: 3}

@@ -52,6 +52,13 @@ Other keys: `local` (role: what it is - a part made on the machine rather than d
 or another registry entry), `base` (a lora: the model it rides on), `defaults` (image / video / audio: the
 request's defaults - steps, cfg, size, seconds ...), `speech` (audio: `voices`, `design`, `clone`).
 
+### Image controls
+
+A picture-making image card carries `controls:` - its request rules (steps, guidance, negative prompt, sizes, edits,
+alpha, LoRAs, samplers, its own options), schema 1, read off the engine. The entry and the `system.models` row carry
+them; the creative platform's image control and request builder enforce them. The schema and every model's values:
+[docs/models.md](../docs/models.md) "Image controls".
+
 ### Inline annotations
 
 `annotations.yml` says, per architecture, what a speech or song model's text may carry inline: the syntax, what it

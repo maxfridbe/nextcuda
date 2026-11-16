@@ -182,6 +182,11 @@ impl Catalog {
             if let Some(n) = card.get("annotations_note") {
                 e["annotations_note"] = n.clone();
             }
+            // an image model's request rules (schema 1, docs/models.md "Image controls"): the card's, also for an
+            // entry registered before cards carried them
+            if let Some(c) = card.get("controls") {
+                e["controls"] = c.clone();
+            }
         }
     }
 
@@ -523,7 +528,7 @@ fn entry(m: &Value, paths: &BTreeMap<String, PathBuf>, local: &BTreeMap<String, 
         "files": files, "gpus": m.get("gpus").cloned().unwrap_or(json!("0")), "env": env, "enabled": true,
         "catalog": m["id"],
     });
-    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "annotations", "annotations_note", "does", "silo", "vram_gib", "headroom_gib", "streams", "split", "split_vram_gib", "concurrency", "coexistence"].iter().chain(LICENSE_KEYS) {
+    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "annotations", "annotations_note", "controls", "does", "silo", "vram_gib", "headroom_gib", "streams", "split", "split_vram_gib", "concurrency", "coexistence"].iter().chain(LICENSE_KEYS) {
         if let Some(v) = m.get(k) {
             e[k] = v.clone();
         }
@@ -724,6 +729,67 @@ mod tests {
         assert_eq!(e["env"], json!({"A": "/m/x.gguf", "C": "plain"}));
         let e = entry(&m, &paths, &BTreeMap::from([("mtp".to_string(), "/d/rt".to_string())]));
         assert_eq!(e["env"]["B"], "/d/rt");
+    }
+
+    #[test]
+    fn every_picture_making_card_states_its_request_rules() {
+        // docs/models.md "Image controls" (schema 1): the platform's image control offers these and its request
+        // builder refuses beyond them, so they must be whole and agree with the card's own defaults. The values
+        // themselves were read off each engine (the comment above each card's block says where).
+        let cat = repo_cards();
+        let draws = ["qwen-image-2.1", "qwen-image-2512", "z-image", "p-h3-image", "ming-image", "moss-image"];
+        let mut seen = 0;
+        for m in cat.models.iter().filter(|m| s(m, "kind") == "image") {
+            let id = s(m, "id");
+            let c = &m["controls"];
+            if !draws.contains(&s(m, "arch").as_str()) {
+                assert!(c.is_null(), "{id}: only picture-making models carry controls");
+                continue;
+            }
+            seen += 1;
+            assert_eq!(c["version"], 1, "{id}: controls version 1");
+            let range = |k: &str| {
+                let r = &c[k];
+                let (lo, hi, d) = (r["min"].as_f64().unwrap(), r["max"].as_f64().unwrap(), r["default"].as_f64().unwrap());
+                assert!(lo <= d && d <= hi, "{id}: {k} default {d} outside {lo}..{hi}");
+                (lo, hi, d)
+            };
+            let (_, _, steps) = range("steps");
+            assert_eq!(m["defaults"]["steps"].as_f64(), Some(steps), "{id}: the card's default steps are the rules'");
+            if !c["cfg"].is_null() {
+                range("cfg");
+            } else {
+                assert!(!c["negative"].as_bool().unwrap(), "{id}: no guidance, no negative prompt");
+            }
+            let size = &c["size"];
+            let (lo, hi, mult) = (size["min_side"].as_u64().unwrap(), size["max_side"].as_u64().unwrap(), size["multiple"].as_u64().unwrap());
+            let d = s(size, "default");
+            assert_eq!(m["defaults"]["size"].as_str(), Some(d.as_str()), "{id}: the card's default size is the rules'");
+            let (w, h) = d.split_once('x').map(|(a, b)| (a.parse::<u64>().unwrap(), b.parse::<u64>().unwrap())).unwrap();
+            for v in [w, h] {
+                assert!(lo <= v && v <= hi && v % mult == 0, "{id}: default size {d} inside its own rules");
+            }
+            assert!(size["max_pixels"].as_u64().is_none_or(|p| w * h <= p), "{id}: default size within max_pixels");
+            for k in ["negative", "seed", "loras", "transparent"] {
+                assert!(c[k].is_boolean(), "{id}: {k} true or false");
+            }
+            assert!(c["n"].as_u64().is_some_and(|n| (1..=8).contains(&n)), "{id}: n 1..8 (the server's own limit)");
+            assert!(c["edit"].is_null() || c["edit"]["images"].as_u64().is_some_and(|n| (1..=8).contains(&n)), "{id}: edit pictures 1..8");
+            // the server never passes a mask to an engine (glue/serve/src/image.rs: Edit.mask is None)
+            assert!(c["edit"].is_null() || c["edit"]["mask"] == false, "{id}: no mask reaches an engine");
+            // a turbo Qwen-Image 2.1 runs the card's own sigmas: exactly that many steps (c989bf51's lesson)
+            if let Some(sig) = m["env"]["NS_QI_SIGMAS"].as_str() {
+                let n = sig.split(',').count() as f64;
+                assert_eq!((c["steps"]["min"].as_f64(), c["steps"]["max"].as_f64()), (Some(n), Some(n)), "{id}: fixed at its sigmas");
+            }
+            // an entry carries them, and an entry registered before cards did gets them from its card
+            let e = entry(m, &BTreeMap::new(), &BTreeMap::new());
+            assert_eq!(&e["controls"], c, "{id}: the entry carries the card's controls");
+            let mut old = vec![json!({"id": id, "catalog": id})];
+            cat.fill_annotations(&mut old);
+            assert_eq!(&old[0]["controls"], c, "{id}: filled in for an old entry");
+        }
+        assert!(seen >= 15, "{seen} picture-making cards");
     }
 
     #[test]

@@ -12,11 +12,11 @@ about: 'Qwen-Image-2512 as unsloth''s Q4_K_M GGUF (13.2 GB: the blocks that fit 
 gpus: '0'
 vram_gib: 10.0                    # the blocks that fit beside 3.5 GiB of activations (NC_Q2512_RESERVE_GIB); the rest stream from host RAM
 defaults:
-  steps: 30
-  cfg: 4.0
+  steps: 4                      # Lightning (the LoRA); 20 or more is a full guided run (30, cfg 4)
+  cfg: 1.0
   sampler: euler
   schedule: shift
-  size: 1328x1328
+  size: 1024x1024
 env: {}
 files:
   transformer:
@@ -44,3 +44,19 @@ files:
     sha256: de0d236e54ecf2c43b32447d13478c6eae0d361b1fed48c69675b084fa240d87
     path: qwen-image-2512/Qwen-Image-2512-Lightning-4steps-V1.0-bf16.safetensors
 guide: guides/qwen-image-2.1.md
+
+# The request rules the platform's image control enforces (docs/models.md "Image controls", schema 1). The engine
+# (image/qwenimage21/src/q2512/mod.rs): under 20 steps the Lightning LoRA (4 by default, guidance 1), 20 or more a full
+# guided run; cfg above 1 guides against the negative prompt; no pictures (edits() is false) and no alpha.
+controls:
+  version: 1
+  steps: {min: 1, max: 100, default: 4}
+  cfg: {min: 1, max: 30, default: 1}
+  negative: true
+  size: {min_side: 256, max_side: 4096, multiple: 16, max_pixels: 4194304, default: 1024x1024}
+  seed: true
+  n: 8
+  loras: true
+  edit: null
+  transparent: false
+  note: 'under 20 steps the Lightning LoRA (no guidance); 20 or more a full guided run (30 and cfg 4 are the full defaults)'

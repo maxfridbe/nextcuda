@@ -33,3 +33,20 @@ files:
   llm-vision: qwen-image-21-llm-mmproj
   vae: qwen-image-21-vae
 guide: guides/qwen-image-2.1.md
+
+# The request rules the platform's image control enforces (docs/models.md "Image controls", schema 1); system.models
+# carries them on this model's row. The Rust engine runs the card's own 6 sigmas and refuses any other count
+# (image/qwenimage21/src/rust/mod.rs: "this model runs its own 6 sigmas"); the distill is made for cfg 1, so guidance
+# and the negative prompt are not offered.
+controls:
+  version: 1
+  steps: {min: 6, max: 6, default: 6}
+  cfg: null
+  negative: false
+  size: {min_side: 256, max_side: 4096, multiple: 16, max_pixels: 4194304, default: 1024x1024}
+  seed: true
+  n: 8
+  loras: true
+  edit: {images: 8, mask: false, strength: true, reference: true, strength_with_reference: false}
+  transparent: true
+

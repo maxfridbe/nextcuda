@@ -64,6 +64,69 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 
 Each model's guide (how to ask it, what it takes, what it answers) is in `model-cards/guides/`.
 
+## Image controls (schema 1)
+
+Every picture-making image card (Qwen-Image 2.1 / 2512, Z-Image, P-H3, Ming, MOSS) carries `controls:` - the request
+rules a client may build on - and `system.models` (and `system.state`) puts them on the model's row. The creative
+platform's image control offers only these values and its request builder refuses anything outside them, so a new
+model needs no platform change. The values were read off each engine, not guessed; where an engine accepts more than
+it makes well (a turbo's guidance, an unbounded step count, a value it clamps or ignores) the rules offer only what it
+makes well. `glue/models/src/catalog.rs` `every_picture_making_card_states_its_request_rules` checks every card.
+
+```yaml
+controls:
+  version: 1                     # integer; a reader refuses (treats as unknown) a version above its own; fields added
+                                 # within a version are optional
+  steps: {min: 6, max: 6, default: 6}          # min = max: fixed (the box's own count: a client leaves steps out)
+  cfg: {min: 1, max: 30, default: 4}           # null: no guidance (cfg 1 only)
+  negative: true                 # a negative prompt is read
+  size:
+    min_side: 256                # each side
+    max_side: 4096
+    multiple: 16                 # each side a multiple of this (refused otherwise - a client does not rely on rounding)
+    max_pixels: 4194304          # width x height at most (optional)
+    default: 1024x1024
+    sizes: []                    # optional: only these WxH
+    presets: {ratios: ['16:9'], pixels: [1048576]}   # optional: what the model was trained around, for a picker
+  seed: true                     # the seed is honoured (picture i: seed + i)
+  n: 8                           # pictures one request makes at most
+  loras: true                    # per-request LoRAs
+  edit:                          # null: text to image only (no pictures, no img2img)
+    images: 8                    # pictures one edit takes (the first is the one changed)
+    mask: false                  # a mask picture (no engine receives one today)
+    strength: true               # img2img strength below 1
+    reference: true              # the pictures condition the model (the instruction edit)
+    strength_with_reference: false   # strength below 1 also applies with reference true (else it needs reference false)
+  transparent: true              # background "transparent" gives an RGBA picture
+  sampler: {values: [euler, lcm], default: euler}    # optional: the samplers a client may name
+  shift: {min: 0.1, max: 20, default: 3}             # optional: the schedule's shift a client may set; absent: its own
+  options:                       # optional: the engine's own per-request options (`options: {name: value}`)
+    - {name: eta, type: number, min: 0, max: 1, default: 0, help: '...'}   # type number | bool | text
+  note: '...'                    # optional: one sentence for a picker (the int8 fast mode's seed caveat)
+```
+
+| model | steps | cfg | negative | sides (multiple) | max pixels | edit | alpha | LoRAs | other |
+|---|---|---|---|---|---|---|---|---|---|
+| `qwen-image-2.1-q8`, `-q6k`, `-rrq4` | 1-100, 40 | 1-30, 4 | yes | 256-4096 (16) | 4,194,304 | 8 pictures, strength with reference false | yes | yes | |
+| `qwen-image-2.1-q8-fast` | 1-100, 40 | 1-30, 4 | yes | 256-4096 (16) | 4,194,304 | as above | yes | yes | int8: a seed's picture differs slightly |
+| `qwen-image-2.1-turbo-q8` | 6 fixed | none | no | 256-4096 (16) | 4,194,304 | as above | yes | yes | |
+| `qwen-image-2.1-turbo-q8-fast` | 6 fixed | none | no | 256-4096 (16) | 4,194,304 | as above | yes | yes | int8 |
+| `qwen-image-2512-q4km` | 1-100, 4 (under 20 Lightning) | 1-30, 1 | yes | 256-4096 (16) | 4,194,304 | none | no | yes | |
+| `z-image-turbo` | 1-50, 8 | none | no | 256-2048 (16) | 2,359,296 | none | no | no | euler; shift 0.1-20, 3; presets |
+| `p-h3-image` | 8 fixed | none | no | 256-4096 (32), default 2912x2912 | 8,912,896 | 8 pictures, strength with or without reference (reference false: 1) | no | no | euler / lcm; eta, s_noise, deblock, deblock_strength |
+| `p-h3-image-pdmd2` | 1-8, 2 | none | no | 256-4096 (32) | 8,912,896 | as above | no | no | lcm default, eta 1 |
+| `ming-image-0.1-design` | 1-50, 12 | 1-10, 1 | no | 512-4096 (32) | 4,194,304 | none | yes | no | made at its nearest trained size, resized |
+| `moss-image-sft-q8` | 1-100, 50 | 1-30, 3 | yes | 64-4096 (16) | 4,220,160 | none | no | yes | shift 0.1-20, 5; presets |
+| `moss-image-sft-turbo4-q8` | 1-8, 4 | none | no | 64-4096 (16) | 4,220,160 | none | no | yes | presets |
+| `moss-image-sft-turbo8-q8`, `-dmd2-q8` | 1-16, 8 | none | no | 64-4096 (16) | 4,220,160 | none | no | yes | presets |
+
+Every row: seed honoured, up to 8 pictures a request. What the engines accept beyond these (found reading them,
+2026-11-15): a turbo 2.1 runs guided with cfg above 1 and any step count on a schedule other than `shift`; 2.1 ignores
+`shift` on its `shift` schedule and a reference edit's strength; 2512 ignores sampler, schedule and shift; Z-Image, P-H3
+and Ming drop per-request LoRAs at their reload; P-H3 clamps eta, s_noise and deblock_strength; Ming reads no negative
+prompt and makes any size at its nearest trained one; MOSS's turbo cards honour cfg and shift though the engine reports
+neither. The rules leave all of that out.
+
 ## What runs where, by engine
 
 | kind | engines | on the two cards |

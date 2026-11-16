@@ -187,6 +187,8 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
         // text to image alone: no edits, references or starting picture (MOSS merges LoRAs at load; a turbo entry's
         // is a few-step distillation)
         "image" if arch == "ming-image" => (vec!["generate"], vec!["image.generate"]),
+        // Z-Image-Turbo draws from text alone (the engine refuses pictures; its load drops LoRAs)
+        "image" if arch == "z-image" => (vec!["generate", "few_step"], vec!["image.generate"]),
         "image" if arch == "moss-image" => {
             let mut c = vec!["generate", "loras"];
             if m["files"]["turbo-lora"].is_string() {
@@ -195,7 +197,8 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
             (c, vec!["image.generate"])
         }
         "image" => {
-            let mut c = vec!["generate", "edit", "compose", "img2img", "loras"];
+            // P-H3-Image's load drops per-request LoRAs: it does not list them
+            let mut c = if arch == "p-h3-image" { vec!["generate", "edit", "compose", "img2img"] } else { vec!["generate", "edit", "compose", "img2img", "loras"] };
             if m["env"]["NS_QI_SIGMAS"].is_string() || m["files"]["turbo-lora"].is_string() {
                 c.push("few_step");
             }
@@ -616,7 +619,9 @@ impl Home {
                                                   "video" => json!(self.o.ports.video), _ => json!(self.o.ports.chat_ui) }});
             row.as_object_mut().unwrap().extend(licence);
             // what its text may carry inline (model-cards/annotations.yml): the platform's legend where text is written
-            for k in ["annotations", "annotations_note"] {
+            // an image model's request rules (model-cards/image/*.yml `controls`, schema 1): what the platform's image
+            // control offers and its request builder refuses beyond (docs/models.md "Image controls")
+            for k in ["annotations", "annotations_note", "controls"] {
                 if let Some(v) = m.get(k).or_else(|| card.and_then(|c| c.get(k))) {
                     row[k] = v.clone();
                 }

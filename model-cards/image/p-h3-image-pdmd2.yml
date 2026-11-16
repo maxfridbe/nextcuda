@@ -43,3 +43,31 @@ files:
     sha256: 5feaeef13df31f98f36364a95e7ce9e8ff0afd71570d1c53d7c3be599e3a0f22
     path: p-h3-image/loras/minimax_h3_pdmd_2nfe_comfyui.safetensors
 guide: guides/p-h3-image.md
+
+# The request rules the platform's image control enforces (docs/models.md "Image controls", schema 1), as the engine
+# (image/ph3image/src/lib.rs) refuses: 1..8 steps on the pDMD LoRA's shift-12 grid (2 by default); cfg exactly 1, no negative prompt, sides 256..4096 on 32s and at most
+# 8,912,896 pixels, edits of 1..8 pictures (no mask; reference false takes one), euler (eta 0) or lcm (eta 1); no
+# alpha, LoRAs dropped. eta / s_noise / deblock_strength are clamped by the engine, so they are offered only in range.
+controls:
+  version: 1
+  steps: {min: 1, max: 8, default: 2}
+  cfg: null
+  negative: false
+  size:
+    min_side: 256
+    max_side: 4096
+    multiple: 32
+    max_pixels: 8912896
+    default: 1024x1024
+    presets: {ratios: ['9:16', '2:3', '3:4', '1:1', '4:3', '3:2', '16:9'], pixels: [1048576, 4194304, 8388608]}
+  seed: true
+  n: 8
+  loras: false
+  edit: {images: 8, mask: false, strength: true, reference: true, strength_with_reference: true}
+  transparent: false
+  sampler: {values: [euler, lcm], default: lcm}
+  options:
+    - {name: eta, type: number, min: 0, max: 1, default: 1, help: 'the sampler between flow Euler (0) and LCM (1)'}
+    - {name: s_noise, type: number, min: 0, max: 2, default: 1, help: 'the fresh noise scale of a stochastic step'}
+    - {name: deblock, type: bool, default: true, help: 'the 16-pixel grid filter'}
+    - {name: deblock_strength, type: number, min: 0, max: 1, default: 1, help: 'how strongly the grid filter works'}
