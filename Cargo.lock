@@ -822,6 +822,7 @@ dependencies = [
  "nextcuda-audio",
  "nextcuda-audio-acestep",
  "nextcuda-audio-breezetts2",
+ "nextcuda-audio-haru",
  "nextcuda-audio-minimaxmusic3",
  "nextcuda-audio-qwen3tts",
  "nextcuda-audio-vibevoice",
@@ -899,6 +900,19 @@ dependencies = [
  "nextcuda-core",
  "nextcuda-diffusion",
  "nextcuda-gguf",
+ "nextcuda-tok",
+ "serde_json",
+]
+
+[[package]]
+name = "nextcuda-audio-haru"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-audio",
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
+ "nextcuda-qwen35",
  "nextcuda-tok",
  "serde_json",
 ]

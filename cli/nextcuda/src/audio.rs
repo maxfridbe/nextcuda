@@ -31,14 +31,14 @@ nextcuda audio voice rm NAME            (addvoice / clonevoice NAME ... = voice 
 nextcuda audio transcribe FILE [--model ID | --dir DIR] [--language L] [--translate] [--no-words] [--prompt TEXT] [--opt-NAME VALUE]...
                    [--json] [--gpu N]   (speech to text: a recogniser, whisper-large-v3-turbo; any rate, WAV, MP3, FLAC, Ogg, M4A)
 nextcuda audio check <dump dir> [--model ID | --dir DIR] [--stages ar,dit,voc,chunks | prompt,frames,codec | mel,encoder,logits,transcribe | text,te,enc,velocity,sample,vae,song | tokens,ar,neg,noise,vel,steps,solve,vae |
-                   wave,mel,encoder,decoder,generate,notation,transcribe (yue2's SheetSage2)] [--gpu N]
+                   wave,mel,encoder,decoder,generate,notation,transcribe (yue2's SheetSage2) | codec,prompt,frames,speed (haru)] [--gpu N]
 nextcuda audio engines | selftest [--gpu N]";
 
 /// The audio engines this program has (audio/<arch>)
 pub fn engines() -> Vec<nextcuda_audio::AudioKind> {
     vec![nextcuda_audio_minimaxmusic3::kind(), nextcuda_audio_breezetts2::kind(), nextcuda_audio_qwen3tts::kind(), nextcuda_audio_voxcpm2::kind(),
          nextcuda_audio_whisper::kind(), nextcuda_audio_vibevoice::kind(), nextcuda_audio_acestep::kind(), nextcuda_audio_yue2::kind(),
-         nextcuda_audio_zonos3::kind()]
+         nextcuda_audio_zonos3::kind(), nextcuda_audio_haru::kind()]
 }
 
 /// Every `--speaker FILE` (a recording a speaker, Speaker 1 first: a multi-speaker script's voices)
@@ -67,8 +67,11 @@ fn model(cfg: &Config, args: &[String]) -> Result<(Value, ModelFiles), String> {
         let whisper = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"whisper\""));
         let vibevoice = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"vibevoice\""));
         let yue2 = std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| e.file_name().to_string_lossy().starts_with("yue2-lm-"));
+        let haru = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"haru\""));
         let zonos3 = ["backbone-ptq-edit.gguf", "backbone-ptq.gguf", "backbone-f16.gguf"].iter().any(|f| dir.join(f).is_file());
-        let (arch, files) = if zonos3 {
+        let (arch, files) = if haru {
+            (nextcuda_audio_haru::ARCH, nextcuda_audio_haru::files_in(dir).map_err(|e| e.0)?)
+        } else if zonos3 {
             (nextcuda_audio_zonos3::ARCH, nextcuda_audio_zonos3::files_in(dir).map_err(|e| e.0)?)
         } else if yue2 {
             (nextcuda_audio_yue2::ARCH, nextcuda_audio_yue2::files_in(dir).map_err(|e| e.0)?)
@@ -225,7 +228,7 @@ fn gen(cfg: &Config, args: &[String]) -> Result<(), String> {
     // frames a second of sound: speech 12.5, songs 25
     let fps = match e.arch() {
         "voxcpm2" => 6.25,
-        "vibevoice" => 7.5,
+        "vibevoice" | "haru" => 7.5,
         _ if e.speech().is_some() => 12.5,
         _ => 25.0,
     };
@@ -406,6 +409,10 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         let stages: Vec<&str> = opt(args, "--stages").unwrap_or("tokens,ar,neg,noise,vel,steps,solve,vae").split(',').collect();
         let e = nextcuda_audio_yue2::Yue2::load(&files, &gs, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
         nextcuda_audio_yue2::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
+    } else if m["arch"] == nextcuda_audio_haru::ARCH {
+        let stages: Vec<&str> = opt(args, "--stages").unwrap_or("codec,prompt,frames").split(',').collect();
+        let e = nextcuda_audio_haru::Haru::load(&files, std::slice::from_ref(&g), &options(&m, args)?, &mut log).map_err(|e| e.0)?;
+        nextcuda_audio_haru::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
     } else if m["arch"] == nextcuda_audio_zonos3::ARCH {
         let stages: Vec<String> = opt(args, "--stages").unwrap_or("lm,decoder").split(',').map(str::to_string).collect();
         let e = nextcuda_audio_zonos3::Zonos3::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;

@@ -384,6 +384,14 @@ ACE-Step 1.5 (`NS_ACE_`), MiniMax Music 3 (`NS_MM3_`), YuE2 (`NS_YUE2_`), Qwen3-
 | `NS_VCP_*` | - | every NS_VCP_ setting in nextsycl.conf is passed to the audio server | cli (audio serve) |
 | `NS_VCP_INT8` | 0 | 1: the language models' matrices in int8 (less VRAM, faster patches) (--opt-int8) | audio voxcpm2 |
 | `NS_VV_INT8` | 0 | 1: the language model's matrices in int8 (less VRAM) (--opt-int8) | audio vibevoice |
+| `NS_HARU_CTX` | 28672 | positions a conversation holds (7.5 a second plus the prompt: about an hour) | audio haru |
+| `NS_HARU_LM` | q8_0 | the language model's weights: `q8_0` (4.5 GB) or `f16` (8.5 GB, checks); its GGUF made once beside the checkpoint | audio haru |
+| `NS_HARU_GUIDANCE` | 1.5 | the audio head's guidance (1 - 2): higher keeps the voice closer to the reference | audio haru |
+| `NS_HARU_TOP_K` | 25 | the text stream's top-k (0: all) | audio haru |
+| `NS_HARU_EOP_BIAS` | 0 | added to the start-speaking logit: above 0 it starts speaking sooner | audio haru |
+| `NS_HARU_SPEAK_FIRST` | 0 | 1: the model opens the conversation | audio haru |
+| `NS_HARU_DRY` | 1 | the DRY repetition penalty on its words | audio haru |
+| `NS_HARU_STEREO` | 0 | offline (a source recording): the user on the left channel, the model on the right | audio haru |
 | `NS_VCP_MAX_RATIO` | 6 | the per-request option max-ratio's name: the most patches a text token (a runaway's bound); a request's options only, the variable itself is not read (--opt-max-ratio) | audio voxcpm2 |
 | `NS_WH_*` | - | every NS_WH_ setting in nextcuda.conf is passed to the audio server | cli (audio serve) |
 | `NS_WH_CONDITION` | 0 | 1: Whisper prompts each 30 s window with the text before it (openai's condition_on_previous_text: a steadier style, but a mistake carries on); also a request's option condition (--opt-condition) | audio whisper |

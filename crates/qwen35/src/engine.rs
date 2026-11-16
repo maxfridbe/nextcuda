@@ -1461,12 +1461,13 @@ impl<'g> Qwen35<'g> {
     /// One pass of at most a chunk: the last `n_out` rows' logits
     fn pass(&self, s: &mut Session, tokens: &[u32], n_out: usize, tap: Tap) -> Result<Vec<Vec<f32>>> {
         let _w = self.work.lock().unwrap();
-        self.pass_in(s, tokens, n_out, tap)
+        self.pass_in(s, tokens, None, n_out, tap)
     }
 
     /// `pass` with the work lock held: a verify pass (2 ..= drafts + 1 rows, drafts on) keeps the DeltaNet
     /// snapshots; with MTP the draft block runs over the rows behind it
-    fn pass_in(&self, s: &mut Session, tokens: &[u32], n_out: usize, tap: Tap) -> Result<Vec<Vec<f32>>> {
+    /// `add`: float32 rows [t, n_embd] added to the token embeddings (`forward_rows_add`)
+    fn pass_in(&self, s: &mut Session, tokens: &[u32], add: Option<&[f32]>, n_out: usize, tap: Tap) -> Result<Vec<Vec<f32>>> {
         let t = tokens.len();
         self.check_rows(s, s.pos, t)?;
         for d in &self.devs {
@@ -1480,6 +1481,20 @@ impl<'g> Qwen35<'g> {
         snaps.of = None;
         self.phase("embed");
         let x = self.embed_with(self.file, &self.embd, self.g.vocab, tokens)?;
+        if let Some(rows) = add {
+            if rows.len() != t * self.g.n_embd {
+                return Err(e(format!("{} values added to {t} rows of {}", rows.len(), self.g.n_embd)));
+            }
+            // through a pinned slot, queued (no wait for the GPU), then added on it
+            let (b, slot) = self.upload_with(rows.len() * 4, &mut |raw| {
+                for (k, v) in rows.iter().enumerate() {
+                    raw[k * 4..k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                }
+                Ok(())
+            })?;
+            self.add(&x, &b, rows.len())?;
+            self.release(slot)?;
+        }
         let mut part = None;
         let x = self.run_layers(s, 0..self.g.layers, x, t, p0, &rope, snapping.then_some(&*snaps), &mut *tap, &mut part)?;
         if snapping {
@@ -2330,6 +2345,14 @@ impl<'g> Qwen35<'g> {
         self.pass(s, tokens, n_out, tap)
     }
 
+    /// `forward_rows` with float32 rows [tokens, n_embd] (host) added to the token embeddings: a model whose input is a
+    /// token's row plus other streams' (Haru-4B: the text token's embedding + its own and the user's audio latents
+    /// projected). One pass (at most `prefill_chunk` rows), no pipelining, no draft
+    pub fn forward_rows_add(&self, s: &mut Session, tokens: &[u32], add: &[f32], n_out: usize, tap: Tap) -> Result<Vec<Vec<f32>>> {
+        let _w = self.work.lock().unwrap();
+        self.pass_in(s, tokens, Some(add), n_out, tap)
+    }
+
     pub fn rollback(&self, s: &mut Session, keep: usize) -> Result<()> {
         let _w = self.work.lock().unwrap();
         self.rollback_in(s, keep)
@@ -2387,7 +2410,7 @@ impl<'g> Qwen35<'g> {
                     rows.extend(d.drafts.iter().take(s.max_ctx.saturating_sub(s.pos + 1)));
                 }
                 d.drafts.clear();
-                let logits = self.pass_in(s, &rows, rows.len(), tap)?;
+                let logits = self.pass_in(s, &rows, None, rows.len(), tap)?;
                 let mut out = Vec::with_capacity(rows.len());
                 for (i, l) in logits.iter().enumerate() {
                     let y = smp(l);

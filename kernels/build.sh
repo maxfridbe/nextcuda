@@ -87,6 +87,10 @@ for k in $KINDS; do
     objs="$objs $(ls "$OBJ"/llm_*.o 2>/dev/null | grep -v '_silo_' || true)"
     extra+=(-Xlinker --version-script=image.map)
   fi
+  if [ "$k" = audio ]; then
+    # Haru-4B's language model is Qwen3.5: the llm library's qwen35 and nemotronh kernels in the audio library too
+    objs="$objs $(ls "$OBJ"/llm_*.o 2>/dev/null | grep -v '_silo_' || true)"
+  fi
   echo "==> linking libnextcuda-$k.so"
   "$NVCC" -shared "${GEN[@]}" $objs "${extra[@]}" -lcublas -lcublasLt -o "$OUT/.libnextcuda-$k.so.new"
   mv -f "$OUT/.libnextcuda-$k.so.new" "$OUT/libnextcuda-$k.so"

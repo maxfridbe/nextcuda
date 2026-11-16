@@ -52,6 +52,7 @@ nextcuda-audio-acestep.workspace = true
 nextcuda-audio-yue2.workspace = true
 nextcuda-audio-zonos3.workspace = true
 nextcuda-audio-vibevoice.workspace = true
+nextcuda-audio-haru.workspace = true
 nextcuda-models.workspace = true
 nextcuda-serve.workspace = true
 serde_json.workspace = true
