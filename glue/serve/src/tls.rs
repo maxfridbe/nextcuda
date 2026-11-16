@@ -5,7 +5,8 @@
 //! plain http on the LAN and the tailnet. All Rust, in process, nothing of C: rustls with the graviola provider
 //! (rustls-graviola: pure Rust, its assembly as Rust inline asm - no build script, no cc, unlike aws-lc-rs and ring),
 //! the certificate made by rcgen with no crypto backend of its own (`GraviolaKey` signs for it), a kept one read by
-//! x509-parser. The connections stay what they are on http - std threads, one request each (`Conn::Tls`).
+//! x509-parser. The connections stay what they are on http - std threads, one request each (`Conn::Tls`); a WebSocket
+//! passed on to a model's server (/v1/realtime) is pumped (`TlsConn::pump`) so it is read and written both ways at once.
 //!
 //! The certificate is made on the first start (`tls/cert.pem` and `tls/key.pem` beside serve.json, the key mode 600)
 //! and kept, so the exception a browser was given - or the trust a device was told to place in it (`GET /cert.pem`) -
@@ -15,10 +16,11 @@
 //! addresses, every stable address of the host - are read when a certificate is made: an address that changes later
 //! does not make a new one (that would undo the browsers' trust at every lease); the log names what the kept one lacks.
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::{self, Read, Write};
+use std::net::{Shutdown, TcpStream};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use graviola::hashing::Sha256;
@@ -342,8 +344,21 @@ pub fn server_config(cert: &Path, key: &Path) -> Result<Arc<rustls::ServerConfig
 
 /// A TLS connection the server accepted. Read and write as the TCP one; dropped, it says close_notify, so a client
 /// reading an answer to the connection's end (a stream) sees it end cleanly rather than cut.
+///
+/// One handle reads and writes the session (`Direct`) - what every request needs. A WebSocket passed on to a model's
+/// server (`http::splice`: /v1/realtime) reads and writes at once from two threads, so `pump` hands the session to two
+/// pump threads that move bytes between it and one end of an anonymous Unix socket pair, and the connection becomes
+/// the other end (`Pumped`): an ordinary socket, cloned, shut down, read and written as TCP (after nextsycl's
+/// glue/serve/src/tls.rs, where every TLS connection is pumped).
 pub struct TlsConn {
-    s: rustls::StreamOwned<rustls::ServerConnection, TcpStream>,
+    s: Side,
+}
+
+enum Side {
+    Direct(rustls::StreamOwned<rustls::ServerConnection, TcpStream>),
+    Pumped(UnixStream),
+    /// between the two (never seen outside `pump`)
+    Gone,
 }
 
 impl TlsConn {
@@ -360,43 +375,205 @@ impl TlsConn {
         // after it, the connection is as patient as a plain one
         sock.set_read_timeout(None).map_err(|e| e.to_string())?;
         sock.set_write_timeout(None).map_err(|e| e.to_string())?;
-        Ok(TlsConn { s: rustls::StreamOwned::new(conn, sock) })
+        Ok(TlsConn { s: Side::Direct(rustls::StreamOwned::new(conn, sock)) })
     }
 
-    pub fn sock(&self) -> &TcpStream {
-        &self.s.sock
+    pub fn set_read_timeout(&self, d: Option<Duration>) -> io::Result<()> {
+        match &self.s {
+            Side::Direct(s) => s.sock.set_read_timeout(d),
+            Side::Pumped(u) => u.set_read_timeout(d),
+            Side::Gone => Ok(()),
+        }
+    }
+
+    /// The session handed to two pump threads (see the type); the connection is then the plaintext end of a socket
+    /// pair. What the client sent that the session has decrypted but nobody has read yet is passed on first.
+    pub fn pump(&mut self) -> io::Result<()> {
+        if !matches!(self.s, Side::Direct(_)) {
+            return Ok(());
+        }
+        let Side::Direct(st) = std::mem::replace(&mut self.s, Side::Gone) else { unreachable!() };
+        let rustls::StreamOwned { mut conn, sock } = st;
+        // the pumps drain what they encrypt as they go: no limit needed on the session's own buffer
+        conn.set_buffer_limit(None);
+        let (app, pump) = UnixStream::pair()?;
+        let shared = Arc::new(Session { conn: Mutex::new(conn), out: Mutex::new(sock.try_clone()?) });
+        let (sh, tcp_in, pump_out) = (shared.clone(), sock.try_clone()?, pump.try_clone()?);
+        std::thread::spawn(move || inbound(&sh, tcp_in, pump_out));
+        std::thread::spawn(move || outbound(&shared, pump, sock));
+        self.s = Side::Pumped(app);
+        Ok(())
+    }
+
+    /// A second handle: a pumped connection only (one session cannot be written from two handles)
+    pub fn try_clone(&self) -> io::Result<TlsConn> {
+        match &self.s {
+            Side::Pumped(u) => Ok(TlsConn { s: Side::Pumped(u.try_clone()?) }),
+            _ => Err(io::Error::new(io::ErrorKind::Unsupported, "a TLS connection has one handle until it is pumped")),
+        }
+    }
+
+    /// Both directions closed: a pumped one's pumps say close_notify and close the TCP connection
+    pub fn shutdown(&self) {
+        let _ = match &self.s {
+            Side::Direct(s) => s.sock.shutdown(Shutdown::Both),
+            Side::Pumped(u) => u.shutdown(Shutdown::Both),
+            Side::Gone => Ok(()),
+        };
     }
 }
 
 impl Read for TlsConn {
-    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
-        match self.s.read(b) {
-            // a client that closes without close_notify after its request: the end of what it sends
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
-            r => r,
+    fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+        match &mut self.s {
+            Side::Direct(s) => match s.read(b) {
+                // a client that closes without close_notify after its request: the end of what it sends
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(0),
+                r => r,
+            },
+            Side::Pumped(u) => u.read(b),
+            Side::Gone => Ok(0),
         }
     }
 }
 
 impl Write for TlsConn {
-    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        self.s.write(b)
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        match &mut self.s {
+            Side::Direct(s) => s.write(b),
+            Side::Pumped(u) => u.write(b),
+            Side::Gone => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
+        }
     }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.s.flush()
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.s {
+            Side::Direct(s) => s.flush(),
+            Side::Pumped(u) => u.flush(),
+            Side::Gone => Ok(()),
+        }
     }
 }
 
 impl Drop for TlsConn {
     fn drop(&mut self) {
-        self.s.conn.send_close_notify();
-        let _ = self.s.sock.set_write_timeout(Some(Duration::from_secs(5)));
-        while self.s.conn.wants_write() {
-            if self.s.conn.write_tls(&mut self.s.sock).is_err() {
+        // a pumped one: its pumps end the session when the last handle of the pair's end is gone
+        let Side::Direct(s) = &mut self.s else { return };
+        s.conn.send_close_notify();
+        let _ = s.sock.set_write_timeout(Some(Duration::from_secs(5)));
+        while s.conn.wants_write() {
+            if s.conn.write_tls(&mut s.sock).is_err() {
                 break;
             }
         }
     }
+}
+
+/// One TLS session shared by its two pumps: the session itself, then the TCP connection's writing side (taken before
+/// the session is let go, so records reach the wire in the order they were made)
+struct Session {
+    conn: Mutex<rustls::ServerConnection>,
+    out: Mutex<TcpStream>,
+}
+
+impl Session {
+    /// What the session has to send, sent: made under its lock, written under the writer's
+    fn send(&self, mut c: std::sync::MutexGuard<'_, rustls::ServerConnection>) -> io::Result<()> {
+        let mut bytes = Vec::new();
+        while c.wants_write() {
+            c.write_tls(&mut bytes)?;
+        }
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let mut out = self.out.lock().unwrap_or_else(|e| e.into_inner());
+        drop(c);
+        out.write_all(&bytes)?;
+        out.flush()
+    }
+}
+
+/// The client's bytes: read from TCP, decrypted, written to the server's side; the end (EOF, close_notify) passed on
+/// as the end of what the server reads
+fn inbound(sh: &Session, mut tcp: TcpStream, mut app: UnixStream) {
+    let mut buf = vec![0u8; 64 << 10];
+    let (mut at, mut end) = (0usize, 0usize);
+    let r: io::Result<()> = (|| loop {
+        let mut plain = Vec::new();
+        let mut closed = false;
+        {
+            let mut c = sh.conn.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                let mut fed = 0;
+                if at < end {
+                    fed = c.read_tls(&mut &buf[at..end])?;
+                    at += fed;
+                }
+                let st = match c.process_new_packets() {
+                    Ok(st) => st,
+                    Err(e) => {
+                        // the alert that says why, then the end
+                        let _ = sh.send(c);
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+                    }
+                };
+                let k = st.plaintext_bytes_to_read();
+                if k > 0 {
+                    let o = plain.len();
+                    plain.resize(o + k, 0);
+                    c.reader().read_exact(&mut plain[o..])?;
+                }
+                closed |= st.peer_has_closed();
+                if at >= end || closed {
+                    break;
+                }
+                if fed == 0 && k == 0 {
+                    return Err(io::Error::other("the TLS session takes no more of what was read"));
+                }
+            }
+            sh.send(c)?;
+        }
+        if !plain.is_empty() && app.write_all(&plain).is_err() {
+            // the server's side has gone: the other pump ends the connection
+            return Ok(());
+        }
+        if closed {
+            return Ok(());
+        }
+        let n = tcp.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        (at, end) = (0, n);
+    })();
+    // what the server reads ends here (its answer can still go out); on an error the whole connection
+    let _ = app.shutdown(Shutdown::Write);
+    if r.is_err() {
+        let _ = app.shutdown(Shutdown::Both);
+        let _ = tcp.shutdown(Shutdown::Both);
+    }
+}
+
+/// The server's bytes: read from its side, encrypted, sent; when it closes (or shuts down), close_notify and the TCP
+/// connection closed
+fn outbound(sh: &Session, mut app: UnixStream, tcp: TcpStream) {
+    let mut buf = vec![0u8; 64 << 10];
+    loop {
+        let n = match app.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        let mut c = sh.conn.lock().unwrap_or_else(|e| e.into_inner());
+        if c.writer().write_all(&buf[..n]).is_err() || sh.send(c).is_err() {
+            // the client has gone: the server's next write fails as it would on TCP
+            let _ = app.shutdown(Shutdown::Both);
+            let _ = tcp.shutdown(Shutdown::Both);
+            return;
+        }
+    }
+    let mut c = sh.conn.lock().unwrap_or_else(|e| e.into_inner());
+    c.send_close_notify();
+    let _ = sh.send(c);
+    let _ = tcp.shutdown(Shutdown::Both);
 }
 
 #[cfg(test)]
@@ -472,5 +649,71 @@ mod tests {
         assert_eq!(fib_trie_locals(trie), ["192.168.0.246", "100.113.46.61"]);
         let v6 = "fdd1e9ebb40370c8c20f5426e2a86645 02 40 00 01 enp1s0\nfdd1e9ebb40370c8505400fffe772f72 02 40 00 00 enp1s0\nfe80000000000000505400fffe772f72 02 40 20 80 enp1s0\n00000000000000000000000000000001 01 80 10 80 lo\n";
         assert_eq!(if_inet6_stable(v6), ["fdd1:e9eb:b403:70c8:5054:ff:fe77:2f72"]);
+    }
+
+    /// A WebSocket upgrade over https spliced on to a plain upstream (the front door to a model's /v1/realtime): the
+    /// 101 back, then bytes both ways at once through the pumped session, and the end a clean close_notify (after
+    /// nextsycl's https test's splice)
+    #[test]
+    fn an_upgrade_over_https_is_spliced_both_ways() {
+        use crate::http::{self, Conn, Target};
+        use rustls::pki_types::pem::PemObject;
+        let d = tmp();
+        let (cert, key) = (d.join("cert.pem"), d.join("key.pem"));
+        ensure_cert(&cert, &key, &["localhost".to_string()]).unwrap();
+        let cfg = server_config(&cert, &key).unwrap();
+        // upstream: the 101, then each 5 bytes it reads upper-cased back, twice, then it closes
+        let up_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let up_addr = up_l.local_addr().unwrap().to_string();
+        let upstream = std::thread::spawn(move || {
+            let (mut c, _) = up_l.accept().unwrap();
+            let got = http::read_request(&mut c).unwrap();
+            c.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
+            for _ in 0..2 {
+                let mut b = [0u8; 5];
+                c.read_exact(&mut b).unwrap();
+                c.write_all(&b.to_ascii_uppercase()).unwrap();
+            }
+            got
+        });
+        let door_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let door_addr = door_l.local_addr().unwrap();
+        let door = std::thread::spawn(move || {
+            let (c, _) = door_l.accept().unwrap();
+            let mut conn = Conn::Tls(Box::new(TlsConn::accept(c, cfg).unwrap()));
+            let req = http::read_request(&mut conn).unwrap();
+            assert!(http::is_upgrade(&req.head));
+            http::splice(&mut conn, &Target::Tcp(up_addr), &req, "/v1/realtime?model=m").unwrap();
+        });
+        let mut roots = rustls::RootCertStore::empty();
+        for c in rustls::pki_types::CertificateDer::pem_file_iter(&cert).unwrap() {
+            roots.add(c.unwrap()).unwrap();
+        }
+        let ccfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls_graviola::default_provider()))
+            .with_safe_default_protocol_versions().unwrap().with_root_certificates(roots).with_no_client_auth();
+        let conn = rustls::ClientConnection::new(Arc::new(ccfg), "localhost".try_into().unwrap()).unwrap();
+        let tcp = TcpStream::connect(door_addr).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut s = rustls::StreamOwned::new(conn, tcp);
+        s.write_all(b"GET /open/m/v1/realtime?model=m HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            s.read_exact(&mut b).unwrap();
+            head.push(b[0]);
+        }
+        assert!(head.starts_with(b"HTTP/1.1 101"), "{}", String::from_utf8_lossy(&head));
+        s.write_all(b"hello").unwrap();
+        let mut got = [0u8; 5];
+        s.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"HELLO", "an answer while the socket stays open: both directions at once");
+        s.write_all(b"again").unwrap();
+        let mut rest = Vec::new();
+        s.read_to_end(&mut rest).expect("the end, by close_notify");
+        assert_eq!(rest, b"AGAIN");
+        let req = upstream.join().unwrap();
+        assert_eq!(req.target, "/v1/realtime?model=m");
+        door.join().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
