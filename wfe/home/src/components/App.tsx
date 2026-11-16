@@ -11,8 +11,9 @@ import { Spinner } from "./Spinner.js";
 const gib = (mb: number) => (mb / 1024).toFixed(1);
 /** A GPU as the pages show it (the same function in every app's util.ts). */
 const short = (n: string) => n.replace(/^Intel\(R\) Arc\(TM\) /, "").replace(/^NVIDIA GeForce /, "").replace(/ Graphics$/, "");
-/** a link to a service on this box, as the browser reaches it */
-const at = (port: number, path = "/") => `${location.protocol}//${location.hostname}:${port}${path}`;
+/** a link to a service on this box, as the browser reaches it: over http, the only thing the other ports speak (this page
+ * may be on the front door's https port, NS_TLS_PORT, which is the front door's alone) */
+const at = (port: number, path = "/") => `http://${location.hostname}:${port}${path}`;
 
 const COLORS: Record<string, string> = { llm: "#06b6d4", image: "#f59e0b", video: "#ec4899", audio: "#8b5cf6", model3d: "#10b981" };
 const color = (k?: string) => COLORS[k ?? ""] ?? "#64748b";
