@@ -391,6 +391,7 @@ ACE-Step 1.5 (`NS_ACE_`), MiniMax Music 3 (`NS_MM3_`), YuE2 (`NS_YUE2_`), Qwen3-
 | `NS_HARU_EOP_BIAS` | 0 | added to the start-speaking logit: above 0 it starts speaking sooner | audio haru |
 | `NS_HARU_SPEAK_FIRST` | 0 | 1: the model opens the conversation | audio haru |
 | `NS_HARU_DRY` | 1 | the DRY repetition penalty on its words | audio haru |
+| `NS_HARU_EXACT_X` | 1 | 0: the language model's decode products quantize each activation row to Q8_1 (faster); 1: float32 activations (ns_q35_gemv_q8f) and half ones in the prompt - the silent / speak decision moved with the rounding | audio haru |
 | `NS_HARU_STEREO` | 0 | offline (a source recording): the user on the left channel, the model on the right | audio haru |
 | `NS_VCP_MAX_RATIO` | 6 | the per-request option max-ratio's name: the most patches a text token (a runaway's bound); a request's options only, the variable itself is not read (--opt-max-ratio) | audio voxcpm2 |
 | `NS_WH_*` | - | every NS_WH_ setting in nextcuda.conf is passed to the audio server | cli (audio serve) |

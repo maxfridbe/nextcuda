@@ -99,6 +99,11 @@ impl Lm {
         // the attention cache in half unless NS_Q35_KV says otherwise (measured against the reference: q8_0's doubled
         // the worst hidden-state error over 12 frames, 5.4e-2 -> 1.25e-1; half costs 0.4 GiB more an hour)
         nextcuda_qwen35::engine::set_kv_default("f16");
+        // and the activations unquantized: the decode products' Q8_1 rounding of each row moved the silent / speak
+        // decision (NS_HARU_EXACT_X=0: the faster int8 products)
+        if std::env::var("NS_HARU_EXACT_X").map_or(true, |v| v != "0") {
+            nextcuda_qwen35::engine::set_exact_activations();
+        }
         let engine = Qwen35::load(f, std::slice::from_ref(gpu), false, (ctx, 1), log).map_err(|e| Error(e.0))?;
         let h = cfg.hidden;
         let mut exact = Vec::new();

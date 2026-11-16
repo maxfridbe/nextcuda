@@ -57,6 +57,9 @@ int ns_q35_attn_q8(ns_gpu* g, const float* q, int64_t qs, const void* kc, const 
 /* As ns_q35_attn against a q4_0 cache (ns_q35_kv_store_q4's rows) */
 int ns_q35_attn_q4(ns_gpu* g, const float* q, int64_t qs, const void* kc, const void* vc, int64_t T, int64_t Hq, int64_t Hkv, int64_t D,
                    int64_t cap, int64_t p0, float* out, float* scratch);
+/* y [rows][n_out] = W [n_out][n_in] (Q8_0 blocks) . x [rows][n_in] (float32, kept so: no Q8_1 rounding), 1..8 rows
+ * (q35_q8f.cu: a decode product for a model whose decisions move with the activations' rounding - Haru-4B) */
+int ns_q35_gemv_q8f(ns_gpu* g, const void* w, const float* x, float* y, int64_t n_in, int64_t n_out, int64_t rows);
 /* The attention's output gate: out [T, H x D] *= sigmoid(gate), the gate at q_full[t * gs + h * 2D + D + d] */
 int ns_q35_gate_mul(ns_gpu* g, float* out, const float* q_full, int64_t gs, int64_t T, int64_t H, int64_t D);
 /* DeltaNet's per-head gates: eg [T, H, d] = exp(softplus(alpha + dt) * a) (each head's d copies), beta = sigmoid(beta);

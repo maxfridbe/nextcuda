@@ -62,6 +62,8 @@ pub struct Api {
     /// q35.h: the verify passes' products (q35_vq8.cu: decode once, int8 tensor cores)
     pub vq8_supported: unsafe extern "C" fn(c_int) -> c_int,
     pub vq8: unsafe extern "C" fn(G, c_int, P, P, FM, i64, i64, i64) -> c_int,
+    /// q35_q8f.cu: decode products from Q8_0 with float32 activations
+    pub gemv_q8f: unsafe extern "C" fn(G, P, F, FM, i64, i64, i64) -> c_int,
     /// nh.h: rows of bytes gathered by index (the DSpine candidates' head rows)
     pub gather_rows: unsafe extern "C" fn(G, P, *const i32, M, i64, i64) -> c_int,
     // q35.h: the DSpine draft's (dspine.cu)
@@ -139,6 +141,7 @@ pub fn api() -> nextcuda_core::Result<&'static Api> {
             argmax: sym!("ns_q35_argmax"),
             vq8_supported: sym!("ns_q35_vq8_supported"),
             vq8: sym!("ns_q35_vq8"),
+            gemv_q8f: sym!("ns_q35_gemv_q8f"),
             gather_rows: sym!("ns_nh_gather_rows"),
             dsp_bridge_norm: sym!("ns_q35_dsp_bridge_norm"),
             dsp_codes: sym!("ns_q35_dsp_codes"),

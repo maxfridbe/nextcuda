@@ -449,6 +449,8 @@ pub struct Qwen35<'g> {
     head: usize,
     /// the prompt products from the stored blocks (q35_tiles.cu's; NS_Q35_MMQ=0: by the half expansion and cuBLAS)
     mmq: bool,
+    /// float32 activations into the decode products (`set_exact_activations`)
+    exact: bool,
     /// each GPU's attention cache type (NS_Q35_KV)
     kv_ty: Vec<KvTy>,
     /// quantized caches rotated (NS_Q35_KV_ROT)
@@ -525,6 +527,20 @@ pub fn set_kv_default(mode: &'static str) {
     let _ = KV_DEFAULT.set(Some(mode));
 }
 
+/// Products with the activations in float32 (`set_exact_activations`): decode rows from Q8_0 matrices through
+/// ns_q35_gemv_q8f instead of the Q8_1 products, prompt chunks through the half product (x in half) instead of MMQ's int8
+static EXACT_X: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Engines loaded in this process from now on multiply with their activations unquantized (Haru-4B: its silent / speak
+/// decision moved with the Q8_1 rounding); slower decode products, the prompt's half ones
+pub fn set_exact_activations() {
+    EXACT_X.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn exact_x() -> bool {
+    EXACT_X.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn kv_mode_of(v: Option<&str>) -> (KvTy, KvTy) {
     match v {
         Some("q8") => (KvTy::Q8, KvTy::Q8),
@@ -579,7 +595,7 @@ impl<'g> Qwen35<'g> {
         }).sum::<u64>();
         // the half buffer a prompt chunk expands a matrix into: with MMQ only the matrices it does not take (the file's
         // IQ1_M, the float32 ones), so each GPU's is its own layers' largest such (without MMQ: the largest matrix)
-        let mmq_on = !std::env::var("NS_Q35_MMQ").is_ok_and(|v| v == "0");
+        let mmq_on = !std::env::var("NS_Q35_MMQ").is_ok_and(|v| v == "0") && !exact_x();
         let expands = |t: &Tensor| t.shape.len() == 2 && !(mmq_on && unsafe { (k.mmq_supported)(t.ty.code() as i32) } != 0) && t.shape[0] > 1 && t.shape[1] > 1;
         let layer_x16: Vec<usize> = (0..g.layers).map(|l| {
             let p = format!("blk.{l}.");
@@ -973,7 +989,7 @@ impl<'g> Qwen35<'g> {
         Ok(Qwen35 { g, file: f, devs, layer_dev, cur: 0.into(), staging: Mutex::new(None), k, layers, output_norm, output, embd, chunk,
                     work: Mutex::new(()), mtp, dspine, dsp_pipe, drafts, snaps: Mutex::new(Snaps { layers: snap_layers, of: None }), vh, next_id: 0.into(), load_s,
                     load_bytes: loaded, pictures: Mutex::new(HashMap::new()), vision,
-                    mmq: !std::env::var("NS_Q35_MMQ").is_ok_and(|v| v == "0"), head, kv_ty, kv_rot, pipe,
+                    mmq: !std::env::var("NS_Q35_MMQ").is_ok_and(|v| v == "0") && !exact_x(), exact: exact_x(), head, kv_ty, kv_rot, pipe,
                     xq: Mutex::new(Vec::new()), verify_mmq, vq8, vq8_check, vq8_types,
                     prof: ["NS_Q35_PROFILE", "NS_PROFILE"].iter().any(|k| std::env::var(k).is_ok_and(|v| v == "1")).then(|| Mutex::new(Profile::default())) })
     }
@@ -1109,6 +1125,11 @@ impl<'g> Qwen35<'g> {
             self.op("x to half", key, 6 * t * cols, 0, || unsafe { (k.to_half)(self.raw(), x.fp(), xh.ptr(), (t * cols) as i64) })?;
             return self.op("gemm f16", key, 2 * t * cols + 2 * elems + 4 * t * rows, flops,
                            || unsafe { (k.gemm_f16)(self.raw(), self.dev().w16.ptr(), xh.ptr(), y.fp(), t as i64, n, kk) });
+        }
+        if self.exact && w.ty == GType::Q8_0 && t <= 8 {
+            // SAFETY: the matrix's Q8_0 blocks [rows, cols], x [t, cols] float32, y [t, rows].
+            return self.op("gemv q8f", key, wb + 4 * t * cols + 4 * t * rows, flops,
+                           || unsafe { (k.gemv_q8f)(self.raw(), w.buf.ptr(), x.fp(), y.fp(), kk, n, t as i64) });
         }
         // SAFETY: arithmetic only.
         let mmvq = unsafe { (k.mmvq_supported)(w.ty.code() as i32) } != 0;
