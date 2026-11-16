@@ -215,8 +215,21 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
             (c, vec!["image.generate", "image.edit"])
         }
         "audio" if arch == "whisper" => (vec!["transcribe", "speech_to_text", "word_timestamps", "language_detection", "translate_to_english"], vec!["audio.transcribe"]),
+        // a live conversation only (Haru-4B): /v1/realtime, nothing read aloud - no audio.speak; `lockstep` a frame in, a
+        // frame out (after nextsycl's life.rs)
+        "audio" if speech("realtime") && m["speech"].as_array().is_some_and(|a| a.iter().all(|x| x == "realtime" || x == "lockstep")) => {
+            let mut c = vec!["realtime"];
+            if speech("lockstep") {
+                c.push("lockstep");
+            }
+            (c, vec![])
+        }
         "audio" if m["speech"].is_array() => {
             let mut c = vec!["speech"];
+            // a live conversation as well (a speech model that also converses): /v1/realtime
+            if speech("realtime") {
+                c.push("realtime");
+            }
             if speech("voices") {
                 c.push("builtin_voices");
             }
@@ -610,6 +623,7 @@ impl Home {
             let mut row = json!({"id": id, "kind": kind, "title": m["title"], "arch": m["arch"], "enabled": enabled, "pinned": enabled && registry::pinned(m), "held_s": self.held_s(&id).round(), "gpus": gpus, "state": state,
                    "spans": spans_all(m, &mc),
                    "capabilities": caps, "methods": methods,
+                   "lockstep": m["speech"].as_array().is_some_and(|a| a.iter().any(|x| x == "lockstep")),
                    "vouch_mb": vouch.iter().map(|(g, mb)| (g.to_string(), json!(mb))).collect::<serde_json::Map<String, Value>>(),
                    "measured": measured,
                    "headroom_mb": headroom.iter().map(|(g, mb)| (g.to_string(), json!(mb))).collect::<serde_json::Map<String, Value>>(),
@@ -1660,6 +1674,18 @@ pub(crate) fn job_of_proc(p: &Value, by_port: &std::collections::HashMap<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A live conversation only (Haru-4B's card: speech [realtime, lockstep]): capabilities realtime and lockstep, no
+    /// method (it is /v1/realtime, a WebSocket); a speech model that also converses keeps audio.speak
+    #[test]
+    fn a_lockstep_model_converses_and_speaks_nothing() {
+        let (caps, methods) = capabilities(&json!({"id": "haru-4b", "kind": "audio", "arch": "haru", "speech": ["realtime", "lockstep"]}));
+        assert_eq!((caps, methods), (vec!["realtime", "lockstep"], vec![]), "a live conversation only: no audio.speak");
+        let (caps, methods) = capabilities(&json!({"id": "sophon", "kind": "audio", "arch": "sophon-realtime", "speech": ["clone", "realtime"]}));
+        assert!(caps.contains(&"realtime") && caps.contains(&"speech") && methods.contains(&"audio.speak"), "{caps:?} {methods:?}");
+        let (caps, _) = capabilities(&json!({"id": "voxcpm2", "kind": "audio", "arch": "voxcpm2", "speech": ["clone"]}));
+        assert!(!caps.contains(&"realtime") && !caps.contains(&"lockstep"));
+    }
 
     #[test]
     fn a_speech_model_whose_card_says_edit_edits() {

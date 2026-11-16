@@ -168,6 +168,9 @@ pub(crate) fn relay(t: &crate::http::Target, method: &str, path: &str, body: Opt
 impl Home {
     fn authorized(&self, req: &Request) -> bool {
         http::header(&req.head, "authorization").is_some_and(|h| h.trim().strip_prefix("Bearer ").is_some_and(|t| t.trim() == self.token))
+            // a browser's WebSocket cannot set headers: the token as a sub-protocol (OpenAI Realtime's convention)
+            || (http::is_upgrade(&req.head) && http::header(&req.head, "sec-websocket-protocol")
+                .is_some_and(|p| p.split(',').any(|x| x.trim().strip_prefix("openai-insecure-api-key.").is_some_and(|t| t == self.token))))
     }
 
     pub(crate) fn api(self: &Arc<Self>, mut s: Conn, req: Request) {
@@ -1575,6 +1578,13 @@ impl Home {
                     }
                 }
                 op["responses"]["default"] = json!({"description": "OpenAI's error: {\"error\": {\"message\", \"type\"}} (HTTP 4xx / 5xx; 401 without the token)"});
+                // a live conversation answers with the WebSocket, not a file (rpcgen's routes have no 101 of their own)
+                if path == "/v1/realtime" {
+                    if let Some(r) = op["responses"].as_object_mut() {
+                        r.remove("200");
+                        r.insert("101".into(), json!({"description": "Switching Protocols: the conversation's WebSocket (docs/api/realtime.md)"}));
+                    }
+                }
             }
             paths.insert(path, ops);
         }

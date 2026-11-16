@@ -355,7 +355,7 @@ pub struct TlsConn {
 }
 
 enum Side {
-    Direct(rustls::StreamOwned<rustls::ServerConnection, TcpStream>),
+    Direct(Box<rustls::StreamOwned<rustls::ServerConnection, TcpStream>>),
     Pumped(UnixStream),
     /// between the two (never seen outside `pump`)
     Gone,
@@ -375,7 +375,7 @@ impl TlsConn {
         // after it, the connection is as patient as a plain one
         sock.set_read_timeout(None).map_err(|e| e.to_string())?;
         sock.set_write_timeout(None).map_err(|e| e.to_string())?;
-        Ok(TlsConn { s: Side::Direct(rustls::StreamOwned::new(conn, sock)) })
+        Ok(TlsConn { s: Side::Direct(Box::new(rustls::StreamOwned::new(conn, sock))) })
     }
 
     pub fn set_read_timeout(&self, d: Option<Duration>) -> io::Result<()> {
@@ -393,7 +393,7 @@ impl TlsConn {
             return Ok(());
         }
         let Side::Direct(st) = std::mem::replace(&mut self.s, Side::Gone) else { unreachable!() };
-        let rustls::StreamOwned { mut conn, sock } = st;
+        let rustls::StreamOwned { mut conn, sock } = *st;
         // the pumps drain what they encrypt as they go: no limit needed on the session's own buffer
         conn.set_buffer_limit(None);
         let (app, pump) = UnixStream::pair()?;

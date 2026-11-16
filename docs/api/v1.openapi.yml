@@ -415,6 +415,29 @@ paths:
                 format: binary
         default:
           description: 'an error: the body''s `error` says what'
+  /v1/realtime:
+    get:
+      operationId: realtime
+      summary: 'A live voice conversation: a WebSocket (Upgrade: websocket) of OpenAI Realtime''s events - session.update, input_audio_buffer.append (pcm16 24 kHz, g711, or pcm_f32le), response.* with the model''s speech and text as made; a lockstep model (Haru-4B) answers every 133 ms frame; the token as Authorization or the sub-protocol openai-insecure-api-key.<token> (docs/api/realtime.md). The model is loaded as for any request and the socket passed on to its server (HTTP 101, then the conversation''s events both ways)'
+      tags:
+      - openai
+      parameters:
+      - name: model
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'a full-duplex speech model (a card whose speech list says realtime: haru-4b); none: the loaded or first enabled one'
+      responses:
+        '200':
+          description: the file
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
 components:
   schemas:
     AudioSpeechBody:
@@ -1332,6 +1355,15 @@ components:
       - seed
       - loras
       description: How pictures were made
+    RealtimeQuery:
+      type: object
+      properties:
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'a full-duplex speech model (a card whose speech list says realtime: haru-4b); none: the loaded or first enabled one'
+      description: The model a live conversation is with (OpenAI Realtime's query)
     RepaintMode:
       type: string
       enum:

@@ -242,6 +242,8 @@ export interface Info {
   report?: string[] | null;
   /** it keeps what it makes (an output directory: links, the history, saved voices) */
   saves?: boolean | null;
+  /** a full-duplex speech model: its live conversations (GET /v1/realtime, a WebSocket); none: it holds none */
+  realtime?: RealtimeInfo | null;
 }
 
 /** A model in OpenAI's list */
@@ -277,6 +279,25 @@ export interface Progress {
   waiting?: number | null;
   /** the front door's job running, if it named one */
   request_id?: string | null;
+  /** live conversations open (/v1/realtime): the server is busy while one is */
+  realtime_sessions?: number | null;
+}
+
+/** What a full-duplex speech model's live conversations take (/v1/realtime) */
+export interface RealtimeInfo {
+  /** the rate it hears at (what a client sends is resampled to it) */
+  input_rate: number;
+  /** the rate it speaks at */
+  output_rate: number;
+  /** a lockstep model's frame in milliseconds (Haru-4B: 133, a frame in, a frame out); 0: it answers turns */
+  frame_ms: number;
+  /** its built-in voices */
+  voices: string[];
+  /** it speaks in a saved voice's recording */
+  clone: boolean;
+  languages: string[];
+  /** it calls the functions a session offers */
+  tools: boolean;
 }
 
 /** What a recogniser writes down */

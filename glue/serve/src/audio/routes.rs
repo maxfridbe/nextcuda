@@ -115,6 +115,27 @@ pub struct Info {
     /// it keeps what it makes (an output directory: links, the history, saved voices)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saves: Option<bool>,
+    /// a full-duplex speech model: its live conversations (GET /v1/realtime, a WebSocket); none: it holds none
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realtime: Option<RealtimeInfo>,
+}
+
+/// What a full-duplex speech model's live conversations take (/v1/realtime)
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct RealtimeInfo {
+    /// the rate it hears at (what a client sends is resampled to it)
+    pub input_rate: u32,
+    /// the rate it speaks at
+    pub output_rate: u32,
+    /// a lockstep model's frame in milliseconds (Haru-4B: 133, a frame in, a frame out); 0: it answers turns
+    pub frame_ms: u32,
+    /// its built-in voices
+    pub voices: Vec<String>,
+    /// it speaks in a saved voice's recording
+    pub clone: bool,
+    pub languages: Vec<String>,
+    /// it calls the functions a session offers
+    pub tools: bool,
 }
 
 /// What the server is doing: busy false, or what it is making and how far it is
@@ -143,6 +164,9 @@ pub struct Progress {
     /// the front door's job running, if it named one
     #[serde(default)]
     pub request_id: Option<String>,
+    /// live conversations open (/v1/realtime): the server is busy while one is
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realtime_sessions: Option<i64>,
 }
 
 /// A song or speech made here: its link, what it was made from (the WAV's own tags) and how
@@ -424,6 +448,13 @@ fn progress(s: &AudioServer, _cx: &mut Cx) -> Result<Checked<Progress>, Fail> {
     let mut p = s.progress.lock().unwrap().clone();
     p["waiting"] = json!(s.waiting.load(Ordering::Relaxed));
     p["request_id"] = json!(s.cancel.current());
+    // a live conversation is running work (the front door neither stops nor counts it idle)
+    let live = s.realtime_sessions();
+    p["realtime_sessions"] = json!(live);
+    if live > 0 && p["busy"] != true {
+        p["busy"] = json!(true);
+        p["phase"] = json!("conversation");
+    }
     Ok(Checked::new(p))
 }
 

@@ -94,6 +94,21 @@ fn serve_kind(l: TcpListener, dir: PathBuf, port: u16) {
         for mut s in l.incoming().flatten() {
             let head = read_head(&mut s);
             let Ok(model) = std::fs::read_to_string(dir.join(format!("model-{port}"))) else { continue };
+            // a live conversation (/v1/realtime): the 101, then what it reads upper-cased back until the client closes;
+            // the request line kept in upgraded-PORT
+            if head.to_ascii_lowercase().contains("upgrade: websocket") {
+                let _ = std::fs::write(dir.join(format!("upgraded-{port}")), head.lines().next().unwrap_or(""));
+                std::thread::spawn(move || {
+                    let _ = s.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+                    let mut b = [0u8; 256];
+                    while let Ok(n @ 1..) = s.read(&mut b) {
+                        if s.write_all(&b[..n].to_ascii_uppercase()).is_err() {
+                            break;
+                        }
+                    }
+                });
+                continue;
+            }
             if head.starts_with("GET /api/info") {
                 reply(&mut s, "200 OK", &json!({"model": model.trim(), "loading": false}));
             } else {
@@ -1043,4 +1058,136 @@ fn the_https_port_serves_the_same_routes_with_its_own_certificate() {
     let wrong = std::fs::read(d2.join("c.pem")).unwrap();
     let r = std::panic::catch_unwind(|| https(port, &wrong, b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n"));
     assert!(r.is_err(), "an untrusted certificate is refused");
+}
+
+/// A live conversation through the front door (/v1/realtime, docs/api/realtime.md): the model asked for loaded as for
+/// any request and the WebSocket spliced to its server - with the token as Authorization or as the sub-protocol, at
+/// /open/<id>/v1/realtime, and over https; none without the token or the upgrade; the model in use (busy) while the
+/// socket is open; its system.models row says realtime and lockstep
+#[test]
+fn a_live_conversation_is_spliced_to_the_model_it_names() {
+    let mut haru = model("haru-4b", "audio", 2.0);
+    haru["speech"] = json!(["realtime", "lockstep"]);
+    let mut tts = model("tts", "audio", 2.0);
+    tts["speech"] = json!(["voices"]);
+    let w = world("realtime", vec![tts, haru]);
+    let token = w.home.token.clone();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let h = w.home.clone();
+    std::thread::spawn(move || h.serve_plain(l));
+    let upgraded = || std::fs::read_to_string(w.dir.join(format!("upgraded-{}", w.audio))).unwrap_or_default();
+    // a conversation: the head, then "hello" echoed back upper-cased through the splice
+    let talk = |path: &str, auth: &str| -> (String, Option<std::net::TcpStream>) {
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        write!(c, "GET {path} HTTP/1.1\r\nHost: box\r\n{auth}Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").unwrap();
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if c.read_exact(&mut b).is_err() {
+                break;
+            }
+            head.push(b[0]);
+        }
+        let head = String::from_utf8_lossy(&head).into_owned();
+        if !head.starts_with("HTTP/1.1 101") {
+            let mut rest = String::new();
+            let _ = c.read_to_string(&mut rest);
+            return (head + &rest, None);
+        }
+        c.write_all(b"hello").unwrap();
+        let mut got = [0u8; 5];
+        c.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"HELLO");
+        (head, Some(c))
+    };
+    let bearer = format!("Authorization: Bearer {token}\r\n");
+
+    // the model named: loaded (the backplane's start), then the socket passed on with the query
+    let (head, c) = talk("/v1/realtime?model=haru-4b", &bearer);
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+    assert_eq!(upgraded(), "GET /v1/realtime?model=haru-4b HTTP/1.1");
+    assert!(w.count("audio start haru-4b") >= 1, "{}", w.log());
+    // while it is open the model is in use: the lease counts it as work
+    assert!(w.home.inflight.lock().unwrap().values().any(|n| *n > 0), "a conversation open is work");
+    drop(c);
+    let t0 = Instant::now();
+    while w.home.inflight.lock().unwrap().values().any(|n| *n > 0) {
+        assert!(t0.elapsed() < Duration::from_secs(5), "the lease ends with the socket");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // no model named, the token as a browser sends it (a sub-protocol): the full-duplex one, not the TTS
+    let (head, _c) = talk("/v1/realtime", &format!("Sec-WebSocket-Protocol: realtime, openai-insecure-api-key.{token}, openai-beta.realtime-v1\r\n"));
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+    assert_eq!(upgraded(), "GET /v1/realtime HTTP/1.1");
+    // the model's page's own conversation
+    let (head, _c) = talk("/open/haru-4b/v1/realtime", "");
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+    assert_eq!(upgraded(), "GET /v1/realtime HTTP/1.1");
+
+    // refused: a wrong token; not an upgrade
+    let (head, c) = talk("/v1/realtime?model=haru-4b", "Sec-WebSocket-Protocol: realtime, openai-insecure-api-key.wrong\r\n");
+    assert!(c.is_none() && head.starts_with("HTTP/1.1 401"), "{head}");
+    let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(c, "GET /v1/realtime HTTP/1.1\r\nHost: box\r\n{bearer}\r\n").unwrap();
+    let mut a = String::new();
+    c.read_to_string(&mut a).unwrap();
+    assert!(a.starts_with("HTTP/1.1 400") && a.contains("WebSocket"), "{a}");
+
+    // its row: a live conversation in lockstep, no method
+    let rows = w.home.rpc_inner("system.models", &json!({})).unwrap();
+    let rows = rows["models"].as_array().or(rows.as_array()).cloned().unwrap_or_default();
+    let row = rows.iter().find(|m| m["id"] == "haru-4b").expect("haru-4b's row");
+    assert_eq!((row["capabilities"].clone(), row["methods"].clone(), row["lockstep"].clone()), (json!(["realtime", "lockstep"]), json!([]), json!(true)), "{row}");
+    let row = rows.iter().find(|m| m["id"] == "tts").unwrap();
+    assert_eq!(row["lockstep"], false);
+    // the document lists it as the WebSocket it is
+    let req = crate::http::read_request(&b"GET /openapi.json HTTP/1.1\r\nHost: box\r\n\r\n"[..]).unwrap();
+    let doc = w.home.openapi(&req, false);
+    let op = &doc["paths"]["/v1/realtime"]["get"];
+    assert!(op["responses"]["101"].is_object() && op["responses"].get("200").is_none(), "{op}");
+}
+
+/// The same over https (wss://box:8443/v1/realtime): the session pumped so the socket runs both ways at once
+#[test]
+fn a_live_conversation_over_https_is_spliced_too() {
+    let mut haru = model("haru-4b", "audio", 2.0);
+    haru["speech"] = json!(["realtime", "lockstep"]);
+    let w = world("realtime-tls", vec![haru]);
+    let token = w.home.token.clone();
+    let (cert, key) = (w.dir.join("tls/cert.pem"), w.dir.join("tls/key.pem"));
+    crate::tls::ensure_cert(&cert, &key, &["localhost".into()]).unwrap();
+    let cfg = crate::tls::server_config(&cert, &key).unwrap();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let h = w.home.clone();
+    std::thread::spawn(move || h.serve_tls(l, cfg));
+    use rustls::pki_types::pem::PemObject;
+    let mut roots = rustls::RootCertStore::empty();
+    for c in rustls::pki_types::CertificateDer::pem_file_iter(&cert).unwrap() {
+        roots.add(c.unwrap()).unwrap();
+    }
+    let ccfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls_graviola::default_provider()))
+        .with_safe_default_protocol_versions().unwrap().with_root_certificates(roots).with_no_client_auth();
+    let conn = rustls::ClientConnection::new(Arc::new(ccfg), "localhost".try_into().unwrap()).unwrap();
+    let tcp = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    let mut s = rustls::StreamOwned::new(conn, tcp);
+    write!(s, "GET /v1/realtime?model=haru-4b HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
+    let mut head = Vec::new();
+    let mut b = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        s.read_exact(&mut b).unwrap();
+        head.push(b[0]);
+    }
+    assert!(head.starts_with(b"HTTP/1.1 101"), "{}", String::from_utf8_lossy(&head));
+    for (say, back) in [(b"hello", b"HELLO"), (b"again", b"AGAIN")] {
+        s.write_all(say).unwrap();
+        let mut got = [0u8; 5];
+        s.read_exact(&mut got).unwrap();
+        assert_eq!(&got, back);
+    }
+    assert_eq!(std::fs::read_to_string(w.dir.join(format!("upgraded-{}", w.audio))).unwrap(), "GET /v1/realtime?model=haru-4b HTTP/1.1");
 }

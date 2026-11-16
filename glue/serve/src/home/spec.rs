@@ -190,6 +190,7 @@ const MODEL_STATE: &str = r#"{"type": "object", "properties": {"id": {"type": "s
   "pull": {"description": "not downloaded: its download under way (as system.models.pulls lists it), else null"},
   "vouch_mb": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "VRAM it is counted for, by card"},
   "spans": {"type": "boolean", "description": "a chat model spread over every card (its model card: gpus all): its cards are not a choice"},
+  "lockstep": {"type": "boolean", "description": "a live conversation in lockstep over /v1/realtime (capability realtime): every frame of audio in answered by a frame out (Haru-4B, 133 ms); its model card: speech lockstep"},
   "measured": {"type": "boolean"}, "headroom_mb": {"type": "object", "additionalProperties": {"type": "integer"}}, "headroom_given": {"type": "boolean"},
   "license": {"type": "string", "description": "the licence of its weights (an SPDX-style id or a short name)"},
   "commercial": {"type": "boolean", "description": "false: the licence forbids commercial use (the pages tag the model non-commercial)"},

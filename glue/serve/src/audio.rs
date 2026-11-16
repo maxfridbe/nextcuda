@@ -16,6 +16,8 @@
 //!                                 options} -> {text, language, duration, segments [{start, end, text}], words [{start,
 //!                                 end, text, probability}], nextsycl: {took, wh}} (JSON only, no multipart form)
 //!   GET  /v1/audio/files/<f>      a song made here (saved in the output directory; byte ranges for seeking)
+//!   GET  /v1/realtime             a live conversation with a full-duplex speech model (Haru-4B): the request upgraded
+//!                                 to a WebSocket of OpenAI Realtime's events (crate::realtime; /realtime too)
 //!   POST /api/cancel              stops the request running (between frames or steps)
 //!   GET  /v1/models, /health
 //!   GET  /api/info                the model, its defaults and limits, its options
@@ -77,6 +79,8 @@ pub struct AudioServer {
     /// a speech engine's built-in voices (None: songs, a recogniser): fixed at load, so a request is told its answer's
     /// shape (streamed or not) without waiting for the engine
     speech_voices: Option<Vec<String>>,
+    /// live conversations open (/v1/realtime): the server is busy while one is
+    sessions: AtomicUsize,
 }
 
 /// A float32 setting as JSON without its binary tail (1.7, not 1.7000000476837158)
@@ -152,7 +156,7 @@ impl AudioServer {
         let speech_voices = engine.speech().map(|sp| sp.voices);
         Ok(AudioServer { speech_voices, model, out_dir, wfe, cors, keep: Vec::new(), gpu, tele, engine: Mutex::new(engine), progress: Mutex::new(json!({"busy": false})),
                          idle: None, license: Value::Null, waiting: AtomicUsize::new(0), cancel: Default::default(), history,
-                         vram_loaded: AtomicU64::new(own_vram_mb()), retire: AtomicBool::new(false) })
+                         vram_loaded: AtomicU64::new(own_vram_mb()), retire: AtomicBool::new(false), sessions: AtomicUsize::new(0) })
     }
 
     /// Answers on `addr` until the process ends
@@ -161,7 +165,8 @@ impl AudioServer {
         if let Some(i) = self.idle {
             let me = self.clone();
             i.watch("nextcuda audio", Box::new(move || {
-                me.waiting.load(Ordering::Relaxed) > 0 || me.progress.lock().map(|p| p["busy"] == true).unwrap_or(true)
+                me.waiting.load(Ordering::Relaxed) > 0 || me.sessions.load(Ordering::Relaxed) > 0
+                    || me.progress.lock().map(|p| p["busy"] == true).unwrap_or(true)
             }));
         }
         eprintln!("nextcuda audio: {} on http://{addr}/v1/audio/speech{}", self.model,
@@ -200,6 +205,11 @@ impl AudioServer {
                 return self.asset(&mut cx.s, &p, &cx.cors);
             }
         }
+        // a live conversation: the WebSocket, not a route of the table (it answers 101, then events both ways)
+        if cx.req.method == "GET" && matches!(cx.req.path.as_str(), "/v1/realtime" | "/realtime") && http::is_upgrade(&cx.req.head) {
+            let Cx { s, req, .. } = cx;
+            return self.realtime(s, &req);
+        }
         // the API: what routes.rs declares
         if !page::serve(routes::table(), self, &mut cx, routes::fail) {
             let m = format!("no route {} {}", cx.req.method, cx.req.path);
@@ -215,7 +225,8 @@ impl AudioServer {
             eprintln!("nextcuda audio: card memory {now} MiB, {was} MiB once loaded - ending so a fresh server takes the next request");
             self.retire.store(true, Ordering::Relaxed);
         }
-        if !self.retire.load(Ordering::Relaxed) {
+        // not under a live conversation: it ends with its socket
+        if !self.retire.load(Ordering::Relaxed) || self.sessions.load(Ordering::Relaxed) > 0 {
             return;
         }
         // the engine held while ending: a request that got it after this one's answer is on the card (it retires
@@ -275,7 +286,32 @@ impl AudioServer {
                 .map(|o| json!({"name": o.name, "value": o.value, "help": o.help})).collect::<Vec<_>>(),
             "report": e.report(),
             "saves": self.out_dir.is_some(),
+            "realtime": e.realtime().map(|r| json!({"input_rate": r.input_rate, "output_rate": r.output_rate, "frame_ms": r.frame_ms, "voices": r.voices,
+                                                    "clone": r.clone, "languages": r.languages, "tools": r.tools})),
         })
+    }
+
+    /// Live conversations open now (/v1/realtime)
+    pub(crate) fn realtime_sessions(&self) -> usize {
+        self.sessions.load(Ordering::Relaxed)
+    }
+
+    /// A live conversation (/v1/realtime upgraded to a WebSocket: crate::realtime) until either side closes; saved
+    /// voices by name are their recordings, cloned (after nextsycl's audio.rs)
+    fn realtime(&self, s: Conn, req: &http::Request) {
+        self.sessions.fetch_add(1, Ordering::SeqCst);
+        if let Some(i) = self.idle {
+            i.touch();
+        }
+        let lib = self.voices();
+        let lookup = |name: &str| -> Option<(Vec<f32>, u32)> { lib.as_ref()?.reference(name).ok().map(|r| (r.samples, r.rate)) };
+        if let Err(m) = crate::realtime::serve(s, req, &self.engine, &self.model, &lookup) {
+            eprintln!("nextcuda audio: a conversation ended: {m}");
+        }
+        self.sessions.fetch_sub(1, Ordering::SeqCst);
+        if let Some(i) = self.idle {
+            i.touch();
+        }
     }
 
     /// A song made here, whole or the byte range asked for

@@ -241,6 +241,39 @@ fn video_thumb(h: &Arc<Home>, cx: &mut Cx, req: FileName) -> Result<Sent, Fail> 
     Ok(Sent::new())
 }
 
+/// The model a live conversation is with (OpenAI Realtime's query)
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct RealtimeQuery {
+    /// a full-duplex speech model (a card whose speech list says realtime: haru-4b); none: the loaded or first enabled one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// A live voice conversation: a WebSocket (Upgrade: websocket) of OpenAI Realtime's events - session.update, input_audio_buffer.append (pcm16 24 kHz, g711, or pcm_f32le), response.* with the model's speech and text as made; a lockstep model (Haru-4B) answers every 133 ms frame; the token as Authorization or the sub-protocol openai-insecure-api-key.<token> (docs/api/realtime.md). The model is loaded as for any request and the socket passed on to its server (HTTP 101, then the conversation's events both ways)
+#[route(get = "/v1/realtime", tags = "openai")]
+fn realtime(h: &Arc<Home>, cx: &mut Cx, req: RealtimeQuery) -> Result<Sent, Fail> {
+    if !http::is_upgrade(&cx.req.head) {
+        return Err((400, "/v1/realtime is a WebSocket: connect with Upgrade: websocket".into()));
+    }
+    need(h, "audio")?;
+    let all = h.models();
+    let live: Vec<&Value> = all.iter().filter(|m| registry::kind_of(m) == "audio" && m["enabled"] != false
+        && m["speech"].as_array().is_some_and(|a| a.iter().any(|x| x == "realtime"))).collect();
+    let id = match req.model.filter(|n| !n.is_empty()) {
+        // OpenAI's own names (gpt-realtime ...) mean "the full-duplex model here"
+        Some(n) if all.iter().any(|m| m["id"] == n.as_str()) || h.not_downloaded(&n).is_some() => h.pick("audio", &json!({"model": n}), &all)?,
+        _ => h.loaded_of("audio").into_iter().find(|l| live.iter().any(|m| m["id"] == l.as_str()))
+            .or_else(|| live.first().and_then(|m| m["id"].as_str().map(str::to_string)))
+            .ok_or((409, "no full-duplex speech model is enabled (a card whose speech list says realtime: haru-4b)".to_string()))?,
+    };
+    // the lease is held while the conversation lasts: the model is in use, not stopped for room
+    let t = h.ensure(&id)?;
+    let query = cx.req.target.split_once('?').map_or("", |(_, q)| q);
+    let target = if query.is_empty() { "/v1/realtime".to_string() } else { format!("/v1/realtime?{query}") };
+    http::splice(&mut cx.s, &t, &cx.req, &target).map_err(|e| (502, e))?;
+    Ok(Sent::new())
+}
+
 /// A saved voice's sample (audio.voices.list's sample)
 #[route(get = "/v1/audio/voices/{name}", tags = "files", produces = "audio/wav")]
 fn voice_sample(h: &Arc<Home>, cx: &mut Cx, req: FileName) -> Result<Sent, Fail> {
@@ -251,7 +284,7 @@ fn voice_sample(h: &Arc<Home>, cx: &mut Cx, req: FileName) -> Result<Sent, Fail>
 }
 
 routes![sync Arc<Home>, Cx, Fail; models, chat, generations, edits, speech, transcriptions, image_file, audio_file, model3d_file,
-        model3d_generate, model3d_rig, video_file, video_thumb, voice_sample];
+        model3d_generate, model3d_rig, video_file, video_thumb, voice_sample, realtime];
 
 /// The table, made once
 pub(crate) fn table() -> &'static [rpcgen::SyncRoute<Arc<Home>, Cx, Fail>] {
@@ -266,7 +299,7 @@ pub(crate) fn infos() -> Vec<rpcgen::RouteInfo> {
 
 /// The kind a route is for (the document lists a kind's routes while a model of it is enabled); none: always listed
 pub(crate) fn kind_of(path: &str) -> Option<&'static str> {
-    [("/v1/chat/", "llm"), ("/v1/images/", "image"), ("/v1/audio/", "audio"), ("/v1/model3d/", "model3d"), ("/v1/video/", "video")]
+    [("/v1/chat/", "llm"), ("/v1/images/", "image"), ("/v1/audio/", "audio"), ("/v1/realtime", "audio"), ("/v1/model3d/", "model3d"), ("/v1/video/", "video")]
         .iter().find(|(p, _)| path.starts_with(p)).map(|(_, k)| *k)
 }
 
