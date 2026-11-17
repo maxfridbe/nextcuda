@@ -447,7 +447,6 @@ impl ImageEngine for RustQwenImage21 {
                 None if asked.is_empty() => " ",
                 None => asked.as_str(),
             };
-            let neg_prompt = req.negative.as_deref().filter(|n| !n.trim().is_empty()).unwrap_or(" ");
             let prefix_of = |p: &str| -> Result<dit::Prefix> {
                 if seen.is_empty() {
                     let e = self.encode(p)?;
@@ -459,7 +458,7 @@ impl ImageEngine for RustQwenImage21 {
             };
             let pre = prefix_of(prompt)?;
             // true guidance: a negative prompt (" " when none was given) and a second pass a step
-            let npre = if cfg > 1.0 { Some(prefix_of(neg_prompt)?) } else { None };
+            let npre = crate::guidance_negative(cfg, req.negative.as_deref()).map(&prefix_of).transpose()?;
             // the conditioning's scratch (the vision tower's and the encoder's score tables, the VAE encoder's im2col) back
             // to the card before the steps
             drop(lats);

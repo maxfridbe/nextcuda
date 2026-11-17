@@ -263,7 +263,8 @@ impl ImageEngine for Q2512 {
         let t_text = Instant::now();
         let prompt = if req.prompt.trim().is_empty() { " " } else { req.prompt.trim() };
         let pos = self.encode(prompt)?;
-        let neg = if cfg > 1.0 { Some(self.encode(req.negative.as_deref().filter(|n| !n.trim().is_empty()).unwrap_or(" "))?) } else { None };
+        // true guidance above 1: against the negative prompt, " " when none was given
+        let neg = crate::guidance_negative(cfg, req.negative.as_deref()).map(|n| self.encode(n)).transpose()?;
         self.nsd.trim()?;
         crate::stages::record(format!("get_learned_condition completed, taking {:.2}s", t_text.elapsed().as_secs_f64()));
         let texts: Vec<&dit::Text> = std::iter::once(pos.as_ref()).chain(neg.as_deref()).collect();

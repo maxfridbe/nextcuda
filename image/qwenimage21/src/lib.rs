@@ -18,6 +18,13 @@ use nextcuda_image::{Error, Gpu, ImageEngine, ImageKind, LoadOptions, ModelFiles
 
 pub const ARCH: &str = "qwen-image-2.1";
 
+/// The prompt true guidance steers away from: none at a scale of 1 or less (one pass a step), else the request's
+/// negative prompt, or an empty one (" ", the model card's own empty negative) when none is given or it is blank -
+/// a scale above 1 never needs a negative prompt (the published cfg 1-30 holds without one, as nextsycl's)
+pub fn guidance_negative(cfg: f32, negative: Option<&str>) -> Option<&str> {
+    (cfg > 1.0).then(|| negative.filter(|n| !n.trim().is_empty()).unwrap_or(" "))
+}
+
 /// The engine's kernels, each against host arithmetic on `gpu` (`nextcuda image selftest`): the worst error of each
 pub fn selftest(gpu: &Arc<Gpu>) -> Result<Vec<f32>> {
     let mut v = selftest::run(gpu)?;
@@ -51,4 +58,23 @@ fn load_2512(files: &ModelFiles, gpus: &[Arc<Gpu>], o: &LoadOptions, log: &mut d
 fn load(files: &ModelFiles, gpus: &[Arc<Gpu>], o: &LoadOptions, log: &mut dyn FnMut(String)) -> Result<Box<dyn ImageEngine>> {
     let gpu = gpus.first().ok_or_else(|| Error("no GPU".into()))?;
     Ok(Box::new(rust::RustQwenImage21::load(files, gpu, o, log)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guidance_negative;
+
+    #[test]
+    fn guidance_above_1_runs_against_an_empty_negative_when_none_is_given() {
+        // cfg 4 with no negative, an empty or a blank one: true guidance against the empty prompt, never a refusal
+        for none in [None, Some(""), Some("   "), Some("\n")] {
+            assert_eq!(guidance_negative(4.0, none), Some(" "), "{none:?}");
+        }
+        // a negative given is the one guided against
+        assert_eq!(guidance_negative(4.0, Some("blurry, low quality")), Some("blurry, low quality"));
+        // at 1 or below: one pass a step, the negative unread
+        assert_eq!(guidance_negative(1.0, Some("blurry")), None);
+        assert_eq!(guidance_negative(0.5, None), None);
+        assert_eq!(guidance_negative(1.01, None), Some(" "));
+    }
 }

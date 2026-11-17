@@ -53,10 +53,11 @@ pub fn max_pixels(m: &Value) -> Option<u32> {
     (m["arch"] == "moss-image").then_some(4_220_160)
 }
 
-/// Whether a guidance scale above 1 needs a negative prompt: Qwen-Image's true_cfg_scale does (its engine refuses
-/// without one); MOSS-Image's guidance runs against an empty one, and Ming-Image's against a zero condition
-pub fn cfg_needs_negative(m: &Value) -> bool {
-    m["arch"].as_str().is_some_and(|a| a.starts_with("qwen-image"))
+/// An image request's guidance scale: 0 to 30. Above 1 never needs a negative prompt - every engine here guides
+/// against an empty one when none is given (Qwen-Image's true_cfg_scale against " ", MOSS-Image's against "",
+/// Ming-Image's against a zero condition), so the cards' published cfg range holds with the negative left out
+pub fn image_cfg(b: &Value) -> Result<f64, Fail> {
+    Ok(number(b, "cfg", 0.0, 30.0)?.unwrap_or(1.0))
 }
 
 /// The steps an image model takes (image.info's steps): its default, and the only count a few-step model runs
@@ -193,10 +194,7 @@ impl Home {
                 return Err(bad(format!("steps {st}: {id} runs its own {n} sigmas (a few-step distill) - send {n} or leave steps out")));
             }
         }
-        let cfg = number(b, "cfg", 0.0, 30.0)?.unwrap_or(1.0);
-        if cfg > 1.0 && cfg_needs_negative(&m) && s(b, "negative_prompt").trim().is_empty() {
-            return Err(bad(format!("cfg {cfg}: guidance above 1 needs a negative_prompt (the model's true_cfg_scale)")));
-        }
+        image_cfg(b)?;
         let strength = number(b, "strength", 0.05, 1.0)?.unwrap_or(1.0);
         let pics: Vec<(String, &str)> = if edit {
             let list: Vec<&Value> = match (&b["images"], &b["image"]) {
@@ -320,20 +318,28 @@ pub fn speech_lists(m: &Value) -> (Vec<String>, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cfg_needs_negative, number, size_range, speech_lists, steps_of, whole};
+    use super::{image_cfg, number, size_range, speech_lists, steps_of, whole};
     use serde_json::json;
 
     #[test]
-    fn each_engine_has_its_own_sides_and_guidance_rule() {
+    fn each_engine_has_its_own_sides() {
         assert_eq!(size_range(&json!({"arch": "moss-image"})), (64, 4096));
         assert_eq!(super::max_pixels(&json!({"arch": "moss-image"})), Some(2512 * 1680));
         assert_eq!(super::max_pixels(&json!({"arch": "qwen-image-2.1"})), None);
         assert_eq!(size_range(&json!({"arch": "qwen-image-2.1"})), (64, 4096));
-        assert!(cfg_needs_negative(&json!({"arch": "qwen-image-2.1"})));
-        assert!(cfg_needs_negative(&json!({"arch": "qwen-image-2512"})));
-        // MOSS-Image's guidance (cfg 3 by default) runs against an empty negative prompt, Ming-Image's has none
-        assert!(!cfg_needs_negative(&json!({"arch": "moss-image"})));
-        assert!(!cfg_needs_negative(&json!({"arch": "ming-image"})));
+    }
+
+    #[test]
+    fn guidance_above_1_needs_no_negative_prompt() {
+        // the storyboard's frames (63f55f2f): cfg 4 and no negative were refused; now guided against an empty one
+        for neg in [json!(null), json!(""), json!("  ")] {
+            assert_eq!(image_cfg(&json!({"prompt": "a lighthouse at dusk", "cfg": 4, "negative_prompt": neg})).ok(), Some(4.0), "{neg}");
+        }
+        assert_eq!(image_cfg(&json!({"prompt": "p", "cfg": 30})).ok(), Some(30.0));
+        assert_eq!(image_cfg(&json!({"prompt": "p"})).ok(), Some(1.0));
+        // the range still holds
+        assert!(image_cfg(&json!({"prompt": "p", "cfg": 31})).is_err());
+        assert!(image_cfg(&json!({"prompt": "p", "cfg": -1})).is_err());
     }
 
     #[test]

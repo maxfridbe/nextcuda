@@ -802,7 +802,7 @@ components:
           anyOf:
           - type: number
           - type: 'null'
-          description: true guidance (needs negative_prompt)
+          description: 'the guidance scale, 0 to 30: above 1, true guidance against negative_prompt - an empty one when none is given (two passes a step); 1 or less, one pass'
         deblock:
           anyOf:
           - type: boolean

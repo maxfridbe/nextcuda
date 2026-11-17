@@ -663,7 +663,7 @@ pub struct ImageGenerateReq {
 #[derive(Deserialize, Serialize, Rpc)]
 #[allow(non_snake_case)]
 pub struct ImageGenerateBody {
-    /// true guidance (needs negative_prompt)
+    /// the guidance scale, 0 to 30: above 1, true guidance against negative_prompt - an empty one when none is given (two passes a step); 1 or less, one pass
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cfg: Option<f64>,
     /// p-h3-image-pdmd2 and p-h3-image: the deblock filter after the decoder (default true) - takes out the 16-pixel grid the H3 decoder leaves (each latent token's 16 x 16 tile written on its own): the fixed pattern every tile shares, estimated from the picture and subtracted at each tile's own amplitude, then a flatness-gated pass over the tile boundaries (H.264's edge test: off across real edges and texture). No blur. false: the decoder's pixels as they are. Other models refuse it
