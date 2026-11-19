@@ -133,10 +133,12 @@ function AllocLine(total: number) {
             : null}
           {!live ? <span class="hint"> {r.state}{r.measured ? "" : " · estimate"}</span> : null}
           {r.vouched > 0 && r.headroom > 0 && live ? <span class="hint"> · vouched {Alloc(r.vouched, r.headroom, r.kind, r.headroomGiven)}</span> : null}
-          {r.loadedAgo != null ? <span class="hint ages"> · {agesText({ loaded_s_ago: r.loadedAgo, idle_s: r.idle, busy: r.state === "busy" }, since())}</span> : null}
         </span>
         {AllocBar(r, total)}
         <span class="mb">{live ? `${gib(r.held)} GiB` : Alloc(r.vouched, r.headroom, r.kind, r.headroomGiven)}</span>
+        {r.loadedAgo != null
+          ? <div class="jobline hint ages">{agesText({ loaded_s_ago: r.loadedAgo, idle_s: r.idle, busy: r.state === "busy" }, since())}</div>
+          : null}
         {r.job
           ? <div class="jobline" attrs={{ title: r.jobLabel }}><span class="i" props={{ innerHTML: "&#xf0da;" }} /> <b>{r.job}</b>{r.jobLabel ? <span class="hint"> {r.jobLabel}</span> : null}</div>
           : null}
