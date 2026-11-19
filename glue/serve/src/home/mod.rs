@@ -21,6 +21,7 @@
 //! services over HTTP, the actions by running this same program (`nextcuda image start ...`) or the video studio's
 //! llm.mode, which owns the chat card.
 
+mod ages;
 mod api;
 mod config;
 mod control;
@@ -244,6 +245,8 @@ pub struct Home {
     me: std::sync::OnceLock<std::sync::Weak<Home>>,
     /// the model cards, read at most once a minute (their concurrency profiles)
     cards_cache: Mutex<(Option<std::time::Instant>, Vec<Value>)>,
+    /// each loaded copy's clocks: since it loaded, since its last request (ages.rs; ages.json beside serve.json)
+    pub(crate) ages: ages::Ages,
 }
 
 pub(crate) fn now() -> f64 {
@@ -344,6 +347,7 @@ impl Home {
             (id.clone(), g.as_object().map(|g| g.iter().filter_map(|(k, v)| Some((k.parse().ok()?, v.as_u64()?))).collect()).unwrap_or_default())
         }).collect()).unwrap_or_default();
         let jobs = jobs::Jobs::load(state_file.with_file_name("jobs.json"));
+        let state_file_ages = state_file.with_file_name("ages.json");
         let maint_file = crate::maintenance::file_beside(&registry::registry(&o.cfg));
         let maint_bypass = Mutex::new(st["maintenance_bypass"].as_str().unwrap_or("").to_string());
         let h = Arc::new(Home {
@@ -356,6 +360,7 @@ impl Home {
             history: backplane_scheduler::history::History::open(Box::new(backplane_scheduler::history::FileStorage::new(o_dir.with_file_name("history")))),
             me: std::sync::OnceLock::new(),
             cards_cache: Mutex::new((None, Vec::new())),
+            ages: ages::Ages::open(Some(state_file_ages)),
         });
         let _ = h.me.set(Arc::downgrade(&h));
         Ok(h)

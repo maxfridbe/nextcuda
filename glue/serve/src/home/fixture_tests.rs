@@ -1191,3 +1191,45 @@ fn a_live_conversation_over_https_is_spliced_too() {
     }
     assert_eq!(std::fs::read_to_string(w.dir.join(format!("upgraded-{}", w.audio))).unwrap(), "GET /v1/realtime?model=haru-4b HTTP/1.1");
 }
+
+/// A loaded model says how long it has been loaded and how long since its last request: no request yet once loaded,
+/// now while one runs, the end of the last one after; on the model's row, its copy (instances) and the card's line;
+/// gone when it unloads
+#[test]
+fn a_loaded_model_says_since_when_and_since_its_last_request() {
+    let w = world("ages", vec![big("a")]);
+    let row = |w: &World| {
+        let rows = w.home.rpc_inner("system.models", &json!({})).unwrap();
+        rows["models"].as_array().unwrap().iter().find(|m| m["id"] == "a").cloned().unwrap()
+    };
+    assert!(row(&w)["loaded_at"].is_null() && row(&w)["instances"].as_array().unwrap().is_empty(), "not loaded: no ages");
+    let t0 = super::now();
+    let lease = w.home.ensure("a").unwrap();
+    let r = row(&w);
+    assert!(r["loaded_at"].as_f64().is_some_and(|t| t >= t0 - 1.0), "{r}");
+    assert_eq!((r["idle_s"].as_u64(), r["instances"][0]["busy"].clone(), r["instances"][0]["port"].as_u64()), (Some(0), json!(true), Some(w.audio as u64)), "a request on it: in use now: {r}");
+    drop(lease);
+    let ended = super::now();
+    std::thread::sleep(Duration::from_millis(1100));
+    let r = row(&w);
+    let last = r["last_request_at"].as_f64().unwrap();
+    assert!((last - ended).abs() < 0.5 && r["idle_s"].as_u64().is_some_and(|s| (1..=2).contains(&s)), "the last request's end: {r}");
+    assert!(r["loaded_s_ago"].as_u64().is_some_and(|s| s >= 1) && r["unload_in_s"].as_u64().is_some_and(|s| (597..=600).contains(&s)), "{r}");
+    assert_eq!(r["instances"][0]["gpu"], 0);
+    // the card's line says its copy's clocks; system.state the same row
+    let st = w.home.rpc_inner("system.state", &json!({})).unwrap();
+    let v = st["cards"][0]["vouched"].as_array().unwrap().iter().find(|v| v["model"] == "a").cloned().unwrap();
+    assert_eq!((v["loaded_at"].clone(), v["last_request_at"].clone()), (r["loaded_at"].clone(), r["last_request_at"].clone()), "{v}");
+    assert!(st["models"].as_array().unwrap().iter().any(|m| m["id"] == "a" && m["instances"][0]["idle_s"].is_number()));
+    // system.busy's slot too
+    let busy = w.home.rpc_inner("system.busy", &json!({})).unwrap();
+    assert!(busy["slots"].as_array().unwrap().iter().any(|s| s["model"] == "a" && s["loaded_at"] == r["loaded_at"]), "{busy}");
+    // a restart of the front door: the clocks come back from ages.json
+    let again = super::ages::Ages::open(Some(w.home.state_file.with_file_name("ages.json")));
+    assert_eq!(again.get(&super::ages::port_key(w.audio)).map(|a| a.last_request_at.is_some()), Some(true));
+    // unloaded: the clock goes
+    std::fs::remove_file(w.dir.join(format!("model-{}", w.audio))).unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+    let r = row(&w);
+    assert!(r["loaded_at"].is_null() && w.home.ages.get(&super::ages::port_key(w.audio)).is_none(), "{r}");
+}

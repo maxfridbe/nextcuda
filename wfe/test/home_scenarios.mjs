@@ -138,5 +138,35 @@ sc.show("status", App())
   ui.state.cards = [card];
 }
 
+// a loaded model says how long it has been loaded and since its last request, in words, and they run on between polls;
+// a box that does not say (no loaded_s_ago) shows nothing; the card's line says the same for its copy there
+{
+  const { dur, agesText, unloadText } = await mod("home", "ages.js");
+  sc.check("ages-dur", [dur(0), dur(59.9), dur(60), dur(3599), dur(3600), dur(8040), dur(86400), dur(273600)].join("|") === "0 s|59 s|1 min|59 min|1 h|2 h 14 min|1 d|3 d 4 h",
+    `seconds, min, h, days (${[dur(59.9), dur(8040), dur(273600)]})`);
+  sc.check("ages-text", agesText({ loaded_s_ago: 8040, idle_s: 180 }, 0) === "loaded 2 h 14 min ago · last request 3 min ago"
+    && agesText({ loaded_s_ago: 50, idle_s: null }, 5) === "loaded 55 s ago · no request yet"
+    && agesText({ loaded_s_ago: 50, idle_s: 0, busy: true }, 5) === "loaded 55 s ago · in use now"
+    && agesText({}, 0) === "" && agesText({ loaded_s_ago: null, idle_s: null }, 0) === ""
+    && unloadText({ unload_in_s: 600 }, 30) === "unloads in 9 min" && unloadText({ unload_in_s: null }, 0) === "",
+    "the two ages, no request yet, in use, nothing when the box does not say");
+  const inst = { gpu: 0, port: 8101, busy: false, loaded_at: 1, last_request_at: 2, loaded_s_ago: 8040, idle_s: 12, unload_in_s: 588 };
+  ui.state.models = [model("qwen-image-2.1-q8", "image", { state: "loaded", loaded_at: 1, last_request_at: 2, loaded_s_ago: 8040, idle_s: 12, unload_in_s: 588, instances: [inst] }),
+                     model("voxcpm2", "audio", { state: "loaded", loaded_s_ago: 30, idle_s: null, instances: [{ ...inst, idle_s: null }] }),
+                     model("qwen3-8b", "llm")];
+  const proc = { pid: 11, vram_mb: 6000, program: "nextcuda", kind: "image", command: "serve", model: "qwen-image-2.1-q8", model_id: "qwen-image-2.1-q8", port: "8101" };
+  ui.state.cards = [{ ...card, procs: [proc], vouched: [{ model: "qwen-image-2.1-q8", kind: "image", mb: 6000, headroom_mb: 0, headroom_given: false, measured: true, state: "loaded", counted: true, loaded_s_ago: 8040, idle_s: 12 }] }];
+  ui.stateAt = Date.now() - 10_000;
+  const t = sc.show("status-ages", App());
+  t.has(/loaded 2 h 14 min ago · last request 22 s ago · unloads in 9 min/).has(/loaded 40 s ago · no request yet/);
+  sc.check("status-ages", t.lines.filter((l) => /loaded 2 h 14 min ago · last request 22 s ago/.test(l)).length >= 2, "the model row and the card's line both say it");
+  // hardac1's box today: no ages at all - nothing shown, never NaN
+  ui.state.models = [model("qwen-image-2.1-q8", "image", { state: "loaded" })];
+  ui.state.cards = [{ ...card, procs: [proc], vouched: [{ model: "qwen-image-2.1-q8", kind: "image", mb: 6000, headroom_mb: 0, headroom_given: false, measured: true, state: "loaded", counted: true }] }];
+  sc.show("status-no-ages", App()).lacks(/loaded .* ago/).lacks(/NaN/).lacks(/no request yet/);
+  ui.state.cards = [card];
+  ui.stateAt = 0;
+}
+
 sc.done();
 process.exit(process.exitCode ?? 0);

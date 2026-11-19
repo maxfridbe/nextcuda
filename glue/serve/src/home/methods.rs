@@ -2656,13 +2656,13 @@ pub struct VideoDescribePromptGuideMdReq {
     pub rest: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The box: the GPUs (memory by process and vouched for), every model's state, the front ends
+/// The box: the GPUs (memory by process and vouched for), every model's state, the front ends. Each loaded model says how long it has been loaded and how long since its last request: loaded_at, last_request_at (UTC, Unix seconds; last_request_at is now while a request runs, else when the last one ended, null with none since it loaded), loaded_s_ago, idle_s (seconds, as of the answer), unload_in_s, and its copies (instances: card, port, busy, the same clocks); a card's vouched rows carry its copy there's
 #[rpc(name = "system.state", tags = "system", example = r#"{}"#)]
 fn system_state(h: &Arc<Home>, req: SystemStateReq) -> Answer {
     h.legacy("system.state", req)
 }
 
-/// Is anything working: a clip made or waiting to run, a picture, sound or chat answered, a model loading. video.accepts says whether video.generate starts a clip at once (else 409 busy without queue: true)
+/// Is anything working: a clip made or waiting to run, a picture, sound or chat answered, a model loading; where work runs (slots, each with its copy's loaded_at, last_request_at, loaded_s_ago, idle_s). video.accepts says whether video.generate starts a clip at once (else 409 busy without queue: true)
 #[rpc(name = "system.busy", tags = "system", example = r#"{}"#)]
 fn system_busy(h: &Arc<Home>, req: SystemBusyReq) -> Answer {
     h.legacy("system.busy", req)
@@ -2692,7 +2692,7 @@ fn system_files_delete(h: &Arc<Home>, req: SystemFilesDeleteReq) -> Answer {
     h.legacy("system.files.delete", req)
 }
 
-/// Every registered model: kind, enabled, its GPUs, its state (disabled, unloaded, loading, loaded, busy, ready), what it can do (capabilities, methods); downloaded: true. Then every model a card offers that is not downloaded: downloaded: false, state not_downloaded, enabled false, bytes, the drive and folder it would go to, fits, its download under way (pull) - system.models.pull fetches one
+/// Every registered model: kind, enabled, its GPUs, its state (disabled, unloaded, loading, loaded, busy, ready), what it can do (capabilities, methods), and loaded: since when and since its last request (loaded_at, last_request_at in UTC Unix seconds - the latter now while a request runs, else when the last one ended, null with none since it loaded; loaded_s_ago, idle_s, unload_in_s in seconds; instances: each copy's card, port and clocks); downloaded: true. Then every model a card offers that is not downloaded: downloaded: false, state not_downloaded, enabled false, bytes, the drive and folder it would go to, fits, its download under way (pull) - system.models.pull fetches one
 #[rpc(name = "system.models", tags = "system", example = r#"{}"#)]
 fn system_models(h: &Arc<Home>, req: SystemModelsReq) -> Answer {
     h.legacy("system.models", req)

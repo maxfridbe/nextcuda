@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::{now, Home};
+use super::{ages, now, Home};
 use backplane_scheduler::profile::Profile;
 use crate::http::{call_for, Target};
 use super::registry;
@@ -44,8 +44,19 @@ use backplane_scheduler::place::{self as splace, Outcome, PlaceReq};
 use backplane_scheduler::room::{self, Card, Idleness, ModelInfo, Proc, Server, Snapshot, JOB_ROOM_WAIT_S, MARGIN_MB, ROOM_WAIT_S};
 use backplane_scheduler::{eta, rsvp as sr};
 
-/// The video daemon's engines (model ids), and (engine, GPU) per loaded worker
-type VideoDaemon = (Vec<String>, Vec<(String, usize)>);
+/// The video daemon's engines (model ids), and per loaded worker its engine, card and clocks
+type VideoDaemon = (Vec<String>, Vec<VideoWorker>);
+
+/// A video worker holding an engine on a card: its idle clock (the daemon's `idle_seconds`, 0 while a clip runs) and
+/// its idle unload countdown (`unload_in_seconds`)
+#[derive(Clone)]
+struct VideoWorker {
+    engine: String,
+    gpu: usize,
+    idle_s: Option<f64>,
+    running: bool,
+    unload_in: Option<u64>,
+}
 
 /// How long a video request waits for the daemon to come up before 503
 const VIDEO_WAIT_S: u64 = 120;
@@ -80,6 +91,13 @@ fn video_engines(enabled: &[String]) -> (String, Vec<String>) {
 /// running: `running` none)
 fn video_missing(enabled: &[String], running: Option<&[String]>) -> bool {
     !enabled.is_empty() && running.is_none_or(|r| enabled.iter().any(|e| !r.contains(e)))
+}
+
+/// `more`'s fields added to the object `row`
+fn extend(row: &mut Value, more: Value) {
+    if let (Some(o), Value::Object(m)) = (row.as_object_mut(), more) {
+        o.extend(m);
+    }
 }
 
 /// Whether something listens on 127.0.0.1:`port`
@@ -151,6 +169,7 @@ impl Drop for Lease<'_> {
         if let Some(n) = self.home.inflight.lock().unwrap().get_mut(&self.port) {
             *n = n.saturating_sub(1);
         }
+        self.home.ages.end(&ages::port_key(self.port), now());
         if let Some((id, secs)) = self.hold.take() {
             self.home.hold_after(&id, secs);
         }
@@ -510,21 +529,30 @@ impl Home {
                 continue;
             }
             for x in self.servers(kind) {
-                v.push(json!({"kind": kind, "slot": x.slot, "port": x.port, "gpu": card_of_port(cards, x.port).or(x.gpu),
-                              "model": x.model, "loading": x.loading, "busy": x.busy && !x.loading, "up": x.model.is_some()}));
+                let mut row = json!({"kind": kind, "slot": x.slot, "port": x.port, "gpu": card_of_port(cards, x.port).or(x.gpu),
+                                     "model": x.model, "loading": x.loading, "busy": x.busy && !x.loading, "up": x.model.is_some()});
+                let age = self.ages.get(&ages::port_key(x.port)).filter(|a| !x.loading && x.model.as_deref() == Some(a.model.as_str()));
+                extend(&mut row, age.map_or_else(ages::unknown, |a| a.view(now(), x.busy && !x.loading)));
+                v.push(row);
             }
         }
         if all.iter().any(|m| registry::kind_of(m) == "video" && m["enabled"] != false) {
             if let Ok(st) = call_for(&self.target("video"), "GET", "/engine/status", None, 4) {
                 for g in st["gpus"].as_array().into_iter().flatten() {
-                    v.push(json!({"kind": "video", "slot": g["gpu"], "gpu": g["gpu"], "model": g["denoiser"],
-                                  "loading": false, "busy": !g["running"].is_null(), "up": g["engine"].as_str().is_some_and(|e| e != "unloaded")}));
+                    let mut row = json!({"kind": "video", "slot": g["gpu"], "gpu": g["gpu"], "model": g["denoiser"],
+                                         "loading": false, "busy": !g["running"].is_null(), "up": g["engine"].as_str().is_some_and(|e| e != "unloaded")});
+                    let age = g["gpu"].as_u64().and_then(|n| self.ages.get(&ages::video_key(n as usize))).filter(|a| row["up"] == true && g["denoiser"] == a.model.as_str());
+                    extend(&mut row, age.map_or_else(ages::unknown, |a| a.view(now(), !g["running"].is_null())));
+                    v.push(row);
                 }
             }
         }
         if let Some(id) = all.iter().any(|m| registry::kind_of(m) == "llm").then(|| self.chat_loaded(all)).flatten() {
             let gpus = all.iter().find(|m| m["id"] == id.as_str()).map(|m| self.gpus_of(m)).unwrap_or_default();
-            v.push(json!({"kind": "llm", "slot": 0, "gpu": gpus.first(), "gpus": gpus, "model": id, "loading": false, "busy": false, "up": true}));
+            let mut row = json!({"kind": "llm", "slot": 0, "gpu": gpus.first(), "gpus": gpus, "model": id, "loading": false, "busy": false, "up": true});
+            let age = self.ages.get(ages::CHAT).filter(|a| a.model == id);
+            extend(&mut row, age.map_or_else(ages::unknown, |a| a.view(now(), false)));
+            v.push(row);
         }
         v
     }
@@ -557,7 +585,8 @@ impl Home {
         // a slot's engine is "unloaded" or holds a denoiser (by its model id)
         let loaded = v["gpus"].as_array().into_iter().flatten()
             .filter(|g| g["engine"].as_str().is_some_and(|e| e != "unloaded"))
-            .filter_map(|g| Some((g["denoiser"].as_str()?.to_string(), g["gpu"].as_u64()? as usize)))
+            .filter_map(|g| Some(VideoWorker { engine: g["denoiser"].as_str()?.to_string(), gpu: g["gpu"].as_u64()? as usize,
+                                               idle_s: g["idle_seconds"].as_f64(), running: !g["running"].is_null(), unload_in: g["unload_in_seconds"].as_u64() }))
             .collect();
         Some((names, loaded))
     }
@@ -573,6 +602,69 @@ impl Home {
         let m3d = if need("model3d") { self.servers("model3d") } else { Vec::new() };
         let slots_of = |k: &str| -> &Vec<Slot> { match k { "image" => &image, "audio" => &audio, _ => &m3d } };
         let video = if need("video") { self.video_daemon() } else { None };
+        let t = now();
+        // each loaded copy's clocks (ages.rs): the servers by port, the chat server, the video workers by card
+        let mut copies: BTreeMap<String, (Vec<Value>, Option<u64>)> = BTreeMap::new();
+        let kept = self.kept_ids(all);
+        for slots in [&image, &audio, &m3d] {
+            for x in slots.iter() {
+                let key = ages::port_key(x.port);
+                let Some(model) = x.model.as_deref().filter(|m| !m.is_empty()) else {
+                    self.ages.gone(&key);
+                    continue;
+                };
+                if x.loading {
+                    continue;
+                }
+                let age = self.ages.seen(&key, model, t, || None);
+                let mut v = age.view(t, x.busy);
+                let unload = ages::unload_in(&age, t, self.o.idle_minutes, kept.contains(model), x.busy);
+                v["gpu"] = json!(card_of_port(cards, x.port).or(x.gpu));
+                v["port"] = json!(x.port);
+                v["busy"] = json!(x.busy);
+                v["unload_in_s"] = json!(unload);
+                let e = copies.entry(model.to_string()).or_default();
+                e.0.push(v);
+                e.1 = match (e.1, unload) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) };
+            }
+        }
+        if let Some(id) = chat.0.as_deref() {
+            let (active, last) = self.chat_requests();
+            let age = self.ages.seen(ages::CHAT, id, t, || self.chat_uptime().map(|u| t - u));
+            self.ages.last_was(ages::CHAT, last);
+            let age = self.ages.get(ages::CHAT).unwrap_or(age);
+            let mut v = age.view(t, active);
+            let g = all.iter().find(|m| m["id"] == id).map(|m| self.gpus_of(m)).unwrap_or_default();
+            v["gpu"] = json!(g.first());
+            v["gpus"] = json!(g);
+            v["port"] = json!(self.o.ports.llm);
+            v["busy"] = json!(active);
+            v["unload_in_s"] = Value::Null;
+            copies.entry(id.to_string()).or_default().0.push(v);
+        } else if need("llm") {
+            self.ages.gone(ages::CHAT);
+        }
+        if let Some((_, workers)) = &video {
+            for g in 0..cards.as_array().map_or(0, Vec::len) {
+                if !workers.iter().any(|w| w.gpu == g) {
+                    self.ages.gone(&ages::video_key(g));
+                }
+            }
+            for w in workers {
+                let key = ages::video_key(w.gpu);
+                self.ages.seen(&key, &w.engine, t, || None);
+                self.ages.last_was(&key, if w.running { Some(t) } else { w.idle_s.map(|i| t - i) });
+                let Some(age) = self.ages.get(&key) else { continue };
+                let mut v = age.view(t, w.running);
+                v["gpu"] = json!(w.gpu);
+                v["port"] = Value::Null;
+                v["busy"] = json!(w.running);
+                v["unload_in_s"] = json!(w.unload_in.filter(|_| !kept.contains(&w.engine)));
+                let e = copies.entry(w.engine.clone()).or_default();
+                e.0.push(v);
+                e.1 = match (e.1, w.unload_in) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) };
+            }
+        }
         // the model cards, read once: for the headroom of entries registered before cards carried it
         // and whether a chat model spans every card
         let mc = if all.iter().all(|m| m.get("headroom_gib").is_some() && m.get("license").is_some()) && !need("llm") { Vec::new() } else { self.o.cfg.cards() };
@@ -604,7 +696,7 @@ impl Home {
                     }
                 }
                 "video" => match &video {
-                    Some((_, loaded)) if loaded.iter().any(|(e, _)| *e == id) => "loaded",
+                    Some((_, loaded)) if loaded.iter().any(|w| w.engine == id) => "loaded",
                     Some((names, _)) if names.contains(&id) => "ready",
                     _ => "unloaded",
                 },
@@ -653,6 +745,10 @@ impl Home {
             row["copies_now"] = json!(copies_now);
             row["concurrency"] = pc;
             row["coexistence"] = px;
+            // since it loaded and since its last request, a copy each (instances) and the model's (ages.rs)
+            let (inst, unload) = copies.remove(&id).unwrap_or_default();
+            let unload = if kept.contains(&id) { None } else { unload };
+            row.as_object_mut().unwrap().extend(ages::model_view(&inst, unload).as_object().cloned().unwrap_or_default());
             row
         }).collect()
     }
@@ -687,6 +783,17 @@ impl Home {
                         list.push(json!({"model": o["id"], "kind": kind, "mb": mb(o), "headroom_mb": hr(o), "headroom_given": o["headroom_given"],
                                          "measured": o["measured"], "state": o["state"], "of": group.len(), "counted": false}));
                     }
+                }
+            }
+            // the clocks of the model's copy on this card (a chat model spread over the cards: its one copy)
+            for v in list.iter_mut() {
+                let m = models.iter().find(|m| m["id"] == v["model"]);
+                let inst = m.and_then(|m| m["instances"].as_array()).and_then(|a| {
+                    a.iter().find(|i| i["gpu"].as_u64().map(|g| g.to_string()) == Some(gi.clone()))
+                        .or_else(|| a.iter().find(|i| i["gpus"].as_array().is_some_and(|g| g.iter().any(|x| x.as_u64().map(|g| g.to_string()) == Some(gi.clone())))))
+                });
+                for k in ["loaded_at", "last_request_at", "loaded_s_ago", "idle_s"] {
+                    v[k] = inst.map_or(Value::Null, |i| i[k].clone());
                 }
             }
             let counted = |v: &&Value| v["counted"] == true;
@@ -1111,6 +1218,20 @@ impl Home {
     }
 
     /// The chat server's control socket (its /server routes are not on its port)
+    /// The chat server's requests: whether one runs now, and when the last one ended (its own list, whatever way
+    /// it came: the front door, the switcher, its page)
+    fn chat_requests(&self) -> (bool, Option<f64>) {
+        let Ok(v) = call_for(&Target::Unix(self.chat_socket()), "GET", "/server/requests", None, 3) else { return (false, None) };
+        let active = v["active"].as_array().is_some_and(|a| !a.is_empty());
+        let last = v["done"].as_array().into_iter().flatten().filter_map(|r| r["ended"].as_f64().or_else(|| r["started"].as_f64())).reduce(f64::max);
+        (active, last)
+    }
+
+    /// How long the chat server has been up (its /server/status), for a chat model loaded before this front door
+    fn chat_uptime(&self) -> Option<f64> {
+        call_for(&Target::Unix(self.chat_socket()), "GET", "/server/status", None, 3).ok()?["uptime_seconds"].as_f64()
+    }
+
     pub(crate) fn chat_socket(&self) -> std::path::PathBuf {
         self.o.cfg.get("NS_SOCKET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| {
             std::path::PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into())).join("nextcuda")
@@ -1248,6 +1369,8 @@ impl Home {
         args.extend(idle_exit_args(self.o.idle_minutes, self.entry(id).is_ok_and(|m| registry::pinned(&m))));
         self.loading.lock().unwrap().insert(id.to_string(), now());
         self.started_on.lock().unwrap().insert(port, gpu);
+        // a new server there: the clock of whatever held the port before is done with
+        self.ages.gone(&ages::port_key(port));
         let r = self.exec(format!("{kind} start {id} on GPU {on_label}{}", if slot > 0 { format!(" (server {})", slot + 1) } else { String::new() }), &args);
         self.loading.lock().unwrap().remove(id);
         r.map_err(|e| (502, e))?;
@@ -1282,6 +1405,9 @@ impl Home {
     fn lease(&self, port: u16) -> Lease<'_> {
         *self.inflight.lock().unwrap().entry(port).or_insert(0) += 1;
         let model = self.answers.lock().unwrap().get(&port).map(|a| a.0.clone()).filter(|m| !m.is_empty());
+        if let Some(m) = &model {
+            self.ages.begin(&ages::port_key(port), m, now());
+        }
         let hold = model.zip(super::rsvp::granted(super::rsvp::asked(), self.max_rsvp()));
         Lease { target: Target::Tcp(format!("127.0.0.1:{port}")), port, home: self, hold }
     }
@@ -1290,6 +1416,9 @@ impl Home {
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_secs(600) {
             if self.server_at(port).is_some_and(|(m, l, _)| m == id && !l) {
+                // loaded now: its clock starts (no request yet - the one that asked for it comes next); a second
+                // waiter for the same load keeps the clock the first started
+                self.ages.seen(&ages::port_key(port), id, now(), || None);
                 return Ok(());
             }
             std::thread::sleep(Duration::from_secs(1));

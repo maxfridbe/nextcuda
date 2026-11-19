@@ -81,6 +81,25 @@ message, retryable, status, ...}}`; `no_room` and `wait_too_long` both carry `er
 (`wait_too_long` adds `eta`, `max_willing_to_wait_s`, and `waited_s` when it was withdrawn after waiting; `no_room`'s
 message names a pin or hold that blocks). The `/v1` routes (OpenAI's shape) answer the HTTP status itself.
 
+### How long a model has been loaded, and since its last request
+
+Every loaded model says both, a copy at a time and as a whole (`glue/serve/src/home/ages.rs`):
+
+| field | where | what |
+| --- | --- | --- |
+| `loaded_at` | model rows (`system.models`, `system.state`, the page's `/api/state`), `instances[]`, `cards[].vouched[]`, `system.busy` `slots[]` | UTC, Unix seconds: when the copy finished loading (a model: its longest-loaded copy); null: not loaded |
+| `last_request_at` | the same | UTC, Unix seconds: the last moment a request was on it - now while one runs, else when the last one ended (a model: the latest of any copy); null: no request since it loaded |
+| `loaded_s_ago`, `idle_s` | the same | the two as seconds before the answer (`idle_s` 0 while a request runs, null with no request yet): what a page counts on from, without trusting its own clock |
+| `unload_in_s` | model rows, `instances[]` | seconds until the copy ends itself for idleness (`idle_minutes` after its last request, else after it loaded; a model: the soonest copy); null: pinned, held, busy, idle unload off, a chat model |
+| `instances` | model rows | the loaded copies: `{gpu, gpus (chat), port (null: a video worker), busy, loaded_at, last_request_at, loaded_s_ago, idle_s, unload_in_s}` |
+
+A request is anything through the front door that holds the copy: an RPC, an OpenAI call, its page, a live
+conversation (`/v1/realtime`, for as long as it lasts). Chat takes the chat server's own request list (the switcher's
+and Open WebUI's requests count too) and its uptime for a model loaded before the front door; video takes the daemon's
+worker idle clock (`idle_seconds`, `unload_in_seconds`). The clocks are kept in `ages.json` beside `serve.json` with the
+boot they belong to: a restart of the front door keeps them, a reboot drops them. The home page shows "loaded 2 h 14 min
+ago · last request 12 s ago · unloads in 9 min" under each loaded model and on its card's line, counting on between polls.
+
 ### Concurrency profile: how many copies, and who may share a card
 
 Each model's card (`model-cards/README.md`: `concurrency`, `coexistence`) says how many copies run on one card and are

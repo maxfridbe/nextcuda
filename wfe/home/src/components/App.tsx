@@ -1,7 +1,8 @@
 /** The page: the host strip and the tabs - Status (the GPUs with what holds them and what is vouched for them, the
  *  models by kind with enable / start / stop, the front ends, the actions' output) and API. */
 import { jsx } from "../jsx.js";
-import { act, autoPull, copy, maintenance, render, setTab, toggleKind, toggleRsvp, ui } from "../main.js";
+import { act, autoPull, copy, maintenance, render, setTab, since, toggleKind, toggleRsvp, ui } from "../main.js";
+import { agesText, unloadText } from "../ages.js";
 import type { Available, Card, Model, Proc, Service } from "../types.js";
 import { Api } from "./Api.js";
 import { ConfigView } from "./Config.js";
@@ -69,6 +70,9 @@ interface AllocRow {
   measured: boolean;
   port?: string | null;
   tip: string;
+  /** its copy on this card: seconds since it loaded and since its last request, as of the state (ages.ts) */
+  loadedAgo?: number | null;
+  idle?: number | null;
 }
 
 /** The card's processes and the memory vouched for it as one list, a line a model: the lines with a job on top (next to
@@ -84,7 +88,7 @@ function allocRows(c: Card): AllocRow[] {
       key: `v:${v.model}`, kind: v.kind, name: v.model, job: job?.job_title || job?.job_label || "", jobLabel: job?.job_title ? job.job_label ?? "" : "",
       state: v.state, held: mine.reduce((n, p) => n + p.vram_mb, 0), vouched: v.mb, headroom: Math.min(v.headroom_mb ?? 0, v.mb),
       headroomGiven: v.headroom_given, counted: v.counted, of: v.of, measured: v.measured, port: mine[0]?.port ?? null,
-      tip: mine.map((p) => p.args ?? `pid ${p.pid}`).join("\n"),
+      tip: mine.map((p) => p.args ?? `pid ${p.pid}`).join("\n"), loadedAgo: v.loaded_s_ago, idle: v.idle_s,
     });
   }
   for (const p of c.procs.filter((q) => !used.has(q))) {
@@ -129,6 +133,7 @@ function AllocLine(total: number) {
             : null}
           {!live ? <span class="hint"> {r.state}{r.measured ? "" : " · estimate"}</span> : null}
           {r.vouched > 0 && r.headroom > 0 && live ? <span class="hint"> · vouched {Alloc(r.vouched, r.headroom, r.kind, r.headroomGiven)}</span> : null}
+          {r.loadedAgo != null ? <span class="hint ages"> · {agesText({ loaded_s_ago: r.loadedAgo, idle_s: r.idle, busy: r.state === "busy" }, since())}</span> : null}
         </span>
         {AllocBar(r, total)}
         <span class="mb">{live ? `${gib(r.held)} GiB` : Alloc(r.vouched, r.headroom, r.kind, r.headroomGiven)}</span>
@@ -226,6 +231,21 @@ function GpuPicker(m: Model) {
   );
 }
 
+/** Since it loaded and since its last request (the oldest copy, the latest request of any), its idle unload; each copy's
+ *  clocks on hover */
+function ModelAges(m: Model) {
+  const s = since();
+  const text = agesText({ ...m, busy: m.state === "busy" }, s);
+  if (!text) return null;
+  const unload = unloadText(m, s);
+  const copies = (m.instances ?? []).map((i) => `${i.gpu != null ? `GPU ${i.gpu}` : "?"}${i.port ? ` :${i.port}` : ""}: ${agesText(i, s)}${unloadText(i, s) ? ` · ${unloadText(i, s)}` : ""}`);
+  return (
+    <div class="hint ages" attrs={{ title: copies.length > 1 ? copies.join("\n") : "since it finished loading · since a request was last on it (an RPC, an OpenAI call, its page or a live conversation)" }}>
+      {text}{unload ? ` · ${unload}` : ""}
+    </div>
+  );
+}
+
 function ModelRow(m: Model) {
   const p = ui.pending[m.id];
   const spin = (what: string) => p?.what === what || (what === "pin" && m.state === "loading");
@@ -249,7 +269,8 @@ function ModelRow(m: Model) {
       </div>
       <div class="mstate"><span class={{ tag: true, [m.state]: true }}>{STATE_TEXT[m.state] ?? m.state}</span>
         {m.pinned ? <span class="hint" attrs={{ title: "pinned: kept loaded, never unloaded for idleness or stopped for another model's room" }}> · pinned</span>
-          : m.held_s > 0 ? <span class="hint" attrs={{ title: "a request's rsvp_s keeps it loaded until then" }}> · held for {Math.round(m.held_s)} more s</span> : null}</div>
+          : m.held_s > 0 ? <span class="hint" attrs={{ title: "a request's rsvp_s keeps it loaded until then" }}> · held for {Math.round(m.held_s)} more s</span> : null}
+        {ModelAges(m)}</div>
       <div class="acts">
         <span class="onoff" attrs={{ title: m.enabled ? "enabled: it loads on its first request and unloads after the idle time (pin keeps it loaded)" : "disabled: off the API (and Open WebUI's list)" }}>
           <label class={{ on: !m.enabled }}>

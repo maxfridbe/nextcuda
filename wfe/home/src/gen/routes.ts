@@ -160,6 +160,27 @@ export interface HostStat {
   cpus: number;
 }
 
+/** A loaded copy of a model (an image/audio/3D server, the chat server, a video worker on a card): since it loaded and since its last request */
+export interface Instance {
+  /** its card (a chat model spread over several: the first; gpus has them all) */
+  gpu?: number | null;
+  gpus?: number[] | null;
+  /** its server's port (null: a video worker) */
+  port?: number | null;
+  /** a request runs on it now */
+  busy: boolean;
+  /** when it finished loading (UTC, Unix seconds; a copy started before this front door: when it was first seen, or the chat server's own start) */
+  loaded_at?: number | null;
+  /** the last moment a request was on it: now while one runs, else when the last one ended (UTC, Unix seconds; null: no request since it loaded) */
+  last_request_at?: number | null;
+  /** seconds since loaded_at, as of this answer */
+  loaded_s_ago?: number | null;
+  /** seconds since last_request_at, as of this answer (0 while a request runs; null: no request since it loaded) */
+  idle_s?: number | null;
+  /** seconds until it unloads for idleness (null: it does not - pinned, held, a request on it, idle unload off, a chat model) */
+  unload_in_s?: number | null;
+}
+
 /** A PCIe link: its generation and lanes */
 export interface Link {
   gen?: number | null;
@@ -234,6 +255,18 @@ export interface ModelView {
   license?: string | null;
   commercial?: boolean | null;
   license_note?: string | null;
+  /** when its longest-loaded copy finished loading (UTC, Unix seconds; null: not loaded) */
+  loaded_at?: number | null;
+  /** the last moment a request was on any copy: now while one runs, else when the last one ended (UTC, Unix seconds; null: no request since it loaded, or not loaded) */
+  last_request_at?: number | null;
+  /** seconds since loaded_at, as of this answer */
+  loaded_s_ago?: number | null;
+  /** seconds since last_request_at, as of this answer (0 while a request runs) */
+  idle_s?: number | null;
+  /** seconds until its first copy unloads for idleness (null: none does - pinned, held, busy, idle unload off) */
+  unload_in_s?: number | null;
+  /** its loaded copies, each with its card and clocks (empty: not loaded) */
+  instances?: Instance[];
 }
 
 /** Whether a model's files may move to a drive: what they need there, or why not */
@@ -393,6 +426,14 @@ export interface Vouched {
   of?: number | null;
   /** false: one of a group that runs one at a time (chat models, video engines), listed beside the one that is counted (the loaded one, else the largest) and left out of the card's vouched total; true: counted in it */
   counted: boolean;
+  /** its copy on this card: when it finished loading (UTC, Unix seconds; null: not loaded here) */
+  loaded_at?: number | null;
+  /** its copy on this card: the last moment a request was on it - now while one runs, else when the last ended (UTC, Unix seconds; null: no request since it loaded, or not loaded here) */
+  last_request_at?: number | null;
+  /** seconds since loaded_at, as of this answer */
+  loaded_s_ago?: number | null;
+  /** seconds since last_request_at, as of this answer (0 while a request runs) */
+  idle_s?: number | null;
 }
 
 /** A route's failure: the words its body's `error` said, and the body. */

@@ -30,6 +30,8 @@ export function toggleRsvp(): void {
 
 export const ui = {
   state: null as State | null,
+  /** when the state came (ms): the ages it carries run on from then (ages.ts) */
+  stateAt: 0,
   spec: null as Spec | null,
   error: null as string | null,
   tab: (() => { try { return localStorage.getItem("ns-tab") ?? "status"; } catch { return "status"; } })() as Tab,
@@ -90,6 +92,7 @@ function settle(): void {
 async function poll(): Promise<void> {
   try {
     ui.state = await api.state();
+    ui.stateAt = Date.now();
     ui.error = null;
     settle();
   } catch (e) {
@@ -226,7 +229,19 @@ export async function copy(text: string, key: string): Promise<void> {
   setTimeout(() => { if (ui.copied === key) { ui.copied = null; render(); } }, 1500);
 }
 
+/** Seconds since the state came: what the ages it carries have run on by */
+export function since(): number {
+  return ui.stateAt ? Math.max(0, (Date.now() - ui.stateAt) / 1000) : 0;
+}
+
+/** The ages on the page count up every second between polls */
+function tick(): void {
+  if (ui.state && ui.tab === "status") render();
+  setTimeout(tick, 1000);
+}
+
 render();
 void poll();
+setTimeout(tick, 1000);
 if (ui.tab === "api") void loadSpec();
 if (ui.tab === "config") void loadConfig();

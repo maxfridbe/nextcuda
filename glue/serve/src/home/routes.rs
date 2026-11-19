@@ -87,6 +87,45 @@ pub struct Vouched {
     /// false: one of a group that runs one at a time (chat models, video engines), listed beside the one that is counted
     /// (the loaded one, else the largest) and left out of the card's vouched total; true: counted in it
     pub counted: bool,
+    /// its copy on this card: when it finished loading (UTC, Unix seconds; null: not loaded here)
+    #[serde(default)]
+    pub loaded_at: Option<f64>,
+    /// its copy on this card: the last moment a request was on it - now while one runs, else when the last ended (UTC,
+    /// Unix seconds; null: no request since it loaded, or not loaded here)
+    #[serde(default)]
+    pub last_request_at: Option<f64>,
+    /// seconds since loaded_at, as of this answer
+    #[serde(default)]
+    pub loaded_s_ago: Option<i64>,
+    /// seconds since last_request_at, as of this answer (0 while a request runs)
+    #[serde(default)]
+    pub idle_s: Option<i64>,
+}
+
+/// A loaded copy of a model (an image/audio/3D server, the chat server, a video worker on a card): since it loaded and
+/// since its last request
+#[derive(Serialize, Deserialize, Rpc)]
+pub struct Instance {
+    /// its card (a chat model spread over several: the first; gpus has them all)
+    pub gpu: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<Vec<i64>>,
+    /// its server's port (null: a video worker)
+    pub port: Option<i64>,
+    /// a request runs on it now
+    pub busy: bool,
+    /// when it finished loading (UTC, Unix seconds; a copy started before this front door: when it was first seen, or
+    /// the chat server's own start)
+    pub loaded_at: Option<f64>,
+    /// the last moment a request was on it: now while one runs, else when the last one ended (UTC, Unix seconds; null:
+    /// no request since it loaded)
+    pub last_request_at: Option<f64>,
+    /// seconds since loaded_at, as of this answer
+    pub loaded_s_ago: Option<i64>,
+    /// seconds since last_request_at, as of this answer (0 while a request runs; null: no request since it loaded)
+    pub idle_s: Option<i64>,
+    /// seconds until it unloads for idleness (null: it does not - pinned, held, a request on it, idle unload off, a chat model)
+    pub unload_in_s: Option<i64>,
 }
 
 /// A card: its readings, its processes, the memory vouched for
@@ -200,6 +239,25 @@ pub struct ModelView {
     pub commercial: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license_note: Option<String>,
+    /// when its longest-loaded copy finished loading (UTC, Unix seconds; null: not loaded)
+    #[serde(default)]
+    pub loaded_at: Option<f64>,
+    /// the last moment a request was on any copy: now while one runs, else when the last one ended (UTC, Unix seconds;
+    /// null: no request since it loaded, or not loaded)
+    #[serde(default)]
+    pub last_request_at: Option<f64>,
+    /// seconds since loaded_at, as of this answer
+    #[serde(default)]
+    pub loaded_s_ago: Option<i64>,
+    /// seconds since last_request_at, as of this answer (0 while a request runs)
+    #[serde(default)]
+    pub idle_s: Option<i64>,
+    /// seconds until its first copy unloads for idleness (null: none does - pinned, held, busy, idle unload off)
+    #[serde(default)]
+    pub unload_in_s: Option<i64>,
+    /// its loaded copies, each with its card and clocks (empty: not loaded)
+    #[serde(default)]
+    pub instances: Vec<Instance>,
 }
 
 /// A front end or helper beside the models
