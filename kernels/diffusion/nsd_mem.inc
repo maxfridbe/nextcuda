@@ -145,9 +145,14 @@ void* nsd_alloc(void* ctx, uint64_t bytes) {
         return nullptr;
     }
     void* p = nullptr;
-    if (cudaMalloc(&p, bytes ? bytes : 1) != cudaSuccess || !p) {
+    if (cudaError_t me = cudaMalloc(&p, bytes ? bytes : 1); me != cudaSuccess || !p) {
         cudaGetLastError();
-        fail("nsd_alloc: the device refused " + std::to_string(bytes >> 20) + " MiB");
+        size_t fr = 0, tot = 0;
+        const bool known = cudaMemGetInfo(&fr, &tot) == cudaSuccess;
+        cudaGetLastError();
+        fail("nsd_alloc: the device refused " + std::to_string(bytes >> 20) + " MiB (" + cudaGetErrorString(me) + "; " +
+             std::to_string(c->used >> 20) + " MiB counted in use here" +
+             (known ? ", the card has " + std::to_string(fr >> 20) + " of " + std::to_string(tot >> 20) + " MiB free" : std::string()) + ")");
         return nullptr;
     }
     // NSD_POISON=1: new buffers filled with NaN bytes (finds reads of unwritten memory)

@@ -515,6 +515,26 @@ impl<'a> Denoiser<'a> {
             return Err(Error("text_tags: one modality (0, 1 or 2) per text token".into()));
         }
         let s = layout.tokens();
+        // room for the clip's buffers on each card, asked before anything is allocated: a clip too long for the cards
+        // ran 20 steps' worth of setup and then died on a small allocation ("the device refused 42 MiB") with the
+        // card full of its own buffers
+        {
+            let w = cfg.heads * cfg.head_dim;
+            // bytes a token costs on a card: the stream and the scratch (bfloat16), the step's rotation table and rows
+            let per_token = 2 * (cfg.hidden * 3 + 3 * w + w + 2 * cfg.ffn + cfg.ffn + crate::dit::MAX_LORA_RANK) as u64 + 2 * (cfg.rot_dim as u64 * 4 + 4);
+            let cards: Vec<&Arc<Device>> = if blocks.devs.len() > 1 { blocks.devs.iter().collect() } else { vec![&dev] };
+            let margin = 768u64 << 20; // attention workspace, the previous step's tables still alive while the next is made
+            for d in &cards {
+                let free = d.mem_cap().saturating_sub(d.mem_used());
+                let need = s as u64 * per_token + margin;
+                if need > free {
+                    let fit = free.saturating_sub(margin) / per_token;
+                    return Err(Error(format!(
+                        "this clip has {s} tokens and its buffers need {:.1} GiB on each card; {} has {:.1} GiB free beside the denoiser: at most about {fit} tokens fit (a shorter clip or a smaller canvas)",
+                        s as f64 * per_token as f64 / 1073741824.0, d.name(), free as f64 / 1073741824.0)));
+                }
+            }
+        }
         if blocks.devs.len() > 1 && !blocks.devs[0].same(&dev) {
             return Err(Error("the text tokens must be on the first card of the split denoiser".into()));
         }
