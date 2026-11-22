@@ -43,10 +43,10 @@ pub fn api() -> nextcuda_core::Result<&'static Api> {
         Ok(Api {
             situ: sym!("ns_image_mo_situ"),
             group_norm: sym!("ns_image_mo_group_norm"),
-            axpy: sym!("ns_image_mi_axpy"),
+            axpy: sym!("ns_zimage_axpy"),
             to_half: sym!("ns_image_mi_to_half"),
             to_float: sym!("ns_image_mi_to_float"),
-            to_half_rows: sym!("ns_image_mi_to_half_rows"),
+            to_half_rows: sym!("ns_zimage_to_half_rows"),
             up2: sym!("ns_image_mi_up2"),
             softmax_rows: sym!("ns_image_mi_softmax_rows"),
         })
