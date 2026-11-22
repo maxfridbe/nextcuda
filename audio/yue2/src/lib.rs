@@ -202,7 +202,7 @@ impl Yue2 {
         let load_s = t0.elapsed().as_secs_f64();
         log(format!("{ARCH}: the language model {:.2} GiB on {} (the flow's matrices {}, its attention {}), the VAE {:.2} GiB on {} - loaded in {load_s:.1} s",
                     lm.bytes as f64 / GIB, gpu.name, if lm.int8 { "int8" } else { "Q8_0" },
-                    lm.silo.map_or("nsd's".to_string(), |s| format!("the silo's for sm_{}", s.sm)), vae.bytes as f64 / GIB, vgpu.name));
+                    lm.silo.map_or("nsd's".to_string(), |s| format!("the silo's on sm_{}", s.sm)), vae.bytes as f64 / GIB, vgpu.name));
         Ok(Yue2 { lm, vae, sheet, tok, settings: o.clone(), work: Mutex::new(Scratch::default()), vwork: Mutex::new(Scratch::default()), last: Mutex::new(None), trunc: Mutex::new(None),
                   load_s })
     }

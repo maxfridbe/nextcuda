@@ -305,7 +305,7 @@ impl Dit {
         if nl == 0 || f.tensor("shared_block_modulation.weight").is_none() {
             return Err(Error(format!("{}: not MOSS-Image's DiT (no layers / shared_block_modulation)", f.paths[0].display())));
         }
-        let silo = ffi::silo(gpu.cc);
+        let silo = ffi::silo(gpu.index);
         let env = |k: &str| std::env::var(k).ok().and_then(|v| v.trim().parse::<i32>().ok());
         let how = std::env::var("NS_MOSS_ATTN").unwrap_or_default();
         let fp8 = match how.trim() {
@@ -317,7 +317,7 @@ impl Dit {
         };
         if fp8 > 0 && !silo.is_some_and(|s| s.fp8) {
             return Err(Error(format!("NS_MOSS_ATTN={how}: {} has no FP8 attention ({}; FP8 needs sm_89 and up)", gpu.name,
-                                     silo.map_or("no MOSS-Image silo built".to_string(), |s| format!("its silo is for sm_{}", s.sm)))));
+                                     silo.map_or("no MOSS-Image silo built".to_string(), |s| format!("the card is sm_{}", s.sm)))));
         }
         let dit = Dit {
             gpu: gpu.clone(),
@@ -348,7 +348,7 @@ impl Dit {
                                      dit.text_proj.k)));
         }
         let silo_words = match dit.silo {
-            Some(s) => format!("its silo for sm_{}, attention {}", s.sm, ["half", "float", "fp8", "fp8v"][(dit.fp8 + 1) as usize]),
+            Some(s) => format!("its silo on sm_{}, attention {}", s.sm, ["half", "float", "fp8", "fp8v"][(dit.fp8 + 1) as usize]),
             None => "the shared kernels".into(),
         };
         log(format!("moss-image dit: {nl} blocks, {nt} text blocks on {} ({}{}, {silo_words}) in {:.1} s", gpu.name,

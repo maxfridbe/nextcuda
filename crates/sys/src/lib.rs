@@ -244,13 +244,6 @@ impl Api {
     /// `kernels/<kind>/<arch>/silo/`, opened on demand. None when there is none or `NS_SILO=0` (the shared kernels
     /// then); an error when the file is there but does not open.
     pub fn silo(&self, arch: &str) -> Result<Option<Silo>, String> {
-        self.silo_for(arch, 0)
-    }
-
-    /// A model's silo for a card of compute capability `cc` (86, 120): `libnextcuda-<arch>.sm<cc>.so` when the silo
-    /// is built a card at a time (its `per-card` file: kernels tuned to each card, an FP8 path on the one that has
-    /// it), else the one built for every card; `cc` 0: the latter.
-    pub fn silo_for(&self, arch: &str, cc: u32) -> Result<Option<Silo>, String> {
         if std::env::var("NS_SILO").is_ok_and(|v| v == "0") {
             return Ok(None);
         }
@@ -260,8 +253,7 @@ impl Api {
         let required = std::env::var("NS_SILO_REQUIRED").is_ok_and(|v| v == "1");
         let dir = std::env::var_os("NS_SILO_DIR").map(PathBuf::from)
                                                   .unwrap_or_else(|| self.dir.join("silo"));
-        let card = dir.join(format!("libnextcuda-{name}.sm{cc}.so"));
-        let path = if cc > 0 && card.exists() { card } else { dir.join(format!("libnextcuda-{name}.so")) };
+        let path = dir.join(format!("libnextcuda-{name}.so"));
         if !path.exists() {
             if required {
                 return Err(format!("{}: the model's silo is not built (NS_SILO_REQUIRED=1; kernels/build.sh builds the silos)", path.display()));

@@ -74,10 +74,10 @@ pub fn check(rc: c_int, what: &str) -> nextcuda_core::Result<()> {
     Err(nextcuda_core::Error(format!("{what}: {why}")))
 }
 
-/// The model's silo for one card (`kernels/audio/yue2/silo`, built once a card: dist/silo/libnextcuda-yue2.sm<NN>.so): the
-/// flow's attention (MOSS-Image's tiles with grouped-query heads)
+/// The model's silo as one card takes it (`kernels/audio/yue2/silo`: dist/silo/libnextcuda-yue2.so, one library for every
+/// card): the flow's attention (MOSS-Image's tiles with grouped-query heads)
 pub struct Silo {
-    /// the card the build is for (86, 120)
+    /// the card's compute capability (86, 120)
     pub sm: i32,
     pub attention: unsafe extern "C" fn(G, P, i64, i64, P, P, i64, i64, i64, i64, M, c_int, c_int) -> c_int,
 }
@@ -86,25 +86,27 @@ pub struct Silo {
 unsafe impl Send for Silo {}
 unsafe impl Sync for Silo {}
 
-/// The silo for a card of compute capability `cc` (Gpu::cc), when it is built (NS_SILO=0: none - the shared kernels)
-pub fn silo(cc: u32) -> Option<&'static Silo> {
-    static SILOS: std::sync::Mutex<Vec<(u32, Option<&'static Silo>)>> = std::sync::Mutex::new(Vec::new());
+/// The silo for GPU `gpu` (its index), when it is built (NS_SILO=0: none - the shared kernels)
+pub fn silo(gpu: usize) -> Option<&'static Silo> {
+    static SILOS: std::sync::Mutex<Vec<(usize, Option<&'static Silo>)>> = std::sync::Mutex::new(Vec::new());
     let mut m = SILOS.lock().unwrap();
-    if let Some((_, s)) = m.iter().find(|(c, _)| *c == cc) {
+    if let Some((_, s)) = m.iter().find(|(g, _)| *g == gpu) {
         return *s;
     }
     let s = (|| {
-        let lib = nextcuda_core::silo_for("yue2", cc).ok().flatten()?;
+        let lib = nextcuda_core::silo("yue2").ok().flatten()?;
         let sym = |n: &str| Some(lib.symbol(n)).filter(|p| !p.is_null());
         let info = sym("ns_audio_yue2_silo_info")?;
         let mut sm = 0 as c_int;
         // SAFETY: the symbols are declared in the silo's silo.h with these signatures.
         unsafe {
-            let info: unsafe extern "C" fn(*mut c_int) -> c_int = std::mem::transmute(info);
-            info(&mut sm);
+            let info: unsafe extern "C" fn(c_int, *mut c_int) -> c_int = std::mem::transmute(info);
+            if info(gpu as c_int, &mut sm) != 0 {
+                return None;
+            }
             Some(&*Box::leak(Box::new(Silo { sm, attention: std::mem::transmute::<*mut c_void, _>(sym("ns_audio_yue2_silo_attention")?) })))
         }
     })();
-    m.push((cc, s));
+    m.push((gpu, s));
     s
 }

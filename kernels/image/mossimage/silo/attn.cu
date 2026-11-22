@@ -1,4 +1,4 @@
-// attn.cu: MOSS-Image's attention (head size 128, half in and out), built once a card. FlashAttention-2's scheme on
+// attn.cu: MOSS-Image's attention (head size 128, half in and out), one library for every card. FlashAttention-2's scheme on
 // mma.sync: a block of queries (16 a warp) against 64-key tiles that never leave the chip, the softmax online. Over
 // nsd_flash_attention (the same scheme, Qwen-Image 2.1's silo kernel): the key and value tiles double-buffered with
 // cp.async (the next tile loads while this one is used), their fragments by ldmatrix (the values' transposed by
@@ -7,7 +7,8 @@
 // The scores accumulated in half (fp8 -1, the engine's default): GeForce cards run that product at twice the float32
 // accumulation's rate - the kernel 20% faster, the reference checks unchanged (2026-10-26).
 //
-// FP8 (fp8 >= 1; built only for a card with FP8 tensor cores, sm_89 and up): the scores from e4m3 copies of q and k,
+// FP8 (fp8 >= 1; only on a card with FP8 tensor cores, compute capability 8.9 and up - the e4m3 product is compiled
+// for those alone, and a card without them is refused at the call): the scores from e4m3 copies of q and k,
 // each 128-value row scaled to its own maximum (m16n8k32: twice the features a product); fp8 2: the probabilities and
 // the values in e4m3 too, each value column scaled. Measured on the 5070 it is no faster (a GeForce card's FP8 product
 // with a float32 accumulation runs at half precision's rate, and the copies cost a pass) and less exact (8 guided steps
@@ -17,17 +18,11 @@
 #include "silo.h"
 
 #include <cuda_fp16.h>
-#if NS_SILO_SM >= 89
 #include <cuda_fp8.h>
-#endif
 #include <algorithm>
 #include <cfloat>
 #include <string>
 #include <cstdint>
-
-#ifndef NS_SILO_SM
-#define NS_SILO_SM 0
-#endif
 
 namespace {
 
@@ -241,13 +236,17 @@ __global__ void __launch_bounds__(WARPS * 32) fa_half_k(const __half* __restrict
     store(o, l0, l1, out, r0, r1, Sq, H, h, t);
 }
 
-#if NS_SILO_SM >= 89
 constexpr int LD8 = 144;   // an e4m3 row of 128 in smem: 144 bytes (8 rows a quad of 4-byte reads on distinct banks)
 
+// (the e4m3 product exists from sm_89: a card below it never runs the FP8 kernels - the call refuses it)
 __device__ __forceinline__ void mma_e4m3(float c[4], uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t b0, uint32_t b1) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 890
+    __trap();
+#else
     asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
                  : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
                  : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+#endif
 }
 
 __device__ __forceinline__ uint32_t pack8(float a, float b, float c, float d) {
@@ -450,7 +449,17 @@ __global__ void vt_perm_k(uint8_t* vt, int rows, int Skv8) {
             c[base + 4 * t + 3] = src[base + 8 + 2 * t + 1];
         }
 }
-#endif
+
+// a card's compute capability, major * 10 + minor (86, 120)
+int card_cc(int dev) {
+    int ma = 0, mi = 0;
+    if (cudaDeviceGetAttribute(&ma, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+        cudaDeviceGetAttribute(&mi, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) {
+        cudaGetLastError();
+        return 0;
+    }
+    return ma * 10 + mi;
+}
 
 // the FP8 copies' buffers, grown and kept (one model a process)
 struct Fp8Bufs {
@@ -465,9 +474,9 @@ struct Fp8Bufs {
 
 extern "C" {
 
-int ns_image_moss_silo_info(int* sm, int* fp8) {
-    *sm = NS_SILO_SM;
-    *fp8 = NS_SILO_SM >= 89;
+int ns_image_moss_silo_info(int dev, int* sm, int* fp8) {
+    *sm = card_cc(dev);
+    *fp8 = *sm >= 89;
     return 0;
 }
 
@@ -494,7 +503,9 @@ int ns_image_moss_silo_attention(ns_gpu* gp, const void* q, int64_t S, int64_t q
         if (warps == 4) return fp8 < 0 ? launch(fa_half_k<4, true>, 128) : launch(fa_half_k<4, false>, 128);
         return fp8 < 0 ? launch(fa_half_k<8, true>, 256) : launch(fa_half_k<8, false>, 256);
     }
-#if NS_SILO_SM >= 89
+    if (card_cc(gp->dev) < 89)
+        return ns_fail("moss attention: FP8 needs a card with FP8 tensor cores (compute capability 8.9 and up); this one is " +
+                       std::to_string(card_cc(gp->dev)));
     static Fp8Bufs b;
     const int Skv8 = (int) ((Skv + BK - 1) / BK * BK);
     const size_t n8 = (size_t) std::max(S, Skv) * H * D, nv = (size_t) H * D * Skv8, nsc = (size_t) (S + Skv) * H + H * D;
@@ -541,9 +552,6 @@ int ns_image_moss_silo_attention(ns_gpu* gp, const void* q, int64_t S, int64_t q
     };
     if (warps == 4) return pv8 ? launch(fa_fp8_k<4, true>, 128) : launch(fa_fp8_k<4, false>, 128);
     return pv8 ? launch(fa_fp8_k<8, true>, 256) : launch(fa_fp8_k<8, false>, 256);
-#else
-    return ns_fail("moss attention: FP8 needs a card with FP8 tensor cores (sm_89 and up); this silo is for sm_" + std::to_string(NS_SILO_SM));
-#endif
 }
 
 }  // extern "C"

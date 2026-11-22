@@ -1,5 +1,5 @@
-// silo.h: MOSS-Image's silo - its tuned kernels, built once a card (per-card), opened by the engine on each card
-// (image/mossimage/src/ffi.rs). On the GPU's stream.
+// silo.h: MOSS-Image's silo - its tuned kernels, one library for every card (dist/silo/libnextcuda-mossimage.so), opened
+// by the engine for each card (image/mossimage/src/ffi.rs). On the GPU's stream.
 #pragma once
 #include <stdint.h>
 #include "ns.h"
@@ -8,11 +8,11 @@
 extern "C" {
 #endif
 
-/* this build: the card's compute capability (86, 120) and whether FP8 attention is in it */
-int ns_image_moss_silo_info(int* sm, int* fp8);
+/* card `dev`: its compute capability (86, 120) and whether it runs FP8 attention (8.9 and up) */
+int ns_image_moss_silo_info(int dev, int* sm, int* fp8);
 /* attention, head size 128, half in and out: S query rows of stride qs over Skv key / value rows of stride kvs, H heads,
  * out [S, H * 128]; warps 0 = the default (8: 128 queries a block), or 4; fp8 -1 = the scores accumulated in half,
- * 0 = in float32, 1 = from FP8 copies of q and k (each row scaled to e4m3), 2 = the values too (FP8: sm_89 and up) */
+ * 0 = in float32, 1 = from FP8 copies of q and k (each row scaled to e4m3), 2 = the values too (FP8: compute capability 8.9 and up) */
 int ns_image_moss_silo_attention(ns_gpu* g, const void* q, int64_t S, int64_t qs, const void* k, const void* v, int64_t Skv, int64_t kvs,
                                  int64_t H, void* out, int warps, int fp8);
 /* the int8 products' epilogues (nsd_int8_product's acc [M, N], xs [M]; wscale [N]):

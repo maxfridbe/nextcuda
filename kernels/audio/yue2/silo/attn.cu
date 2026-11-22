@@ -1,5 +1,5 @@
-// attn.cu: YuE2's flow attention (head size 128, half in and out, 16 query heads over 8 key / value heads), built once
-// a card. MOSS-Image's silo kernel (kernels/image/mossimage/silo/attn.cu: FlashAttention-2's scheme on mma.sync, the key
+// attn.cu: YuE2's flow attention (head size 128, half in and out, 16 query heads over 8 key / value heads), one
+// library for every card. MOSS-Image's silo kernel (kernels/image/mossimage/silo/attn.cu: FlashAttention-2's scheme on mma.sync, the key
 // and value tiles double-buffered by cp.async, their fragments by ldmatrix, the scores accumulated in half where a
 // GeForce card runs that product at twice the float32 accumulation's rate) copied and given grouped-query heads: query
 // head h reads key / value head h / G. The flow's rows (a song's frames, thousands) attend to every AR key of the chunk
@@ -11,10 +11,6 @@
 
 #include <cuda_fp16.h>
 #include <cstdint>
-
-#ifndef NS_SILO_SM
-#define NS_SILO_SM 0
-#endif
 
 namespace {
 
@@ -232,8 +228,11 @@ __global__ void __launch_bounds__(WARPS * 32) fa_half_k(const __half* __restrict
 
 extern "C" {
 
-int ns_audio_yue2_silo_info(int* sm) {
-    *sm = NS_SILO_SM;
+int ns_audio_yue2_silo_info(int dev, int* sm) {
+    int ma = 0, mi = 0;
+    NS_CU(cudaDeviceGetAttribute(&ma, cudaDevAttrComputeCapabilityMajor, dev));
+    NS_CU(cudaDeviceGetAttribute(&mi, cudaDevAttrComputeCapabilityMinor, dev));
+    *sm = ma * 10 + mi;
     return 0;
 }
 

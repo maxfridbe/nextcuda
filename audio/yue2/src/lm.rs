@@ -281,7 +281,7 @@ impl Lm {
             t2: (host_vec(f, "time_embd.1.weight")?, host_vec(f, "time_embd.1.bias")?),
             pos,
             int8,
-            silo: ffi::silo(gpu.cc),
+            silo: ffi::silo(gpu.index),
             half_scores: std::env::var("NS_YUE2_ATTN").map_or(true, |v| v.trim() != "float"),
             embed: embed.w,
             head,

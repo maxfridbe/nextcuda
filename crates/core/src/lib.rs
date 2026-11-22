@@ -52,22 +52,17 @@ pub fn api() -> Result<&'static Api> {
     API.get_or_init(|| Api::load(KIND.get().copied().unwrap_or("image"))).as_ref().map_err(|e| Error(e.clone()))
 }
 
-/// A model's silo (`kernels/<kind>/<arch>/silo/`: its tuned kernels, `dist/silo/libnextcuda-<arch>.so`), opened on
-/// the first ask and kept: None when there is none (or NS_SILO=0) - the engine then uses the shared kernels
+/// A model's silo (`kernels/<kind>/<arch>/silo/`: its tuned kernels, `dist/silo/libnextcuda-<arch>.so`, one library
+/// for every card), opened on the first ask and kept: None when there is none (or NS_SILO=0) - the engine then uses the
+/// shared kernels
 pub fn silo(arch: &str) -> Result<Option<&'static nextcuda_sys::Silo>> {
-    silo_for(arch, 0)
-}
-
-/// A model's silo for a card: the one built for its compute capability (`cc`: Gpu::cc) when the silo is built a card
-/// at a time, else the one for every card - two cards of two kinds run two silos side by side
-pub fn silo_for(arch: &str, cc: u32) -> Result<Option<&'static nextcuda_sys::Silo>> {
-    static SILOS: std::sync::Mutex<Vec<(String, u32, Option<&'static nextcuda_sys::Silo>)>> = std::sync::Mutex::new(Vec::new());
+    static SILOS: std::sync::Mutex<Vec<(String, Option<&'static nextcuda_sys::Silo>)>> = std::sync::Mutex::new(Vec::new());
     let mut m = SILOS.lock().unwrap();
-    if let Some((_, _, s)) = m.iter().find(|(a, c, _)| a == arch && *c == cc) {
+    if let Some((_, s)) = m.iter().find(|(a, _)| a == arch) {
         return Ok(*s);
     }
-    let s = api()?.silo_for(arch, cc).map_err(Error)?.map(|s| &*Box::leak(Box::new(s)));
-    m.push((arch.to_string(), cc, s));
+    let s = api()?.silo(arch).map_err(Error)?.map(|s| &*Box::leak(Box::new(s)));
+    m.push((arch.to_string(), s));
     Ok(s)
 }
 
