@@ -59,6 +59,21 @@ model's faster version of an op goes in `kernels/<kind>/<arch>/silo/`:
 3. Build it into `dist/silo/libnextcuda-<arch>.so` (`kernels/build.sh`); the engine opens it at load.
 4. Check it (section 2.4), clock it (section 3), keep the matrices.
 
+A silo is per model architecture, never per card: one library carries every card's code, and what a card has or lacks
+(FP8 tensor cores from compute capability 8.9) is decided in it from what the card reports. Tuning for another class of
+card - fewer SMs, less memory, another compute capability - is a **variant** of the silo (CONTRIBUTING rule 5):
+
+5. `kernels/<kind>/<arch>/silo/variants/<name>/` with a `variant.yml` (`description`, `measured`, a `match` on
+   `vram_mb_min/max`, `units_min/max` - SMs -, `mhz_min/max`, `cc_min/max`, a `name` substring last) and only the ops
+   that differ, under the silo's C names (`kernels/ns/ns_variant.hpp` hands the rest to the default silo's op).
+   `kernels/build.sh` builds `dist/silo/libnextcuda-<arch>@<name>.so` and copies the manifest beside it.
+6. `nextcuda silo <arch>` says which GPU takes it; `NS_SILO_VARIANT=none` against it is the check (identical output),
+   and its pull request carries before / after numbers on its hardware and a gate baseline recorded on a card it
+   matches (`NS_GATE_RECORD=1 tooling/gate.sh`, on your own box `NS_GATE_HOST=local`).
+7. A card that wants another host-side path (a chunking, a fusion) gets it as an engine option with enumerated values,
+   and the variant's `settings:` picks it - never a memory size: memory is planned from what the device reports
+   (`Gpu::free_or_guess`). Two variants of one silo never match the same card (a tighter `match`).
+
 ## 5. Host code in Rust
 
 - A kernel's launch checks the launch (`NS_LAUNCH_CHECK()`); asynchronous errors surface at `ns_sync`.

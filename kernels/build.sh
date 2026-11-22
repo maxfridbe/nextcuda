@@ -3,8 +3,10 @@
 # memory, copies, the C ABI's core) and that kind's engines (kernels/<kind>/<arch>), built with nvcc; and the silos,
 # a model's kernels tuned for it alone (kernels/<kind>/<arch>/silo/*.cu -> dist/silo/libnextcuda-<arch>.so), which its
 # engine opens at load. A silo is one library for every card, per model architecture, never per card: what differs by
-# card is chosen in it by what the card reports (its compute capability, its SMs), or is a variant of it. Runs where
-# nvcc is (the GPU host; tooling/deploy.sh copies the sources there).
+# card is chosen in it by what the card reports (its compute capability, its SMs), or is a variant of it - a silo's
+# variants (kernels/<kind>/<arch>/silo/variants/<name>/: only the ops that differ for a class of card, variant.yml says
+# which) are dist/silo/libnextcuda-<arch>@<name>.so with the manifest beside it (libnextcuda-<arch>@<name>.yml). Runs
+# where nvcc is (the GPU host; tooling/deploy.sh copies the sources there).
 #   ARCHS="86 120" (default: the cards of the box: sm_86 3060, sm_120 5070; + PTX of the newest)   JOBS=4
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -30,7 +32,7 @@ sources() {
   ls ns/*.cu diffusion/*.cu 2>/dev/null || true
   for k in $KINDS; do ls $k/*/*.cu 2>/dev/null || true; done
 }
-silo_sources() { for k in $KINDS; do ls $k/*/silo/*.cu 2>/dev/null || true; done; }
+silo_sources() { for k in $KINDS; do ls $k/*/silo/*.cu $k/*/silo/variants/*/*.cu 2>/dev/null || true; done; }
 
 compile() {
   f=$1; o="$OBJ/$(echo "$f" | tr / _).o"
@@ -87,10 +89,29 @@ done
 rm -f "$OUT"/silo/libnextcuda-*.sm[0-9]*.so
 for d in $(ls -d */*/silo 2>/dev/null); do
   arch=$(basename "$(dirname "$d")")
-  objs=$(ls "$OBJ"/$(echo "$d" | tr / _)_*.o 2>/dev/null || true)
+  objs=$(ls "$OBJ"/$(echo "$d" | tr / _)_*.o 2>/dev/null | grep -v '_silo_variants_' || true)
   [ -n "$objs" ] || continue
   echo "==> linking silo/libnextcuda-$arch.so"
   "$NVCC" -shared "${GEN[@]}" $objs -o "$OUT/silo/.libnextcuda-$arch.so.new"
   mv -f "$OUT/silo/.libnextcuda-$arch.so.new" "$OUT/silo/libnextcuda-$arch.so"
 done
-ls -la "$OUT"/libnextcuda*.so "$OUT"/silo/*.so 2>/dev/null || true
+# a silo's variants: only the ops that differ, under the silo's C names - opened locally over the default silo, and
+# -Bsymbolic so that within it its ops call its own; the manifest beside it (a variant without one is never taken)
+want_v=" "
+for d in $(ls -d */*/silo/variants/*/ 2>/dev/null); do
+  d=${d%/}; name=$(basename "$d"); arch=$(basename "$(dirname "$(dirname "$(dirname "$d")")")")
+  objs=$(ls "$OBJ"/$(echo "$d" | tr / _)_*.o 2>/dev/null || true)
+  [ -n "$objs" ] && [ -f "$d/variant.yml" ] || { echo "skip $d (no sources or no variant.yml)"; continue; }
+  echo "==> linking silo/libnextcuda-$arch@$name.so"
+  "$NVCC" -shared "${GEN[@]}" $objs -Xlinker -Bsymbolic -o "$OUT/silo/.libnextcuda-$arch@$name.so.new"
+  cp "$d/variant.yml" "$OUT/silo/libnextcuda-$arch@$name.yml"
+  mv -f "$OUT/silo/.libnextcuda-$arch@$name.so.new" "$OUT/silo/libnextcuda-$arch@$name.so"
+  want_v="$want_v$arch@$name "
+done
+# a variant whose sources are gone is not left to be taken
+for f in "$OUT"/silo/libnextcuda-*@*.so; do
+  [ -f "$f" ] || continue
+  v=${f##*/libnextcuda-}; v=${v%.so}
+  case "$want_v" in *" $v "*) ;; *) echo "gone $f"; rm -f -- "$f" "${f%.so}.yml" ;; esac
+done
+ls -la "$OUT"/libnextcuda*.so "$OUT"/silo/*.so "$OUT"/silo/*.yml 2>/dev/null || true

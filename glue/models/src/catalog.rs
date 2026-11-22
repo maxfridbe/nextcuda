@@ -509,7 +509,7 @@ fn entry(m: &Value, paths: &BTreeMap<String, PathBuf>, local: &BTreeMap<String, 
         }
     }
     // the card's silo as the settings the kernel loader reads: `none` the shared kernels only, another name that silo,
-    // `required` no load without it
+    // `required` no load without it, `variant` one of its variants on every GPU (or `none`)
     if m["silo"] == "none" {
         env.insert("NS_SILO".into(), json!("0"));
     } else {
@@ -518,6 +518,10 @@ fn entry(m: &Value, paths: &BTreeMap<String, PathBuf>, local: &BTreeMap<String, 
         }
         if m["silo"]["required"] == true {
             env.insert("NS_SILO_REQUIRED".into(), json!("1"));
+        }
+        // a variant pinned (to measure it; `none`: the default silo's ops alone) - left alone, each GPU takes its own
+        if let Some(v) = m["silo"]["variant"].as_str().filter(|v| !v.is_empty()) {
+            env.insert("NS_SILO_VARIANT".into(), json!(v));
         }
     }
     let main = ["model", "transformer", "denoiser", "lora"].iter().find_map(|r| paths.get(*r)).or_else(|| paths.values().next());

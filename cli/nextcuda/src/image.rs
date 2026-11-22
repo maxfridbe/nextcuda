@@ -179,6 +179,10 @@ fn options(cfg: &Config, m: &Value, args: &[String]) -> Result<nextcuda_image::L
     for (var, v) in super::opt_env(k.options, nextcuda_core::At::Load, k.name)? {
         settings.insert(var, v);
     }
+    // the silo variant's settings (every GPU of the process matching it): below all of the above (CONTRIBUTING rule 5)
+    for line in nextcuda_core::variant_settings_into(k.archs, &[], k.options, &mut settings).map_err(|e| e.0)? {
+        eprintln!("{line}");
+    }
     Ok(nextcuda_image::LoadOptions { merge_loras, settings })
 }
 

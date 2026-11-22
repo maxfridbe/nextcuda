@@ -9,6 +9,8 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 
+pub mod variant;
+
 include!(concat!(env!("OUT_DIR"), "/libs_embedded.rs"));
 
 extern "C" {
@@ -19,6 +21,7 @@ extern "C" {
 }
 const RTLD_NOW: c_int = 2;
 const RTLD_GLOBAL: c_int = 0x100;
+const RTLD_LOCAL: c_int = 0;
 
 /// An opened GPU (`ns_gpu*`).
 pub type Gpu = *mut c_void;
@@ -38,6 +41,8 @@ pub struct Api {
     pub gpu_pci: unsafe extern "C" fn(c_int, *mut c_char, usize) -> c_int,
     pub gpu_units: unsafe extern "C" fn(c_int, *mut c_int, *mut c_int) -> c_int,
     pub gpu_cc: unsafe extern "C" fn(c_int, *mut c_int) -> c_int,
+    /// a GPU's memory in all and compute capability with no context opened (None: a library built before it)
+    pub gpu_props: Option<unsafe extern "C" fn(c_int, *mut u64, *mut c_int) -> c_int>,
     pub gpu_open: unsafe extern "C" fn(c_int, *mut Gpu) -> c_int,
     pub gpu_close: unsafe extern "C" fn(Gpu),
     pub gpu_queue: unsafe extern "C" fn(Gpu) -> *mut c_void,
@@ -198,6 +203,13 @@ impl Api {
             gpu_pci: sym!("ns_gpu_pci"),
             gpu_units: sym!("ns_gpu_units"),
             gpu_cc: sym!("ns_gpu_cc"),
+            gpu_props: {
+                let n = CString::new("ns_gpu_props").unwrap();
+                // SAFETY: a symbol lookup in the handle above; null (an older library) is kept as None.
+                let p = unsafe { dlsym(h, n.as_ptr()) };
+                // SAFETY: the declaration in ns.h is the field's type.
+                (!p.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, unsafe extern "C" fn(c_int, *mut u64, *mut c_int) -> c_int>(p) })
+            },
             gpu_open: sym!("ns_gpu_open"),
             gpu_close: sym!("ns_gpu_close"),
             gpu_queue: sym!("ns_gpu_queue"),
@@ -249,10 +261,9 @@ impl Api {
         }
         // a model card's silo: NS_SILO_NAME another silo of this engine's ABI (default: the architecture's own),
         // NS_SILO_REQUIRED=1 no load without it (not the shared kernels)
-        let name = std::env::var("NS_SILO_NAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| arch.to_string());
+        let name = self.silo_name(arch);
         let required = std::env::var("NS_SILO_REQUIRED").is_ok_and(|v| v == "1");
-        let dir = std::env::var_os("NS_SILO_DIR").map(PathBuf::from)
-                                                  .unwrap_or_else(|| self.dir.join("silo"));
+        let dir = self.silo_dir();
         let path = dir.join(format!("libnextcuda-{name}.so"));
         if !path.exists() {
             if required {
@@ -267,7 +278,84 @@ impl Api {
         if h.is_null() {
             return Err(format!("{}: {}", path.display(), dl_error()));
         }
-        Ok(Some(Silo { handle: h, path }))
+        Ok(Some(Silo { handle: h, path, variant: None }))
+    }
+
+    /// The silo an architecture runs on: NS_SILO_NAME, else its own
+    pub fn silo_name(&self, arch: &str) -> String {
+        std::env::var("NS_SILO_NAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| arch.to_string())
+    }
+
+    /// Where the silos and their variants are: NS_SILO_DIR, else silo/ beside the kind's library (or the executable)
+    pub fn silo_dir(&self) -> PathBuf {
+        std::env::var_os("NS_SILO_DIR").map(PathBuf::from).unwrap_or_else(|| self.dir.join("silo"))
+    }
+
+    /// The variants built of silo `name` (`<silo dir>/libnextcuda-<name>@<variant>.so`, each with its manifest
+    /// `libnextcuda-<name>@<variant>.yml` beside it, `variant.rs`), by name. A library without its manifest, or with
+    /// one that does not read, is an error: a variant never applies on a guess.
+    pub fn silo_variants(&self, name: &str) -> Result<Vec<variant::VariantFile>, String> {
+        let prefix = format!("libnextcuda-{name}@");
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(self.silo_dir()).into_iter().flatten().flatten() {
+            let f = e.file_name().to_string_lossy().into_owned();
+            let Some(v) = f.strip_prefix(&prefix).and_then(|r| r.strip_suffix(".so")) else { continue };
+            let yml = e.path().with_extension("yml");
+            let text = std::fs::read_to_string(&yml).map_err(|x| format!("{}: {x} (a variant's manifest: kernels/build.sh copies it there)", yml.display()))?;
+            let manifest = variant::parse_manifest(&text).map_err(|x| format!("{}: {x}", yml.display()))?;
+            out.push(variant::VariantFile { name: v.to_string(), path: e.path(), manifest });
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    /// `base` with a variant's library over it (`Silo::symbol`: the variant's op when it has one, else the base's).
+    /// Opened locally: its ops have the default silo's names, and must not stand in for the default's in the
+    /// process's global scope (nor the default's for its own: it is linked -Bsymbolic).
+    pub fn with_variant(&self, base: &Silo, v: &variant::VariantFile) -> Result<Silo, String> {
+        let c = CString::new(v.path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+        // SAFETY: dlopen with a valid C string; the handle is checked. Its undefined symbols resolve against the
+        // kind's library (global).
+        let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
+        if h.is_null() {
+            return Err(format!("{}: {}", v.path.display(), dl_error()));
+        }
+        Ok(Silo { handle: base.handle, path: base.path.clone(), variant: Some(VariantLib { name: v.name.clone(), handle: h, path: v.path.clone() }) })
+    }
+
+    /// What a variant's match rule reads of GPU `index` (no context is opened)
+    pub fn device_info(&self, index: usize) -> Result<variant::DeviceInfo, String> {
+        let i = index as c_int;
+        let mut buf = [0 as c_char; 256];
+        // SAFETY: buf is 256 bytes, its length passed.
+        if unsafe { (self.gpu_name)(i, buf.as_mut_ptr(), buf.len()) } != 0 {
+            return Err(self.error());
+        }
+        // SAFETY: the library wrote a NUL-terminated string into buf.
+        let name = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned();
+        let (mut u, mut m) = (0, 0);
+        // SAFETY: out-pointers to locals.
+        if unsafe { (self.gpu_units)(i, &mut u, &mut m) } != 0 {
+            return Err(self.error());
+        }
+        let (mut bytes, mut cc) = (0u64, 0 as c_int);
+        // SAFETY: out-pointers to locals.
+        let props = self.gpu_props.is_some_and(|f| unsafe { f(i, &mut bytes, &mut cc) } == 0);
+        if !props {
+            // (an older library: the compute capability from ns_gpu_cc, the memory not known)
+            // SAFETY: an out-pointer to a local.
+            if unsafe { (self.gpu_cc)(i, &mut cc) } != 0 {
+                cc = 0;
+            }
+        }
+        Ok(variant::DeviceInfo {
+            index,
+            name,
+            units: u.max(0) as u32,
+            mhz: m.max(0) as u32,
+            vram_mb: props.then_some(bytes >> 20),
+            cc: (cc > 0).then_some(cc as u32),
+        })
     }
 
     /// The reason of the last failed call on this thread.
@@ -277,10 +365,19 @@ impl Api {
     }
 }
 
-/// A model's silo library (`Api::silo`): its tuned kernels, bound by the engine by name
+/// A model's silo library (`Api::silo`): its tuned kernels, bound by the engine by name; with a variant
+/// (`Api::with_variant`) the variant's ops over the default silo's
 pub struct Silo {
     handle: *mut c_void,
     pub path: PathBuf,
+    variant: Option<VariantLib>,
+}
+
+/// A silo variant's library (dist/silo/libnextcuda-<arch>@<name>.so)
+struct VariantLib {
+    name: String,
+    handle: *mut c_void,
+    path: PathBuf,
 }
 
 // SAFETY: a handle to a library that stays loaded for the process's life.
@@ -288,10 +385,22 @@ unsafe impl Send for Silo {}
 unsafe impl Sync for Silo {}
 
 impl Silo {
-    /// A symbol of the silo by name (null when it has none)
+    /// A symbol of the silo by name (null when it has none): the variant's when it has one, else the default silo's
     pub fn symbol(&self, name: &str) -> *mut c_void {
         let Ok(n) = CString::new(name) else { return std::ptr::null_mut() };
+        if let Some(v) = &self.variant {
+            // SAFETY: a lookup in the variant's own handle (opened locally: its symbols, not the default silo's).
+            let p = unsafe { dlsym(v.handle, n.as_ptr()) };
+            if !p.is_null() {
+                return p;
+            }
+        }
         // SAFETY: a lookup in the silo's handle; it stays open for the process.
         unsafe { dlsym(self.handle, n.as_ptr()) }
+    }
+
+    /// The variant over the default silo (its name, its library); None for the default silo alone
+    pub fn variant(&self) -> Option<(&str, &Path)> {
+        self.variant.as_ref().map(|v| (v.name.as_str(), v.path.as_path()))
     }
 }

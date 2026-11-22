@@ -80,6 +80,8 @@ kernels/                   SYCL ONLY - one library a kind (dist/libnextsycl-<kin
                           (ns_<kind>_<arch>_* symbols)
   <kind>/<arch>/silo/     the engine's silo: kernels tuned for that model alone, replacing shared ones for what they
                           cover - their own library, dist/silo/libnextsycl-<arch>.so, opened by the engine at load
+  <kind>/<arch>/silo/variants/<name>/   a variant of the silo: its ops tuned for other cards (variant.yml says which),
+                          only the ops that differ - dist/silo/lib<proj>-<arch>@<name>.so and its manifest beside it
 ```
 
 ### The rules (checked by `cli/nextsycl/tests/architecture.rs` on every `cargo test`)
@@ -101,6 +103,21 @@ kernels/                   SYCL ONLY - one library a kind (dist/libnextsycl-<kin
   it at load (`nextsycl_core::silo(ARCH)`, once a process; `NS_SILO=0` or `NS_SILO_DIR` to change where), binds its
   symbols by name, asks each op's `_supported` per call and falls back to the shared kernel otherwise - with no
   silo file it runs on the shared kernels alone, just slower. Its load log says which.
+- **Tuning for other cards lives in a silo's variants; memory comes from the device** (nextcuda: CONTRIBUTING.md
+  rule 5, README "Silos and variants"). A silo is per model architecture, never per card (one library with every
+  card's code: dist/silo/libnextcuda-<arch>.so). A class of card that wants other ops gets
+  `kernels/<kind>/<arch>/silo/variants/<name>/`: `variant.yml` (`description`, `measured`, a `match` on what the device
+  reports - `vram_mb_min` / `_max`, `units_min` / `_max` (SMs), `mhz_min` / `_max`, `cc_min` / `_max`, a `name`
+  substring last - and optional `settings:`, engine options as defaults on its cards) and only the ops that differ,
+  built as `dist/silo/libnextcuda-<arch>@<name>.so` (-Bsymbolic) with its manifest beside it. Resolution is per op and
+  per GPU, once at load: `nextcuda_core::silo_for(ARCH, gpu)` is the default silo with the variant that GPU matches
+  over it (`Silo::symbol`: the variant's op when it has one, else the default's), and an engine binds each GPU's ops
+  when it opens the GPU; `nextcuda_core::silo(ARCH)` - an engine that binds once a process - takes a variant only
+  when every GPU of the process matches it. `NS_SILO_VARIANT=<name>|none` (a model card's `silo.variant`) forces one
+  or none; two variants of one silo that can match one card are refused by the architecture test. A variant gives
+  the same outputs as its silo and never changes a memory plan: memory is planned from what the device reports
+  (`Gpu::free_or_guess`, `cudaGetDeviceProperties`), not from a card's name or an assumed size. `nextcuda silo [ARCH]`
+  prints what each GPU takes.
 
 ## The kinds' contracts
 

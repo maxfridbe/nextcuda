@@ -23,10 +23,32 @@ is the method (how to check, clock and tune an engine) and `docs/benchy/README.m
      by name - never added to the shared `kernels/ns/ns.h`.
 4. **Exact before fast.** An engine is checked against a reference before it is tuned, and every speed claim comes
    with the measurement that made it: `nextcuda image bench` before and after, both quoted.
-5. **Tune in the model's silo, never in the shared kernels.** A kernel tuned for one model goes in that model's
-   silo, `kernels/<kind>/<arch>/silo/` - its own library, `dist/silo/libnextcuda-<arch>.so`, which the engine opens at
-   load and calls for what it covers, the shared kernel for everything else (`NS_SILO=0` turns it off). Start a silo
-   kernel as a copy of the shared one, then change the copy.
+5. **Tune in the model's silo, never in the shared kernels; tune for other cards in a variant of it.** A kernel tuned
+   for one model goes in that model's silo, `kernels/<kind>/<arch>/silo/` - its own library,
+   `dist/silo/libnextcuda-<arch>.so`, which the engine opens at load and calls for what it covers, the shared kernel
+   for everything else (`NS_SILO=0` turns it off). Start a silo kernel as a copy of the shared one, then change the
+   copy. **A silo is per model architecture, never per card**: one library holds every card's code (what a card has
+   or lacks - FP8 tensor cores - is decided in it by what the card reports, `cudaGetDeviceProperties`). A model tuned
+   for another class of card - an 8 GB card, one of fewer SMs, another compute capability - goes in a **variant** of
+   its silo, `kernels/<kind>/<arch>/silo/variants/<name>/`: a manifest (`variant.yml`: a one-line `description`, who
+   `measured` it on what, a `match` rule on what the device reports - `vram_mb_min` / `_max`, `units_min` / `_max`
+   (SMs), `mhz_min` / `_max`, `cc_min` / `_max` (compute capability, 86 for 8.6), a `name` substring as the last
+   resort) and only the ops that differ, under the silo's C names, built as `dist/silo/libnextcuda-<arch>@<name>.so`
+   (`kernels/ns/ns_variant.hpp` hands the default silo's op the shapes a variant's op does not cover). Each GPU takes
+   its ops at load from the variant it matches, else the silo's, else the shared kernel (`nextcuda_core::silo_for`). A
+   variant gives the same outputs as its silo (`NS_SILO_VARIANT=none` against it), its pull request quotes before /
+   after numbers on its hardware, and it never changes a memory plan (memory is planned from what the device
+   reports). **A variant may also set its engine's options for its cards**: an optional `settings:` block in
+   `variant.yml`, option name -> value, the names the engine declares (`EngineOption`, the ones `--opt-NAME` takes).
+   Where the variant applies to every GPU the engine loads on, each becomes the engine's default - below a request's
+   options, `--opt` / the environment and the model card's settings, above the engine's own default (`nextcuda silo`
+   and the load's log say what applied). **An engine's alternative host-side paths** (another chunking, a fusion, an
+   expert placement) are declared options with enumerated values (`value: "spread|pack"`): the variant picks one by
+   name, and a new path is itself an engine change under the gate, never a variant's own code. A setting never sizes
+   memory (an option whose value is `TOKENS`, `GIB`, `MIB` or `BYTES` is refused). **Two variants of one silo never
+   match the same card**: their numeric `match` ranges must not meet (a name never tells two rules apart) - give one a
+   tighter `match`. And a variant has a **gate baseline on a card it matches**, recorded on that card and committed in
+   its pull request (the merge gate below).
 
 6. **A front-door method is its handler.** `glue/serve/src/home/methods.rs`: `#[rpc(name = "image.generate", tags
    = "image", example = r#"{...}"#)]` on a fn with a doc comment (its summary), and a request struct with

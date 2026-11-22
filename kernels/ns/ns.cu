@@ -56,12 +56,22 @@ int ns_gpu_units(int index, int* units, int* mhz) {
     return 0;
 }
 
-// GPU `index`'s compute capability, major * 10 + minor (86, 120): which of a model's per-card silos it runs
+// GPU `index`'s compute capability, major * 10 + minor (86, 120)
 int ns_gpu_cc(int index, int* cc) {
     int major = 0, minor = 0;
     NS_CU(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, index));
     NS_CU(cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, index));
     *cc = major * 10 + minor;
+    return 0;
+}
+
+// GPU `index`'s memory in all and its compute capability, with no context opened (cudaGetDeviceProperties): what a
+// silo variant's match rule reads, and the card's size a memory plan starts from
+int ns_gpu_props(int index, uint64_t* total_bytes, int* cc) {
+    cudaDeviceProp p;
+    NS_CU(cudaGetDeviceProperties(&p, index));
+    *total_bytes = (uint64_t) p.totalGlobalMem;
+    *cc = p.major * 10 + p.minor;
     return 0;
 }
 

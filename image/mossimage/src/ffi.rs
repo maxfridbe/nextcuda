@@ -92,7 +92,7 @@ pub fn silo(gpu: usize) -> Option<&'static Silo> {
         return *s;
     }
     let s = (|| {
-        let lib = nextcuda_core::silo("mossimage").ok().flatten()?;
+        let lib = nextcuda_core::silo_for("mossimage", gpu).ok().flatten()?;
         let sym = |n: &str| Some(lib.symbol(n)).filter(|p| !p.is_null());
         let info = sym("ns_image_moss_silo_info")?;
         let (mut sm, mut fp8) = (0 as c_int, 0 as c_int);

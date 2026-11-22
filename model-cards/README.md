@@ -31,8 +31,9 @@ tools: true                     # llm: tool calls offered to it (false: dropped)
 tasks: true                     # llm: a front end's background tasks (titles, tags) accepted
 env: {}                         # settings its engine reads; '{role}' is that file's path once pulled
 silo:                           # its tuned kernels (CONTRIBUTING rule 5): kernels/<kind>/<name>/silo, built as
-  name: qwen35                  #   dist/silo/libnextsycl-<name>.so (default: the architecture's own, when built)
+  name: qwen35                  #   dist/silo/libnextcuda-<name>.so (default: the architecture's own, when built)
   required: true                # no load without it (default false: the shared kernels for what it lacks)
+  variant: none                 # a variant on every GPU, or none (default: each GPU takes the one its match fits)
 files:                          # by role: a file defined here, or another card's file by its key
   model:
     key: q27-q4                 # the file's id among all cards (a file is downloaded once, defined once)
@@ -45,8 +46,12 @@ guide: guides/chat.md           # how to prompt it (Markdown, relative to this f
 ```
 
 `silo` also takes a name alone (`silo: qwen35`) or `none` (the shared kernels only); without it a model runs on its
-architecture's silo when one is built. `nextsycl models search` shows each model's (`-`: the shared kernels). The
-registry entry carries it as the loader's settings (`NS_SILO_NAME`, `NS_SILO_REQUIRED`, `NS_SILO=0`).
+architecture's silo when one is built. `nextcuda models search` shows each model's (`-`: the shared kernels). The
+registry entry carries it as the loader's settings (`NS_SILO_NAME`, `NS_SILO_REQUIRED`, `NS_SILO=0`,
+`NS_SILO_VARIANT`). A silo's variants are its ops tuned for other cards (CONTRIBUTING rule 5): a card pins one only to
+measure it; left alone, each GPU takes the variant made for it. A variant may also carry engine options for its cards
+(`settings:` in its `variant.yml`); a card's own `env` setting the same variable wins over the variant's, as `--opt`
+and the environment do - set one in a card only when that model needs it on every card.
 
 Other keys: `local` (role: what it is - a part made on the machine rather than downloaded, found in nextsycl.conf
 or another registry entry), `base` (a lora: the model it rides on), `defaults` (image / video / audio: the

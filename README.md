@@ -16,7 +16,8 @@ We stand on the shoulders of giants.
 - **A single API control plane** - one service, `nextcuda.service`, answers on :8000 and starts a model server when a
   request names its model
 - **A Docker-style CLI** - `nextcuda <kind> start | stop | ps | logs | ...`, as a process, not a container
-- **Silo architecture** - a model's tuned kernels live in its own library; the shared ones stay as they are
+- **Silos and variants** - a model's tuned kernels live in its own library, one per architecture; a class of card
+  that wants other ops gets a variant of it, never a fork ([below](#silos-and-variants-how-tuning-stays-out-of-each-others-way))
 - **Test driven** - the architecture rules, the model cards and the kernels are checked by `cargo test` and
   `nextcuda image selftest`
 
@@ -79,6 +80,55 @@ curl -s -X POST http://127.0.0.1:8000/rpc/image.status -H "Authorization: Bearer
 
 Not here yet: HunyuanImage 2.1; the bigger cards' forms (the models [marked too big](docs/models.md)). The answers'
 `nextsycl` result key keeps its name (the platform reads it).
+
+## Silos and variants: how tuning stays out of each other's way
+
+Every kernel an engine runs comes from one of three layers. Each GPU picks an op from the most specific layer that has
+it when the engine loads: **variant → silo → shared kernel** (nextsycl's layout, in CUDA terms).
+
+| | shared kernel | silo | variant |
+|---|---|---|---|
+| **Scope** | every engine of a kind | one model architecture (never one card) | one model on one class of hardware |
+| **Where** | `kernels/ns`, `kernels/diffusion`, an engine's kernels another engine calls | `kernels/<kind>/<arch>/silo/` | `kernels/<kind>/<arch>/silo/variants/<name>/` + `variant.yml` |
+| **Builds to** | the kind's library | `dist/silo/libnextcuda-<arch>.so` (every card's code in it) | `dist/silo/libnextcuda-<arch>@<name>.so` and its `.yml` |
+| **Holds** | the plain, correct op | the model's ops tuned for its shapes | only the ops that differ from the silo (a delta, under the silo's C names) |
+| **Settings** | - | - | optional `settings:` in `variant.yml`: engine options (the names `--opt-NAME` takes) as the engine's defaults on its cards - a path the engine already has (an option with enumerated values), never a memory size |
+| **Chosen by** | always there (the fallback) | the engine's arch | its `match` against what the GPU reports: `vram_mb_min/max`, `units_min/max` (SMs), `mhz_min/max`, `cc_min/max` (compute capability, 86 for 8.6); a `name` substring as a last resort. Two variants of one silo never both match a card |
+| **Override** | `NS_SILO=0` (silo off) | `NS_SILO=0` | `NS_SILO_VARIANT=<name>\|none`, or a model card's `silo.variant` |
+| **Who may change it** | a bug fix or new type, with every engine that calls it re-checked | that model's porter | whoever tunes that hardware |
+| **Must prove** | every caller's check and bench | the same output as the shared kernel; before and after numbers | the same output as the silo (`NS_SILO_VARIANT=none` against it); before and after numbers on its hardware; a gate baseline recorded on a card it matches, and the gate's table from that card |
+
+**What it protects against**
+- **Pull requests fighting.** Someone tuning for an 8 GB card, or a card with fewer SMs, adds a variant. The default
+  silo the RTX 5070 and RTX 3060 run doesn't change, so two tunings for different hardware never edit the same file.
+- **One model's speed-up slowing another.** Tuning goes in that model's silo, never in a shared kernel, so another
+  engine's speed and output can't move.
+- **Silent output changes.** Each layer must give the same output as the layer below it, and the merge gate
+  (`tooling/gate.sh`) compares each engine's output exactly for a fixed seed (an LLM's greedy tokens and their
+  log-probabilities, a picture's, a sound's or a mesh's bytes); its throughput must stay within 3% on each card a
+  change touches.
+- **Hard-coded memory.** A variant never changes a memory plan. Memory is planned from what the device reports
+  (`Gpu::free_or_guess`), so a smaller card gets a smaller plan without a fork. A variant's `settings` may not set an
+  option that sizes memory (`TOKENS`, `GIB`, `MIB`, `BYTES`).
+- **Forking an engine for one card.** A card that wants another host-side path - a chunking, a fusion, an expert
+  placement - gets it as an engine option with enumerated values (`value: "spread|pack"`), and its variant picks one
+  in `settings`. A new path is an engine change under the gate; the variant only chooses. Precedence, highest first:
+  a request's options, `--opt` / the environment, the model card's settings, the variant's, the engine's default.
+- **Two tunings claiming one card.** The architecture test fails when two variants of one silo can match the same
+  card (their numeric ranges meet; a name never separates them). The fix is a tighter `match`. At run time the first
+  by name is taken, with a warning.
+- **Hardware we don't own.** The gate runs on a contributor's own box (`NS_GATE_HOST=local`), and its baselines are
+  per card (`rtx-3060-28u-12g`: the name, SMs and memory the card reports). A variant's pull request records its
+  card's baseline (`NS_GATE_RECORD=1`), commits it, and pastes the gate's table from that card; the architecture test
+  fails on a variant with no baseline on a card it matches.
+- **Mixed boxes.** The layer is chosen per GPU (`nextcuda_core::silo_for(arch, gpu)`). The 5070 beside the 3060 each
+  get their own ops. An engine that binds once per process (`nextcuda_core::silo(arch)`) takes a variant only when
+  every GPU matches it, and a variant's settings (process-wide) apply only when every GPU the engine loads on matches
+  it. `nextcuda silo [ARCH]` shows what each GPU takes and the settings that come with it.
+
+The rules are enforced by tests in `cli/nextcuda/tests/architecture.rs` and by the gate, not only by review
+(CONTRIBUTING.md rule 5). nextcuda has no variant yet: the 5070 and the 3060 run the default silos (a variant is added
+when a measurement on one class of card justifies it); nextsycl's example is its `kernels/llm/qwen35/silo/variants/b65/`.
 
 ## Docs
 

@@ -79,7 +79,7 @@ pub fn gpu_list(args: &[String]) -> Option<Vec<usize>> {
 /// The engine of entry `m`, loaded on GPUs `gpus` (the first leads)
 pub fn load(m: &Value, files: &ModelFiles, gpus: &[usize], log: &mut dyn FnMut(String)) -> Result<Box<dyn VideoEngine>, String> {
     nextcuda_core::use_kind("video");
-    let (k, o) = kind_and_options(m)?;
+    let (k, mut o) = kind_and_options(m)?;
     // the engine's own variables (the kernels read them with getenv): set before anything opens the GPU
     for (var, v) in &o.settings {
         if var.starts_with("NSD_") || var.starts_with("H3_") {
@@ -87,6 +87,11 @@ pub fn load(m: &Value, files: &ModelFiles, gpus: &[usize], log: &mut dyn FnMut(S
         }
     }
     let gs = gpus.iter().map(|i| nextcuda_core::Gpu::open(*i)).collect::<Result<Vec<_>, _>>().map_err(|e| e.0)?;
+    // the silo variant's settings for these GPUs, below all of the above (CONTRIBUTING rule 5) - into the load's
+    // settings only: they come after the GPUs open, so not the NSD_ / H3_ variables the kernels read as they do
+    for line in nextcuda_core::variant_settings_into(k.archs, gpus, k.options, &mut o.settings).map_err(|e| e.0)? {
+        log(line);
+    }
     (k.load)(files, &gs, &o, log).map_err(|e| e.0)
 }
 

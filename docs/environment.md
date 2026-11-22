@@ -77,9 +77,10 @@ Where the program, its libraries, its models and its sockets are.
 | `NS_MODELS` | none (llm start fails: set it) | host directory with the model files, mounted as /models in the containers; `models pull` puts files there | cli (llm, image, audio, video start; models pull) |
 | `NS_MOUNTS` | none | more read-only mounts for the chat server's container, `host:inside[,...]` (another model folder, a draft layer, a profile) | cli (llm start) |
 | `NS_SILO` | silos on | 0: no model silo, every model on the shared kernels (the A/B for a silo) | runtime (every kind) |
-| `NS_SILO_NAME` | the architecture's own | another silo of the engine's ABI to load (dist/silo/libnextsycl-<name>.so) - a model card's `silo.name` | runtime (every kind) |
+| `NS_SILO_NAME` | the architecture's own | another silo of the engine's ABI to load (dist/silo/libnextcuda-<name>.so) - a model card's `silo.name` | runtime (every kind) |
 | `NS_SILO_REQUIRED` | 0 | 1: refuse to load when the silo is not built (no fall back to the shared kernels) - a model card's `silo.required` | runtime (every kind) |
-| `NS_SILO_DIR` | silo/ beside the kind's kernel library (beside the executable for one inside the binary) | directory holding the silos (`libnextsycl-<arch>.so`) | runtime (every kind) |
+| `NS_SILO_DIR` | silo/ beside the kind's kernel library (beside the executable for one inside the binary) | directory holding the silos (`libnextcuda-<arch>.so`) and their variants (`libnextcuda-<arch>@<name>.so` with `.yml` beside) | runtime (every kind) |
+| `NS_SILO_VARIANT` | by the card | a silo variant (`kernels/<kind>/<arch>/silo/variants/<name>`, built as dist/silo/libnextcuda-<arch>@<name>.so with its manifest beside it) on every GPU, or `none`: the default silo's ops alone. Unset: each GPU takes the variant its manifest's `match` rule fits (an engine that binds per GPU), or the one every GPU of the process fits - a model card's `silo.variant`. The variant chosen also brings its manifest's `settings` (engine options) as the engine's defaults, below a model card's settings, `--opt` and the environment | runtime (every kind) |
 | `NS_SOCKET_DIR` | $XDG_RUNTIME_DIR/nextsycl (serve's pid and marker files: /tmp) | where the control sockets live (mounted into the containers) | cli, serve, llm, video, studio |
 
 ## Front door and services
@@ -484,6 +485,7 @@ Inputs of the checks and unit tests that need files outside the repository (unse
 | `NS_TEST_QWEN_TOKENS` | test skipped | the reference pipeline's tokens.json the tokenizer test compares against | tests (crates/tok) |
 | `NS_X_INT8` | - | fixture: an option table's variable in the --opt-NAME unit tests (never read by an engine) | tests (crates/core options) |
 | `NS_X_SIGMAS` | - | fixture: an option table's variable in the --opt-NAME unit tests (never read by an engine) | tests (crates/core options) |
+| `NS_X_DRAFTS`, `NS_X_PLACE`, `NS_X_CHUNK` | - | fixtures: an option table's variables in the silo variant settings unit tests (never read by an engine) | tests (crates/core options) |
 
 ## Build
 

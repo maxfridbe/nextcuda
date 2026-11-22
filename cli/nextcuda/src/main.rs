@@ -62,6 +62,9 @@ every kind:
   nextcuda drives [--json]      the drives the models are on: device, PCIe link, mount, size, free, models, read speed
   nextcuda drives measure <drive>   its read speed: 4 GiB of model files past the page cache (O_DIRECT), kept
   nextcuda gpus                 each GPU in its own context: memory, copy rates, GPU to GPU, host RAM unaffected
+  nextcuda silo [ARCH]          what each GPU reports (SMs, clock, memory, compute capability), its id in the merge gate's
+                                baselines, and for each silo (or ARCH's) the variant each GPU takes and its settings
+                                (NS_SILO_VARIANT forces one; no GPU is opened)
   nextcuda maintenance [on|off|status] [--message TEXT] [--eta MINUTES] [--unload]
                                 the front door's maintenance mode: callers told, new work refused, queues waiting
   nextcuda switch [--port 8001] [--upstream 127.0.0.1:8085] [--studio URL] [--alias OLD=NEW]...
@@ -176,6 +179,11 @@ fn load_engine<'g>(f: &'g Gguf, gpus: &[std::sync::Arc<nextcuda_core::Gpu>], o: 
         log(format!("option {var}={v}"));
         std::env::set_var(var, v);
     }
+    // the silo variant's settings for these GPUs: below everything set above (CONTRIBUTING rule 5)
+    let on: Vec<usize> = gpus.iter().map(|g| g.index).collect();
+    for line in nextcuda_core::apply_variant_settings(k.archs, &on, &llm_options(k)).map_err(|e| e.0)? {
+        log(line);
+    }
     (k.load)(f, gpus, &o, log).map_err(|e| e.0)
 }
 
@@ -200,6 +208,64 @@ fn host_available() -> u64 {
     std::fs::read_to_string("/proc/meminfo").ok()
         .and_then(|m| m.lines().find(|l| l.starts_with("MemAvailable:"))?.split_whitespace().nth(1)?.parse::<u64>().ok())
         .map_or(0, |kb| kb * 1024)
+}
+
+/// `nextcuda silo [ARCH]`: each GPU as a variant's match rule reads it (and its id in the gate's baselines: `card N ID
+/// {json}` lines), and per silo (or ARCH's) the variant each GPU takes - `silo ARCH GPU N: NAME` / `default` lines, the
+/// variant's settings under it (tooling/gate.sh reads them). No GPU is opened.
+fn silo_cmd(args: &[String]) -> Result<(), String> {
+    let e = |x: nextcuda_core::Error| x.0;
+    let api = nextcuda_core::api().map_err(e)?;
+    let n = nextcuda_core::gpus().map_err(e)?.len();
+    let devs: Vec<nextcuda_core::variant::DeviceInfo> = (0..n).map(|i| api.device_info(i)).collect::<Result<_, _>>()?;
+    for d in &devs {
+        println!("GPU {}: {}, {} SMs at {} MHz, {}, compute capability {}", d.index, d.name, d.units, d.mhz,
+                 d.vram_mb.map_or("memory not reported".into(), |m| format!("{m} MiB")),
+                 d.cc.map_or("?".into(), |c| format!("{}.{}", c / 10, c % 10)));
+    }
+    for d in &devs {
+        println!("card {} {} {}", d.index, d.card_id(), d.to_json());
+    }
+    // the silos: libnextcuda-<arch>.so (and its variants libnextcuda-<arch>@<name>.so) beside the kind's library
+    let dir = api.silo_dir();
+    let mut archs: Vec<String> = match args.first() {
+        Some(a) => vec![a.clone()],
+        None => {
+            let mut v: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten()
+                .filter_map(|f| f.file_name().to_str()?.strip_prefix("libnextcuda-")?.strip_suffix(".so").map(|r| r.split('@').next().unwrap_or(r).to_string()))
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        }
+    };
+    archs.retain(|a| !a.is_empty());
+    if archs.is_empty() {
+        println!("no silo in {}", dir.display());
+    }
+    let force = std::env::var("NS_SILO_VARIANT").ok().filter(|v| !v.trim().is_empty());
+    for arch in archs {
+        let vs = api.silo_variants(&api.silo_name(&arch))?;
+        if vs.is_empty() {
+            println!("silo {arch}: no variants (every GPU takes the default silo)");
+        }
+        for d in &devs {
+            if let Some(w) = nextcuda_core::variant::ambiguity(&vs, std::slice::from_ref(d), force.as_deref()) {
+                println!("{w} (silo {arch})");
+            }
+            match nextcuda_core::variant::choose(&vs, std::slice::from_ref(d), force.as_deref())? {
+                Some(v) => {
+                    println!("silo {arch} GPU {}: {} - {}", d.index, v.name, v.manifest.description);
+                    if !v.manifest.settings.is_empty() {
+                        let s: Vec<String> = v.manifest.settings.iter().map(|(k, x)| format!("{k}={x}")).collect();
+                        println!("  settings (the engine's defaults where every GPU it loads on takes {}): {}", v.name, s.join(", "));
+                    }
+                }
+                None => println!("silo {arch} GPU {}: default", d.index),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn gpus() -> Result<(), String> {
@@ -1050,6 +1116,7 @@ fn main() -> ExitCode {
         }
         Some("info") if args.len() == 2 => info(Path::new(&args[1])),
         Some("gpus") => gpus(),
+        Some("silo") => silo_cmd(rest),
         Some("switch") => host::switch(rest),
         Some("maintenance") => host::maintenance(&cfg, rest),
         Some("gpustat") => host::gpustat(rest),

@@ -26,6 +26,9 @@ int ns_gpu_pci(int index, char* buf, size_t len);
 int ns_gpu_units(int index, int* units, int* mhz);
 /* the compute capability of GPU `index` as one number: 86 (an RTX 3060), 120 (an RTX 5070) */
 int ns_gpu_cc(int index, int* cc);
+/* GPU index's memory in all (bytes, cudaGetDeviceProperties) and compute capability (major * 10 + minor), with no
+ * context opened: what a silo variant's match rule and a memory plan read (crates/sys/src/variant.rs) */
+int ns_gpu_props(int index, uint64_t* total_bytes, int* cc);
 /* opens GPU `index`: its stream, its two copy streams */
 int ns_gpu_open(int index, ns_gpu** out);
 void ns_gpu_close(ns_gpu* g);

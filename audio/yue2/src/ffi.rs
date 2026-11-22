@@ -94,7 +94,7 @@ pub fn silo(gpu: usize) -> Option<&'static Silo> {
         return *s;
     }
     let s = (|| {
-        let lib = nextcuda_core::silo("yue2").ok().flatten()?;
+        let lib = nextcuda_core::silo_for("yue2", gpu).ok().flatten()?;
         let sym = |n: &str| Some(lib.symbol(n)).filter(|p| !p.is_null());
         let info = sym("ns_audio_yue2_silo_info")?;
         let mut sm = 0 as c_int;
