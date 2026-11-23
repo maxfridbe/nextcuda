@@ -143,6 +143,8 @@ pub struct Silo {
     pub moe_down: unsafe extern "C" fn(G, c_int, P, i64, *const f32, *const i32, *const f32, P, *mut f32, i64, i64, i64, i64) -> c_int,
     pub fused: Fused,
     pub draft: Draft,
+    pub moe_prompt_supported: unsafe extern "C" fn(c_int, i64, i64) -> c_int,
+    pub moe_prompt: unsafe extern "C" fn(G, c_int, P, i64, i64, i64, *const u16, *mut f32, *const i32, i64) -> c_int,
     pub attn_prompt_supported: unsafe extern "C" fn(i64, i64, i64, i64) -> c_int,
     /// (q, kc, vc, r, relb, E, R, sink, out, T, Hq, Hkv, cap, p0, win)
     pub attn_prompt: unsafe extern "C" fn(G, *const f32, P, P, *const f32, *const f32, i64, i64, *const f32, *mut f32, i64, i64, i64, i64, i64, i64) -> c_int,
@@ -307,6 +309,8 @@ fn bind(path: &std::path::Path, symbol: impl Fn(&str) -> *mut c_void) -> std::re
             moe_union: sym!("ns_ink2s_moe_union"),
             moe_gu_union: sym!("ns_ink2s_moe_gu_union"),
             moe_down_union: sym!("ns_ink2s_moe_down_union"),
+            moe_prompt_supported: sym!("ns_ink2s_moe_prompt_supported"),
+            moe_prompt: sym!("ns_ink2s_moe_prompt"),
             attn_prompt_supported: sym!("ns_ink2s_attn_prompt_supported"),
             attn_prompt: sym!("ns_ink2s_attn_prompt"),
             draft: Draft {

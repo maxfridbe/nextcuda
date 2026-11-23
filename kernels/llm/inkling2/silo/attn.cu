@@ -5,7 +5,7 @@
 // (two a lane), the split's softmax at once, then the values with the lanes over the dims. A row's splits are the same
 // whatever rows share its pass.
 //
-// ns_ink2s_attn_prompt (a prompt pass's attention) is not taken here: the engine's own kernel (ink.cu) runs prompts.
+// A prompt pass's attention is pattn.cu's.
 #include "common.cuh"
 
 using namespace ink2s;
@@ -142,15 +142,6 @@ int ns_ink2s_attn_part_block(ns_gpu* g, const float* q, const void* kc, const vo
     NS_TRY
     return attn_part(g, q, kc, vc, nullptr, nullptr, 0, 0, part, T, Hq, Hkv, cap, p0, win, scale, true);
     NS_CATCH
-}
-
-int ns_ink2s_attn_prompt_supported(int64_t, int64_t, int64_t, int64_t) {
-    return 0;
-}
-
-int ns_ink2s_attn_prompt(ns_gpu*, const float*, const void*, const void*, const float*, const float*, int64_t, int64_t, const float*, float*, int64_t, int64_t,
-                         int64_t, int64_t, int64_t, int64_t) {
-    return ns_fail("ns_ink2s_attn_prompt: not in this silo (ns_ink2s_attn_prompt_supported says so)");
 }
 
 }  // extern "C"

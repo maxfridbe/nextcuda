@@ -303,6 +303,9 @@ Inkling-2-Mini (`llm/inkling2`, its silo `kernels/llm/inkling2/silo`; docs/ports
 | `NS_INK2_DRAFT_PMIN` | 0.8 | a draft (and those after it) dropped when the drafter gives it less than this probability (fewer rows to verify) | llm inkling2 |
 | `NS_INK2_EXPERT_UNION` | on | 0: a decode pass of several rows (a verify) reads an expert the rows share once a row instead of once (A/B) | llm inkling2 |
 | `NS_INK2_UNION` | off | Debug: 1 reads a pass's chosen experts back each layer application (a sync each) and reports the distinct experts a pass by its rows | llm inkling2 |
+| `NS_INK2_PATTN` | on (with the silo) | Experiment: 0 runs a prompt pass's attention on the engine's own kernel (float32, no tensor cores) instead of the silo's flash attention (A/B) | llm inkling2 |
+| `NS_INK2_PGEMM` | on (with the silo) | Experiment: 0 runs a prompt pass's routed experts an expert at a time (each expanded to half, a cuBLAS product) instead of the silo's grouped products (A/B) | llm inkling2 |
+| `NS_INK2_SPLIT` | from the loop out while the faster card has the room | `A,B`: on two GPUs, the faster one's layers [A, B) (holding the loop, 6..18); the rest and the head on the other | llm inkling2 |
 
 ## Image
 

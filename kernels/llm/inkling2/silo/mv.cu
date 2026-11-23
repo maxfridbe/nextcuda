@@ -179,7 +179,7 @@ __device__ __forceinline__ float situ(float g, float u, float beta, float lb) {
 // and up rows [F + j0, ..) of the expert, 16 warps; each pair's 32 values through SiTU, quantized into act_q's row p
 // the pairs of block (blockIdx.x: the 32-column group; blockIdx.y: a pair, or a distinct expert of uni)
 template <int TY, int NP>
-__global__ void moe_gu_k(const void* wv, int64_t E, const float* scale, const int32_t* ids, const int32_t* uni, const void* xqv, void* actv, int64_t T,
+__global__ void __launch_bounds__(512) moe_gu_k(const void* wv, int64_t E, const float* scale, const int32_t* ids, const int32_t* uni, const void* xqv, void* actv, int64_t T,
                          int64_t K, int64_t n, int64_t F, float beta, float lb) {
     __shared__ float vals[NP][64];
     const int64_t P = T * K;

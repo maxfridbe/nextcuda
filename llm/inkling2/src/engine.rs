@@ -21,8 +21,8 @@
 //! through this engine's own products, a prompt chunk expands each matrix (an expert at a time) to half and multiplies.
 //!
 //! nextsycl's llm/inkling2 engine (the same steps, kernels of the same names), over one GPU or two: when the model does
-//! not fit one card, the looped layers (36 of the 48 applications) go to the faster card and the prelude, the coda and
-//! the head to the other - a token crosses between them twice, carrying the stream and the depth attention's blocks
+//! not fit one card, the looped layers (36 of the 48 applications) and as many of their neighbours as it has room for go to
+//! the faster card, the rest of the prelude and the coda and the head to the other - a token crosses between them twice, carrying the stream and the depth attention's blocks
 //! (each a row of 2,304 floats). Each card has its own work memory and its own silo binding (a variant per card).
 
 use std::ffi::c_int;
@@ -366,6 +366,12 @@ fn union_on() -> bool {
     std::env::var("NS_INK2_EXPERT_UNION").map_or(true, |v| v != "0")
 }
 
+/// NS_INK2_PATTN=0 / NS_INK2_PGEMM=0: a prompt pass's attention / routed experts on the engine's own kernels, not the
+/// silo's (A/B)
+fn prompt_silo(var: &str) -> bool {
+    std::env::var(var).map_or(true, |v| v != "0")
+}
+
 /// NS_INK2_UNION: by rows a pass, (distinct experts summed, layer applications, the most)
 type UnionStats = std::collections::BTreeMap<usize, (u64, u64, u64)>;
 
@@ -480,7 +486,7 @@ fn layer_of(name: &str) -> Option<usize> {
 
 impl<'g> Inkling2<'g> {
     /// Loads the model onto the GPUs: the last of `gpus` alone when it holds everything (the server orders them
-    /// weakest first), else the looped layers on the last and the rest on the one before it. `kv`: the context the
+    /// weakest first), else the looped layers and the neighbours it has room for on the last, the rest on the one before it. `kv`: the context the
     /// sessions reserve (tokens in all; 0: 32K). A load that does not fit says which card is short (no_room: a 409).
     pub fn load(f: &'g Gguf, gpus: &[Arc<Gpu>], kv: (usize, usize), draft: bool, log: &mut dyn FnMut(String)) -> Result<Inkling2<'g>> {
         let t0 = Instant::now();
@@ -491,9 +497,10 @@ impl<'g> Inkling2<'g> {
         let k = ffi::api()?;
         let embd = f.tensor("token_embd.weight").ok_or_else(|| e("no token_embd.weight"))?.clone();
         let tied = f.tensor("output.weight").is_none();
-        // the weights by part: the looped layers', the rest's (the embedding's rows stay in the file unless it is the head)
-        let mut core_w = 0u64;
-        let mut rest_w = 0u64;
+        // the weights a layer, and the rest's (the head and its norms; the embedding's rows stay in the file unless it is
+        // the head)
+        let mut lw = vec![0u64; g.layers];
+        let mut head_w = 0u64;
         let mut biggest = 0u64;
         for t in &f.tensors {
             if t.name == "token_embd.weight" && !tied {
@@ -501,8 +508,8 @@ impl<'g> Inkling2<'g> {
             }
             biggest = biggest.max(t.bytes);
             match layer_of(&t.name) {
-                Some(l) if g.looped(l) => core_w += t.bytes,
-                _ => rest_w += t.bytes,
+                Some(l) if l < g.layers => lw[l] += t.bytes,
+                _ => head_w += t.bytes,
             }
         }
         let ctx = if kv.0 > 0 { kv.0 } else { 32768 };
@@ -530,8 +537,10 @@ impl<'g> Inkling2<'g> {
         for gpu in gpus {
             free.push(gpu.free_or_guess()?);
         }
-        // what a part needs on a GPU for prompt chunks of c rows: (part's weights, its slots) + the work memory
-        let need = |c: usize, weights: u64, on: &dyn Fn(usize) -> bool, head: bool| -> u64 {
+        // what the layers [a, b) need on a GPU for prompt chunks of c rows (their weights and slots, the work memory;
+        // `head`: the head, the embedding and the drafter there too)
+        let need = |c: usize, on: &dyn Fn(usize) -> bool, head: bool| -> u64 {
+            let weights: u64 = (0..g.layers).filter(|l| on(*l)).map(|l| lw[l]).sum::<u64>() + if head { head_w } else { 0 };
             let extra = kv.1.max(1).saturating_sub(1) as u64 * session_bytes(&g, (g.window + c).min(ctx), c, on) as u64;
             let ds_c = if head {
                 dfile.as_ref().map_or(0, |_| (c * dspark::FEATS * g.n_embd * 4) as u64 + kv.1.max(1) as u64 * dspark::DSpark::session_bytes(&g, ctx, c, MAXV) as u64)
@@ -541,43 +550,61 @@ impl<'g> Inkling2<'g> {
             };
             weights + w16_bytes as u64 + arena_bytes(&g, c) as u64 + session_bytes(&g, ctx, c, on) as u64 + extra + margin + ds_c + STAGING as u64
         };
-        let all = |_: usize| true;
-        let core_on = |l: usize| g.looped(l);
-        let rest_on = |l: usize| !g.looped(l);
-        // (GPU of the rest and the head, GPU of the loop, chunk)
+        // NS_INK2_SPLIT=A,B: the faster GPU's layers [A, B) (they hold the loop); else from the loop out, a layer at a
+        // time (the coda's first, then the prelude's last), while it has the room - the faster card does more of a token
+        let forced: Option<(usize, usize)> = std::env::var("NS_INK2_SPLIT").ok().and_then(|v| {
+            let x: Vec<usize> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+            (x.len() == 2 && x[0] >= 1 && x[0] <= g.core.0 && x[1] >= g.core.1 && x[1] <= g.layers).then(|| (x[0], x[1]))
+        });
+        // (GPU of the rest and the head, GPU of [a, b), a, b, chunk)
         let last = gpus.len() - 1;
-        let mut plan: Option<(usize, usize, usize)> = None;
+        let mut plan: Option<(usize, usize, usize, usize, usize)> = None;
         let mut short: Option<(usize, u64, String)> = None;
+        let all = |_: usize| true;
+        let total_w: u64 = lw.iter().sum::<u64>() + head_w;
         for &c in &tries {
-            let one = need(c, core_w + rest_w, &all, true);
-            if one <= free[last] {
-                plan = Some((last, last, c));
+            let one = need(c, &all, true);
+            if one <= free[last] && forced.is_none() {
+                plan = Some((last, last, 0, g.layers, c));
                 break;
             }
             if gpus.len() > 1 {
-                let (nr, nc) = (need(c, rest_w, &rest_on, true), need(c, core_w, &core_on, false));
+                let fits = |a: usize, b: usize| need(c, &|l: usize| l >= a && l < b, false) <= free[last];
+                let (mut a, mut b) = forced.unwrap_or(g.core);
+                if forced.is_none() && fits(a, b) {
+                    loop {
+                        if b < g.layers && fits(a, b + 1) {
+                            b += 1;
+                        } else if a > 1 && fits(a - 1, b) {
+                            a -= 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                let (nr, nc) = (need(c, &|l: usize| l < a || l >= b, true), need(c, &|l: usize| l >= a && l < b, false));
                 if nr <= free[last - 1] && nc <= free[last] {
-                    plan = Some((last - 1, last, c));
+                    plan = Some((last - 1, last, a, b, c));
                     break;
                 }
                 if short.is_none() {
                     short = Some(if nr > free[last - 1] {
-                        (last - 1, nr - free[last - 1], format!("the prelude, the coda and the head need {:.1} GiB on {}; {:.1} GiB are free", gib(nr), gpus[last - 1].name,
-                                                               gib(free[last - 1])))
+                        (last - 1, nr - free[last - 1], format!("layers 0-{} and {b}-{} with the head need {:.1} GiB on {}; {:.1} GiB are free", a - 1, g.layers - 1, gib(nr),
+                                                               gpus[last - 1].name, gib(free[last - 1])))
                     } else {
-                        (last, nc - free[last], format!("the looped layers need {:.1} GiB on {}; {:.1} GiB are free", gib(nc), gpus[last].name, gib(free[last])))
+                        (last, nc - free[last], format!("layers {a}-{} need {:.1} GiB on {}; {:.1} GiB are free", b - 1, gib(nc), gpus[last].name, gib(free[last])))
                     });
                 }
             } else if short.is_none() {
                 short = Some((last, one - free[last], format!("{:.1} GiB of weights, work memory and a {ctx}-token session need {:.1} GiB on {}; {:.1} GiB are free",
-                                                              gib(core_w + rest_w), gib(one), gpus[last].name, gib(free[last]))));
+                                                              gib(total_w), gib(one), gpus[last].name, gib(free[last]))));
             }
         }
-        let Some((rest_i, core_i, chunk)) = plan else {
+        let Some((rest_i, core_i, sa, sb, chunk)) = plan else {
             let (i, by, msg) = short.unwrap_or((last, 0, "no room".into()));
             return Err(Error(nextcuda_core::no_room_message(gpus[i].index, (by >> 20) + 1, &format!("inkling2: {msg}"))));
         };
-        // the engine's GPUs: the rest's (index 0), the loop's (index 1 when it is another)
+        // the engine's GPUs: the rest's (index 0), the one of [sa, sb) (index 1 when it is another)
         let mut picked = vec![rest_i];
         if core_i != rest_i {
             picked.push(core_i);
@@ -596,10 +623,11 @@ impl<'g> Inkling2<'g> {
         let hd = 0;
         let cd = devs.len() - 1;
         if devs.len() > 1 {
-            log(format!("inkling2: layers {}-{} (the loop, {} applications a token) on {}, the rest and the head on {}", g.core.0, g.core.1 - 1,
-                        (g.core.1 - g.core.0) * g.passes, devs[cd].gpu.name, devs[hd].gpu.name));
+            let apps = g.order().iter().filter(|(_, l, _)| *l >= sa && *l < sb).count();
+            log(format!("inkling2: layers {sa}-{} ({apps} of the {} applications a token) on {}, the rest and the head on {}", sb - 1, g.order().len(), devs[cd].gpu.name,
+                        devs[hd].gpu.name));
         }
-        let dev_of = |l: usize| if g.looped(l) { cd } else { hd };
+        let dev_of = |l: usize| if l >= sa && l < sb { cd } else { hd };
         let loaded = std::cell::Cell::new(0u64);
         let mut layers = Vec::with_capacity(g.layers);
         for l in 0..g.layers {
@@ -681,7 +709,7 @@ impl<'g> Inkling2<'g> {
         }
         let mut loops = Vec::new();
         for l in g.core.0..g.core.1 {
-            let (gpu, silo) = (&devs[cd].gpu, devs[cd].silo);
+            let (gpu, silo) = (&devs[dev_of(l)].gpu, devs[dev_of(l)].silo);
             let read = |name: &str| -> Result<Mat> { mat(f, gpu, silo, name, &loaded) };
             // the controllers in float32 (UD-Q8_K_XL stores them in BF16; the fused decode steps read float32): exact
             let read32 = |name: &str| -> Result<Mat> {
@@ -1209,6 +1237,34 @@ impl<'g> Inkling2<'g> {
         // SAFETY: rows of h gathered to half, [m, C]
         self.op(d, "gather", || unsafe { (k.gather_f16)(d.raw(), h.fp(), tok_d.ptr().cast(), xh.ptr().cast(), m as i64, c as i64) })?;
         let (gn, gk) = (gu.rows as i64, gu.cols as i64);
+        let (dn_n, dn_k) = (dn.rows as i64, dn.cols as i64);
+        // the silo's grouped products: every expert's rows in one launch, its weights decoded as it goes
+        // SAFETY: arithmetic only.
+        let grouped = d.silo.filter(|s| prompt_silo("NS_INK2_PGEMM") && gu.packed && dn.packed && unsafe { (s.moe_prompt_supported)(gu.ty.code() as c_int, gn, gk) } != 0
+                                     && unsafe { (s.moe_prompt_supported)(dn.ty.code() as c_int, dn_n, dn_k) } != 0);
+        if let Some(s) = grouped {
+            let mut tiles: Vec<i32> = Vec::new();
+            for &(x, r0, n) in &runs {
+                for off in (0..n).step_by(64) {
+                    tiles.extend([x as i32, (r0 + off) as i32, (n - off).min(64) as i32]);
+                }
+            }
+            let tl = up_i(&tiles)?;
+            let nt = (tiles.len() / 3) as i64;
+            let rows_gu = (g.experts * gu.rows) as i64;
+            let rows_dn = (g.experts * dn.rows) as i64;
+            // SAFETY: the repacked stacks, x / act half [m, K], y / dd [m, N], the tiles.
+            unsafe {
+                self.op(d, "experts prompt silo", || (s.moe_prompt)(d.raw(), gu.ty.code() as c_int, gu.buf.ptr(), rows_gu, gn, gk, xh.ptr().cast(), y.fp(), tl.ptr().cast(), nt))?;
+                self.op(d, "situ", || (k.situ)(d.raw(), y.fp(), rs_d.fp(), std::ptr::null_mut(), act.ptr().cast(), m as i64, ff as i64, g.situ_beta, g.situ_lb))?;
+                self.op(d, "experts prompt silo", || (s.moe_prompt)(d.raw(), dn.ty.code() as c_int, dn.buf.ptr(), rows_dn, dn_n, dn_k, act.ptr().cast(), dd.fp(), tl.ptr().cast(), nt))?;
+            }
+            out.fill(0)?;
+            // SAFETY: each token's rows weighted into out [t, C]
+            self.op(d, "combine", || unsafe { (k.combine_rows)(d.raw(), dd.fp(), tp_d.ptr().cast(), ent_d.ptr().cast(), cw_d.fp(), out.fp(), t as i64, c as i64) })?;
+            d.arena.rewind(mark);
+            return Ok(out);
+        }
         for &(x, r0, n) in &runs {
             // SAFETY: expert x's gate|up -> half in w16 (from its blocks, or the silo's repacked stack); its rows' product.
             self.expand_expert(d, gu, x, g.experts)?;
@@ -1218,7 +1274,6 @@ impl<'g> Inkling2<'g> {
         }
         // SAFETY: [m, 2F] scaled by its expert's factor -> SiTU in half [m, F]
         self.op(d, "situ", || unsafe { (k.situ)(d.raw(), y.fp(), rs_d.fp(), std::ptr::null_mut(), act.ptr().cast(), m as i64, ff as i64, g.situ_beta, g.situ_lb) })?;
-        let (dn_n, dn_k) = (dn.rows as i64, dn.cols as i64);
         for &(x, r0, n) in &runs {
             // SAFETY: expert x's down -> half in w16; its rows' product.
             self.expand_expert(d, dn, x, g.experts)?;
@@ -1304,7 +1359,7 @@ impl<'g> Inkling2<'g> {
         // SAFETY: the rows and caches as ink.h names them.
         unsafe {
             self.op(d, "kv store", || (k.kv_store)(d.raw(), kc.fp(), vc.fp(), t as i64, hk as i64, hd as i64, ss.cap as i64, p0 as i64, ss.kc.ptr(), ss.vc.ptr()))?;
-            match d.silo.filter(|s| t > MAXV && (s.attn_prompt_supported)(hq as i64, hk as i64, hd as i64, g.rel_len as i64) != 0) {
+            match d.silo.filter(|s| t > MAXV && prompt_silo("NS_INK2_PATTN") && (s.attn_prompt_supported)(hq as i64, hk as i64, hd as i64, g.rel_len as i64) != 0) {
                 // a prompt pass's rows: the silo's flash attention
                 Some(s) => self.op(d, "attention silo", || (s.attn_prompt)(d.raw(), q.fp(), ss.kc.ptr(), ss.vc.ptr(), r.fp(), ly.rel_bias.fp(), extent,
                                                                           g.rel_len as i64, sink.fp(), att.fp(), t as i64, hq as i64, hk as i64, ss.cap as i64,
