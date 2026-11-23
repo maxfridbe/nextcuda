@@ -1093,7 +1093,34 @@
         "0",
         "1"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "a4221c7a03dafaec",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "81d7774 (2026-11-23; the binary built at 81d7774, deployed; two runs each, the same bytes)",
+          "s": 1.75
+        },
+        "rtx-3060-28u-12g": {
+          "exact": "aedd2076f4fd64e5",
+          "device": {
+            "name": "NVIDIA GeForce RTX 3060",
+            "units": 28,
+            "mhz": 1807,
+            "vram_mb": 11909,
+            "cc": 86
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "81d7774 (2026-11-23; the binary built at 81d7774, deployed; two runs each, the same bytes)",
+          "s": 4.16
+        }
+      }
     }
   }
 }
