@@ -601,6 +601,22 @@ __global__ void kv_store_k(const float* k, const float* v, int64_t n, int64_t Hk
     vh[(h * cap + slot) * D + d] = __float2half_rn(v[i]);
 }
 
+// a block a (row, head): 4 warps, a block of 32 dims each
+__global__ void kv_store_q8_k(const float* k, const float* v, int64_t Hkv, int64_t cap, int64_t p0, uint8_t* kc, uint8_t* vc) {
+    const int64_t rh = blockIdx.x, t = rh / Hkv, h = rh % Hkv;
+    const int d = threadIdx.x, lane = d % WS, w = d / WS;
+    const int64_t slot = (p0 + t) % cap;
+    for (int which = 0; which < 2; ++which) {
+        const float x = (which ? v : k)[rh * 128 + d];
+        uint8_t* row = (which ? vc : kc) + (h * cap + slot) * 136;
+        const float amax = warp_max(fabsf(x));
+        const float dd = amax / 127.0f;
+        const float id = dd != 0.0f ? 1.0f / dd : 0.0f;
+        row[d] = (uint8_t) (int8_t) roundf(x * id);
+        if (lane == 0) ((__half*) (row + 128))[w] = __float2half_rn(dd);
+    }
+}
+
 __global__ void gate_k(float* x, const float* gate, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) x[i] *= 1.0f / (1.0f + expf(-gate[i]));
@@ -1008,6 +1024,17 @@ int ns_ink2_kv_store(ns_gpu* g, const float* k, const float* v, int64_t T, int64
     if (T <= 0) return 0;
     NS_CU(cudaSetDevice(g->dev));
     kv_store_k<<<blocks(T * Hkv * D), 256, 0, g->q>>>(k, v, T * Hkv * D, Hkv, D, cap, p0, (__half*) kc, (__half*) vc);
+    NS_LAUNCH_CHECK();
+    return 0;
+    NS_CATCH
+}
+
+int ns_ink2_kv_store_q8(ns_gpu* g, const float* k, const float* v, int64_t T, int64_t Hkv, int64_t D, int64_t cap, int64_t p0, void* kc, void* vc) {
+    NS_TRY
+    if (D != 128) return ns_fail("ns_ink2_kv_store_q8: heads of 128");
+    if (T <= 0) return 0;
+    NS_CU(cudaSetDevice(g->dev));
+    kv_store_q8_k<<<(unsigned) (T * Hkv), 128, 0, g->q>>>(k, v, Hkv, cap, p0, (uint8_t*) kc, (uint8_t*) vc);
     NS_LAUNCH_CHECK();
     return 0;
     NS_CATCH

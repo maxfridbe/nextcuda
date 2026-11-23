@@ -253,8 +253,18 @@ __global__ void post_qkv_k(Ink2sQkv p) {
             }
             (isv ? p.vout : p.kout)[t * KD + c] = y;
             const int64_t slot = (p.p0 + t) % p.cap;
-            __half* cache = (__half*) (isv ? p.vc : p.kc);
-            cache[(hh * p.cap + slot) * 128 + tid] = __float2half_rn(y);
+            if (p.kvq) {
+                // a q8 row (ns_ink2_kv_store_q8's): a warp a block of 32
+                uint8_t* row = (uint8_t*) (isv ? p.vc : p.kc) + (hh * p.cap + slot) * 136;
+                const float amax = warp_max(fabsf(y));
+                const float dd = amax / 127.0f;
+                const float id = dd != 0.0f ? 1.0f / dd : 0.0f;
+                row[tid] = (uint8_t) (int8_t) roundf(y * id);
+                if (tid % WS == 0) ((__half*) (row + 128))[tid / WS] = __float2half_rn(dd);
+            } else {
+                __half* cache = (__half*) (isv ? p.vc : p.kc);
+                cache[(hh * p.cap + slot) * 128 + tid] = __float2half_rn(y);
+            }
         }
         return;
     }

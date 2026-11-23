@@ -1,0 +1,28 @@
+# Inkling-2-Mini UD-Q4_K_XL on the RTX 5070 alone, the longest context: the files of inkling-2-mini-q4kxl
+# model card (model-cards/README.md): NS_INK2_PLACE=one with `--ctx max` - every expert outside the loop streamed from
+# host memory, the pools at their fewest slots, the rest of the card for a q8 attention cache (NS_INK2_KV=q8); the
+# context measured at load from what the card reports (a load that cannot hold a session is refused: 409).
+id: inkling-2-mini-q4kxl-5070-long
+kind: llm
+arch: inkling2_loop
+license: apache-2.0
+commercial: true
+license_note: 'Thinking Machines'' Inkling 2 Mini (Apache-2.0); Unsloth''s GGUF (Mainline_Support layout, the same tensors as its root files) under the same terms.'
+title: Inkling-2-Mini UD-Q4_K_XL, long (the 5070 alone, experts streamed, the most context it holds, q8 cache)
+about: 'The files of inkling-2-mini-q4kxl on the RTX 5070 alone with the longest context it holds, found at load: the experts outside the loop in host memory (copied in as tokens ask for them), the attention cache as q8, no drafter. The 3060 stays free.'
+gpus: '0'
+vram_gib: 11.3
+ctx: max
+tools: true
+tasks: true
+env:
+  NS_PARALLEL: '1'
+  NS_INK2_PLACE: one
+  NS_INK2_DRAFTS: '0'
+  NS_INK2_KV: q8
+silo:
+  name: inkling2
+  required: true
+files:
+  model: ink2-mini-q4kxl
+guide: guides/inkling2.md

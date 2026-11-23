@@ -80,6 +80,8 @@ pub struct Geometry {
     pub vocab_pad: usize,
     pub vocab: usize,
     pub ctx: usize,
+    /// the attention rings in q8 (NS_INK2_KV=q8: 136 bytes a head's row, 128 int8 and 4 half scales) instead of half
+    pub kv_q8: bool,
 }
 
 /// The most rows the decode path takes in a pass (a verify pass); prompt rows beyond
@@ -135,6 +137,7 @@ impl Geometry {
             vocab_pad: u("vocab_size")?,
             vocab: u("vocab_size_unpadded")?,
             ctx: u("context_length").unwrap_or(1 << 20),
+            kv_q8: false,
         };
         if g.head != 128 || g.heads != 3 * g.heads_kv || g.rel_len > 16 || g.conv != 4 {
             return Err(format!("heads of {} ({} / {}), a bias of {}, {} taps: this engine takes heads of 128, 3 query heads a key head, a bias of at most 16 \
@@ -189,6 +192,11 @@ impl Geometry {
     /// The window a slot's rows see (0: all)
     pub fn win(&self, slot: usize) -> usize {
         if self.swa[self.phys(slot)] { self.window } else { 0 }
+    }
+
+    /// A head's row of the attention rings, bytes
+    pub fn kv_row(&self) -> usize {
+        if self.kv_q8 { self.head + 8 } else { self.head * 2 }
     }
 
     /// A slot's convolution state's channel groups: k, v, the attention's output, the FFN's
@@ -457,6 +465,8 @@ pub struct Inkling2<'g> {
     drafts: usize,
     /// the pools of streamed experts' slots (one card for a model larger than it), a matrix shape each
     pools: Mutex<Vec<stream::Pool>>,
+    /// the largest session this load leaves room for (`--ctx max`), or the context it was planned for
+    ctx_fit: usize,
 }
 
 /// NS_INK2_PLACE=one: the whole model on the last GPU given, streaming experts from host memory when it does not fit
@@ -492,7 +502,7 @@ fn arena_bytes(g: &Geometry, chunk: usize) -> usize {
 /// The bytes of a session's caches for `max_ctx` and passes of `chunk` rows: the slots `on` takes (by physical layer)
 fn session_bytes(g: &Geometry, max_ctx: usize, chunk: usize, on: &dyn Fn(usize) -> bool) -> usize {
     let conv: usize = g.conv_groups().iter().sum::<usize>() * 4;
-    (0..g.slots()).filter(|s| on(g.phys(*s))).map(|s| 2 * g.heads_kv * g.cap(s, max_ctx, chunk) * g.head * 2 + conv * (3 + 3 + MAXV)).sum()
+    (0..g.slots()).filter(|s| on(g.phys(*s))).map(|s| 2 * g.heads_kv * g.cap(s, max_ctx, chunk) * g.kv_row() + conv * (3 + 3 + MAXV)).sum()
 }
 
 fn gib(b: u64) -> f64 {
@@ -513,7 +523,8 @@ impl<'g> Inkling2<'g> {
         if gpus.is_empty() {
             return Err(e("no GPU"));
         }
-        let g = Geometry::read(f).map_err(e)?;
+        let mut g = Geometry::read(f).map_err(e)?;
+        g.kv_q8 = std::env::var("NS_INK2_KV").is_ok_and(|v| v == "q8");
         let k = ffi::api()?;
         let embd = f.tensor("token_embd.weight").ok_or_else(|| e("no token_embd.weight"))?.clone();
         let tied = f.tensor("output.weight").is_none();
@@ -532,11 +543,14 @@ impl<'g> Inkling2<'g> {
                 _ => head_w += t.bytes,
             }
         }
-        let ctx = if kv.0 > 0 { kv.0 } else { 32768 };
+        // kv.0 usize::MAX: the largest context that fits (`llm serve --ctx max`), found below; else the context asked for
+        let want_max = kv.0 == usize::MAX;
+        let ctx_c = std::cell::Cell::new(if want_max { 1 << 14 } else if kv.0 > 0 { kv.0 } else { 32768 });
         // what the driver and cuBLAS take beside the plan (its workspace, the module's code)
         let margin: u64 = 384 << 20;
         let w16_bytes = [g.heads * g.head * g.n_embd, 2 * g.n_ff * g.n_embd].into_iter().max().unwrap_or(0) * 2;
-        let tries: Vec<usize> = chunk_setting().map_or_else(|| vec![2048, 1024, 512], |c| vec![c]);
+        // (the largest context: prompt chunks of 1,024 - the half GiB 2,048 would take is ~20K tokens of cache)
+        let tries: Vec<usize> = chunk_setting().map_or_else(|| if want_max { vec![1024, 512] } else { vec![2048, 1024, 512] }, |c| vec![c]);
         let silo_any = ffi::silo_on(gpus[gpus.len() - 1].index)?;
         // the drafter (its file beside the model), when asked for, there and the silo loaded
         let dfile = match (draft && dspark::draft_count() != Some(0), silo_any, dspark::draft_path(f)) {
@@ -559,6 +573,7 @@ impl<'g> Inkling2<'g> {
         // what the layers [a, b) need on a GPU for prompt chunks of c rows (their weights and slots, the work memory;
         // `head`: the head, the embedding and the drafter there too)
         let need = |c: usize, on: &dyn Fn(usize) -> bool, head: bool| -> u64 {
+            let ctx = ctx_c.get();
             let weights: u64 = (0..g.layers).filter(|l| on(*l)).map(|l| lw[l]).sum::<u64>() + if head { head_w } else { 0 };
             let extra = kv.1.max(1).saturating_sub(1) as u64 * session_bytes(&g, (g.window + c).min(ctx), c, on) as u64;
             let ds_c = if head {
@@ -591,80 +606,100 @@ impl<'g> Inkling2<'g> {
         };
         // (GPU of the rest and the head, GPU of [a, b), a, b, chunk)
         let last = gpus.len() - 1;
-        let mut plan: Option<(usize, usize, usize, usize, usize)> = None;
-        // one card: the layers whose experts stay in host memory, and the bytes left for the pools
-        let mut streamed: Vec<usize> = Vec::new();
-        let mut pool_bytes = 0u64;
-        let mut short: Option<(usize, u64, String)> = None;
-        let all = |_: usize| true;
         let total_w: u64 = lw.iter().sum::<u64>() + head_w;
-        for &c in &tries {
-            let one = need(c, &all, true);
-            if one <= free[last] && forced.is_none() {
-                plan = Some((last, last, 0, g.layers, c));
-                break;
-            }
-            if one_card {
-                // the layers outside the loop, the largest expert stacks first, streamed until the rest fits beside the
-                // fewest slots a pool may have (the silo packs and reads them: none without it)
-                let mut cand: Vec<usize> = (0..g.layers).filter(|l| !g.looped(*l)).collect();
-                cand.sort_by_key(|l| (std::cmp::Reverse(ew[*l]), std::cmp::Reverse(*l)));
-                let mut st: Vec<usize> = Vec::new();
-                let fits = loop {
-                    let n = one - st.iter().map(|l| ew[*l]).sum::<u64>() + min_pools(&st);
-                    // (with the half GiB the pools leave over)
-                    if n + (512 << 20) <= free[last] {
-                        break Some(n);
-                    }
-                    match cand.get(st.len()) {
-                        Some(&l) => st.push(l),
-                        None => break None,
-                    }
-                };
-                if let (Some(n), true) = (fits, silo_any.is_some()) {
-                    // (0.75 GiB left over: the session's check keeps a quarter spare, cuBLAS its workspace, the driver's own)
-                    pool_bytes = (free[last] - n + min_pools(&st)).saturating_sub(768 << 20).max(min_pools(&st));
-                    streamed = st;
+        type Plan = (Option<(usize, usize, usize, usize, usize)>, Vec<usize>, u64, Option<(usize, u64, String)>);
+        let run_plan = || -> Plan {
+            let ctx = ctx_c.get();
+            let mut plan: Option<(usize, usize, usize, usize, usize)> = None;
+            // one card: the layers whose experts stay in host memory, and the bytes left for the pools
+            let mut streamed: Vec<usize> = Vec::new();
+            let mut pool_bytes = 0u64;
+            let mut short: Option<(usize, u64, String)> = None;
+            let all = |_: usize| true;
+            for &c in &tries {
+                let one = need(c, &all, true);
+                if one <= free[last] && forced.is_none() {
                     plan = Some((last, last, 0, g.layers, c));
                     break;
                 }
-                if short.is_none() {
-                    short = Some((last, one - free[last], format!("{:.1} GiB of weights, work memory and a {ctx}-token session need {:.1} GiB on {}; {:.1} GiB are free{}",
-                                                                  gib(total_w), gib(one), gpus[last].name, gib(free[last]),
-                                                                  if silo_any.is_none() { " (streaming experts needs the silo)" } else { ", streaming every expert outside the loop" })));
-                }
-            } else if gpus.len() > 1 {
-                let fits = |a: usize, b: usize| need(c, &|l: usize| l >= a && l < b, false) <= free[last];
-                let (mut a, mut b) = forced.unwrap_or(g.core);
-                if forced.is_none() && fits(a, b) {
-                    loop {
-                        if b < g.layers && fits(a, b + 1) {
-                            b += 1;
-                        } else if a > 1 && fits(a - 1, b) {
-                            a -= 1;
-                        } else {
-                            break;
+                if one_card {
+                    // the layers outside the loop, the largest expert stacks first, streamed until the rest fits beside the
+                    // fewest slots a pool may have (the silo packs and reads them: none without it)
+                    let mut cand: Vec<usize> = (0..g.layers).filter(|l| !g.looped(*l)).collect();
+                    cand.sort_by_key(|l| (std::cmp::Reverse(ew[*l]), std::cmp::Reverse(*l)));
+                    let mut st: Vec<usize> = Vec::new();
+                    let fits = loop {
+                        let n = one - st.iter().map(|l| ew[*l]).sum::<u64>() + min_pools(&st);
+                        // (with the half GiB the pools leave over)
+                        if n + (512 << 20) <= free[last] {
+                            break Some(n);
+                        }
+                        match cand.get(st.len()) {
+                            Some(&l) => st.push(l),
+                            None => break None,
+                        }
+                    };
+                    if let (Some(n), true) = (fits, silo_any.is_some()) {
+                        // (0.75 GiB left over: the session's check keeps a quarter spare, cuBLAS its workspace, the driver's own)
+                        pool_bytes = (free[last] - n + min_pools(&st)).saturating_sub(768 << 20).max(min_pools(&st));
+                        streamed = st;
+                        plan = Some((last, last, 0, g.layers, c));
+                        break;
+                    }
+                    if short.is_none() {
+                        short = Some((last, one - free[last], format!("{:.1} GiB of weights, work memory and a {ctx}-token session need {:.1} GiB on {}; {:.1} GiB are free{}",
+                                                                      gib(total_w), gib(one), gpus[last].name, gib(free[last]),
+                                                                      if silo_any.is_none() { " (streaming experts needs the silo)" } else { ", streaming every expert outside the loop" })));
+                    }
+                } else if gpus.len() > 1 {
+                    let fits = |a: usize, b: usize| need(c, &|l: usize| l >= a && l < b, false) <= free[last];
+                    let (mut a, mut b) = forced.unwrap_or(g.core);
+                    if forced.is_none() && fits(a, b) {
+                        loop {
+                            if b < g.layers && fits(a, b + 1) {
+                                b += 1;
+                            } else if a > 1 && fits(a - 1, b) {
+                                a -= 1;
+                            } else {
+                                break;
+                            }
                         }
                     }
+                    let (nr, nc) = (need(c, &|l: usize| l < a || l >= b, true), need(c, &|l: usize| l >= a && l < b, false));
+                    if nr <= free[last - 1] && nc <= free[last] {
+                        plan = Some((last - 1, last, a, b, c));
+                        break;
+                    }
+                    if short.is_none() {
+                        short = Some(if nr > free[last - 1] {
+                            (last - 1, nr - free[last - 1], format!("layers 0-{} and {b}-{} with the head need {:.1} GiB on {}; {:.1} GiB are free", a - 1, g.layers - 1, gib(nr),
+                                                                   gpus[last - 1].name, gib(free[last - 1])))
+                        } else {
+                            (last, nc - free[last], format!("layers {a}-{} need {:.1} GiB on {}; {:.1} GiB are free", b - 1, gib(nc), gpus[last].name, gib(free[last])))
+                        });
+                    }
+                } else if short.is_none() {
+                    short = Some((last, one - free[last], format!("{:.1} GiB of weights, work memory and a {ctx}-token session need {:.1} GiB on {}; {:.1} GiB are free",
+                                                                  gib(total_w), gib(one), gpus[last].name, gib(free[last]))));
                 }
-                let (nr, nc) = (need(c, &|l: usize| l < a || l >= b, true), need(c, &|l: usize| l >= a && l < b, false));
-                if nr <= free[last - 1] && nc <= free[last] {
-                    plan = Some((last - 1, last, a, b, c));
-                    break;
-                }
-                if short.is_none() {
-                    short = Some(if nr > free[last - 1] {
-                        (last - 1, nr - free[last - 1], format!("layers 0-{} and {b}-{} with the head need {:.1} GiB on {}; {:.1} GiB are free", a - 1, g.layers - 1, gib(nr),
-                                                               gpus[last - 1].name, gib(free[last - 1])))
-                    } else {
-                        (last, nc - free[last], format!("layers {a}-{} need {:.1} GiB on {}; {:.1} GiB are free", b - 1, gib(nc), gpus[last].name, gib(free[last])))
-                    });
-                }
-            } else if short.is_none() {
-                short = Some((last, one - free[last], format!("{:.1} GiB of weights, work memory and a {ctx}-token session need {:.1} GiB on {}; {:.1} GiB are free",
-                                                              gib(total_w), gib(one), gpus[last].name, gib(free[last]))));
             }
+            (plan, streamed, pool_bytes, short)
+        };
+        // the largest context: the plan for the most tokens that fits (a binary search over 1K steps up to the model's)
+        if want_max {
+            let (mut lo, mut hi) = (1usize, g.ctx.min(1 << 20) / 1024);
+            ctx_c.set(1024);
+            if run_plan().0.is_some() {
+                while lo < hi {
+                    let mid = (lo + hi).div_ceil(2);
+                    ctx_c.set(mid * 1024);
+                    if run_plan().0.is_some() { lo = mid } else { hi = mid - 1 }
+                }
+            }
+            ctx_c.set(lo * 1024);
         }
+        let ctx = ctx_c.get();
+        let (plan, streamed, pool_bytes, short) = run_plan();
         let Some((rest_i, core_i, sa, sb, chunk)) = plan else {
             let (i, by, msg) = short.unwrap_or((last, 0, "no room".into()));
             return Err(Error(nextcuda_core::no_room_message(gpus[i].index, (by >> 20) + 1, &format!("inkling2: {msg}"))));
@@ -879,12 +914,35 @@ impl<'g> Inkling2<'g> {
         let on: Vec<&str> = devs.iter().map(|d| d.gpu.name.as_str()).collect();
         log(format!("inkling2: {} layers ({} applications a token: [{}, {}) x {}), {:.1} GiB on {} in {load_s:.0} s; prompt chunks of {chunk}", g.layers,
                     g.order().len(), g.core.0, g.core.1, g.passes, gib(loaded.get()), on.join(" + ")));
-        Ok(Inkling2 { g, file: f, devs, hd, k, layers, loops, tok_norm, output_norm, output_res, output, embd, chunk, work: Mutex::new(()),
+        let mut eng = Inkling2 { g, file: f, devs, hd, k, layers, loops, tok_norm, output_norm, output_res, output, embd, chunk, work: Mutex::new(()),
                       prof: std::env::var("NS_INK2_PROFILE").is_ok_and(|v| v == "1" || v == "gpu").then(|| Mutex::new(Default::default())), load_s, load_bytes: loaded.get(),
                       gpu_stamps: std::env::var("NS_INK2_PROFILE").is_ok_and(|v| v == "gpu"), stamps: Mutex::new(Vec::new()),
                       fused_on: std::env::var("NS_INK2_FUSED").map_or(true, |v| v != "0"),
                       union: std::env::var("NS_INK2_UNION").is_ok_and(|v| v == "1").then(|| Mutex::new(Default::default())), ds, drafts,
-                      pools: Mutex::new(pools) })
+                      pools: Mutex::new(pools), ctx_fit: ctx };
+        if want_max {
+            // what the cards hold now, not the plan's estimate: the most tokens (in steps of 1K) a session's check passes
+            let fits = |n: usize| -> Result<bool> {
+                for (di, d) in eng.devs.iter().enumerate() {
+                    if eng.session_need(di, n) as u64 + (256 << 20) > d.gpu.free_or_guess()? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            };
+            let (mut lo, mut hi) = (0usize, eng.g.ctx.min(1 << 20) / 1024);
+            while lo < hi {
+                let mid = (lo + hi).div_ceil(2);
+                if fits(mid * 1024)? { lo = mid } else { hi = mid - 1 }
+            }
+            if lo == 0 {
+                let d = &eng.devs[eng.hd];
+                return Err(Error(nextcuda_core::no_room_message(d.gpu.index, 1024, "inkling2: no room for a session of 1K tokens beside the weights")));
+            }
+            eng.ctx_fit = lo * 1024;
+            log(format!("inkling2: the largest context these cards hold: {} tokens (planned {ctx})", eng.ctx_fit));
+        }
+        Ok(eng)
     }
 
     /// The GPU of physical layer `l`
@@ -974,6 +1032,10 @@ impl<'g> Inkling2<'g> {
     }
     pub fn prefill_chunk(&self) -> usize {
         self.chunk
+    }
+    /// The largest session this load leaves room for (`--ctx max`), or the context it was planned for
+    pub fn ctx_fit(&self) -> usize {
+        self.ctx_fit
     }
     pub fn has_draft(&self) -> bool {
         self.drafts > 0
@@ -1533,12 +1595,14 @@ impl<'g> Inkling2<'g> {
         let extent = if ly.swa { g.window } else { g.rel_extent } as i64;
         // SAFETY: the rows and caches as ink.h names them.
         unsafe {
-            self.op(d, "kv store", || (k.kv_store)(d.raw(), kc.fp(), vc.fp(), t as i64, hk as i64, hd as i64, ss.cap as i64, p0 as i64, ss.kc.ptr(), ss.vc.ptr()))?;
+            let store = if g.kv_q8 { k.kv_store_q8 } else { k.kv_store };
+            self.op(d, "kv store", || (store)(d.raw(), kc.fp(), vc.fp(), t as i64, hk as i64, hd as i64, ss.cap as i64, p0 as i64, ss.kc.ptr(), ss.vc.ptr()))?;
             match d.silo.filter(|s| t > MAXV && prompt_silo("NS_INK2_PATTN") && (s.attn_prompt_supported)(hq as i64, hk as i64, hd as i64, g.rel_len as i64) != 0) {
                 // a prompt pass's rows: the silo's flash attention
                 Some(s) => self.op(d, "attention silo", || (s.attn_prompt)(d.raw(), q.fp(), ss.kc.ptr(), ss.vc.ptr(), r.fp(), ly.rel_bias.fp(), extent,
                                                                           g.rel_len as i64, sink.fp(), att.fp(), t as i64, hq as i64, hk as i64, ss.cap as i64,
-                                                                          p0 as i64, win))?,
+                                                                          p0 as i64, win, g.kv_q8 as i64))?,
+                None if g.kv_q8 => return Err(e("a q8 attention cache is read by the silo's attention only (NS_INK2_KV=q8 with the silo and its fused decode steps)")),
                 None => {
                     let sc = (k.attn_scratch)(t as i64, hq as i64, hd as i64, p0 as i64, win) as usize;
                     let part = if sc > 0 { Some(self.f32(d, sc)?) } else { None };
@@ -1750,6 +1814,7 @@ impl<'g> Inkling2<'g> {
             sinkw: if inline { ly.sink.buf.ptr().cast() } else { std::ptr::null() }, sink: sink.fp(),
             kdw: if inline { ly.k_dyn.as_ref().map_or(std::ptr::null(), |m| m.buf.ptr().cast()) } else { std::ptr::null() },
             vdw: if inline { ly.v_dyn.as_ref().map_or(std::ptr::null(), |m| m.buf.ptr().cast()) } else { std::ptr::null() },
+            kvq: g.kv_q8 as i64,
         };
         // SAFETY: every buffer as Ink2sQkv describes it.
         self.op(d, "post qkv silo", || unsafe { (f.post_qkv)(d.raw(), &p) })?;
@@ -1769,7 +1834,7 @@ impl<'g> Inkling2<'g> {
         // SAFETY: the rows and caches as silo.h names them.
         unsafe {
             self.op(d, "attention silo", || (f.attn_part)(d.raw(), q.fp(), ss.kc.ptr(), ss.vc.ptr(), r.fp(), ly.rel_bias.fp(), extent, g.rel_len as i64, part.fp(),
-                                                          t as i64, hq as i64, hk as i64, ss.cap as i64, p0 as i64, win, 1.0 / (hd as f32).sqrt()))?;
+                                                          t as i64, hq as i64, hk as i64, ss.cap as i64, p0 as i64, win, 1.0 / (hd as f32).sqrt(), g.kv_q8 as i64))?;
             self.op(d, "merge silo", || (f.merge_gate_xq)(d.raw(), part.fp(), sink.fp(), gate.fp(), att.fp(), aq.ptr(), t as i64, hq as i64, ns as i64))?;
         }
         let o = self.mmq(d, &ly.o, &att, Some(&aq), t)?;
@@ -2053,7 +2118,7 @@ impl<'g> Inkling2<'g> {
         for sl in 0..g.slots() {
             let gpu = &self.dev_of(g.phys(sl)).gpu;
             let cap = g.cap(sl, max_ctx, self.chunk);
-            let n = g.heads_kv * cap * g.head * 2;
+            let n = g.heads_kv * cap * g.kv_row();
             let st = DevBuf::new(gpu, 3 * conv * 4)?;
             st.fill(0)?;
             slots.push(SlotState { kc: DevBuf::new(gpu, n)?, vc: DevBuf::new(gpu, n)?, cap, conv: st, snap: DevBuf::new(gpu, (3 + MAXV) * conv * 4)? });
@@ -2076,8 +2141,7 @@ impl<'g> Inkling2<'g> {
 
     /// Positions [from, to) of one ring (`heads` of cap slots) into another (dcap slots), in runs that wrap neither
     #[allow(clippy::too_many_arguments)]
-    fn copy_ring(&self, dst: &DevBuf, dcap: usize, src: &DevBuf, scap: usize, heads: usize, from: usize, to: usize) -> Result<()> {
-        let row = self.g.head * 2;
+    fn copy_ring(&self, dst: &DevBuf, dcap: usize, src: &DevBuf, scap: usize, heads: usize, from: usize, to: usize, row: usize) -> Result<()> {
         for h in 0..heads {
             let mut p = from;
             while p < to {
@@ -2101,8 +2165,8 @@ impl<'g> Inkling2<'g> {
         }
         for (sl, (d, sc)) in dst.slots.iter().zip(&src.slots).enumerate() {
             let from = Self::kept(self.g.win(sl), src.pos);
-            self.copy_ring(&d.kc, d.cap, &sc.kc, sc.cap, self.g.heads_kv, from, src.pos)?;
-            self.copy_ring(&d.vc, d.cap, &sc.vc, sc.cap, self.g.heads_kv, from, src.pos)?;
+            self.copy_ring(&d.kc, d.cap, &sc.kc, sc.cap, self.g.heads_kv, from, src.pos, self.g.kv_row())?;
+            self.copy_ring(&d.vc, d.cap, &sc.vc, sc.cap, self.g.heads_kv, from, src.pos, self.g.kv_row())?;
             d.conv.copy_within(0, &sc.conv, 0, d.conv.len)?;
         }
         if let (Some(dd), Some(sd)) = (dst.ds.as_mut(), src.ds.as_ref()) {
@@ -2242,7 +2306,7 @@ impl<'g> Inkling2<'g> {
 
     pub fn save(&self, s: &Session) -> Result<Checkpoint> {
         let g = &self.g;
-        let row = g.head * 2;
+        let row = g.kv_row();
         let mut bufs = Vec::new();
         for (sl, st) in s.slots.iter().enumerate() {
             let from = Self::kept(g.win(sl), s.pos);
@@ -2274,7 +2338,7 @@ impl<'g> Inkling2<'g> {
 
     pub fn restore(&self, s: &mut Session, ck: &Checkpoint) -> Result<()> {
         let g = &self.g;
-        let row = g.head * 2;
+        let row = g.kv_row();
         if ck.pos > s.max_ctx {
             return Err(e(format!("a checkpoint of {} tokens into a session of {}", ck.pos, s.max_ctx)));
         }

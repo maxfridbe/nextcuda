@@ -39,6 +39,7 @@ pub struct Api {
     pub clip: unsafe extern "C" fn(G, *mut f32, *const f32, i64, i64, i64, f32, f32, f32, i64) -> c_int,
     pub rms_rows: unsafe extern "C" fn(G, *const f32, *mut f32, i64, i64, f32) -> c_int,
     pub kv_store: unsafe extern "C" fn(G, *const f32, *const f32, i64, i64, i64, i64, i64, M, M) -> c_int,
+    pub kv_store_q8: unsafe extern "C" fn(G, *const f32, *const f32, i64, i64, i64, i64, i64, M, M) -> c_int,
     pub attn_scratch: unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64,
     /// (q, kc, vc, r, relb, E, R, sink, out, T, Hq, Hkv, D, cap, p0, win, scale, part)
     pub attn: unsafe extern "C" fn(G, *const f32, P, P, *const f32, *const f32, i64, i64, *const f32, *mut f32, i64, i64, i64, i64, i64, i64, i64, f32,
@@ -95,6 +96,7 @@ pub fn api() -> nextcuda_core::Result<&'static Api> {
             clip: sym!("ns_ink2_clip"),
             rms_rows: sym!("ns_ink2_rms_rows"),
             kv_store: sym!("ns_ink2_kv_store"),
+            kv_store_q8: sym!("ns_ink2_kv_store_q8"),
             attn_scratch: sym!("ns_ink2_attn_scratch"),
             attn: sym!("ns_ink2_attn"),
             gate: sym!("ns_ink2_gate"),
@@ -148,7 +150,7 @@ pub struct Silo {
     pub moe_prompt: unsafe extern "C" fn(G, c_int, P, i64, i64, i64, *const u16, *mut f32, *const i32, i64) -> c_int,
     pub attn_prompt_supported: unsafe extern "C" fn(i64, i64, i64, i64) -> c_int,
     /// (q, kc, vc, r, relb, E, R, sink, out, T, Hq, Hkv, cap, p0, win)
-    pub attn_prompt: unsafe extern "C" fn(G, *const f32, P, P, *const f32, *const f32, i64, i64, *const f32, *mut f32, i64, i64, i64, i64, i64, i64) -> c_int,
+    pub attn_prompt: unsafe extern "C" fn(G, *const f32, P, P, *const f32, *const f32, i64, i64, *const f32, *mut f32, i64, i64, i64, i64, i64, i64, i64) -> c_int,
 }
 
 /// silo.h's Ink2sQkv: the attention's inputs after their projections (ns_ink2s_post_qkv)
@@ -194,6 +196,8 @@ pub struct Qkv {
     pub sink: *mut f32,
     pub kdw: *const u16,
     pub vdw: *const u16,
+    /// the caches' rows: 0 half, 1 q8
+    pub kvq: i64,
 }
 
 /// The silo's fused decode steps (dec.cpp, attn.cpp)
@@ -219,7 +223,7 @@ pub struct Fused {
     pub router: unsafe extern "C" fn(G, *const f32, *const f32, *const f32, *mut f32, *mut i32, *mut f32, i64, i64, i64, i64, f32) -> c_int,
     pub attn_splits: unsafe extern "C" fn(i64, i64, i64) -> i64,
     /// (q, kc, vc, r, relb, E, R, part, T, Hq, Hkv, cap, p0, win, scale)
-    pub attn_part: unsafe extern "C" fn(G, *const f32, P, P, *const f32, *const f32, i64, i64, *mut f32, i64, i64, i64, i64, i64, i64, f32) -> c_int,
+    pub attn_part: unsafe extern "C" fn(G, *const f32, P, P, *const f32, *const f32, i64, i64, *mut f32, i64, i64, i64, i64, i64, i64, f32, i64) -> c_int,
 }
 
 /// The silo's DSpark drafter steps (draft.cpp; attn.cpp's block attention)

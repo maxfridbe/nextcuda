@@ -25,7 +25,7 @@ __device__ __forceinline__ void mma16816(float* c, uint32_t a0, uint32_t a1, uin
 
 __global__ void __launch_bounds__(NW * WS) pattn_k(const float* q, const __half* kc, const __half* vc, const float* r, const float* relb, int64_t E, int64_t R,
                                                    const float* sink, float* out, int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win,
-                                                   float scale) {
+                                                   float scale, int kvq) {
     __shared__ __align__(16) __half Ks[KT * KP];
     __shared__ __align__(16) __half Vt[D * VP];
     __shared__ float rs[NW][16][R_MAX];
@@ -75,8 +75,24 @@ __global__ void __launch_bounds__(NW * WS) pattn_k(const float* q, const __half*
             uint4 kv = make_uint4(0, 0, 0, 0), vv = make_uint4(0, 0, 0, 0);
             if (j < hi) {
                 const int64_t slot = j % cap;
-                kv = *(const uint4*) (kc + (hk * cap + slot) * D + c8);
-                vv = *(const uint4*) (vc + (hk * cap + slot) * D + c8);
+                if (kvq) {
+                    // a q8 row: 128 int8, then 4 half scales: these 8 values of block c8 / 32
+                    const uint8_t* kr = (const uint8_t*) kc + (hk * cap + slot) * 136;
+                    const uint8_t* vr = (const uint8_t*) vc + (hk * cap + slot) * 136;
+                    const float dk = __half2float(((const __half*) (kr + 128))[c8 / 32]), dv = __half2float(((const __half*) (vr + 128))[c8 / 32]);
+                    const int8_t* kq = (const int8_t*) kr + c8;
+                    const int8_t* vq = (const int8_t*) vr + c8;
+                    __half2* ko = (__half2*) &kv;
+                    __half2* vo = (__half2*) &vv;
+#pragma unroll
+                    for (int k2 = 0; k2 < 4; ++k2) {
+                        ko[k2] = __floats2half2_rn(kq[2 * k2] * dk, kq[2 * k2 + 1] * dk);
+                        vo[k2] = __floats2half2_rn(vq[2 * k2] * dv, vq[2 * k2 + 1] * dv);
+                    }
+                } else {
+                    kv = *(const uint4*) (kc + (hk * cap + slot) * D + c8);
+                    vv = *(const uint4*) (vc + (hk * cap + slot) * D + c8);
+                }
             }
             *(uint4*) (Ks + jj * KP + c8) = kv;
             const __half* vh = (const __half*) &vv;
@@ -180,13 +196,13 @@ int ns_ink2s_attn_prompt_supported(int64_t Hq, int64_t Hkv, int64_t D_, int64_t 
 }
 
 int ns_ink2s_attn_prompt(ns_gpu* g, const float* q, const void* kc, const void* vc, const float* r, const float* relb, int64_t E, int64_t R, const float* sink,
-                         float* out, int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win) {
+                         float* out, int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win, int64_t kvq) {
     NS_TRY
     if (!ns_ink2s_attn_prompt_supported(Hq, Hkv, D, R)) return ns_fail("ns_ink2s_attn_prompt: 3 query heads a key head of 128, a bias of at most 16");
     if (T <= 0) return 0;
     NS_CU(cudaSetDevice(g->dev));
     const dim3 grid((unsigned) ((T + 16 * RG - 1) / (16 * RG)), (unsigned) Hkv);
-    pattn_k<<<grid, NW * WS, 0, g->q>>>(q, (const __half*) kc, (const __half*) vc, r, relb, E, R, sink, out, T, Hq, Hkv, cap, p0, win, 1.0f / sqrtf((float) D));
+    pattn_k<<<grid, NW * WS, 0, g->q>>>(q, (const __half*) kc, (const __half*) vc, r, relb, E, R, sink, out, T, Hq, Hkv, cap, p0, win, 1.0f / sqrtf((float) D), (int) kvq);
     NS_LAUNCH_CHECK();
     return 0;
     NS_CATCH

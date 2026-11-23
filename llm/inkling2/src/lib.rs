@@ -22,6 +22,7 @@ pub const ARCH: &str = "inkling2_loop";
 pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "chunk", env: "NS_INK2_CHUNK", value: "TOKENS", help: "a prompt pass's rows (default 2048 when it fits beside the weights and a session, else 1024 or 512)", at: At::Load },
     EngineOption { name: "place", env: "NS_INK2_PLACE", value: "split|one", help: "split: over two GPUs when one does not hold it (default); one: the last GPU alone, the experts of layers outside the loop streamed from host memory when it does not fit", at: At::Load },
+    EngineOption { name: "kv", env: "NS_INK2_KV", value: "f16|q8", help: "the attention rings in half (default) or q8 (a block of 32 an int8 row and a half scale: 0.53 the bytes, ~1.9x the context)", at: At::Load },
     EngineOption { name: "draft", env: "NS_INK2_DRAFT", value: "FILE", help: "the DSpark drafter's GGUF (default: the smallest dspark-*.gguf beside the model)", at: At::Load },
     EngineOption { name: "drafts", env: "NS_INK2_DRAFTS", value: "N", help: "tokens drafted a step (default 5; at most 7; 0: none)", at: At::Load },
     EngineOption { name: "draft-pmin", env: "NS_INK2_DRAFT_PMIN", value: "P", help: "drop a draft (and those after it) the drafter gives less than this probability (default 0.8)", at: At::Load },
@@ -114,8 +115,11 @@ impl Engine for engine::Inkling2<'_> {
     fn max_verify(&self) -> usize {
         engine::Inkling2::max_verify(self)
     }
+    fn max_ctx(&self) -> Option<usize> {
+        Some(engine::Inkling2::ctx_fit(self))
+    }
     fn cache_fingerprint(&self) -> String {
-        format!("inkling2 f16-kv conv-state nsink-1 chunk={}{}", self.prefill_chunk(), if self.has_draft() { " dspark" } else { "" })
+        format!("inkling2 {}-kv conv-state nsink-1 chunk={}{}", if self.g.kv_q8 { "q8" } else { "f16" }, self.prefill_chunk(), if self.has_draft() { " dspark" } else { "" })
     }
     fn session(&self, max_ctx: usize) -> Result<Session> {
         Ok(Session::new(engine::Inkling2::session(self, max_ctx)?))

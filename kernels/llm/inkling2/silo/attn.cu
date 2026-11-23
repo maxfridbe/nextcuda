@@ -21,7 +21,8 @@ void range(int64_t T, int64_t p0, int64_t win, int64_t& s0, int64_t& ns) {
 }
 
 __global__ void attn_part_k(const float* qp, const __half* kc, const __half* vc, const float* r, const float* relb, int64_t E, int64_t R, float* part,
-                            int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win, float scale, int64_t s0, int64_t ns, bool block) {
+                            int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win, float scale, int64_t s0, int64_t ns, bool block,
+                            int kvq) {
     __shared__ __align__(16) __half ks[KB * D];
     __shared__ __align__(16) __half vs[KB * D];
     __shared__ float qs[G][D + 32 + KB];
@@ -47,8 +48,22 @@ __global__ void attn_part_k(const float* qp, const __half* kc, const __half* vc,
         for (int jj = wi; jj < (int) nk; jj += G) {
             int64_t slot = s0k + jj;
             if (slot >= cap) slot -= cap;
-            ((uint2*) (ks + jj * D))[lane] = ((const uint2*) (kc + (hk * cap + slot) * D))[lane];
-            ((uint2*) (vs + jj * D))[lane] = ((const uint2*) (vc + (hk * cap + slot) * D))[lane];
+            if (kvq) {
+                // a q8 row: 128 int8, then 4 half scales (a block of 32): this lane's 4 values of block lane / 8
+                const uint8_t* kr = (const uint8_t*) kc + (hk * cap + slot) * 136;
+                const uint8_t* vr = (const uint8_t*) vc + (hk * cap + slot) * 136;
+                const float dk = __half2float(((const __half*) (kr + 128))[lane / 8]), dv = __half2float(((const __half*) (vr + 128))[lane / 8]);
+                const char4 a = ((const char4*) kr)[lane], b = ((const char4*) vr)[lane];
+                __half2* ko = (__half2*) (ks + jj * D + lane * 4);
+                __half2* vo = (__half2*) (vs + jj * D + lane * 4);
+                ko[0] = __floats2half2_rn(a.x * dk, a.y * dk);
+                ko[1] = __floats2half2_rn(a.z * dk, a.w * dk);
+                vo[0] = __floats2half2_rn(b.x * dv, b.y * dv);
+                vo[1] = __floats2half2_rn(b.z * dv, b.w * dv);
+            } else {
+                ((uint2*) (ks + jj * D))[lane] = ((const uint2*) (kc + (hk * cap + slot) * D))[lane];
+                ((uint2*) (vs + jj * D))[lane] = ((const uint2*) (vc + (hk * cap + slot) * D))[lane];
+            }
         }
     }
     __syncthreads();
@@ -109,13 +124,13 @@ __global__ void attn_part_k(const float* qp, const __half* kc, const __half* vc,
 }
 
 int attn_part(ns_gpu* g, const float* qp, const void* kcv, const void* vcv, const float* r, const float* relb, int64_t E, int64_t R, float* part, int64_t T,
-              int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win, float scale, bool block) {
+              int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win, float scale, bool block, int kvq) {
     if (Hq != G * Hkv || R > WS || T < 1 || T > 16) return ns_fail("ns_ink2s_attn_part: 3 query heads a key head, a bias of at most 32, 1..16 rows");
     NS_CU(cudaSetDevice(g->dev));
     int64_t s0, ns;
     range(T, p0, win, s0, ns);
     attn_part_k<<<(unsigned) (T * Hkv * ns), G * WS, 0, g->q>>>(qp, (const __half*) kcv, (const __half*) vcv, r, relb, E, R, part, T, Hq, Hkv, cap, p0, win, scale, s0,
-                                                            ns, block);
+                                                            ns, block, kvq);
     NS_LAUNCH_CHECK();
     return 0;
 }
@@ -131,16 +146,16 @@ int64_t ns_ink2s_attn_splits(int64_t T, int64_t p0, int64_t win) {
 }
 
 int ns_ink2s_attn_part(ns_gpu* g, const float* qp, const void* kcv, const void* vcv, const float* r, const float* relb, int64_t E, int64_t R, float* part,
-                       int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win, float scale) {
+                       int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win, float scale, int64_t kvq) {
     NS_TRY
-    return attn_part(g, qp, kcv, vcv, r, relb, E, R, part, T, Hq, Hkv, cap, p0, win, scale, false);
+    return attn_part(g, qp, kcv, vcv, r, relb, E, R, part, T, Hq, Hkv, cap, p0, win, scale, false, (int) kvq);
     NS_CATCH
 }
 
 int ns_ink2s_attn_part_block(ns_gpu* g, const float* q, const void* kc, const void* vc, float* part, int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0,
                              int64_t win, float scale) {
     NS_TRY
-    return attn_part(g, q, kc, vc, nullptr, nullptr, 0, 0, part, T, Hq, Hkv, cap, p0, win, scale, true);
+    return attn_part(g, q, kc, vc, nullptr, nullptr, 0, 0, part, T, Hq, Hkv, cap, p0, win, scale, true, 0);
     NS_CATCH
 }
 

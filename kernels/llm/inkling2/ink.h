@@ -76,6 +76,9 @@ int ns_ink2_kv_store(ns_gpu* g, const float* k, const float* v, int64_t T, int64
  * + (d < E ? r[t, h] . relb[d] : 0) (d = the distance; r [T, Hq, R], relb [E, R]), with an extra logit sink[t, h] of no
  * value; out [T, Hq, D]. part: ns_ink2_attn_scratch floats (decode rows: the keys split at absolute positions, merged in
  * order, so a row's result is the same whatever rows share its pass) */
+/* the same into q8 rings: a row [Hkv][cap] of 136 bytes - 128 int8, then 4 half scales (a block of 32 each: d = amax /
+ * 127, q = round(x / d)); heads of 128 */
+int ns_ink2_kv_store_q8(ns_gpu* g, const float* k, const float* v, int64_t T, int64_t Hkv, int64_t D, int64_t cap, int64_t p0, void* kc, void* vc);
 int64_t ns_ink2_attn_scratch(int64_t T, int64_t Hq, int64_t D, int64_t p0, int64_t win);
 int ns_ink2_attn(ns_gpu* g, const float* q, const void* kc, const void* vc, const float* r, const float* relb, int64_t E, int64_t R, const float* sink,
                  float* out, int64_t T, int64_t Hq, int64_t Hkv, int64_t D, int64_t cap, int64_t p0, int64_t win, float scale, float* part);

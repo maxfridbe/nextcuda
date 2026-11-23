@@ -148,6 +148,8 @@ typedef struct Ink2sQkv {
     float* sink;
     const uint16_t* kdw;
     const uint16_t* vdw;
+    /* the caches' rows: 0 half (256 bytes), 1 q8 (136: 128 int8, 4 half scales - ns_ink2_kv_store_q8's) */
+    int64_t kvq;
 } Ink2sQkv;
 int ns_ink2s_post_qkv(ns_gpu* g, const Ink2sQkv* p);
 /* the decode attention's splits (part: the base kernel's layout) merged in order with the sink, times sigmoid(gate),
@@ -172,7 +174,8 @@ int64_t ns_ink2s_attn_splits(int64_t T, int64_t p0, int64_t win);
 int ns_ink2s_attn_part_block(ns_gpu* g, const float* q, const void* kc, const void* vc, float* part, int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0,
                              int64_t win, float scale);
 int ns_ink2s_attn_part(ns_gpu* g, const float* q, const void* kc, const void* vc, const float* r, const float* relb, int64_t E, int64_t R, float* part,
-                       int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win, float scale);
+                       int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win, float scale, int64_t kvq);
+/* (kvq: the caches' rows, as Ink2sQkv's) */
 
 /* ---- a prompt chunk's routed experts (pgemm.cu) ---- */
 /* y [m, N] (rows of x [m, K] half) = x . W_e^T for each tile (tiles [ntiles][3]: expert e, first row, rows - at most 64):
@@ -187,7 +190,7 @@ int ns_ink2s_moe_prompt(ns_gpu* g, int type, const void* w, int64_t rows_total, 
  * no value; out [T, Hq, 128]. Three query heads a key head, r [T, Hq, R] with R at most 16 */
 int ns_ink2s_attn_prompt_supported(int64_t Hq, int64_t Hkv, int64_t D, int64_t R);
 int ns_ink2s_attn_prompt(ns_gpu* g, const float* q, const void* kc, const void* vc, const float* r, const float* relb, int64_t E, int64_t R, const float* sink,
-                         float* out, int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win);
+                         float* out, int64_t T, int64_t Hq, int64_t Hkv, int64_t cap, int64_t p0, int64_t win, int64_t kvq);
 
 #ifdef __cplusplus
 }

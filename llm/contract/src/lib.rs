@@ -215,6 +215,11 @@ pub trait Engine: Send + Sync {
     fn prefill_chunk(&self) -> usize;
     /// rows a verify pass takes at most (as this engine is configured)
     fn max_verify(&self) -> usize;
+    /// The largest session the load left room for, when it was asked for the most (`LoadOptions.kv.0` usize::MAX:
+    /// `llm serve --ctx max`); None: the engine does not plan that way
+    fn max_ctx(&self) -> Option<usize> {
+        None
+    }
     /// what a checkpoint must match to be restored by another process of this engine (beside the model file):
     /// its cache form, its draft model, its format
     fn cache_fingerprint(&self) -> String;

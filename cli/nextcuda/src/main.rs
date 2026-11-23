@@ -96,7 +96,7 @@ language models (nextcuda llm ...; the names without `llm` still work):
   nextcuda llm selftest [--gpu N]    the llm kernel library, an engine's own symbol, a kernel on the GPU
 
   in this process (inside the image: the kernels need the oneAPI runtime):
-  nextcuda llm serve <model.gguf> [--gpu 0,1 | all] [--host H] [--port N] [--name ID] [--ctx N | N,M,...] [--effort E]
+  nextcuda llm serve <model.gguf> [--gpu 0,1 | all] [--host H] [--port N] [--name ID] [--ctx N | N,M,... | max] [--effort E]
                  [--socket PATH] [--expert-gib G] [--mirror-gib G] [--no-mtp] [--prompt-cache-mib N (4096; 0 = off)]
                  [--cors ORIGINS] [--keep-requests N (100)] [--parallel N (2)] [--max-tokens N]
                  [--cache-dir DIR [--cache-disk-gib G (32)] [--cache-ttl-hours H (24)]]
@@ -898,7 +898,9 @@ fn serve_cmd(args: &[String]) -> Result<(), String> {
     let addr = format!("{}:{}", opt("--host").unwrap_or_else(|| "127.0.0.1".into()), opt("--port").unwrap_or_else(|| "8085".into()));
     // --ctx N (every session N tokens) or N,M,... (a session each: one long, others short - a 256K session's attention
     // cache is 3.4 GiB of VRAM)
-    let ctx_list: Vec<usize> = opt("--ctx").unwrap_or_else(|| "8192".into()).split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    // --ctx max: one session of the most tokens the engine's load leaves room for (engines that plan that way)
+    let ctx_max = opt("--ctx").is_some_and(|v| v.trim() == "max");
+    let ctx_list: Vec<usize> = if ctx_max { vec![256] } else { opt("--ctx").unwrap_or_else(|| "8192".into()).split(',').filter_map(|v| v.trim().parse().ok()).collect() };
     if ctx_list.is_empty() || ctx_list.iter().any(|c| *c < 256) {
         return Err("--ctx N or N,M,... (tokens, at least 256 each)".into());
     }
@@ -926,8 +928,16 @@ fn serve_cmd(args: &[String]) -> Result<(), String> {
         return Err("at most 8 sessions".into());
     }
     // the attention reserve is per token: the sessions' tokens in all (a pool row each besides)
-    let kv = (slot_ctx.iter().sum::<usize>() + 4 * slot_ctx.len(), 1);
+    let kv = if ctx_max { (usize::MAX, 1) } else { (slot_ctx.iter().sum::<usize>() + 4 * slot_ctx.len(), 1) };
     let eng = load_engine(f, &gs, LoadOptions { expert_bytes: gib_opt("--expert-gib"), mirror_bytes: mirror, draft: mtp, kv }, &mut log)?;
+    // --ctx max: the one session the load left room for
+    let slot_ctx = if ctx_max {
+        let n = eng.max_ctx().ok_or("--ctx max: this model's engine plans no largest context (give the tokens)")?;
+        log(format!("--ctx max: one session of {n} tokens"));
+        vec![n]
+    } else {
+        slot_ctx
+    };
     eprintln!("[{} loaded on {} in {:.1} s]", name, gs.iter().map(|g| g.name.as_str()).collect::<Vec<_>>().join(" + "), eng.load_seconds());
     let cors: Vec<String> = opt("--cors").unwrap_or_default().split([',', ' ']).filter(|o| !o.is_empty()).map(String::from).collect();
     let keep: usize = opt("--keep-requests").and_then(|v| v.parse().ok()).unwrap_or(100);

@@ -280,8 +280,8 @@ impl Inkling2<'_> {
         let Some(dsp) = &self.ds else { return Ok(()) };
         for (dl, ((dk, dv, dc), (sk, sv, sc))) in dsp.layers.iter().zip(dst.caches.iter().zip(&src.caches)) {
             let from = Self::kept(dl.win, pos);
-            self.copy_ring(dk, *dc, sk, *sc, dsp.heads_kv, from, pos)?;
-            self.copy_ring(dv, *dc, sv, *sc, dsp.heads_kv, from, pos)?;
+            self.copy_ring(dk, *dc, sk, *sc, dsp.heads_kv, from, pos, self.g.head * 2)?;
+            self.copy_ring(dv, *dc, sv, *sc, dsp.heads_kv, from, pos, self.g.head * 2)?;
         }
         dst.frnn.copy_within(0, &src.frnn, 0, src.frnn.len)?;
         dst.frnn_all = src.frnn_all;
