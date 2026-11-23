@@ -1,6 +1,6 @@
 {
   "about": "tooling/gate.sh's baselines: each engine's quick run on a fixed seed - `outputs` hashed (exact: a file's bytes, `frames:FILE` a clip's decoded frames, `lines:FILE:REGEX` lines of it) and its throughputs (`speed`: a number read from the run's stderr or stdout by `re`, `better` lower or higher; the best of its runs: two, or `runs` (pictures 3)) - per card, keyed by the card's id (`nextcuda silo`: its name, SM count and memory, rtx-3060-28u-12g; a run over several GPUs: their ids joined by +, in the order the run takes them) with what the card reports (`device`) and the box it was recorded on (`host`). `gpus` are the GPUs (or sets) the run takes on brainiac-nvidia (GPU 0 the RTX 5070, 1 the RTX 3060; NS_GATE_GPUS elsewhere), `run` its paths there (NS_GATE_PATHS maps them elsewhere; {gpu}, {out} the run's directory, {in} the copy's inputs: `setup` makes them), and the shared parts' engines. Recorded with NS_GATE_RECORD=1 on the commit named; a change that moves a number on purpose records it again in its pull request, and a contributor's card gets its own entry recorded on that card.",
-  "recorded": "2026-11-22: llm/qwen35, image/mossimage (with bf91372), image/qwenimage21, audio/yue2, model3d/skintokens, model3d/unimate on 2ef50c8; the other 20 engines on 0e738a5 (steps 1-2, before step 3)",
+  "recorded": "2026-11-22: llm/qwen35, image/mossimage (with bf91372), image/qwenimage21, audio/yue2, model3d/skintokens, model3d/unimate on 2ef50c8; the other 20 engines on 0e738a5 (steps 1-2, before step 3); llm/inkling2 and llm/inkling2#one on 7bcb8c6 (2026-11-23)",
   "tolerance": 0.03,
   "shared": {
     "crates/": [
@@ -85,7 +85,31 @@
       "gpus": [
         "1,0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-3060-28u-12g+rtx-5070-48u-11g": {
+          "exact": "2272073dd4f04d8e",
+          "device": [
+            {
+              "name": "NVIDIA GeForce RTX 3060",
+              "units": 28,
+              "mhz": 1807,
+              "vram_mb": 11909,
+              "cc": 86
+            },
+            {
+              "name": "NVIDIA GeForce RTX 5070",
+              "units": 48,
+              "mhz": 2542,
+              "vram_mb": 11772,
+              "cc": 120
+            }
+          ],
+          "host": "brainiac-nvidia",
+          "recorded": "7bcb8c6 (2026-11-23)",
+          "pp": 162.1,
+          "tg": 75.14
+        }
+      }
     },
     "llm/inkling2#one": {
       "run": "NS_INK2_PLACE=one NS_INK2_DRAFTS=0 dist/nextcuda llm generate /home/maxfridbe/nextcuda/models/inkling-2-mini/Inkling-2-Mini-UD-Q4_K_XL.gguf --ctx 4096 --max 96 --temp 0 --top 3 --effort low --gpu {gpu} --prompt \"Explain, step by step and with a small worked example, how a hash map handles collisions with open addressing and with separate chaining, and when you would pick one over the other.\"",
@@ -109,7 +133,22 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "e1efdf94a8fb56b7",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "7bcb8c6 (2026-11-23)",
+          "pp": 113.6,
+          "tg": 43.42
+        }
+      }
     },
     "llm/qwen35": {
       "run": "dist/nextcuda llm generate /home/maxfridbe/nextcuda/models/qwen3.8-27b-gsq/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --ctx 4096 --max 96 --temp 0 --top 3 --gpu {gpu} --prompt \"Explain, step by step and with a small worked example, how a hash map handles collisions with open addressing and with separate chaining, and when you would pick one over the other.\"",
