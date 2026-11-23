@@ -34,7 +34,7 @@ pub struct Api {
     pub ctrl_apply: unsafe extern "C" fn(G, *const f32, *const f32, *const f32, *const f32, *mut f32, i64, i64) -> c_int,
     /// (x, state, w, dyn, out, snap, T, C, H, inv)
     pub conv: unsafe extern "C" fn(G, *const f32, *mut f32, *const f32, *const f32, *mut f32, *mut f32, i64, i64, i64, f32) -> c_int,
-    pub conv_keep: unsafe extern "C" fn(G, *const f32, *mut f32, i64, i64) -> c_int,
+    pub conv_keep_slots: unsafe extern "C" fn(G, c_int, *const *const f32, *const *mut f32, i64, *const i64) -> c_int,
     /// (x, scale, T, H, D, thr, log_alpha, log_floor, p0)
     pub clip: unsafe extern "C" fn(G, *mut f32, *const f32, i64, i64, i64, f32, f32, f32, i64) -> c_int,
     pub rms_rows: unsafe extern "C" fn(G, *const f32, *mut f32, i64, i64, f32) -> c_int,
@@ -91,7 +91,7 @@ pub fn api() -> nextcuda_core::Result<&'static Api> {
             ctrl_z: sym!("ns_ink2_ctrl_z"),
             ctrl_apply: sym!("ns_ink2_ctrl_apply"),
             conv: sym!("ns_ink2_conv"),
-            conv_keep: sym!("ns_ink2_conv_keep"),
+            conv_keep_slots: sym!("ns_ink2_conv_keep_slots"),
             clip: sym!("ns_ink2_clip"),
             rms_rows: sym!("ns_ink2_rms_rows"),
             kv_store: sym!("ns_ink2_kv_store"),

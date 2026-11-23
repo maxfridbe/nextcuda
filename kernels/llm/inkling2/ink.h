@@ -61,6 +61,10 @@ int ns_ink2_conv(ns_gpu* g, const float* x, float* state, const float* w, const 
                  float inv);
 /* the state after the first keep rows of the pass `snap` was written by: state = snap rows [keep, keep + 3) */
 int ns_ink2_conv_keep(ns_gpu* g, const float* snap, float* state, int64_t keep, int64_t C);
+/* the same for n slots (at most 64) in one launch, each slot's four channel groups g[0..4) one after another: its
+ * state [3 x sum g] (group k's [3, g[k]] at 3 x the earlier groups' channels) from its snapshot ([3 + 16, g[k]] at
+ * (3 + 16) x those) */
+int ns_ink2_conv_keep_slots(ns_gpu* g, int n, const float* const* snaps, float* const* states, int64_t keep, const int64_t* groups);
 /* rows x [T, H, D] in place: x scale[h, d] (nullable), then each (row, head) scaled to an L2 norm of at most thr; then
  * (log_alpha > 0) x tau(position) = 1 + alpha ln(max(1, (p0 + t + 1) / floor)) */
 int ns_ink2_clip(ns_gpu* g, float* x, const float* scale, int64_t T, int64_t H, int64_t D, float thr, float log_alpha, float log_floor, int64_t p0);

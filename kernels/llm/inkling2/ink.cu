@@ -529,6 +529,28 @@ __global__ void conv_keep_k(const float* snap, float* state, int64_t keep, int64
     if (i < n) state[i] = snap[keep * C + i];
 }
 
+struct Slots {
+    const float* snap[64];
+    float* state[64];
+    int64_t g[4];
+};
+
+__global__ void conv_keep_slots_k(Slots sl, int64_t keep, int64_t total) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= 3 * total) return;
+    const int s = blockIdx.y;
+    int64_t off = 0, j = i;
+    for (int k = 0; k < 4; ++k) {
+        const int64_t ch = sl.g[k];
+        if (j < 3 * ch) {
+            sl.state[s][3 * off + j] = sl.snap[s][(3 + MAXT) * off + keep * ch + j];
+            return;
+        }
+        j -= 3 * ch;
+        off += ch;
+    }
+}
+
 __global__ void clip_k(float* x, const float* scale, int64_t n, int64_t H, int64_t D, float thr, float log_alpha, float log_floor, int64_t p0) {
     const int lane = threadIdx.x % WS;
     const int64_t rh = (int64_t) blockIdx.x * 4 + threadIdx.x / WS;
@@ -935,6 +957,26 @@ int ns_ink2_conv_keep(ns_gpu* g, const float* snap, float* state, int64_t keep, 
     NS_TRY
     NS_CU(cudaSetDevice(g->dev));
     conv_keep_k<<<blocks(3 * C), 256, 0, g->q>>>(snap, state, keep, 3 * C, C);
+    NS_LAUNCH_CHECK();
+    return 0;
+    NS_CATCH
+}
+
+int ns_ink2_conv_keep_slots(ns_gpu* g, int n, const float* const* snaps, float* const* states, int64_t keep, const int64_t* groups) {
+    NS_TRY
+    if (n < 1 || n > 64) return ns_fail("ns_ink2_conv_keep_slots: 1..64 slots");
+    NS_CU(cudaSetDevice(g->dev));
+    Slots sl{};
+    for (int i = 0; i < n; ++i) {
+        sl.snap[i] = snaps[i];
+        sl.state[i] = states[i];
+    }
+    int64_t total = 0;
+    for (int k = 0; k < 4; ++k) {
+        sl.g[k] = groups[k];
+        total += groups[k];
+    }
+    conv_keep_slots_k<<<dim3(blocks(3 * total), (unsigned) n), 256, 0, g->q>>>(sl, keep, total);
     NS_LAUNCH_CHECK();
     return 0;
     NS_CATCH

@@ -347,14 +347,18 @@ pub struct Decoder {
     /// drafts asked for; the drafter's tokens after `next`
     draft: bool,
     drafts: Vec<u32>,
+    /// steps left without drafting (after one whose drafts bought nothing), and the next rest's length (doubling while
+    /// drafts keep buying nothing, up to NS_INK2_DRAFT_REST; back to 1 when one is accepted)
+    rest: usize,
+    rest_len: usize,
 }
 
 impl Decoder {
     pub fn new(logits: Vec<f32>, draft: bool) -> Decoder {
-        Decoder { logits: Some(logits), next: None, drafted: 0, accepted: 0, draft, drafts: Vec::new() }
+        Decoder { logits: Some(logits), next: None, drafted: 0, accepted: 0, draft, drafts: Vec::new(), rest: 0, rest_len: 1 }
     }
     pub fn after(next: u32, draft: bool) -> Decoder {
-        Decoder { logits: None, next: Some(next), drafted: 0, accepted: 0, draft, drafts: Vec::new() }
+        Decoder { logits: None, next: Some(next), drafted: 0, accepted: 0, draft, drafts: Vec::new(), rest: 0, rest_len: 1 }
     }
     pub fn pending(&mut self) -> Option<u32> {
         self.next.take()
@@ -1974,16 +1978,17 @@ impl<'g> Inkling2<'g> {
 
     /// Every slot's convolution states as after the first `keep` rows of the last decode pass
     fn conv_keep(&self, s: &Session, keep: usize) -> Result<()> {
-        let groups = self.g.conv_groups();
-        for (i, sl) in s.slots.iter().enumerate() {
-            let d = self.dev_of(self.g.phys(i));
-            let mut off = 0;
-            for &ch in &groups {
-                let snap = sl.snap.view((3 + MAXV) * off * 4, (3 + MAXV) * ch * 4)?;
-                let st = sl.conv.view(3 * off * 4, 3 * ch * 4)?;
-                // SAFETY: snap [3 + rows, ch], the state [3, ch].
-                self.op(d, "conv keep", || unsafe { (self.k.conv_keep)(d.raw(), snap.fp(), st.fp(), keep as i64, ch as i64) })?;
-                off += ch;
+        let groups: Vec<i64> = self.g.conv_groups().iter().map(|&c| c as i64).collect();
+        // a launch a GPU for all of its slots
+        for (di, d) in self.devs.iter().enumerate() {
+            let mine: Vec<&SlotState> = s.slots.iter().enumerate().filter(|(i, _)| self.layers[self.g.phys(*i)].dev == di).map(|(_, x)| x).collect();
+            for part in mine.chunks(64) {
+                let snaps: Vec<*const f32> = part.iter().map(|x| x.snap.fp() as *const f32).collect();
+                let states: Vec<*mut f32> = part.iter().map(|x| x.conv.fp()).collect();
+                // SAFETY: each slot's snapshot [3 + MAXV rows of its groups] and state [3 rows of its groups].
+                self.op(d, "conv keep", || unsafe {
+                    (self.k.conv_keep_slots)(d.raw(), part.len() as c_int, snaps.as_ptr(), states.as_ptr(), keep as i64, groups.as_ptr())
+                })?;
             }
         }
         Ok(())
@@ -2003,6 +2008,8 @@ impl<'g> Inkling2<'g> {
         let drafting = d.draft && self.drafts > 0 && s.ds.is_some();
         // the last pass's row whose features the drafts continue from
         let mut last_row = s.last_rows.saturating_sub(1);
+        // the drafts offered this step were all rejected
+        let mut fruitless = false;
         let out = match (d.logits.take(), d.next.take()) {
             (Some(l), _) => vec![smp.sample(&l)],
             (None, Some(x)) => {
@@ -2018,6 +2025,7 @@ impl<'g> Inkling2<'g> {
                     Out::Ids(v) => v,
                 };
                 let mut out = Vec::with_capacity(rows.len());
+                fruitless = rows.len() > 1 && picks.first() != rows.get(1);
                 for (i, &y) in picks.iter().enumerate() {
                     out.push(y);
                     if i + 1 < rows.len() {
@@ -2041,7 +2049,22 @@ impl<'g> Inkling2<'g> {
         let tail = *out.last().unwrap_or(&0);
         d.next = Some(tail);
         if drafting {
-            d.drafts = self.ds_draft(s, tail, last_row, self.drafts)?;
+            // a step whose drafts bought nothing (none sure enough, or the first rejected) rests the drafter for a
+            // step, then 2, 4 ... up to NS_INK2_DRAFT_REST while that goes on (its pass and the head's product over its
+            // rows cost ~2.5 ms where text runs unpredictable); an accepted draft ends it. The drafter's caches are
+            // kept by every pass all the same
+            if out.len() > 1 {
+                d.rest_len = 1;
+            }
+            if d.rest > 0 {
+                d.rest -= 1;
+            } else {
+                d.drafts = self.ds_draft(s, tail, last_row, self.drafts)?;
+                if (d.drafts.is_empty() || fruitless) && dspark::draft_rest() > 0 {
+                    d.rest = d.rest_len.min(dspark::draft_rest());
+                    d.rest_len = (d.rest_len * 2).min(dspark::draft_rest());
+                }
+            }
         }
         Ok(out)
     }

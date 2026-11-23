@@ -301,6 +301,7 @@ Inkling-2-Mini (`llm/inkling2`, its silo `kernels/llm/inkling2/silo`; docs/ports
 | `NS_INK2_DRAFT` | the smallest `dspark-*.gguf` beside the model | the DSpark drafter's GGUF (Unsloth's `dspark-Inkling-2-Mini-Q8_0.gguf`); loaded when drafts are asked for (`--no-mtp` / LoadOptions.draft off: not) | llm inkling2 |
 | `NS_INK2_DRAFTS` | 5 | tokens drafted a step (at most the drafter's block less one: 7; 0: no drafter) | llm inkling2 |
 | `NS_INK2_DRAFT_PMIN` | 0.8 | a draft (and those after it) dropped when the drafter gives it less than this probability (fewer rows to verify) | llm inkling2 |
+| `NS_INK2_DRAFT_REST` | 8 | the longest rest of the drafter: after a step whose drafts bought nothing (none sure enough, or the first rejected) it skips 1 step, then 2, 4 ... up to this while that goes on; an accepted draft ends it (0: the drafter every step) | llm inkling2 |
 | `NS_INK2_EXPERT_UNION` | on | 0: a decode pass of several rows (a verify) reads an expert the rows share once a row instead of once (A/B) | llm inkling2 |
 | `NS_INK2_UNION` | off | Debug: 1 reads a pass's chosen experts back each layer application (a sync each) and reports the distinct experts a pass by its rows | llm inkling2 |
 | `NS_INK2_PATTN` | on (with the silo) | Experiment: 0 runs a prompt pass's attention on the engine's own kernel (float32, no tensor cores) instead of the silo's flash attention (A/B) | llm inkling2 |

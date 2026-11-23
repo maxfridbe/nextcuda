@@ -1,6 +1,6 @@
 # Running the LLMs
 
-Chat on the two 12 GB cards: Qwen3.8-27B whole across both, Nemotron 3.5 Super (120B) on one with its experts streamed. The
+Chat on the two 12 GB cards: Qwen3.8-27B and Inkling-2-Mini whole across both, Nemotron 3.5 Super (120B) on one with its experts streamed. The
 settings are in [environment.md](environment.md); the model cards in [models.md](models.md).
 
 ## Qwen3.8-27B over both cards
@@ -84,6 +84,20 @@ speech model still fits on the 3060. Verify passes of 6-8 rows take MMQ's produc
 Also done: prompts with pictures are pipelined too (their positions and rows through pinned slots); a layer's
 tensors are one allocation (one each had lost ~260 MB on the 5070 to 2 MiB rounding); a shared input is quantized
 once for the products that read it; four drafts a step load at 80K.
+
+## Inkling-2-Mini over both cards
+
+**Inkling-2-Mini UD-Q4_K_XL** (`llm/inkling2`; a looped MoE: 24 layers, the middle twelve run three times, 128 NVFP4
+experts, relative-bias attention with sinks, short convolutions, attention over the depth; the DSpark drafter) whole in
+the two cards, nothing streamed: the 5070 takes the loop and as many neighbours as it holds (38-39 of the 48 layer
+applications a token), the 3060 the rest, the head and the drafter; a token crosses twice. It thinks in a message of its
+own before the answer (`reasoning_content`), `reasoning_effort` low / medium / high / max; tools as OpenAI's. The port,
+its checks against llama.cpp and its numbers: [ports/inkling2.md](ports/inkling2.md).
+
+```sh
+curl -s http://127.0.0.1:8000/v1/chat/completions -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+     -d '{"model": "inkling-2-mini-q4kxl", "reasoning_effort": "low", "messages": [{"role": "user", "content": "Hello"}]}'
+```
 
 ## Nemotron 3.5 Super
 

@@ -146,7 +146,15 @@ impl Catalog {
         let has = |m: &&Value| m.get("guide").and_then(Value::as_str).is_some();
         let card = [s(entry, "catalog"), s(entry, "id")].iter().find_map(|id| self.models.iter().filter(has).find(|m| !id.is_empty() && s(m, "id") == *id))
             .or_else(|| self.models.iter().filter(has).find(|m| s(m, "kind") == kind && s(m, "arch") == s(entry, "arch")))
-            .or_else(|| self.models.iter().filter(has).find(|m| s(m, "kind") == kind))?;
+            // the kind's guide: the one most of its cards share (a model's own guide is not the kind's)
+            .or_else(|| {
+                let of_kind: Vec<&Value> = self.models.iter().filter(has).filter(|m| s(m, "kind") == kind).collect();
+                let count = |m: &Value| of_kind.iter().filter(|x| s(x, "guide") == s(m, "guide")).count();
+                of_kind.iter().copied().fold(None::<&Value>, |best, m| match best {
+                    Some(b) if count(b) >= count(m) => Some(b),
+                    _ => Some(m),
+                })
+            })?;
         let text = std::fs::read_to_string(self.dir.join(s(card, "guide"))).ok()?;
         Some(match Self::annotations_md(card) {
             Some(md) => text.trim_end().to_string() + &md,

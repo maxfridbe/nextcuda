@@ -100,6 +100,12 @@ pub fn draft_pmin() -> f32 {
     std::env::var("NS_INK2_DRAFT_PMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.8)
 }
 
+/// NS_INK2_DRAFT_REST: the longest rest of the drafter after steps whose drafts bought nothing (default 8; 0: draft every
+/// step)
+pub fn draft_rest() -> usize {
+    std::env::var("NS_INK2_DRAFT_REST").ok().and_then(|v| v.parse().ok()).unwrap_or(8)
+}
+
 /// NS_INK2_DRAFTS: tokens drafted a step (at most the block's less one; 0: none)
 pub fn draft_count() -> Option<usize> {
     std::env::var("NS_INK2_DRAFTS").ok().and_then(|v| v.parse().ok())
