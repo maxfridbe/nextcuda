@@ -10,13 +10,14 @@ arch: inkling2_loop
 license: apache-2.0
 commercial: true
 license_note: 'Thinking Machines'' Inkling 2 Mini (Apache-2.0); Unsloth''s GGUF (Mainline_Support layout, the same tensors as its root files) under the same terms.'
-title: Inkling-2-Mini UD-Q4_K_XL (native NVFP4 experts; two cards, 64K)
-about: 'Thinking Machines'' Inkling 2 Mini (2026-11-20): a looped MoE of 26.2B (3.4B active) - 24 layers of 2,304, the middle twelve run three times (48 applications a token), 128 experts (8 a token, SiTU), attention with a relative-position bias and per-row sinks (20 layers over a 1,024 window, 4 full), short convolutions, attention over the depth; it thinks in its own message before the answer (reasoning effort low / medium / high / max). Its experts in their native NVFP4 (lossless against the checkpoint), the rest Q8_0. Split over the RTX 5070 and RTX 3060, nothing streamed; the DSpark drafter beside it (code ~1.25x). Text only here (the vision tower is not ported). 17.6 GB.'
+title: Inkling-2-Mini UD-Q4_K_XL (native NVFP4 experts; two cards, 32K)
+about: 'Thinking Machines'' Inkling 2 Mini (2026-11-20): a looped MoE of 26.2B (3.4B active) - 24 layers of 2,304, the middle twelve run three times (48 applications a token), 128 experts (8 a token, SiTU), attention with a relative-position bias and per-row sinks (20 layers over a 1,024 window, 4 full), short convolutions, attention over the depth; it thinks in its own message before the answer (reasoning effort low / medium / high / max). Its experts in their native NVFP4 (lossless against the checkpoint), the rest Q8_0. Split over the RTX 5070 and RTX 3060, nothing streamed; the DSpark drafter beside it (code ~1.25x). Text only here (the vision tower is not ported). 32K of context. 17.6 GB.'
 gpus: '1,0'                      # the order the engine takes them: the last (the 5070) gets the loop and fills first
 split: true
-vram_gib: 11.0                   # measured: its memory on the 5070 (the plan fills it with layers, then the cache); the 3060 below
-split_vram_gib: 9.6
-ctx: '65536'                     # one session of 64K (32 KiB a token: 8 full-attention slots; the 5070 keeps the loop's 6)
+vram_gib: 10.6                   # measured serving 32K with the drafter: 5070 10,851 MiB (the plan fills it with layers, then the cache)
+split_vram_gib: 10.4             # the 3060: 10,595 MiB (the prelude, the coda, the head, the drafter)
+ctx: '32768'                     # one session of 32K (32 KiB a token: 8 full-attention slots); 64K does not leave the 3060 room for
+                                 # the session beside the head and the drafter
 tools: true
 tasks: true
 env:

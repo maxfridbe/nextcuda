@@ -517,9 +517,8 @@ impl<'g> Inkling2<'g> {
             }
         }
         let ctx = if kv.0 > 0 { kv.0 } else { 32768 };
-        // what the driver and cuBLAS take beside the plan (its workspace, the module's code), and a raw tensor beside
-        // its repacking while it loads
-        let margin: u64 = (384 << 20) + biggest;
+        // what the driver and cuBLAS take beside the plan (its workspace, the module's code)
+        let margin: u64 = 384 << 20;
         let w16_bytes = [g.heads * g.head * g.n_embd, 2 * g.n_ff * g.n_embd].into_iter().max().unwrap_or(0) * 2;
         let tries: Vec<usize> = chunk_setting().map_or_else(|| vec![2048, 1024, 512], |c| vec![c]);
         let silo_any = ffi::silo_on(gpus[gpus.len() - 1].index)?;
@@ -552,7 +551,9 @@ impl<'g> Inkling2<'g> {
             } else {
                 dfile.as_ref().map_or(0, |_| (c * dspark::FEATS * g.n_embd * 4) as u64)
             };
-            weights + w16_bytes as u64 + arena_bytes(&g, c) as u64 + session_bytes(&g, ctx, c, on) as u64 + extra + margin + ds_c + STAGING as u64
+            // the work memory is taken after the weights (a raw tensor beside its repacking while they load: the larger)
+            let work = arena_bytes(&g, c) as u64 + session_bytes(&g, ctx, c, on) as u64 + extra + ds_c;
+            weights + w16_bytes as u64 + work.max(biggest) + margin + STAGING as u64
         };
         // NS_INK2_SPLIT=A,B: the faster GPU's layers [A, B) (they hold the loop); else from the loop out, a layer at a
         // time (the coda's first, then the prelude's last), while it has the room - the faster card does more of a token
@@ -621,7 +622,8 @@ impl<'g> Inkling2<'g> {
                 Some(s) => format!("inkling2: {} - decode kernels from its silo {}", gpu.name, s.path.display()),
                 None => format!("inkling2: {} - no silo, its own kernels throughout", gpu.name),
             });
-            devs.push(Dev { arena: Arena::new(&gpu, arena_bytes(&g, chunk))?, w16: DevBuf::new(&gpu, w16_bytes)?, silo, staging: Mutex::new(HostBuf::new(&gpu, STAGING)?),
+            // (its work memory once the weights are in: `arena.set` below)
+            devs.push(Dev { arena: Arena::new(&gpu, 256)?, w16: DevBuf::new(&gpu, w16_bytes)?, silo, staging: Mutex::new(HostBuf::new(&gpu, STAGING)?),
                             feats: None, gpu });
         }
         let hd = 0;
@@ -752,6 +754,7 @@ impl<'g> Inkling2<'g> {
         }
         for d in &devs {
             d.gpu.sync()?;
+            d.arena.set(DevBuf::new(&d.gpu, arena_bytes(&g, chunk))?);
         }
         let ds = match (&dfile, devs[hd].silo) {
             // a drafter that does not load: the model without drafts
