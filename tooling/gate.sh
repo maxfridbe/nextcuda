@@ -248,7 +248,7 @@ touch done
 RUNNER
 if [ "$(jq length "$tmp/plan.json")" -gt 0 ]; then
   "${RSYNC[@]}" "$tmp/plan.json" "$tmp/runner.sh" "$(there)/" >/dev/null
-  echo "gate: $(jq length "$tmp/plan.json") runs (each twice or its `runs`; waiting for the box to be idle as needed)"
+  echo "gate: $(jq length "$tmp/plan.json") runs (each twice, or its runs count; waiting for the box to be idle as needed)"
   if [ -n "$HOST" ]; then
     on "chmod +x runner.sh && rm -f done && (setsid nohup ./runner.sh $WAIT '$LOCK' > runner.log 2>&1 &)" >/dev/null
     until "${SSH[@]}" "test -f ~/$DIR/done" >/dev/null 2>&1; do sleep 20; done
