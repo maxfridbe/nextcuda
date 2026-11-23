@@ -916,8 +916,8 @@
             "cc": 120
           },
           "host": "brainiac-nvidia",
-          "recorded": "0e738a5 (2026-11-22)",
-          "s": 23.6
+          "recorded": "0e738a5 (2026-11-22); s re-measured 2026-11-23 from the 2ef50c8 binary, alternated with HEAD (50.4 / 50.4 against 50.6 / 50.2): the first recording (23.6) was not repeatable",
+          "s": 50.4
         }
       }
     },
@@ -1008,14 +1008,7 @@
       "outputs": [
         "rig.glb"
       ],
-      "speed": [
-        {
-          "name": "s",
-          "re": "^.*rig\\.glb \\(.*, ([0-9.]+) s\\)$",
-          "from": "stdout",
-          "better": "lower"
-        }
-      ],
+      "speed": [],
       "timeout_s": 900,
       "gpus": [
         "0"
@@ -1035,7 +1028,7 @@
           "s": 0.8
         }
       },
-      "nondeterministic": "two runs of one build and seed give different rigs (2026-11-22)"
+      "nondeterministic": "two runs of one build and seed give different rigs (2026-11-22); its time is printed in tenths of a second on a 0.8 s run, too coarse for 3%: only that it runs is checked"
     },
     "model3d/animateanymesh": {
       "run": "dist/nextcuda model3d rig {in}/meshes/humanoid_lo.obj --model animateanymesh --prompt \"a person waves\" --seed 1 --out {out}/anim.glb --gpu {gpu}",
