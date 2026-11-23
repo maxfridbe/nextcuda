@@ -465,6 +465,9 @@ Inputs of the checks and unit tests that need files outside the repository (unse
 
 | Variable | Default | What it does | Read by |
 |---|---|---|---|
+| `NC_Z3_EDIT_DUMP` | unset | a directory: speech editing's first region's prompt written there for the reference (ids.npy, ids.cond.json) | audio zonos3 (check) |
+| `NC_Z3_ENC_DUMP` | unset | a directory: the reference encoder's first lane's stages as .npy, named as zac-encoder-cli --dump names them | audio zonos3 (check) |
+| `NC_Z3_ENC_F32` | 0 | 1: the reference encoder in float32 activations and matrices instead of the production BF16 recipe (a diagnostic) | audio zonos3 (check) |
 | `NS_CHECK_COND` | the reference's cond_latents.npy | edit-dit check: a raw float32 file of condition latents to use instead | image qwenimage21 (check) |
 | `NS_CHECK_EMBEDS` | the reference's embeddings | edit-dit check: a raw float32 file of embeddings to use instead (the engine's own, to see their effect) | image qwenimage21 (check) |
 | `NS_CHECK_NOISE` | the reference's noise.npy | edit-dit check: a raw float32 noise file to use instead | image qwenimage21 (check) |
