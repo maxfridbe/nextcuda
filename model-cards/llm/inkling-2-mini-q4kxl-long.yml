@@ -9,13 +9,14 @@ arch: inkling2_loop
 license: apache-2.0
 commercial: true
 license_note: 'Thinking Machines'' Inkling 2 Mini (Apache-2.0); Unsloth''s GGUF (Mainline_Support layout, the same tensors as its root files) under the same terms.'
-title: Inkling-2-Mini UD-Q4_K_XL, long (two cards, the most context they hold, q8 cache)
-about: 'The files of inkling-2-mini-q4kxl with the longest context the RTX 5070 and RTX 3060 hold together, found at load from the memory they report: the attention cache as q8, no drafter. Both cards are full while it runs.'
+title: Inkling-2-Mini UD-Q4_K_XL, long (two cards, 256K, q8 cache)
+about: 'The files of inkling-2-mini-q4kxl with 262,144 tokens of context (the RTX 5070 and RTX 3060 together hold more; checked at load from the memory they report): the attention cache as q8, no drafter. Both cards are full while it runs.'
 gpus: '1,0'
 split: true
 vram_gib: 11.3
 split_vram_gib: 11.2
-ctx: max
+ctx: 'max:262144'                # the most the cards hold, at most 262,144 (Thinking Machines' context for it; its GGUF says 1M):
+                                 # they hold 296,960 with the q8 cache and no drafter (215,040 with the drafter: it stays off)
 tools: true
 tasks: true
 env:

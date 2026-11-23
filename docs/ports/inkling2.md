@@ -154,13 +154,14 @@ have free after the weights and serves one session of the most a session's own c
 | inkling-2-mini-q4kxl | two cards, drafter | half | 32K (the card) | 10,851 / 10,595 MiB | 1,289 / 60.2 (32K, no drafter) |
 | (`--ctx max`) | two cards, drafter | half | 125K (128,000) | 11,559 / 11,465 MiB | - |
 | (`--ctx max`, q8) | two cards, drafter | q8 | 210K (215,040) | 11,123 / 11,665 MiB | - |
-| inkling-2-mini-q4kxl-long | two cards, no drafter | q8 | 290K (296,960) | ~11,300 / ~11,300 MiB | 566 / 21.6 (a 250K prompt) |
+| inkling-2-mini-q4kxl-long | two cards, no drafter | q8 | 256K (`max:262144`; they hold 296,960) | ~11,300 / ~11,300 MiB | 566 / 21.6 (a 250K prompt) |
 | inkling-2-mini-q4kxl-5070 | the 5070, experts streamed | half | 32K (the card) | 11,115 MiB | 1,112 / 36.9 (32K) |
 | (`--ctx max`) | the 5070 | half | 55K (56,320) | 11,593 MiB | - |
 | inkling-2-mini-q4kxl-5070-long | the 5070 | q8 | 110K (112,640) | 11,561 MiB | 660 / 30.7 (a 90K prompt) |
 
-The model's own context is 1M (its GGUF's `context_length`); its card at Thinking Machines quotes 262K. Two cards reach
-it with the q8 cache and no drafter (the drafter's own cache - half, a full-attention layer of its three - and its
+`--ctx max` never goes past the model's own context (its GGUF's `context_length`: 1,048,576 for this file), and a card
+may cap it lower (`max:N`): the long card serves 262,144, the context nextsycl's cards and the release quote. Two cards
+reach it with the q8 cache and no drafter (with the drafter they hold 215,040, so it stays off there) (the drafter's own cache - half, a full-attention layer of its three - and its
 weights take ~1.3 GiB of the 3060). The q8 cache against the half one (both on the silo): logits cosine against
 llama.cpp 0.99984 / 0.99988 on the medium / long prompts (half: 0.99939 / 0.9999), every layer within the same range,
 the next token the same; greedy runs the same as the half cache's on the medium and long prompts, the short one's token

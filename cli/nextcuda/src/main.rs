@@ -96,7 +96,7 @@ language models (nextcuda llm ...; the names without `llm` still work):
   nextcuda llm selftest [--gpu N]    the llm kernel library, an engine's own symbol, a kernel on the GPU
 
   in this process (inside the image: the kernels need the oneAPI runtime):
-  nextcuda llm serve <model.gguf> [--gpu 0,1 | all] [--host H] [--port N] [--name ID] [--ctx N | N,M,... | max] [--effort E]
+  nextcuda llm serve <model.gguf> [--gpu 0,1 | all] [--host H] [--port N] [--name ID] [--ctx N | N,M,... | max | max:N] [--effort E]
                  [--socket PATH] [--expert-gib G] [--mirror-gib G] [--no-mtp] [--prompt-cache-mib N (4096; 0 = off)]
                  [--cors ORIGINS] [--keep-requests N (100)] [--parallel N (2)] [--max-tokens N]
                  [--cache-dir DIR [--cache-disk-gib G (32)] [--cache-ttl-hours H (24)]]
@@ -899,7 +899,9 @@ fn serve_cmd(args: &[String]) -> Result<(), String> {
     // --ctx N (every session N tokens) or N,M,... (a session each: one long, others short - a 256K session's attention
     // cache is 3.4 GiB of VRAM)
     // --ctx max: one session of the most tokens the engine's load leaves room for (engines that plan that way)
-    let ctx_max = opt("--ctx").is_some_and(|v| v.trim() == "max");
+    // (max:N: at most N - a model card's cap below the model's own context)
+    let ctx_max = opt("--ctx").is_some_and(|v| v.trim() == "max" || v.trim().starts_with("max:"));
+    let ctx_cap: Option<usize> = opt("--ctx").and_then(|v| v.trim().strip_prefix("max:").and_then(|n| n.trim().parse().ok()));
     let ctx_list: Vec<usize> = if ctx_max { vec![256] } else { opt("--ctx").unwrap_or_else(|| "8192".into()).split(',').filter_map(|v| v.trim().parse().ok()).collect() };
     if ctx_list.is_empty() || ctx_list.iter().any(|c| *c < 256) {
         return Err("--ctx N or N,M,... (tokens, at least 256 each)".into());
@@ -932,8 +934,11 @@ fn serve_cmd(args: &[String]) -> Result<(), String> {
     let eng = load_engine(f, &gs, LoadOptions { expert_bytes: gib_opt("--expert-gib"), mirror_bytes: mirror, draft: mtp, kv }, &mut log)?;
     // --ctx max: the one session the load left room for
     let slot_ctx = if ctx_max {
-        let n = eng.max_ctx().ok_or("--ctx max: this model's engine plans no largest context (give the tokens)")?;
-        log(format!("--ctx max: one session of {n} tokens"));
+        let fit = eng.max_ctx().ok_or("--ctx max: this model's engine plans no largest context (give the tokens)")?;
+        // never past the context the model was made for (its GGUF's context_length), whatever the cards hold
+        let trained = f.arch_meta("context_length").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let n = ctx_max_capped(ctx_max_capped(fit, trained), ctx_cap);
+        log(format!("--ctx max: one session of {n} tokens (the cards hold {fit}{})", trained.map_or(String::new(), |t| format!("; the model's context {t}"))));
         vec![n]
     } else {
         slot_ctx
@@ -1159,5 +1164,20 @@ fn main() -> ExitCode {
             eprintln!("nextcuda: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `--ctx max`: what the cards hold, never past the model's own context (its GGUF's `context_length`, when it says)
+fn ctx_max_capped(fit: usize, trained: Option<usize>) -> usize {
+    trained.map_or(fit, |t| fit.min(t))
+}
+
+#[cfg(test)]
+mod ctx_max_tests {
+    #[test]
+    fn ctx_max_never_passes_the_models_context() {
+        assert_eq!(super::ctx_max_capped(296_960, Some(262_144)), 262_144);
+        assert_eq!(super::ctx_max_capped(215_040, Some(262_144)), 215_040);
+        assert_eq!(super::ctx_max_capped(215_040, None), 215_040);
     }
 }

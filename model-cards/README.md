@@ -26,7 +26,7 @@ headroom_gib: 3.3               # optional: of vram_gib, the working memory beyo
 split: true                     # optional (picture, sound): one server takes every card of gpus - the one it is started on
                                 #   first, with vram_gib there - so each must have the room before it starts
 split_vram_gib: 7.2             # optional, with split: its memory on each card but the first (else planned as vram_gib)
-ctx: 131072,32768               # llm: each session's context, or `max`: one session of the most the load leaves room for (engines that plan so: inkling2)
+ctx: 131072,32768               # llm: each session's context, or `max` / `max:N`: one session of the most the load leaves room for, at most the model's context (and N) - engines that plan so: inkling2
 tools: true                     # llm: tool calls offered to it (false: dropped)
 tasks: true                     # llm: a front end's background tasks (titles, tags) accepted
 env: {}                         # settings its engine reads; '{role}' is that file's path once pulled
