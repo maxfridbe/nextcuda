@@ -1050,6 +1050,26 @@
           "s": 5.8
         }
       }
+    },
+    "audio/voiceisolator": {
+      "run": "dist/nextcuda audio isolate /home/maxfridbe/nextcuda/models/voice-isolator/test/sample_2.wav --model voice-isolator --out {out}/voice.wav --background {out}/rest.wav --gpu {gpu}",
+      "outputs": [
+        "voice.wav",
+        "rest.wav"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^.* of recording in ([0-9.]+) s \\(real-time factor.*$",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0",
+        "1"
+      ],
+      "cards": {}
     }
   }
 }
