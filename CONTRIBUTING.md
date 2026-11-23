@@ -59,7 +59,10 @@ is the method (how to check, clock and tune an engine) and `docs/benchy/README.m
    `tooling/sync_rpcgen.sh` (a test fails on a copy edited here, and on a stale client). What happened is in the
    answer's envelope (`error.code`, `retryable`), never only in the HTTP status.
 
-Rules 1 and 3 are checked by `cargo test` (`cli/nextcuda/tests/architecture.rs`); rule 6 by the compiler, `tsc` and
+Rules 1, 3 and 5 are checked by `cargo test` (`cli/nextcuda/tests/architecture.rs`: no per-card silo, valid variant
+manifests that hold only their silo's ops, settings their engine takes, no two variants of a silo matching one card, a
+gate baseline for each variant, no card name or VRAM size in the engines' plans, every variable documented) and by the
+merge gate; rule 6 by the compiler, `tsc` and
 `cargo test` (`home::api_files_tests`).
 
 ## Building
@@ -80,6 +83,27 @@ nextcuda image selftest --gpu 0   # the engine's kernels against host arithmetic
    architecture test fails on one that has none).
 3. **Then make it fast**, as its own change: clock it with the kind's bench, find where the time is, put the faster
    kernels in its silo, check the results are the same and clock it again.
+
+## Pull requests
+
+- One change a pull request, with what it does, why, and how it was checked (the commands and their output).
+- Speed changes: the numbers before and after, on which GPU, with which command.
+- **The merge gate**: `tooling/gate.sh <base> <head>` works out from the paths changed which engines they touch (an
+  engine's own code, kernels or silo: that engine; a silo variant: that engine on the GPUs that take it; a shared part:
+  the engines `tooling/gate-baselines.json` maps it to), builds `<head>` in a build copy (`NS_GATE_HOST`, the project's
+  box brainiac-nvidia; never the service's files), runs each engine's quick run on each of its GPUs twice under the GPU
+  lock and only while the box is idle, and compares with the baselines: the output exactly for a fixed seed (an LLM's
+  greedy tokens and their log-probabilities, a picture's, a sound's or a mesh's bytes, a clip's decoded frames), the
+  throughput within 3%. Paste its table into the pull request; a change that moves a number on purpose records new
+  baselines (`NS_GATE_RECORD=1`) and says why. An engine with no baseline is listed as such - add its run to the file
+  when you port one.
+- **Gating hardware the project does not own.** The baselines are per card, keyed by the id `nextcuda silo` prints
+  (`rtx-3060-28u-12g`: the name, SMs and memory it reports, with the `device` recorded beside it; a run over several
+  GPUs: their ids joined by `+`), so the gate runs on your own box: `NS_GATE_HOST=local` (no ssh), `NS_GATE_GPUS` your
+  GPUs, `NS_GATE_PATHS=FROM=TO` where the baselines' model files are on your disk. Record your card's baseline on the
+  base commit (`NS_GATE_RECORD=1 tooling/gate.sh <base> <base> <kind>/<arch>`), commit it in the same pull request,
+  then run the gate on the head and **paste its table from your hardware**. A variant's pull request always does
+  this: the architecture test fails on a variant with no baseline on a card its `match` accepts.
 
 ## Code style
 

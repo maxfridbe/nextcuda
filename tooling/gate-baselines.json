@@ -1,0 +1,715 @@
+{
+  "about": "tooling/gate.sh's baselines: each engine's quick run on a fixed seed - `outputs` hashed (exact: a file's bytes, `frames:FILE` a clip's decoded frames, `lines:FILE:REGEX` lines of it) and its throughputs (`speed`: a number read from the run's stderr or stdout by `re`, `better` lower or higher; the better of two runs) - per card, keyed by the card's id (`nextcuda silo`: its name, SM count and memory, rtx-3060-28u-12g; a run over several GPUs: their ids joined by +, in the order the run takes them) with what the card reports (`device`) and the box it was recorded on (`host`). `gpus` are the GPUs (or sets) the run takes on brainiac-nvidia (GPU 0 the RTX 5070, 1 the RTX 3060; NS_GATE_GPUS elsewhere), `run` its paths there (NS_GATE_PATHS maps them elsewhere; {gpu}, {out} the run's directory, {in} the copy's inputs: `setup` makes them), and the shared parts' engines. Recorded with NS_GATE_RECORD=1 on the commit named; a change that moves a number on purpose records it again in its pull request, and a contributor's card gets its own entry recorded on that card.",
+  "recorded": "2ef50c8 (2026-11-22): the six first engines on 2ef50c8 (MOSS-Image with bf91372 beside it), ACE-Step on 0e738a5; the rest not recorded yet",
+  "tolerance": 0.03,
+  "shared": {
+    "crates/": [
+      "*"
+    ],
+    "kernels/ns/": [
+      "*"
+    ],
+    "kernels/build.sh": [
+      "*"
+    ],
+    "kernels/image.map": [
+      "image/*"
+    ],
+    "kernels/diffusion/": [
+      "image/*",
+      "video/*",
+      "audio/*",
+      "model3d/*",
+      "llm/qwen35"
+    ],
+    "kernels/llm/qwen35/": [
+      "image/mossimage",
+      "audio/haru"
+    ],
+    "kernels/llm/nemotronh/": [
+      "llm/*",
+      "image/mossimage",
+      "audio/haru"
+    ],
+    "llm/contract/": [
+      "llm/*"
+    ],
+    "image/contract/": [
+      "image/*"
+    ],
+    "video/contract/": [
+      "video/*"
+    ],
+    "audio/contract/": [
+      "audio/*"
+    ],
+    "model3d/contract/": [
+      "model3d/*"
+    ],
+    "cli/nextcuda/src/main.rs": [
+      "llm/*"
+    ],
+    "cli/nextcuda/src/image.rs": [
+      "image/*"
+    ],
+    "cli/nextcuda/src/audio.rs": [
+      "audio/*"
+    ],
+    "cli/nextcuda/src/model3d.rs": [
+      "model3d/*"
+    ],
+    "cli/nextcuda/src/video/": [
+      "video/*"
+    ]
+  },
+  "engines": {
+    "llm/qwen35": {
+      "run": "dist/nextcuda llm generate /home/maxfridbe/nextcuda/models/qwen3.8-27b-gsq/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --ctx 4096 --max 96 --temp 0 --top 3 --gpu {gpu} --prompt \"Explain, step by step and with a small worked example, how a hash map handles collisions with open addressing and with separate chaining, and when you would pick one over the other.\"",
+      "outputs": [
+        "stdout",
+        "lines:stderr:^\\[top\\]"
+      ],
+      "speed": [
+        {
+          "name": "pp",
+          "re": "^\\[prompt [0-9]+ tokens in [0-9.]+ s \\(([0-9.]+) tok/s\\).*",
+          "better": "higher"
+        },
+        {
+          "name": "tg",
+          "re": "^\\[prompt .* generated in [0-9.]+ s \\(([0-9.]+) tok/s\\).*",
+          "better": "higher"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "1,0"
+      ],
+      "cards": {
+        "rtx-3060-28u-12g+rtx-5070-48u-11g": {
+          "exact": "5ff011fe9b3476fd",
+          "device": [
+            {
+              "name": "NVIDIA GeForce RTX 3060",
+              "units": 28,
+              "mhz": 1807,
+              "vram_mb": 11909,
+              "cc": 86
+            },
+            {
+              "name": "NVIDIA GeForce RTX 5070",
+              "units": 48,
+              "mhz": 2542,
+              "vram_mb": 11772,
+              "cc": 120
+            }
+          ],
+          "host": "brainiac-nvidia",
+          "recorded": "2ef50c8 + bf91372 (the MOSS-Image symbol fix) (2026-11-22)",
+          "pp": 558.4,
+          "tg": 62.02
+        }
+      }
+    },
+    "image/mossimage": {
+      "run": "dist/nextcuda image gen \"a lighthouse on a rocky coast at dusk, photograph\" --model moss-image-sft-turbo4-q8 --size 512x512 --seed 7 --local --gpu {gpu} --out {out}/img.png",
+      "outputs": [
+        "img.png"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .*, ([0-9.]+) s, settings in the PNG\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0,1"
+      ],
+      "cards": {
+        "rtx-5070-48u-11g+rtx-3060-28u-12g": {
+          "exact": "3665eaf8004b2186",
+          "device": [
+            {
+              "name": "NVIDIA GeForce RTX 5070",
+              "units": 48,
+              "mhz": 2542,
+              "vram_mb": 11772,
+              "cc": 120
+            },
+            {
+              "name": "NVIDIA GeForce RTX 3060",
+              "units": 28,
+              "mhz": 1807,
+              "vram_mb": 11909,
+              "cc": 86
+            }
+          ],
+          "host": "brainiac-nvidia",
+          "recorded": "2ef50c8 + bf91372 (the MOSS-Image symbol fix) (2026-11-22)",
+          "s": 1.0
+        }
+      }
+    },
+    "image/qwenimage21": {
+      "run": "dist/nextcuda image gen \"a red fox sitting in fresh snow at dawn, photograph\" --model qwen-image-2.1-turbo-q8 --size 512x512 --seed 7 --local --gpu {gpu} --out {out}/img.png",
+      "outputs": [
+        "img.png"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .*, ([0-9.]+) s, settings in the PNG\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0",
+        "1"
+      ],
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "420944ad886eb451",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "2ef50c8 (2026-11-22)",
+          "s": 3.5
+        },
+        "rtx-3060-28u-12g": {
+          "exact": "e31349b99d82d74e",
+          "device": {
+            "name": "NVIDIA GeForce RTX 3060",
+            "units": 28,
+            "mhz": 1807,
+            "vram_mb": 11909,
+            "cc": 86
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "2ef50c8 (2026-11-22)",
+          "s": 8.7
+        }
+      }
+    },
+    "audio/yue2": {
+      "run": "printf '[verse]\\nThe morning light comes over the hill\\nAnd the river sings along\\n' > {out}/lyrics.txt && dist/nextcuda audio gen \"pop, female vocal, piano\" --model yue2-3b-q8 --lyrics-file {out}/lyrics.txt --seconds 10 --seed 1 --out {out}/song.wav --gpu {gpu}",
+      "outputs": [
+        "song.wav"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .* in ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 1800,
+      "gpus": [
+        "0,1"
+      ],
+      "cards": {
+        "rtx-5070-48u-11g+rtx-3060-28u-12g": {
+          "exact": "b0f76c59c8de0374",
+          "device": [
+            {
+              "name": "NVIDIA GeForce RTX 5070",
+              "units": 48,
+              "mhz": 2542,
+              "vram_mb": 11772,
+              "cc": 120
+            },
+            {
+              "name": "NVIDIA GeForce RTX 3060",
+              "units": 28,
+              "mhz": 1807,
+              "vram_mb": 11909,
+              "cc": 86
+            }
+          ],
+          "host": "brainiac-nvidia",
+          "recorded": "2ef50c8 (2026-11-22)",
+          "s": 6.0
+        }
+      }
+    },
+    "model3d/skintokens": {
+      "run": "dist/nextcuda model3d rig {in}/meshes/humanoid_lo.obj --model skintokens --seed 1 --out {out}/rig.glb --gpu {gpu}",
+      "outputs": [
+        "rig.glb"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^.*rig\\.glb \\(.*, ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0",
+        "1"
+      ],
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "29d390d3e3f0177c",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "2ef50c8 (2026-11-22)",
+          "s": 2.5
+        },
+        "rtx-3060-28u-12g": {
+          "exact": "2e176022398ada15",
+          "device": {
+            "name": "NVIDIA GeForce RTX 3060",
+            "units": 28,
+            "mhz": 1807,
+            "vram_mb": 11909,
+            "cc": 86
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "2ef50c8 (2026-11-22)",
+          "s": 5.1
+        }
+      }
+    },
+    "model3d/unimate": {
+      "run": "dist/nextcuda model3d rig {in}/meshes/humanoid_lo.obj --model skintokens --seed 1 --out {out}/rigged.glb --gpu {gpu} && dist/nextcuda model3d rig {out}/rigged.glb --model unimate --prompt \"a person waves with the right hand\" --seed 1 --out {out}/motion.glb --gpu {gpu}",
+      "outputs": [
+        "motion.glb"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^.*motion\\.glb \\(.*, ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0",
+        "1"
+      ],
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "333845f62ec44d86",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "2ef50c8 (2026-11-22)",
+          "s": 10.2
+        },
+        "rtx-3060-28u-12g": {
+          "exact": "6458c7b41036514d",
+          "device": {
+            "name": "NVIDIA GeForce RTX 3060",
+            "units": 28,
+            "mhz": 1807,
+            "vram_mb": 11909,
+            "cc": 86
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "2ef50c8 (2026-11-22)",
+          "s": 23.3
+        }
+      }
+    },
+    "image/zimage": {
+      "run": "dist/nextcuda image gen \"a hand-painted sign that says OPEN on a wooden door\" --model z-image-turbo --size 512x512 --seed 7 --local --gpu {gpu} --out {out}/img.png",
+      "outputs": [
+        "img.png"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .*, ([0-9.]+) s, settings in the PNG\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0,1"
+      ],
+      "cards": {}
+    },
+    "image/mingimage": {
+      "run": "dist/nextcuda image gen \"a poster for a jazz night, bold type\" --model ming-image-0.1-design --size 512x512 --steps 8 --seed 7 --local --gpu {gpu} --out {out}/img.png",
+      "outputs": [
+        "img.png"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .*, ([0-9.]+) s, settings in the PNG\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0,1"
+      ],
+      "cards": {}
+    },
+    "image/ph3image": {
+      "run": "dist/nextcuda image gen \"a teapot on a windowsill, morning light\" --model p-h3-image-pdmd2 --size 512x512 --seed 7 --local --gpu {gpu} --out {out}/img.png",
+      "outputs": [
+        "img.png"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .*, ([0-9.]+) s, settings in the PNG\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 1200,
+      "gpus": [
+        "0,1"
+      ],
+      "cards": {}
+    },
+    "image/upscale": {
+      "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
+      "run": "dist/nextcuda image upscale {in}/pic.png --model real-esrgan --out {out}/up.png --gpu {gpu}",
+      "outputs": [
+        "up.png"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^run [0-9]+: .* in ([0-9.]+) s on .*",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 600,
+      "gpus": [
+        "0",
+        "1"
+      ],
+      "cards": {}
+    },
+    "image/depthanything": {
+      "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
+      "run": "mkdir -p {out}/d && dist/nextcuda image depth {in}/pic.png --out {out}/d --gpu {gpu}",
+      "outputs": [
+        "dir:d"
+      ],
+      "speed": [],
+      "timeout_s": 600,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
+    "image/starvector": {
+      "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
+      "run": "dist/nextcuda image vectorize {in}/pic.png --greedy --max-length 256 --out {out}/v.svg --gpu {gpu}",
+      "outputs": [
+        "v.svg"
+      ],
+      "speed": [],
+      "timeout_s": 900,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
+    "image/unlimitedocr": {
+      "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
+      "run": "dist/nextcuda image ocr {in}/pic.png --model unlimited-ocr-q8 --max 128 --gpu {gpu} --out {out}/t.md",
+      "outputs": [
+        "t.md"
+      ],
+      "speed": [],
+      "timeout_s": 900,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
+    "image/paddleocrvl": {
+      "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
+      "run": "dist/nextcuda image ocr {in}/pic.png --model paddleocr-vl-1.6 --max 128 --gpu {gpu} --out {out}/t.md",
+      "outputs": [
+        "t.md"
+      ],
+      "speed": [],
+      "timeout_s": 900,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
+    "image/flashvsr": {
+      "setup": "[ -f {in}/clip.mp4 ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=320x192:rate=24 -frames:v 25 -c:v libx264 -pix_fmt yuv420p {in}/clip.mp4",
+      "run": "dist/nextcuda image upscale-clip {in}/clip.mp4 {out}/up.mp4 --model flashvsr --scale 2 --frames 17 --seed 1 --gpu {gpu}",
+      "outputs": [
+        "frames:up.mp4"
+      ],
+      "speed": [
+        {
+          "name": "s_frame",
+          "re": "^.* \\(([0-9.]+) s a frame\\) .*",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 1200,
+      "gpus": [
+        "0,1"
+      ],
+      "cards": {}
+    },
+    "audio/breezetts2": {
+      "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model breeze-tts-2 --seed 1 --out {out}/a.wav --gpu {gpu}",
+      "outputs": [
+        "a.wav"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .* in ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0",
+        "1"
+      ],
+      "cards": {}
+    },
+    "audio/qwen3tts": {
+      "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model qwen3-tts-custom --seed 1 --out {out}/a.wav --gpu {gpu}",
+      "outputs": [
+        "a.wav"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .* in ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
+    "audio/voxcpm2": {
+      "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model voxcpm2 --seed 1 --out {out}/a.wav --gpu {gpu}",
+      "outputs": [
+        "a.wav"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .* in ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
+    "audio/zonos3": {
+      "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model zonos3-mini --seed 1 --out {out}/a.wav --gpu {gpu}",
+      "outputs": [
+        "a.wav"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .* in ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
+    "audio/acestep": {
+      "run": "dist/nextcuda audio gen \"upbeat pop, female vocal\" --model acestep-1.5 --lyrics \"[verse]\\nThe morning light comes over the hill\" --seconds 10 --seed 1 --out {out}/song.wav --gpu {gpu}",
+      "outputs": [
+        "song.wav"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .* in ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "1"
+      ],
+      "cards": {
+        "rtx-3060-28u-12g": {
+          "exact": "a106dc123409aabd",
+          "device": {
+            "name": "NVIDIA GeForce RTX 3060",
+            "units": 28,
+            "mhz": 1807,
+            "vram_mb": 11909,
+            "cc": 86
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 3.7
+        }
+      }
+    },
+    "audio/minimaxmusic3": {
+      "run": "dist/nextcuda audio gen \"a calm piano ballad\" --model minimax-music3-int8 --lyrics \"[verse]\\nThe morning light comes over the hill\" --seconds 10 --seed 1 --out {out}/song.wav --gpu {gpu}",
+      "outputs": [
+        "song.wav"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^saved .* in ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 1500,
+      "gpus": [
+        "0,1"
+      ],
+      "cards": {}
+    },
+    "model3d/trellis2": {
+      "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
+      "run": "dist/nextcuda model3d gen {in}/pic.png --model trellis2-512 --seed 1 --out {out}/m.glb --gpu {gpu}",
+      "outputs": [
+        "m.glb"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^.*m\\.glb \\(.*, ([0-9.]+) s, seed [0-9]+\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 1200,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
+    "model3d/hunyuan3d": {
+      "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
+      "run": "dist/nextcuda model3d gen {in}/pic.png --model hunyuan3d-2mini-turbo --seed 1 --out {out}/m.glb --gpu {gpu}",
+      "outputs": [
+        "m.glb"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^.*m\\.glb \\(.*, ([0-9.]+) s, seed [0-9]+\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 1200,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
+    "model3d/unirig": {
+      "run": "dist/nextcuda model3d rig {in}/meshes/humanoid_lo.obj --model unirig --seed 1 --out {out}/rig.glb --gpu {gpu}",
+      "outputs": [
+        "rig.glb"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^.*rig\\.glb \\(.*, ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0",
+        "1"
+      ],
+      "cards": {}
+    },
+    "model3d/rignet": {
+      "run": "dist/nextcuda model3d rig {in}/meshes/humanoid_lo.obj --model rignet --seed 1 --out {out}/rig.glb --gpu {gpu}",
+      "outputs": [
+        "rig.glb"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^.*rig\\.glb \\(.*, ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
+    "model3d/animateanymesh": {
+      "run": "dist/nextcuda model3d rig {in}/meshes/humanoid_lo.obj --model animateanymesh --prompt \"a person waves\" --seed 1 --out {out}/anim.glb --gpu {gpu}",
+      "outputs": [
+        "anim.glb"
+      ],
+      "speed": [
+        {
+          "name": "s",
+          "re": "^.*anim\\.glb \\(.*, ([0-9.]+) s\\)$",
+          "from": "stdout",
+          "better": "lower"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    }
+  }
+}

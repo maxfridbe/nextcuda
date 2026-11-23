@@ -465,6 +465,15 @@ Inputs of the checks and unit tests that need files outside the repository (unse
 
 | Variable | Default | What it does | Read by |
 |---|---|---|---|
+| `NS_GATE_HOST` | this machine | the merge gate's GPU box over ssh (the project's: brainiac-nvidia); empty or `local`: this machine, no ssh (a contributor's own card) | tooling/gate.sh |
+| `NS_GATE_DIR` | nextcuda-gate under ~ over ssh, ~/.cache/nextcuda-gate here | the gate's build copy on that box (its own dist, nextcuda.conf and a copy of the registry) - never the service's files | tooling/gate.sh |
+| `NS_GATE_BUILD` | ~/.cache/nextcuda-gate | where the gate builds <head>'s program here (its tree and its target-trixie) | tooling/gate.sh |
+| `NS_GATE_LOCK` | ~/.nextcuda-gpu.lock | the lock file every GPU run of the gate takes (flock); `none`: no lock | tooling/gate.sh |
+| `NS_GATE_GPUS` | each engine's `gpus` (brainiac-nvidia's) | the GPUs (or sets, `0,1`) the gate runs on, space separated (a contributor's box: its own) | tooling/gate.sh |
+| `NS_GATE_PATHS` | - | FROM=TO[,FROM=TO]: the baselines' model paths (in `run`: brainiac-nvidia's) where they are on this box | tooling/gate.sh |
+| `NS_GATE_RECORD` | 0 | 1: write the measured values into tooling/gate-baselines.json instead of comparing - under each card's id, with what it reports and the box | tooling/gate.sh |
+| `NS_GATE_WAIT` | 7200 | seconds a run waits for the box to be idle (no other process on its GPUs, nothing running or queued for the creative platform) before it is skipped | tooling/gate.sh |
+| `NS_GATE_SKIP_BUILD` | 0 | 1: run what the build copy holds already (a second pass over the same <head>) | tooling/gate.sh |
 | `NC_Z3_EDIT_DUMP` | unset | a directory: speech editing's first region's prompt written there for the reference (ids.npy, ids.cond.json) | audio zonos3 (check) |
 | `NC_Z3_ENC_DUMP` | unset | a directory: the reference encoder's first lane's stages as .npy, named as zac-encoder-cli --dump names them | audio zonos3 (check) |
 | `NC_Z3_ENC_F32` | 0 | 1: the reference encoder in float32 activations and matrices instead of the production BF16 recipe (a diagnostic) | audio zonos3 (check) |
