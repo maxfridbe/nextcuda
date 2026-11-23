@@ -1,6 +1,6 @@
 {
   "about": "tooling/gate.sh's baselines: each engine's quick run on a fixed seed - `outputs` hashed (exact: a file's bytes, `frames:FILE` a clip's decoded frames, `lines:FILE:REGEX` lines of it) and its throughputs (`speed`: a number read from the run's stderr or stdout by `re`, `better` lower or higher; the better of two runs) - per card, keyed by the card's id (`nextcuda silo`: its name, SM count and memory, rtx-3060-28u-12g; a run over several GPUs: their ids joined by +, in the order the run takes them) with what the card reports (`device`) and the box it was recorded on (`host`). `gpus` are the GPUs (or sets) the run takes on brainiac-nvidia (GPU 0 the RTX 5070, 1 the RTX 3060; NS_GATE_GPUS elsewhere), `run` its paths there (NS_GATE_PATHS maps them elsewhere; {gpu}, {out} the run's directory, {in} the copy's inputs: `setup` makes them), and the shared parts' engines. Recorded with NS_GATE_RECORD=1 on the commit named; a change that moves a number on purpose records it again in its pull request, and a contributor's card gets its own entry recorded on that card.",
-  "recorded": "2ef50c8 (2026-11-22): the six first engines on 2ef50c8 (MOSS-Image with bf91372 beside it), ACE-Step on 0e738a5; the rest not recorded yet",
+  "recorded": "2026-11-22: llm/qwen35, image/mossimage (with bf91372), image/qwenimage21, audio/yue2, model3d/skintokens, model3d/unimate on 2ef50c8; the other 20 engines on 0e738a5 (steps 1-2, before step 3)",
   "tolerance": 0.03,
   "shared": {
     "crates/": [
@@ -353,7 +353,30 @@
       "gpus": [
         "0,1"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g+rtx-3060-28u-12g": {
+          "exact": "9513bb37c7c9952f",
+          "device": [
+            {
+              "name": "NVIDIA GeForce RTX 5070",
+              "units": 48,
+              "mhz": 2542,
+              "vram_mb": 11772,
+              "cc": 120
+            },
+            {
+              "name": "NVIDIA GeForce RTX 3060",
+              "units": 28,
+              "mhz": 1807,
+              "vram_mb": 11909,
+              "cc": 86
+            }
+          ],
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 3.1
+        }
+      }
     },
     "image/mingimage": {
       "run": "dist/nextcuda image gen \"a poster for a jazz night, bold type\" --model ming-image-0.1-design --size 512x512 --steps 8 --seed 7 --local --gpu {gpu} --out {out}/img.png",
@@ -372,7 +395,30 @@
       "gpus": [
         "0,1"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g+rtx-3060-28u-12g": {
+          "exact": "f53a42bb86690bd2",
+          "device": [
+            {
+              "name": "NVIDIA GeForce RTX 5070",
+              "units": 48,
+              "mhz": 2542,
+              "vram_mb": 11772,
+              "cc": 120
+            },
+            {
+              "name": "NVIDIA GeForce RTX 3060",
+              "units": 28,
+              "mhz": 1807,
+              "vram_mb": 11909,
+              "cc": 86
+            }
+          ],
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 12.5
+        }
+      }
     },
     "image/ph3image": {
       "run": "dist/nextcuda image gen \"a teapot on a windowsill, morning light\" --model p-h3-image-pdmd2 --size 512x512 --seed 7 --local --gpu {gpu} --out {out}/img.png",
@@ -391,7 +437,30 @@
       "gpus": [
         "0,1"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g+rtx-3060-28u-12g": {
+          "exact": "ce9703f9d8e6b62b",
+          "device": [
+            {
+              "name": "NVIDIA GeForce RTX 5070",
+              "units": 48,
+              "mhz": 2542,
+              "vram_mb": 11772,
+              "cc": 120
+            },
+            {
+              "name": "NVIDIA GeForce RTX 3060",
+              "units": 28,
+              "mhz": 1807,
+              "vram_mb": 11909,
+              "cc": 86
+            }
+          ],
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 2.6
+        }
+      }
     },
     "image/upscale": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -411,7 +480,34 @@
         "0",
         "1"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "d13e479cc16efd0f",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 1.160
+        },
+        "rtx-3060-28u-12g": {
+          "exact": "7b3969750230177b",
+          "device": {
+            "name": "NVIDIA GeForce RTX 3060",
+            "units": 28,
+            "mhz": 1807,
+            "vram_mb": 11909,
+            "cc": 86
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 2.550
+        }
+      }
     },
     "image/depthanything": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -424,11 +520,24 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "5072bbb42337dbcd",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)"
+        }
+      }
     },
     "image/starvector": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
-      "run": "dist/nextcuda image vectorize {in}/pic.png --greedy --max-length 256 --out {out}/v.svg --gpu {gpu}",
+      "run": "dist/nextcuda image vectorize {in}/pic.png --greedy --max-length 512 --out {out}/v.svg --gpu {gpu}",
       "outputs": [
         "v.svg"
       ],
@@ -437,7 +546,20 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "11caa755609f2a81",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)"
+        }
+      }
     },
     "image/unlimitedocr": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -450,7 +572,20 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "537e61329f6d0346",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)"
+        }
+      }
     },
     "image/paddleocrvl": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -463,7 +598,20 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "c8235b19135158de",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)"
+        }
+      }
     },
     "image/flashvsr": {
       "setup": "[ -f {in}/clip.mp4 ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=320x192:rate=24 -frames:v 25 -c:v libx264 -pix_fmt yuv420p {in}/clip.mp4",
@@ -482,7 +630,30 @@
       "gpus": [
         "0,1"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g+rtx-3060-28u-12g": {
+          "exact": "d466d6f0729e64df",
+          "device": [
+            {
+              "name": "NVIDIA GeForce RTX 5070",
+              "units": 48,
+              "mhz": 2542,
+              "vram_mb": 11772,
+              "cc": 120
+            },
+            {
+              "name": "NVIDIA GeForce RTX 3060",
+              "units": 28,
+              "mhz": 1807,
+              "vram_mb": 11909,
+              "cc": 86
+            }
+          ],
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s_frame": 0.072
+        }
+      }
     },
     "audio/breezetts2": {
       "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model breeze-tts-2 --seed 1 --out {out}/a.wav --gpu {gpu}",
@@ -502,10 +673,37 @@
         "0",
         "1"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "f30ece39def535bf",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 2.3
+        },
+        "rtx-3060-28u-12g": {
+          "exact": "eefd85b22530f59c",
+          "device": {
+            "name": "NVIDIA GeForce RTX 3060",
+            "units": 28,
+            "mhz": 1807,
+            "vram_mb": 11909,
+            "cc": 86
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 3.2
+        }
+      }
     },
     "audio/qwen3tts": {
-      "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model qwen3-tts-custom --seed 1 --out {out}/a.wav --gpu {gpu}",
+      "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model qwen3-tts-custom --voice ryan --seed 1 --out {out}/a.wav --gpu {gpu}",
       "outputs": [
         "a.wav"
       ],
@@ -521,7 +719,21 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "13efa5e36f6abe86",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 0.7
+        }
+      }
     },
     "audio/voxcpm2": {
       "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model voxcpm2 --seed 1 --out {out}/a.wav --gpu {gpu}",
@@ -540,7 +752,21 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "7c4192432e7be158",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 1.0
+        }
+      }
     },
     "audio/zonos3": {
       "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model zonos3-mini --seed 1 --out {out}/a.wav --gpu {gpu}",
@@ -559,7 +785,21 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "3f87a83bb8dcf27a",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 0.3
+        }
+      }
     },
     "audio/acestep": {
       "run": "dist/nextcuda audio gen \"upbeat pop, female vocal\" --model acestep-1.5 --lyrics \"[verse]\\nThe morning light comes over the hill\" --seconds 10 --seed 1 --out {out}/song.wav --gpu {gpu}",
@@ -611,7 +851,30 @@
       "gpus": [
         "0,1"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g+rtx-3060-28u-12g": {
+          "exact": "2ffcd62745adc9ee",
+          "device": [
+            {
+              "name": "NVIDIA GeForce RTX 5070",
+              "units": 48,
+              "mhz": 2542,
+              "vram_mb": 11772,
+              "cc": 120
+            },
+            {
+              "name": "NVIDIA GeForce RTX 3060",
+              "units": 28,
+              "mhz": 1807,
+              "vram_mb": 11909,
+              "cc": 86
+            }
+          ],
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 29.3
+        }
+      }
     },
     "model3d/trellis2": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -631,7 +894,21 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "430ffd6d8b395d0b",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 23.6
+        }
+      }
     },
     "model3d/hunyuan3d": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -651,7 +928,22 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "062be44fc7914a3c/68d288f15bbac94b",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 8.7
+        }
+      },
+      "nondeterministic": "two runs of one build and seed give different meshes (2026-11-22)"
     },
     "model3d/unirig": {
       "run": "dist/nextcuda model3d rig {in}/meshes/humanoid_lo.obj --model unirig --seed 1 --out {out}/rig.glb --gpu {gpu}",
@@ -671,7 +963,34 @@
         "0",
         "1"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "7a35ceb2290841a6",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 14.3
+        },
+        "rtx-3060-28u-12g": {
+          "exact": "0a96b6b8aded7168",
+          "device": {
+            "name": "NVIDIA GeForce RTX 3060",
+            "units": 28,
+            "mhz": 1807,
+            "vram_mb": 11909,
+            "cc": 86
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 30.5
+        }
+      }
     },
     "model3d/rignet": {
       "run": "dist/nextcuda model3d rig {in}/meshes/humanoid_lo.obj --model rignet --seed 1 --out {out}/rig.glb --gpu {gpu}",
@@ -690,7 +1009,22 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "54616afc0572dac9/91e6e0c232ccd642",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 0.8
+        }
+      },
+      "nondeterministic": "two runs of one build and seed give different rigs (2026-11-22)"
     },
     "model3d/animateanymesh": {
       "run": "dist/nextcuda model3d rig {in}/meshes/humanoid_lo.obj --model animateanymesh --prompt \"a person waves\" --seed 1 --out {out}/anim.glb --gpu {gpu}",
@@ -709,7 +1043,21 @@
       "gpus": [
         "0"
       ],
-      "cards": {}
+      "cards": {
+        "rtx-5070-48u-11g": {
+          "exact": "5f752c5fb67c97ea",
+          "device": {
+            "name": "NVIDIA GeForce RTX 5070",
+            "units": 48,
+            "mhz": 2542,
+            "vram_mb": 11772,
+            "cc": 120
+          },
+          "host": "brainiac-nvidia",
+          "recorded": "0e738a5 (2026-11-22)",
+          "s": 5.8
+        }
+      }
     }
   }
 }

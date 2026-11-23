@@ -7,7 +7,9 @@
 # GPU sets) twice - under the GPU lock (~/.nextcuda-gpu.lock) and a timeout, and only while the box is idle: no other
 # process on those GPUs and nothing running or queued for the creative platform - and compares with the baselines: the
 # exact output exactly (an LLM's greedy tokens and their log-probabilities, a picture's, a sound's or a mesh's bytes, a
-# clip's decoded frames - for a fixed seed), each throughput within the tolerance (3%, the better of the two runs).
+# clip's decoded frames - for a fixed seed), each throughput within the tolerance (3%, the better of the two runs). An
+# engine whose output differs between two runs of the same build (`nondeterministic` in its baselines, with why) is held
+# to its throughput alone.
 # Prints a pass/fail table to paste into the pull request; exits 1 on a failure.
 #
 # The baselines are per card, keyed by the card's id (what `nextcuda silo` prints: rtx-3060-28u-12g - its name, its
@@ -277,7 +279,9 @@ while read -r res; do
     rows+=("| $e | $g $id | $note | ${spd[*]:-} | - |"); continue
   fi
   bx=$(jq -r --arg e "$e" --arg c "$id" '.engines[$e].cards[$c].exact // "none"' "$B")
-  if [ "$x" = "$bx" ] && [[ "$x" != */* ]]; then xs="same ($x)"; else xs="DIFFERENT ($x, baseline $bx)"; ok=FAIL; fi
+  nd=$(jq -r --arg e "$e" '.engines[$e].nondeterministic // ""' "$B")
+  if [ -n "$nd" ]; then xs="not compared (nondeterministic: $nd)"
+  elif [ "$x" = "$bx" ] && [[ "$x" != */* ]]; then xs="same ($x)"; else xs="DIFFERENT ($x, baseline $bx)"; ok=FAIL; fi
   [ "$ok" = PASS ] || fail=1
   rows+=("| $e | $g $id | $xs | ${spd[*]:-} | $ok |")
 done < "$tmp/results.jsonl"
