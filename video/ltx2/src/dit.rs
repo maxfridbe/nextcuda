@@ -241,8 +241,7 @@ const HEADROOM: u64 = 5 << 29;
 fn auto_split(gpus: &[Arc<Gpu>], per_block: u64) -> Result<Vec<usize>> {
     let speed: Vec<f64> = gpus.iter().map(|g| nextcuda_core::gpu_units(g.index).map_or(1.0, |(u, c)| if u == 0 { 1.0 } else { u as f64 * c.max(1) as f64 })).collect();
     let cap: Vec<usize> = gpus.iter().map(|g| {
-        let (t, f) = g.memory().unwrap_or((0, None));
-        let room = (f.unwrap_or(t) as f64 * 0.94) as u64;
+        let room = (g.free_or_guess().unwrap_or(0) as f64 * 0.94) as u64;
         (room.saturating_sub(HEADROOM) / per_block.max(1)) as usize
     }).collect();
     plan_split(&speed, &cap)

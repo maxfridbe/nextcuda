@@ -525,7 +525,8 @@ impl<'a> Denoiser<'a> {
             let cards: Vec<&Arc<Device>> = if blocks.devs.len() > 1 { blocks.devs.iter().collect() } else { vec![&dev] };
             let margin = 768u64 << 20; // attention workspace, the previous step's tables still alive while the next is made
             for d in &cards {
-                let free = d.mem_cap().saturating_sub(d.mem_used());
+                // (what the device reports: its cap's rest, never past what the card has free with every process counted)
+                let free = d.free_or_guess();
                 let need = s as u64 * per_token + margin;
                 if need > free {
                     let fit = free.saturating_sub(margin) / per_token;

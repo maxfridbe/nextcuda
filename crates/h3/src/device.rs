@@ -96,6 +96,13 @@ impl Device {
         }
     }
 
+    /// The room for new buffers, bytes, as the device reports it (`Gpu::free_or_guess`'s rule for an nsd context):
+    /// what this context may still allocate under its cap, and never more than the whole card has free now (every
+    /// process counted); the card's free memory not known, the cap's rest alone. A plan asks this, never a card's size.
+    pub fn free_or_guess(&self) -> u64 {
+        room(self.mem_cap(), self.mem_used(), self.mem_free())
+    }
+
     /// Device memory. Refused (an error, not a stall) when it would pass the cap.
     pub fn alloc(self: &Arc<Self>, bytes: usize) -> Result<Buf> {
         // SAFETY: plain call; NULL is the failure.
@@ -319,5 +326,27 @@ impl Tensor {
     /// The tensor's values as float32, read back from the device.
     pub fn to_f32(&self) -> Result<Vec<f32>> {
         crate::dtype::bytes_to_f32(&self.to_bytes()?, self.dtype)
+    }
+}
+
+/// `Device::free_or_guess`: the cap's rest, no more than the card's free memory when the driver tells it
+pub fn room(cap: u64, used: u64, card_free: Option<u64>) -> u64 {
+    let rest = cap.saturating_sub(used);
+    card_free.map_or(rest, |f| rest.min(f))
+}
+
+#[cfg(test)]
+mod room_tests {
+    use super::room;
+
+    #[test]
+    fn room_is_the_caps_rest_never_past_what_the_card_has_free() {
+        const G: u64 = 1 << 30;
+        assert_eq!(room(11 * G, 6 * G, Some(5 * G)), 5 * G);
+        // another process holds memory on the card: its free memory is the bound
+        assert_eq!(room(11 * G, 6 * G, Some(2 * G)), 2 * G);
+        // the driver cannot tell: the cap's rest
+        assert_eq!(room(11 * G, 6 * G, None), 5 * G);
+        assert_eq!(room(4 * G, 6 * G, Some(G)), 0);
     }
 }

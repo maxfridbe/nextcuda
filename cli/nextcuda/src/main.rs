@@ -883,8 +883,8 @@ fn serve_cmd(args: &[String]) -> Result<(), String> {
     let model = args.get(1).ok_or("serve <model.gguf> ...")?;
     let g = opt("--gpu").unwrap_or_else(|| "0".into());
     let gpus: Vec<usize> = if g == "all" {
-        // the one that computes most last: it takes the head and the draft block (measured on a B65 + B70: the
-        // B70 last reads prompts 6% faster; decode the same)
+        // the one that computes most (SMs x clock) last: it takes the head and the draft block (nextsycl, B65 + B70:
+        // the B70 last reads prompts 6% faster; here the 5070 last, as the registry's 1,0 for Qwen3.8)
         nextcuda_core::gpus_weakest_first().map_err(e)?
     } else {
         g.split(',').map(|v| v.trim().parse().map_err(|_| format!("--gpu {v}"))).collect::<Result<_, _>>()?

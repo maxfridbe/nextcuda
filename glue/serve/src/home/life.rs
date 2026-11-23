@@ -115,6 +115,90 @@ fn one_card(m: &Value) -> bool {
     matches!(registry::kind_of(m), "image" | "audio" | "model3d")
 }
 
+/// Each card's memory in all, MiB, as the box reports it (`cards`: the named cards, a card's place its index): what the
+/// plans below size against - never a card's name or an assumed size
+pub(super) fn totals_of(cards: &Value) -> Vec<(usize, u64)> {
+    cards.as_array().into_iter().flatten().enumerate().filter_map(|(i, c)| c["vram_total_mb"].as_u64().filter(|t| *t > 0).map(|t| (i, t))).collect()
+}
+
+/// Card `g`'s memory in all, MiB: its own as reported; a card the list does not have yet, the largest the box reports
+/// (a cap no lower than any card here: it can only vouch more, which waits for more room, never less); None when no
+/// card is known (nothing is capped then, and nothing places until the cards are read)
+pub(super) fn card_total(totals: &[(usize, u64)], g: usize) -> Option<u64> {
+    totals.iter().find(|(i, _)| *i == g).map(|(_, t)| *t).or_else(|| totals.iter().map(|(_, t)| *t).max())
+}
+
+/// The most a model may be vouched for on a card of `total` MiB: the card less the 1.5 GiB always kept free
+/// (MARGIN_MB) and 512 MiB the driver takes; no cap on a card not known
+pub(super) fn vouch_cap(total: Option<u64>) -> u64 {
+    total.map_or(u64::MAX, |t| t.saturating_sub(MARGIN_MB + 512))
+}
+
+/// A model's files, MiB (those that are there)
+fn files_mb(m: &Value) -> u64 {
+    registry::paths(m).iter().filter(|p| p.is_file()).filter_map(|p| std::fs::metadata(p).ok()).map(|x| x.len() >> 20).sum()
+}
+
+/// A model's memory on each of its cards, MiB, from what is known of it (no I/O; `Home::vouched_mb` gathers it):
+/// `seen` what it took on each card while it ran here, else its entry's `vram_gib` (as measured where it runs), else
+/// its files' (`files_mb`) share by kind - each never more than its card holds beside the spare (`vouch_cap` of its own
+/// `total`). An image or audio model loads whole on one of its cards: what it takes there, for each. Whether it was
+/// seen comes with it.
+pub(super) fn vouch(m: &Value, gpus: &[usize], seen: Option<&BTreeMap<usize, u64>>, files_mb: u64, total: &dyn Fn(usize) -> Option<u64>) -> (BTreeMap<usize, u64>, bool) {
+    let single = one_card(m);
+    let cap = |g: usize| vouch_cap(total(g));
+    // a model that ran fits the card: a peak seen above what a card may be asked for (an edit's, with its vision tower,
+    // touching the card's whole memory) would otherwise refuse the model from then on, its margin never free
+    if let Some(seen) = seen {
+        if single && !seen.is_empty() {
+            let mb = seen.values().copied().max().unwrap_or(0);
+            return (gpus.iter().map(|g| (*g, mb.min(cap(*g)))).collect(), true);
+        }
+        if !single && gpus.iter().all(|i| seen.contains_key(i)) {
+            return (gpus.iter().map(|g| (*g, seen[g].min(cap(*g)))).collect(), true);
+        }
+    }
+    if let Some(gib) = m["vram_gib"].as_f64().filter(|g| *g > 0.0) {
+        return (gpus.iter().map(|g| (*g, ((gib * 1024.0) as u64).min(cap(*g)))).collect(), false);
+    }
+    let per = |g: usize| match registry::kind_of(m) {
+        // a video model takes its card, less 4 GiB (on a card not known: its files and 4 GiB)
+        "video" => total(g).map_or(files_mb + 4096, |t| t.saturating_sub(4096)),
+        "image" => files_mb * 105 / 100 + 4096,
+        "audio" => files_mb * 110 / 100 + 2048,
+        "model3d" => files_mb * 110 / 100 + 6144,
+        _ => files_mb / gpus.len().max(1) as u64 + 2048,
+    };
+    (gpus.iter().map(|g| (*g, per(*g).min(cap(*g)))).collect(), false)
+}
+
+/// The cards of `gpus` a picture, sound or 3D model can load on at all: its figure - its entry's `vram_gib` (a split
+/// model's first card's), else its files' estimate (a split model's files shared over its cards), never capped - within
+/// the card's whole memory. (nextsycl also keeps its 1.5 GiB spare out of the card here; nextcuda's figures are peaks
+/// measured on these very cards, the 3060 running ACE-Step at 11.3 of its 12 GiB, so the spare stays the room plan's
+/// affair.) A model that streams its weights (`streams`) sizes itself to its card: every card. A card not known passes
+/// (the room plan then waits for it). Err, saying what it needs and what each card holds, when no card is left - or,
+/// for a split model, when any one is short: it is refused, not tried.
+pub(super) fn cards_it_fits(m: &Value, gpus: &[usize], files_mb: u64, total: &dyn Fn(usize) -> Option<u64>) -> Result<Vec<usize>, String> {
+    if m["streams"] == true || !matches!(registry::kind_of(m), "image" | "audio" | "model3d") {
+        return Ok(gpus.to_vec());
+    }
+    let split = m["split"] == true && gpus.len() > 1;
+    let files = if split { files_mb / gpus.len() as u64 } else { files_mb };
+    let (need, _) = vouch(m, gpus, None, files, &|_| None);
+    let short: Vec<(usize, u64, u64)> = gpus.iter().filter_map(|g| {
+        let (n, t) = (need.get(g).copied().unwrap_or(0), total(*g)?);
+        (n > t).then_some((*g, n, t))
+    }).collect();
+    let fits: Vec<usize> = gpus.iter().copied().filter(|g| !short.iter().any(|s| s.0 == *g)).collect();
+    if short.is_empty() || (!split && !fits.is_empty()) {
+        return Ok(fits);
+    }
+    let gib = |mb: u64| mb as f64 / 1024.0;
+    let each: Vec<String> = short.iter().map(|(g, n, t)| format!("{:.1} GiB on GPU {g}, which holds {:.1} GiB", gib(*n), gib(*t))).collect();
+    Err(format!("{} cannot load on its cards: it needs {} - a model larger than its cards is refused, not tried", s(m, "id"), each.join("; ")))
+}
+
 /// A chat model whose model card spreads one copy over every card (`gpus: all`; its title says "both GPUs"): it
 /// does not fit on fewer, so its cards are not a choice (an image or audio model's `all` is where its copies may go)
 pub(crate) fn spans_all(m: &Value, model_cards: &[Value]) -> bool {
@@ -412,37 +496,13 @@ impl Home {
         Ok(())
     }
 
-    /// The memory a model takes on each of its cards, MiB: as seen while it ran, else its model card's `vram_gib` (as
-    /// measured where it runs), else from its files' sizes - never more than a card holds beside the spare. An image or
-    /// audio model loads whole on one of its cards: what it takes there, for each.
-    fn vouched_mb(&self, m: &Value, card_mb: u64) -> (BTreeMap<usize, u64>, bool) {
-        let id = s(m, "id");
-        let gpus = self.gpus_of(m);
-        let single = one_card(m);
-        // a model that ran fits the card: a peak seen above what a card may be asked for (an edit's, with its vision tower,
-        // touching the card's whole memory) would otherwise refuse the model from then on, its margin never free
-        let cap = card_mb.saturating_sub(MARGIN_MB + 512);
-        if let Some(seen) = self.seen.lock().unwrap().get(&id) {
-            if single && !seen.is_empty() {
-                let mb = seen.values().copied().max().unwrap_or(0).min(cap);
-                return (gpus.iter().map(|g| (*g, mb)).collect(), true);
-            }
-            if !single && gpus.iter().all(|i| seen.contains_key(i)) {
-                return (gpus.iter().map(|g| (*g, seen[g].min(cap))).collect(), true);
-            }
-        }
-        if let Some(g) = m["vram_gib"].as_f64().filter(|g| *g > 0.0) {
-            return (gpus.iter().map(|i| (*i, ((g * 1024.0) as u64).min(cap))).collect(), false);
-        }
-        let files: u64 = registry::paths(m).iter().filter(|p| p.is_file()).filter_map(|p| std::fs::metadata(p).ok()).map(|x| x.len() >> 20).sum();
-        let per = match registry::kind_of(m) {
-            "video" => card_mb.saturating_sub(4096),
-            "image" => files * 105 / 100 + 4096,
-            "audio" => files * 110 / 100 + 2048,
-            "model3d" => files * 110 / 100 + 6144,
-            _ => files / gpus.len() as u64 + 2048,
-        };
-        (gpus.iter().map(|g| (*g, per.min(cap))).collect(), false)
+    /// The memory a model takes on each of its cards, MiB (`vouch`): as seen while it ran, else its entry's `vram_gib`,
+    /// else from its files' sizes - never more than its card holds beside the spare, each card's own total as the box
+    /// reports it (`totals`: `totals_of` the named cards)
+    fn vouched_mb(&self, m: &Value, totals: &[(usize, u64)]) -> (BTreeMap<usize, u64>, bool) {
+        let seen = self.seen.lock().unwrap().get(&s(m, "id")).cloned();
+        let files = if m["vram_gib"].as_f64().is_some_and(|g| g > 0.0) && seen.is_none() { 0 } else { files_mb(m) };
+        vouch(m, &self.gpus_of(m), seen.as_ref(), files, &|g| card_total(totals, g))
     }
 
     /// Of what a model is vouched for on each card, MiB: the part that is not its weights - the working memory it
@@ -593,7 +653,7 @@ impl Home {
 
     /// Every registered model (LoRAs aside): kind, enabled, cards, state, memory vouched for
     pub(crate) fn model_states(&self, all: &[Value], cards: &Value) -> Vec<Value> {
-        let card_mb = |g: usize| cards.get(g).and_then(|c| c["vram_total_mb"].as_u64()).unwrap_or(32768);
+        let totals = totals_of(cards);
         let loading = self.loading.lock().unwrap().clone();
         let need = |k: &str| all.iter().any(|m| registry::kind_of(m) == k);
         let chat = if need("llm") { (self.chat_loaded(all), self.chat_mode()) } else { (None, (None, None)) };
@@ -672,7 +732,7 @@ impl Home {
             let (id, kind) = (s(m, "id"), registry::kind_of(m).to_string());
             let enabled = m["enabled"] != false;
             let gpus = self.gpus_of(m);
-            let (mut vouch, measured) = self.vouched_mb(m, gpus.first().map_or(32768, |g| card_mb(*g)));
+            let (mut vouch, measured) = self.vouched_mb(m, &totals);
             // an image or audio model allowed several cards counts on the ones its copies are on, else the first it tries
             if one_card(m) && vouch.len() > 1 {
                 let on: Vec<usize> = held_on(cards, &id).into_iter().filter(|g| vouch.contains_key(g)).collect();
@@ -1028,6 +1088,11 @@ impl Home {
         if m["enabled"] == false {
             return Err((409, format!("{id} is disabled (enable it on :8000 or nextcuda models enable {id})")));
         }
+        // a model larger than every card it may use is refused here (409 conflict), not started to run out of memory
+        {
+            let totals = totals_of(&self.cards.lock().unwrap());
+            cards_it_fits(&m, &self.gpus_of(&m), files_mb(&m), &|g| card_total(&totals, g)).map_err(|e| (409, e))?;
+        }
         let default = Duration::from_secs(if job.is_some() { JOB_ROOM_WAIT_S } else { ROOM_WAIT_S });
         // the caller's max_willing_to_wait_s bounds the wait for the request to start (and never lengthens the default)
         let max_wait = super::rsvp::max_wait();
@@ -1070,8 +1135,8 @@ impl Home {
     pub(crate) fn place(&self, m: &Value, id: &str, kind: &str, job: Option<&str>) -> Result<Result<Lease<'_>, String>, (u16, String)> {
         let info = self.model_info(m);
         let _g = self.kind_lock[kind].lock().unwrap();
-        let card_mb = |c: &Value| c["vram_total_mb"].as_u64().unwrap_or(0);
-        let (need, _) = self.vouched_mb(m, self.cards.lock().unwrap().get(info.gpus[0]).map_or(32768, card_mb));
+        let totals = totals_of(&self.cards.lock().unwrap());
+        let (need, _) = self.vouched_mb(m, &totals);
         let rest = self.split_rest_mb(m, &info);
         let (asked, asked_rest) = {
             let a = self.asked.lock().unwrap();
@@ -1258,8 +1323,9 @@ impl Home {
         let t0 = Instant::now();
         loop {
             let cards = self.named_cards(&all);
-            let card_mb = |g: usize| cards.get(g).and_then(|c| c["vram_total_mb"].as_u64()).unwrap_or(32768);
-            let (need, _) = self.vouched_mb(m, card_mb(gpus[0]));
+            let totals = totals_of(&cards);
+            let card_mb = |g: usize| card_total(&totals, g).unwrap_or(0);
+            let (need, _) = self.vouched_mb(m, &totals);
             let snap = self.snapshot();
             let info = self.model_info(m);
             // what the chat model loaded now holds on a card (it leaves)
@@ -1526,9 +1592,11 @@ impl Home {
         let named = ["engine", "model"].iter().filter_map(|k| b[*k].as_str()).find(|id| all.iter().any(|m| m["id"] == *id && registry::kind_of(m) == "video"));
         let Some(m) = all.iter().find(|m| registry::kind_of(m) == "video" && m["enabled"] != false && named.is_none_or(|id| m["id"] == id)) else { return Ok(()) };
         let info = self.model_info(m);
-        let Some(&first) = info.gpus.first() else { return Ok(()) };
-        let card_mb = self.cards.lock().unwrap().get(first).and_then(|c| c["vram_total_mb"].as_u64()).unwrap_or(32768);
-        let (need, seen) = self.vouched_mb(m, card_mb);
+        if info.gpus.is_empty() {
+            return Ok(());
+        }
+        let totals = totals_of(&self.cards.lock().unwrap());
+        let (need, seen) = self.vouched_mb(m, &totals);
         let need = if seen { BTreeMap::new() } else { need };
         splace::room_for_video(&Sched(self), &splace::VideoReq { model: &info, gpu: b["gpu"].as_u64().map(|g| g as usize), need_mb: &need }).map(|_| ())
     }
@@ -1803,6 +1871,103 @@ pub(crate) fn job_of_proc(p: &Value, by_port: &std::collections::HashMap<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Card sizes as their drivers report them, MiB: an RTX 5070 and an RTX 3060 (12 GB), and the fake ones below
+    const C5070: u64 = 12227;
+    const C3060: u64 = 12288;
+
+    #[test]
+    fn a_card_memory_is_what_the_box_reports_never_a_guess() {
+        let cards = json!([{"index": 0, "vram_total_mb": C5070}, {"index": 1, "vram_total_mb": C3060}, {"index": 2}]);
+        let totals = totals_of(&cards);
+        assert_eq!(totals, vec![(0, C5070), (1, C3060)]);
+        assert_eq!(card_total(&totals, 1), Some(C3060));
+        // a card not reported yet: the largest the box has, never an assumed size; none known: no cap at all
+        assert_eq!(card_total(&totals, 2), Some(C3060));
+        assert_eq!(card_total(&[], 0), None);
+        assert_eq!(vouch_cap(None), u64::MAX);
+        assert_eq!(vouch_cap(Some(C3060)), C3060 - MARGIN_MB - 512);
+    }
+
+    #[test]
+    fn a_vouch_is_capped_by_each_cards_own_memory() {
+        let img = json!({"id": "p", "kind": "image", "gpus": "0,1", "vram_gib": 11.9});
+        let (two, _) = (vouch(&img, &[0, 1], None, 0, &|g| Some(if g == 0 { C5070 } else { C3060 })), ());
+        assert_eq!(two.0[&0], C5070 - MARGIN_MB - 512);
+        assert_eq!(two.0[&1], C3060 - MARGIN_MB - 512);
+        // a video model takes its card less 4 GiB: an 8 GB card gets a smaller vouch than a 24 GB one, no fork
+        let vid = json!({"id": "v", "kind": "video", "gpus": "0"});
+        assert_eq!(vouch(&vid, &[0], None, 20_000, &|_| Some(8192)).0[&0], 8192 - 4096);
+        assert_eq!(vouch(&vid, &[0], None, 20_000, &|_| Some(24576)).0[&0], 24576 - 4096);
+        // a card not known: the files and 4 GiB
+        assert_eq!(vouch(&vid, &[0], None, 20_000, &|_| None).0[&0], 24096);
+        // what it was seen to take wins, still capped
+        let seen: BTreeMap<usize, u64> = [(0, 99_999)].into();
+        let (v, measured) = vouch(&img, &[0, 1], Some(&seen), 0, &|_| Some(C5070));
+        assert!(measured && v[&1] == C5070 - MARGIN_MB - 512);
+    }
+
+    #[test]
+    fn a_model_larger_than_its_cards_is_refused_not_tried() {
+        let one = |gib: f64, gpus: &str| json!({"id": "m", "kind": "image", "gpus": gpus, "vram_gib": gib});
+        let c = |t: u64| move |_: usize| Some(t);
+        // 11.3 GiB (ACE-Step's peak) fits the 12 GB 3060, not an 8 GB card
+        assert_eq!(cards_it_fits(&one(11.3, "1"), &[1], 0, &c(C3060)).unwrap(), vec![1]);
+        let e = cards_it_fits(&one(11.3, "0"), &[0], 0, &c(8192)).unwrap_err();
+        assert!(e.contains("cannot load on its cards") && e.contains("11.3 GiB on GPU 0, which holds 8.0 GiB"), "{e}");
+        // a mixed pair: an image model loads whole on one of its cards - the one it fits
+        let mixed = |g: usize| Some(if g == 0 { 8192 } else { 24576 });
+        assert_eq!(cards_it_fits(&one(11.3, "0,1"), &[0, 1], 0, &mixed).unwrap(), vec![1]);
+        // a split model spans its cards: one short card refuses it
+        let mut split = one(11.3, "0,1");
+        split["split"] = json!(true);
+        assert!(cards_it_fits(&split, &[0, 1], 0, &mixed).is_err());
+        // its files are shared over its cards when no figure is given
+        let files = json!({"id": "f", "kind": "image", "gpus": "0,1", "split": true});
+        assert!(cards_it_fits(&files, &[0, 1], 2 * 7000, &c(C5070)).is_ok());
+        assert!(cards_it_fits(&json!({"id": "f", "kind": "image", "gpus": "0"}), &[0], 14_000, &c(C5070)).is_err());
+        // a card not known passes; a chat or video model, or one that streams its weights, sizes itself
+        assert!(cards_it_fits(&one(40.0, "0"), &[0], 0, &|_| None).is_ok());
+        assert!(cards_it_fits(&json!({"id": "x", "kind": "llm", "vram_gib": 40.0}), &[0], 0, &c(8192)).is_ok());
+        let mut streams = one(40.0, "0");
+        streams["streams"] = json!(true);
+        assert!(cards_it_fits(&streams, &[0], 0, &c(8192)).is_ok());
+    }
+
+    #[test]
+    fn every_model_card_that_runs_here_fits_the_5070_and_the_3060() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = root.join("model-cards");
+        // the cards docs/models.md says are too big for these 12 GB cards ("won't run here"): refused, every other fits
+        let models_md = std::fs::read_to_string(root.join("docs/models.md")).unwrap();
+        let too_big = |id: &str| models_md.lines().any(|l| l.contains(&format!("`{id}`")) && l.contains("too big"));
+        let totals = [(0usize, C5070), (1usize, C3060)];
+        let mut n = 0;
+        for kind in ["image", "audio", "model3d"] {
+            for f in std::fs::read_dir(dir.join(kind)).unwrap().flatten() {
+                let text = std::fs::read_to_string(f.path()).unwrap_or_default();
+                // the card's top-level keys this needs, a line each (`key: value  # comment`)
+                let top = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}:")))
+                    .map(|v| v.split(" #").next().unwrap_or("").trim().trim_matches(|c| c == '\'' || c == '"').to_string());
+                let (Some(gib), Some(gpus)) = (top("vram_gib").and_then(|v| v.parse::<f64>().ok()), top("gpus")) else { continue };
+                let gs: Vec<usize> = gpus.split([',', '|']).filter_map(|g| g.trim().parse().ok()).collect();
+                if gs.is_empty() {
+                    continue;
+                }
+                let id = f.path().file_stem().unwrap().to_string_lossy().to_string();
+                let m = json!({"id": id, "kind": kind, "vram_gib": gib, "split": top("split").as_deref() == Some("true"),
+                               "streams": top("streams").as_deref() == Some("true")});
+                n += 1;
+                let fits = cards_it_fits(&m, &gs, 0, &|g| card_total(&totals, g));
+                if too_big(&id) {
+                    assert!(fits.is_err(), "{id}: docs/models.md says it is too big, but it would be tried");
+                } else {
+                    assert_eq!(fits.unwrap(), gs, "{id}");
+                }
+            }
+        }
+        assert!(n > 20, "only {n} cards checked: is the scan broken?");
+    }
 
     /// A live conversation only (Haru-4B's card: speech [realtime, lockstep]): capabilities realtime and lockstep, no
     /// method (it is /v1/realtime, a WebSocket); a speech model that also converses keeps audio.speak

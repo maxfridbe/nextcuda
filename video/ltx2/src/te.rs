@@ -134,7 +134,7 @@ impl TextEncoder {
         let t0 = std::time::Instant::now();
         let f = Gguf::open(cache).map_err(ge)?;
         // the layers in proportion to each card's free memory (the DiT holds more of the faster one)
-        let free: Vec<f64> = gpus.iter().map(|g| g.memory().map_or(1.0, |(t, f)| f.unwrap_or(t) as f64)).collect();
+        let free: Vec<f64> = gpus.iter().map(|g| g.free_or_guess().map_or(1.0, |f| f as f64)).collect();
         let tot: f64 = free.iter().sum();
         let mut bounds = vec![0usize];
         let mut acc = 0.0;

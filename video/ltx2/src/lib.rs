@@ -100,7 +100,7 @@ impl Ltx2 {
 
     /// The card with the most free memory now
     pub fn freest(&self) -> &Arc<Gpu> {
-        self.gpus.iter().max_by_key(|g| g.memory().map_or(0, |(t, f)| f.unwrap_or(t))).unwrap()
+        self.gpus.iter().max_by_key(|g| g.free_or_guess().unwrap_or(0)).unwrap()
     }
 
     /// A role's file

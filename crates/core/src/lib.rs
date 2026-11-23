@@ -302,11 +302,20 @@ pub fn gpu_units(index: usize) -> Result<(u32, u32)> {
     Ok((u as u32, m as u32))
 }
 
-/// Every GPU's index, the one with the most memory last; ties keep the driver's order.
+/// Every GPU's index, the one that computes least first (SMs x clock, what the device reports): a multi-card plan's order
+/// - the faster card last takes the head (and the draft block); ties keep the driver's order (`order_by_speed`)
 pub fn gpus_weakest_first() -> Result<Vec<usize>> {
-    let mut v: Vec<(usize, u64)> = smi()?.into_iter().map(|r| (r.0, r.3)).collect();
-    v.sort_by_key(|x| x.1);
-    Ok(v.into_iter().map(|x| x.0).collect())
+    let ids: Vec<usize> = gpus()?.into_iter().map(|g| g.0).collect();
+    let speeds: Vec<(usize, u64)> = ids.iter().map(|&i| (i, gpu_units(i).map_or(0, |(u, m)| u as u64 * m as u64))).collect();
+    Ok(order_by_speed(&speeds))
+}
+
+/// Cards (index, SMs x clock) in the order a multi-card plan takes them: the one that computes least first, the fastest
+/// last; ties (and cards whose speed is not known, 0) keep the order given. Pure: never a card's name or its memory.
+pub fn order_by_speed(cards: &[(usize, u64)]) -> Vec<usize> {
+    let mut v = cards.to_vec();
+    v.sort_by_key(|c| c.1);
+    v.into_iter().map(|c| c.0).collect()
 }
 
 /// GPU `index`'s PCIe link as nvidia-smi gives it: "gen4 x16 (max gen4 x16)". The link drops a generation when the
@@ -385,6 +394,14 @@ impl Gpu {
     pub fn queue(&self) -> *mut c_void {
         // SAFETY: a live handle.
         self.dev.map_or(std::ptr::null_mut(), |(a, r)| unsafe { (a.gpu_queue)(r) })
+    }
+
+    /// Free bytes: what the driver says, else a quarter of the card's total - a guess that stays within a card of any
+    /// size and never plans past what is there (CUDA's cudaMemGetInfo always says; a memory plan asks this, never a
+    /// card's name or an assumed size)
+    pub fn free_or_guess(&self) -> Result<u64> {
+        let (total, free) = self.memory()?;
+        Ok(free_or_quarter(total, free))
     }
 
     /// (total bytes, free bytes)
@@ -837,5 +854,37 @@ mod host_copy_tests {
         assert!(d.copy_from_host_async(12, &h, 0, 8, &[]).is_err());
         // a whole-buffer copy is fine
         assert_eq!(d.copy_from_host_async(0, &h, 0, 16, &[]).unwrap(), 0);
+    }
+}
+
+/// What `Gpu::free_or_guess` plans with: the free bytes reported, else a quarter of the total
+pub fn free_or_quarter(total: u64, free: Option<u64>) -> u64 {
+    free.unwrap_or(total / 4)
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    #[test]
+    fn free_memory_is_what_the_card_reports_else_a_quarter_of_it() {
+        assert_eq!(free_or_quarter(12 << 30, Some(5 << 30)), 5 << 30);
+        assert_eq!(free_or_quarter(12 << 30, None), 3 << 30);
+        assert_eq!(free_or_quarter(8 << 30, None), 2 << 30);
+        assert_eq!(free_or_quarter(0, None), 0);
+    }
+
+    #[test]
+    fn a_multi_card_plan_takes_the_weaker_card_first() {
+        // what the RTX 5070 (48 SMs at 2542 MHz) and the RTX 3060 (28 at 1807) report
+        let (c5070, c3060) = ((0, 48 * 2542), (1, 28 * 1807));
+        assert_eq!(order_by_speed(&[c5070, c3060]), vec![1, 0]);
+        assert_eq!(order_by_speed(&[c3060, c5070]), vec![1, 0]);
+        // two of one card, or speeds not known: the order given
+        assert_eq!(order_by_speed(&[(0, 100), (1, 100)]), vec![0, 1]);
+        assert_eq!(order_by_speed(&[(0, 0), (1, 0), (2, 0)]), vec![0, 1, 2]);
+        // a third, faster card goes last
+        assert_eq!(order_by_speed(&[c5070, (2, 84 * 2600), c3060]), vec![1, 0, 2]);
+        assert_eq!(order_by_speed(&[c5070]), vec![0]);
     }
 }
