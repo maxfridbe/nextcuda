@@ -200,24 +200,20 @@ hash_outputs() {   # $1 out dir, $2 outputs JSON: "FILE" its bytes, "frames:FILE
   done | sha256sum | cut -c1-16
 }
 fail() { jq -cn --arg e "$e" --arg c "$card" --arg id "$id" --arg l "$1" '{engine: $e, card: $c, id: $id, error: $l}' >> results.jsonl; }
-n=$(jq length plan.json)
-for i in $(seq 0 $((n - 1))); do
+# one run (twice) of plan item $1, its GPUs idle
+run_one() {
+  local i=$1
   e=$(jq -r ".[$i].engine" plan.json); card=$(jq -r ".[$i].card" plan.json); id=$(jq -r ".[$i].id" plan.json); lim=$(jq -r ".[$i].timeout_s" plan.json)
   slug=$(echo "$e-$card" | tr '/#,' '__-')
-  t0=$(date +%s)
-  until idle "$card"; do
-    [ $(( $(date +%s) - t0 )) -le "$WAIT" ] || { fail "the box stayed busy: not run"; continue 2; }
-    sleep 30
-  done
   exacts=(); metrics=()
   for r in 1 2; do
     out=$PWD/out/$slug-$r; rm -rf "$out"; mkdir -p "$out"
     run=$(jq -r ".[$i].run" plan.json); setup=$(jq -r ".[$i].setup" plan.json)
     run=${run//\{gpu\}/$card}; run=${run//\{out\}/$out}; run=${run//\{in\}/$PWD/in}; setup=${setup//\{in\}/$PWD/in}
-    if [ -n "$setup" ] && ! bash -c "$setup" > "$out/setup.log" 2>&1; then fail "setup: $(tail -2 "$out/setup.log" | tr '\n' ' ')"; continue 2; fi
+    if [ -n "$setup" ] && ! bash -c "$setup" > "$out/setup.log" 2>&1; then fail "setup: $(tail -2 "$out/setup.log" | tr '\n' ' ')"; return; fi
     locked timeout --kill-after=60 "$lim" bash -c "$run" > "$out/stdout" 2> "$out/stderr"
     rc=$?
-    [ $rc = 0 ] || { fail "rc $rc: $(tr '\r' '\n' < "$out/stderr" | grep -v '^\s*$' | tail -2 | tr '\n' ' ' | cut -c1-300)"; continue 2; }
+    [ $rc = 0 ] || { fail "rc $rc: $(tr '\r' '\n' < "$out/stderr" | grep -v '^\s*$' | tail -2 | tr '\n' ' ' | cut -c1-300)"; return; }
     exacts+=("$(hash_outputs "$out" "$(jq -c ".[$i].outputs" plan.json)")")
     m='{}'
     for s in $(jq -r ".[$i].speed[] | @base64" plan.json); do
@@ -229,6 +225,24 @@ for i in $(seq 0 $((n - 1))); do
   done
   jq -cn --arg e "$e" --arg c "$card" --arg id "$id" --arg x "$(printf '%s\n' "${exacts[@]}" | sort -u | paste -sd/)" \
      --argjson a "${metrics[0]}" --argjson b "${metrics[1]}" '{engine: $e, card: $c, id: $id, exact: $x, runs: [$a, $b]}' >> results.jsonl
+}
+# the runs whose GPUs are idle, pass after pass (a run waiting for a busy card holds no other back), until each ran or
+# WAIT seconds passed with the box busy for it
+n=$(jq length plan.json)
+pending=$(seq 0 $((n - 1)))
+t0=$(date +%s)
+while [ -n "$pending" ]; do
+  left=
+  for i in $pending; do
+    if idle "$(jq -r ".[$i].card" plan.json)"; then run_one "$i"; t0=$(date +%s); else left="$left $i"; fi
+  done
+  pending=$left
+  [ -n "$pending" ] || break
+  if [ $(( $(date +%s) - t0 )) -gt "$WAIT" ]; then
+    for i in $pending; do e=$(jq -r ".[$i].engine" plan.json); card=$(jq -r ".[$i].card" plan.json); id=$(jq -r ".[$i].id" plan.json); fail "the box stayed busy: not run"; done
+    break
+  fi
+  sleep 30
 done
 touch done
 RUNNER
