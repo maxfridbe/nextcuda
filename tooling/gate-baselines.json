@@ -1,5 +1,5 @@
 {
-  "about": "tooling/gate.sh's baselines: each engine's quick run on a fixed seed - `outputs` hashed (exact: a file's bytes, `frames:FILE` a clip's decoded frames, `lines:FILE:REGEX` lines of it) and its throughputs (`speed`: a number read from the run's stderr or stdout by `re`, `better` lower or higher; the better of two runs) - per card, keyed by the card's id (`nextcuda silo`: its name, SM count and memory, rtx-3060-28u-12g; a run over several GPUs: their ids joined by +, in the order the run takes them) with what the card reports (`device`) and the box it was recorded on (`host`). `gpus` are the GPUs (or sets) the run takes on brainiac-nvidia (GPU 0 the RTX 5070, 1 the RTX 3060; NS_GATE_GPUS elsewhere), `run` its paths there (NS_GATE_PATHS maps them elsewhere; {gpu}, {out} the run's directory, {in} the copy's inputs: `setup` makes them), and the shared parts' engines. Recorded with NS_GATE_RECORD=1 on the commit named; a change that moves a number on purpose records it again in its pull request, and a contributor's card gets its own entry recorded on that card.",
+  "about": "tooling/gate.sh's baselines: each engine's quick run on a fixed seed - `outputs` hashed (exact: a file's bytes, `frames:FILE` a clip's decoded frames, `lines:FILE:REGEX` lines of it) and its throughputs (`speed`: a number read from the run's stderr or stdout by `re`, `better` lower or higher; the best of its runs: two, or `runs` (pictures 3)) - per card, keyed by the card's id (`nextcuda silo`: its name, SM count and memory, rtx-3060-28u-12g; a run over several GPUs: their ids joined by +, in the order the run takes them) with what the card reports (`device`) and the box it was recorded on (`host`). `gpus` are the GPUs (or sets) the run takes on brainiac-nvidia (GPU 0 the RTX 5070, 1 the RTX 3060; NS_GATE_GPUS elsewhere), `run` its paths there (NS_GATE_PATHS maps them elsewhere; {gpu}, {out} the run's directory, {in} the copy's inputs: `setup` makes them), and the shared parts' engines. Recorded with NS_GATE_RECORD=1 on the commit named; a change that moves a number on purpose records it again in its pull request, and a contributor's card gets its own entry recorded on that card.",
   "recorded": "2026-11-22: llm/qwen35, image/mossimage (with bf91372), image/qwenimage21, audio/yue2, model3d/skintokens, model3d/unimate on 2ef50c8; the other 20 engines on 0e738a5 (steps 1-2, before step 3)",
   "tolerance": 0.03,
   "shared": {
@@ -151,7 +151,8 @@
           "recorded": "2ef50c8 + bf91372 (the MOSS-Image symbol fix) (2026-11-22)",
           "s": 1.0
         }
-      }
+      },
+      "runs": 3
     },
     "image/qwenimage21": {
       "run": "dist/nextcuda image gen \"a red fox sitting in fresh snow at dawn, photograph\" --model qwen-image-2.1-turbo-q8 --size 512x512 --seed 7 --local --gpu {gpu} --out {out}/img.png",
@@ -198,7 +199,8 @@
           "recorded": "2ef50c8 (2026-11-22)",
           "s": 8.7
         }
-      }
+      },
+      "runs": 3
     },
     "audio/yue2": {
       "run": "printf '[verse]\\nThe morning light comes over the hill\\nAnd the river sings along\\n' > {out}/lyrics.txt && dist/nextcuda audio gen \"pop, female vocal, piano\" --model yue2-3b-q8 --lyrics-file {out}/lyrics.txt --seconds 10 --seed 1 --out {out}/song.wav --gpu {gpu}",
@@ -376,7 +378,8 @@
           "recorded": "0e738a5 (2026-11-22)",
           "s": 3.1
         }
-      }
+      },
+      "runs": 3
     },
     "image/mingimage": {
       "run": "dist/nextcuda image gen \"a poster for a jazz night, bold type\" --model ming-image-0.1-design --size 512x512 --steps 8 --seed 7 --local --gpu {gpu} --out {out}/img.png",
@@ -418,7 +421,8 @@
           "recorded": "0e738a5 (2026-11-22)",
           "s": 12.5
         }
-      }
+      },
+      "runs": 3
     },
     "image/ph3image": {
       "run": "dist/nextcuda image gen \"a teapot on a windowsill, morning light\" --model p-h3-image-pdmd2 --size 512x512 --seed 7 --local --gpu {gpu} --out {out}/img.png",
@@ -460,7 +464,8 @@
           "recorded": "0e738a5 (2026-11-22)",
           "s": 2.6
         }
-      }
+      },
+      "runs": 3
     },
     "image/upscale": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -507,7 +512,8 @@
           "recorded": "0e738a5 (2026-11-22)",
           "s": 2.550
         }
-      }
+      },
+      "runs": 3
     },
     "image/depthanything": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -533,7 +539,8 @@
           "host": "brainiac-nvidia",
           "recorded": "0e738a5 (2026-11-22)"
         }
-      }
+      },
+      "runs": 3
     },
     "image/starvector": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -559,7 +566,8 @@
           "host": "brainiac-nvidia",
           "recorded": "0e738a5 (2026-11-22)"
         }
-      }
+      },
+      "runs": 3
     },
     "image/unlimitedocr": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -585,7 +593,8 @@
           "host": "brainiac-nvidia",
           "recorded": "0e738a5 (2026-11-22)"
         }
-      }
+      },
+      "runs": 3
     },
     "image/paddleocrvl": {
       "setup": "[ -f {in}/pic.png ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=256x256:rate=1 -frames:v 1 {in}/pic.png",
@@ -611,7 +620,8 @@
           "host": "brainiac-nvidia",
           "recorded": "0e738a5 (2026-11-22)"
         }
-      }
+      },
+      "runs": 3
     },
     "image/flashvsr": {
       "setup": "[ -f {in}/clip.mp4 ] || ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=320x192:rate=24 -frames:v 25 -c:v libx264 -pix_fmt yuv420p {in}/clip.mp4",
@@ -653,7 +663,8 @@
           "recorded": "0e738a5 (2026-11-22)",
           "s_frame": 0.072
         }
-      }
+      },
+      "runs": 3
     },
     "audio/breezetts2": {
       "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model breeze-tts-2 --seed 1 --out {out}/a.wav --gpu {gpu}",

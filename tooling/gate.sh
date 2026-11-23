@@ -4,10 +4,10 @@
 # that engine; a silo variant: that engine on the cards the variant matches (`nextcuda silo ARCH`); a shared part: the
 # engines tooling/gate-baselines.json's "shared" maps it to - builds <head> in a build copy (never the service's files:
 # the program in the trixie toolchain, the kernels where nvcc is), runs each engine's quick run on each of its GPUs (or
-# GPU sets) twice - under the GPU lock (~/.nextcuda-gpu.lock) and a timeout, and only while the box is idle: no other
+# GPU sets) twice (an engine's `runs`: more, for a throughput that wanders more - pictures take 3) - under the GPU lock (~/.nextcuda-gpu.lock) and a timeout, and only while the box is idle: no other
 # process on those GPUs and nothing running or queued for the creative platform - and compares with the baselines: the
 # exact output exactly (an LLM's greedy tokens and their log-probabilities, a picture's, a sound's or a mesh's bytes, a
-# clip's decoded frames - for a fixed seed), each throughput within the tolerance (3%, the better of the two runs). An
+# clip's decoded frames - for a fixed seed), each throughput within the tolerance (3%, the best of the runs). An
 # engine whose output differs between two runs of the same build (`nondeterministic` in its baselines, with why) is held
 # to its throughput alone.
 # Prints a pass/fail table to paste into the pull request; exits 1 on a failure.
@@ -162,7 +162,7 @@ for eng in $(printf '%s\n' "${!want[@]}" | sort); do
     jq --arg e "$eng" --arg g "$g" --arg id "$id" --arg run "$(mapped "$(jq -r --arg e "$eng" '.engines[$e].run' "$B")")" \
        --arg setup "$(mapped "$(jq -r --arg e "$eng" '.engines[$e].setup // ""' "$B")")" --slurpfile b "$B" \
        '. + [{engine: $e, card: $g, id: $id, run: $run, setup: $setup, timeout_s: $b[0].engines[$e].timeout_s,
-              outputs: $b[0].engines[$e].outputs, speed: ($b[0].engines[$e].speed // [])}]' "$tmp/plan.json" > "$tmp/p" && mv "$tmp/p" "$tmp/plan.json"
+              outputs: $b[0].engines[$e].outputs, speed: ($b[0].engines[$e].speed // []), runs: ($b[0].engines[$e].runs // 2)}]' "$tmp/plan.json" > "$tmp/p" && mv "$tmp/p" "$tmp/plan.json"
   done
 done
 
@@ -200,13 +200,13 @@ hash_outputs() {   # $1 out dir, $2 outputs JSON: "FILE" its bytes, "frames:FILE
   done | sha256sum | cut -c1-16
 }
 fail() { jq -cn --arg e "$e" --arg c "$card" --arg id "$id" --arg l "$1" '{engine: $e, card: $c, id: $id, error: $l}' >> results.jsonl; }
-# one run (twice) of plan item $1, its GPUs idle
+# the runs of plan item $1 (twice, or its `runs`), its GPUs idle
 run_one() {
   local i=$1
   e=$(jq -r ".[$i].engine" plan.json); card=$(jq -r ".[$i].card" plan.json); id=$(jq -r ".[$i].id" plan.json); lim=$(jq -r ".[$i].timeout_s" plan.json)
   slug=$(echo "$e-$card" | tr '/#,' '__-')
   exacts=(); metrics=()
-  for r in 1 2; do
+  for r in $(seq 1 "$(jq -r ".[$i].runs" plan.json)"); do
     out=$PWD/out/$slug-$r; rm -rf "$out"; mkdir -p "$out"
     run=$(jq -r ".[$i].run" plan.json); setup=$(jq -r ".[$i].setup" plan.json)
     run=${run//\{gpu\}/$card}; run=${run//\{out\}/$out}; run=${run//\{in\}/$PWD/in}; setup=${setup//\{in\}/$PWD/in}
@@ -224,7 +224,7 @@ run_one() {
     metrics+=("$m")
   done
   jq -cn --arg e "$e" --arg c "$card" --arg id "$id" --arg x "$(printf '%s\n' "${exacts[@]}" | sort -u | paste -sd/)" \
-     --argjson a "${metrics[0]}" --argjson b "${metrics[1]}" '{engine: $e, card: $c, id: $id, exact: $x, runs: [$a, $b]}' >> results.jsonl
+     --argjson r "$(printf '%s\n' "${metrics[@]}" | jq -cs .)" '{engine: $e, card: $c, id: $id, exact: $x, runs: $r}' >> results.jsonl
 }
 # the runs whose GPUs are idle, pass after pass (a run waiting for a busy card holds no other back), until each ran or
 # WAIT seconds passed with the box busy for it
@@ -248,7 +248,7 @@ touch done
 RUNNER
 if [ "$(jq length "$tmp/plan.json")" -gt 0 ]; then
   "${RSYNC[@]}" "$tmp/plan.json" "$tmp/runner.sh" "$(there)/" >/dev/null
-  echo "gate: $(jq length "$tmp/plan.json") runs (each twice; waiting for the box to be idle as needed)"
+  echo "gate: $(jq length "$tmp/plan.json") runs (each twice or its `runs`; waiting for the box to be idle as needed)"
   if [ -n "$HOST" ]; then
     on "chmod +x runner.sh && rm -f done && (setsid nohup ./runner.sh $WAIT '$LOCK' > runner.log 2>&1 &)" >/dev/null
     until "${SSH[@]}" "test -f ~/$DIR/done" >/dev/null 2>&1; do sleep 20; done
@@ -262,7 +262,7 @@ fi
 
 # ---- compare (or record): the exact output equal, each throughput of the better run within the tolerance
 tol=$(jq -r '.tolerance' "$B")
-best() {   # the better of the two runs' values of metric $2 ("lower" or "higher" better: $3) in result $1
+best() {   # the best of the runs' values of metric $2 ("lower" or "higher" better: $3) in result $1
   jq -c --arg n "$2" --arg d "$3" '[.runs[][$n] | select(. != null)] | if length == 0 then null elif $d == "lower" then min else max end' <<< "$1"
 }
 at="$(git rev-parse --short "$HEAD") ($(date +%F))"
@@ -301,7 +301,7 @@ while read -r res; do
 done < "$tmp/results.jsonl"
 [ "$RECORD" != 1 ] || { jq --arg r "$at" '.recorded = $r' "$B" > "$tmp/b" && mv "$tmp/b" "$B"; }
 echo
-echo "gate $BASE..$HEAD on $([ -n "$HOST" ] && echo "$HOST" || echo "this machine") ($box; best of two against the baseline, tolerance $(awk -v t="$tol" 'BEGIN { print t * 100 }')%)"
+echo "gate $BASE..$HEAD on $([ -n "$HOST" ] && echo "$HOST" || echo "this machine") ($box; the best run against the baseline, tolerance $(awk -v t="$tol" 'BEGIN { print t * 100 }')%)"
 echo "| engine | GPUs | exact output | throughput | result |"
 echo "|---|---|---|---|---|"
 printf '%s\n' "${rows[@]}"
