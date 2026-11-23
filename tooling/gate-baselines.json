@@ -751,14 +751,7 @@
       "outputs": [
         "a.wav"
       ],
-      "speed": [
-        {
-          "name": "s",
-          "re": "^saved .* in ([0-9.]+) s\\)$",
-          "from": "stdout",
-          "better": "lower"
-        }
-      ],
+      "speed": [],
       "timeout_s": 900,
       "gpus": [
         "0"
@@ -777,21 +770,15 @@
           "recorded": "0e738a5 (2026-11-22)",
           "s": 1.0
         }
-      }
+      },
+      "speed_note": "its time is printed in tenths of a second on a run of under 1 s (0.3 / 1.0 s), too coarse for 3%: a gate of bda37f6 read +10% / +33% and the same build again +0.0% (2026-11-23); only the output is held"
     },
     "audio/zonos3": {
       "run": "dist/nextcuda audio gen \"The quick brown fox jumps over the lazy dog.\" --model zonos3-mini --seed 1 --out {out}/a.wav --gpu {gpu}",
       "outputs": [
         "a.wav"
       ],
-      "speed": [
-        {
-          "name": "s",
-          "re": "^saved .* in ([0-9.]+) s\\)$",
-          "from": "stdout",
-          "better": "lower"
-        }
-      ],
+      "speed": [],
       "timeout_s": 900,
       "gpus": [
         "0"
@@ -810,7 +797,8 @@
           "recorded": "0e738a5 (2026-11-22)",
           "s": 0.3
         }
-      }
+      },
+      "speed_note": "its time is printed in tenths of a second on a run of under 1 s (0.3 / 1.0 s), too coarse for 3%: a gate of bda37f6 read +10% / +33% and the same build again +0.0% (2026-11-23); only the output is held"
     },
     "audio/acestep": {
       "run": "dist/nextcuda audio gen \"upbeat pop, female vocal\" --model acestep-1.5 --lyrics \"[verse]\\nThe morning light comes over the hill\" --seconds 10 --seed 1 --out {out}/song.wav --gpu {gpu}",
