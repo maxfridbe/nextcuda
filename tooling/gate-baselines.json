@@ -87,6 +87,30 @@
       ],
       "cards": {}
     },
+    "llm/inkling2#one": {
+      "run": "NS_INK2_PLACE=one NS_INK2_DRAFTS=0 dist/nextcuda llm generate /home/maxfridbe/nextcuda/models/inkling-2-mini/Inkling-2-Mini-UD-Q4_K_XL.gguf --ctx 4096 --max 96 --temp 0 --top 3 --effort low --gpu {gpu} --prompt \"Explain, step by step and with a small worked example, how a hash map handles collisions with open addressing and with separate chaining, and when you would pick one over the other.\"",
+      "outputs": [
+        "stdout",
+        "lines:stderr:^\\[top\\]"
+      ],
+      "speed": [
+        {
+          "name": "pp",
+          "re": "^\\[prompt [0-9]+ tokens in [0-9.]+ s \\(([0-9.]+) tok/s\\).*",
+          "better": "higher"
+        },
+        {
+          "name": "tg",
+          "re": "^\\[prompt .* generated in [0-9.]+ s \\(([0-9.]+) tok/s\\).*",
+          "better": "higher"
+        }
+      ],
+      "timeout_s": 900,
+      "gpus": [
+        "0"
+      ],
+      "cards": {}
+    },
     "llm/qwen35": {
       "run": "dist/nextcuda llm generate /home/maxfridbe/nextcuda/models/qwen3.8-27b-gsq/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --ctx 4096 --max 96 --temp 0 --top 3 --gpu {gpu} --prompt \"Explain, step by step and with a small worked example, how a hash map handles collisions with open addressing and with separate chaining, and when you would pick one over the other.\"",
       "outputs": [

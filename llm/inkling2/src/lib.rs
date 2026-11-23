@@ -21,6 +21,7 @@ pub const ARCH: &str = "inkling2_loop";
 
 pub const OPTIONS: &[EngineOption] = &[
     EngineOption { name: "chunk", env: "NS_INK2_CHUNK", value: "TOKENS", help: "a prompt pass's rows (default 2048 when it fits beside the weights and a session, else 1024 or 512)", at: At::Load },
+    EngineOption { name: "place", env: "NS_INK2_PLACE", value: "split|one", help: "split: over two GPUs when one does not hold it (default); one: the last GPU alone, the experts of layers outside the loop streamed from host memory when it does not fit", at: At::Load },
     EngineOption { name: "draft", env: "NS_INK2_DRAFT", value: "FILE", help: "the DSpark drafter's GGUF (default: the smallest dspark-*.gguf beside the model)", at: At::Load },
     EngineOption { name: "drafts", env: "NS_INK2_DRAFTS", value: "N", help: "tokens drafted a step (default 5; at most 7; 0: none)", at: At::Load },
     EngineOption { name: "draft-pmin", env: "NS_INK2_DRAFT_PMIN", value: "P", help: "drop a draft (and those after it) the drafter gives less than this probability (default 0.8)", at: At::Load },

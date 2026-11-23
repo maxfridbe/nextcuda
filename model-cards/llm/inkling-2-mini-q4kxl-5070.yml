@@ -1,0 +1,28 @@
+# Inkling-2-Mini UD-Q4_K_XL on the RTX 5070 alone - the same file as inkling-2-mini-q4kxl, the 3060 left free
+# model card (model-cards/README.md): the engine (llm/inkling2, docs/ports/inkling2.md) with NS_INK2_PLACE=one: the
+# loop's layers, every attention and the head resident on the 5070; the routed experts of the twelve layers outside the
+# loop (8.3 GiB) in pinned host memory, the experts a pass chooses copied into LRU pools of slots on the card over PCIe
+# (gen4 x16 here). The same weights and kernels: greedy text the same as llama.cpp's on the port's three prompts.
+id: inkling-2-mini-q4kxl-5070
+kind: llm
+arch: inkling2_loop
+license: apache-2.0
+commercial: true
+license_note: 'Thinking Machines'' Inkling 2 Mini (Apache-2.0); Unsloth''s GGUF (Mainline_Support layout, the same tensors as its root files) under the same terms.'
+title: Inkling-2-Mini UD-Q4_K_XL (the 5070 alone, experts streamed; 32K)
+about: 'The files of inkling-2-mini-q4kxl on the RTX 5070 alone, the 3060 free for other work: the experts of the layers outside the loop stay in host memory and are copied in as tokens ask for them (about a third found on the card already). Generation ~44 tok/s at a short context, 37 after 32K (the two-card card: 80 / 60); prompts read faster than on two cards (1,550 tok/s at 4K: the 3060''s link here is PCIe x1). No drafter (its verify rows would pull more experts over PCIe). 32K of context.'
+gpus: '0'
+vram_gib: 10.9                   # measured serving 32K: 11,115 MiB (the plan gives the pools what the weights, the cache and the work leave)
+ctx: '32768'
+tools: true
+tasks: true
+env:
+  NS_PARALLEL: '1'
+  NS_INK2_PLACE: one             # the last (only) GPU given, experts streamed from host memory
+  NS_INK2_DRAFTS: '0'
+silo:
+  name: inkling2
+  required: true                 # streamed experts are repacked and multiplied by the silo
+files:
+  model: ink2-mini-q4kxl
+guide: guides/inkling2.md

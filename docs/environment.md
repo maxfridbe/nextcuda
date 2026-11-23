@@ -307,6 +307,7 @@ Inkling-2-Mini (`llm/inkling2`, its silo `kernels/llm/inkling2/silo`; docs/ports
 | `NS_INK2_PATTN` | on (with the silo) | Experiment: 0 runs a prompt pass's attention on the engine's own kernel (float32, no tensor cores) instead of the silo's flash attention (A/B) | llm inkling2 |
 | `NS_INK2_PGEMM` | on (with the silo) | Experiment: 0 runs a prompt pass's routed experts an expert at a time (each expanded to half, a cuBLAS product) instead of the silo's grouped products (A/B) | llm inkling2 |
 | `NS_INK2_SPLIT` | from the loop out while the faster card has the room | `A,B`: on two GPUs, the faster one's layers [A, B) (holding the loop, 6..18); the rest and the head on the other | llm inkling2 |
+| `NS_INK2_PLACE` | split | `one`: the model on the last GPU given alone; when it does not fit, the routed experts of layers outside the loop (the largest stacks first) stay in pinned host memory and the experts a pass asks for are copied into LRU pools of slots on the card (--opt-place) | llm inkling2 |
 
 ## Image
 

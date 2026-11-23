@@ -25,6 +25,7 @@
 //! the faster card, the rest of the prelude and the coda and the head to the other - a token crosses between them twice, carrying the stream and the depth attention's blocks
 //! (each a row of 2,304 floats). Each card has its own work memory and its own silo binding (a variant per card).
 
+use std::collections::HashMap;
 use std::ffi::c_int;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -36,6 +37,7 @@ use nextcuda_llm::{Error, GpuInfo, Result, Sampler, Tap};
 use crate::ffi;
 
 mod dspark;
+mod stream;
 
 fn e(x: impl std::fmt::Display) -> Error {
     Error(x.to_string())
@@ -218,6 +220,10 @@ pub struct Experts {
     pub scale: Option<DevBuf>,
     /// the scales on the host (the prompt path's per-row factors)
     pub scale_h: Vec<f32>,
+    /// one card for a model larger than it (NS_INK2_PLACE=one): the stack in host memory, its experts copied into a
+    /// pool's slots as passes ask for them; `stack` its key there
+    pub streamed: Option<stream::Streamed>,
+    pub stack: usize,
 }
 
 pub struct Layer {
@@ -449,7 +455,17 @@ pub struct Inkling2<'g> {
     /// the DSpark drafter (LoadOptions.draft and its GGUF beside the model; on the head's GPU), tokens drafted a step
     ds: Option<dspark::DSpark>,
     drafts: usize,
+    /// the pools of streamed experts' slots (one card for a model larger than it), a matrix shape each
+    pools: Mutex<Vec<stream::Pool>>,
 }
+
+/// NS_INK2_PLACE=one: the whole model on the last GPU given, streaming experts from host memory when it does not fit
+fn place_one() -> bool {
+    std::env::var("NS_INK2_PLACE").is_ok_and(|v| v == "one")
+}
+
+/// The fewest slots a pool may have: a verify pass's distinct experts at a layer application (8 rows of 8)
+const MIN_SLOTS: usize = 64;
 
 /// NS_INK2_CHUNK when set; otherwise chosen at load
 fn chunk_setting() -> Option<usize> {
@@ -561,9 +577,24 @@ impl<'g> Inkling2<'g> {
             let x: Vec<usize> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
             (x.len() == 2 && x[0] >= 1 && x[0] <= g.core.0 && x[1] >= g.core.1 && x[1] <= g.layers).then(|| (x[0], x[1]))
         });
+        // one card asked for: only the last given
+        let one_card = place_one() || gpus.len() == 1;
+        // the expert stacks' bytes a layer, and their shapes (gate | up, down) - what streaming one takes off the card
+        let ew: Vec<u64> = (0..g.layers).map(|l| ["gate_up", "down"].iter().filter_map(|w| f.tensor(&format!("blk.{l}.ffn_{w}_exps.weight"))).map(|t| t.bytes).sum()).collect();
+        let shape = |l: usize, w: &str| f.tensor(&format!("blk.{l}.ffn_{w}_exps.weight")).map(|t| (t.ty, t.shape[1] as usize, t.shape[2] as usize));
+        // the fewest slots' bytes for the shapes of these streamed layers
+        let min_pools = |st: &[usize]| -> u64 {
+            let mut kinds: Vec<(GType, usize, usize)> = st.iter().flat_map(|&l| [shape(l, "gate_up"), shape(l, "down")]).flatten().collect();
+            kinds.sort_by_key(|k| (k.0.code(), k.1, k.2));
+            kinds.dedup();
+            kinds.iter().map(|&(t, r, c)| stream::Pool::bytes(t, r, c, MIN_SLOTS) as u64).sum()
+        };
         // (GPU of the rest and the head, GPU of [a, b), a, b, chunk)
         let last = gpus.len() - 1;
         let mut plan: Option<(usize, usize, usize, usize, usize)> = None;
+        // one card: the layers whose experts stay in host memory, and the bytes left for the pools
+        let mut streamed: Vec<usize> = Vec::new();
+        let mut pool_bytes = 0u64;
         let mut short: Option<(usize, u64, String)> = None;
         let all = |_: usize| true;
         let total_w: u64 = lw.iter().sum::<u64>() + head_w;
@@ -573,7 +604,36 @@ impl<'g> Inkling2<'g> {
                 plan = Some((last, last, 0, g.layers, c));
                 break;
             }
-            if gpus.len() > 1 {
+            if one_card {
+                // the layers outside the loop, the largest expert stacks first, streamed until the rest fits beside the
+                // fewest slots a pool may have (the silo packs and reads them: none without it)
+                let mut cand: Vec<usize> = (0..g.layers).filter(|l| !g.looped(*l)).collect();
+                cand.sort_by_key(|l| (std::cmp::Reverse(ew[*l]), std::cmp::Reverse(*l)));
+                let mut st: Vec<usize> = Vec::new();
+                let fits = loop {
+                    let n = one - st.iter().map(|l| ew[*l]).sum::<u64>() + min_pools(&st);
+                    // (with the half GiB the pools leave over)
+                    if n + (512 << 20) <= free[last] {
+                        break Some(n);
+                    }
+                    match cand.get(st.len()) {
+                        Some(&l) => st.push(l),
+                        None => break None,
+                    }
+                };
+                if let (Some(n), true) = (fits, silo_any.is_some()) {
+                    // (0.75 GiB left over: the session's check keeps a quarter spare, cuBLAS its workspace, the driver's own)
+                    pool_bytes = (free[last] - n + min_pools(&st)).saturating_sub(768 << 20).max(min_pools(&st));
+                    streamed = st;
+                    plan = Some((last, last, 0, g.layers, c));
+                    break;
+                }
+                if short.is_none() {
+                    short = Some((last, one - free[last], format!("{:.1} GiB of weights, work memory and a {ctx}-token session need {:.1} GiB on {}; {:.1} GiB are free{}",
+                                                                  gib(total_w), gib(one), gpus[last].name, gib(free[last]),
+                                                                  if silo_any.is_none() { " (streaming experts needs the silo)" } else { ", streaming every expert outside the loop" })));
+                }
+            } else if gpus.len() > 1 {
                 let fits = |a: usize, b: usize| need(c, &|l: usize| l >= a && l < b, false) <= free[last];
                 let (mut a, mut b) = forced.unwrap_or(g.core);
                 if forced.is_none() && fits(a, b) {
@@ -673,10 +733,23 @@ impl<'g> Inkling2<'g> {
                     }
                     None => (None, vec![1.0; g.experts]),
                 };
-                Ok(Experts { buf: m.buf, ty: m.ty, rows, cols, stride, packed: m.packed, scale, scale_h })
+                Ok(Experts { buf: m.buf, ty: m.ty, rows, cols, stride, packed: m.packed, scale, scale_h, streamed: None, stack: 0 })
             };
-            let gu = exp("gate_up")?;
-            let down = exp("down")?;
+            let exp_or_streamed = |which: &str, k: usize| -> Result<Experts> {
+                if !streamed.contains(&l) {
+                    return exp(which);
+                }
+                let sl = silo.ok_or_else(|| e("streamed experts need the silo"))?;
+                let name = format!("blk.{l}.ffn_{which}_exps.weight");
+                let (st, ty, rows, cols) = stream::load_streamed(f, gpu, sl, &name, g.experts, &loaded)?;
+                let scale_h = match f.tensor(&format!("blk.{l}.ffn_{which}_exps.scale")) {
+                    Some(t) => f.read(t).map_err(|x| e(x.0))?.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
+                    None => vec![1.0; g.experts],
+                };
+                Ok(Experts { buf: DevBuf::new(gpu, 256)?, ty, rows, cols, stride: 0, packed: true, scale: None, scale_h, streamed: Some(st), stack: 2 * l + k })
+            };
+            let gu = exp_or_streamed("gate_up", 0)?;
+            let down = exp_or_streamed("down", 1)?;
             let ly = Layer {
                 dev: dv,
                 swa,
@@ -756,6 +829,31 @@ impl<'g> Inkling2<'g> {
             d.gpu.sync()?;
             d.arena.set(DevBuf::new(&d.gpu, arena_bytes(&g, chunk))?);
         }
+        // the streamed experts' pools: the bytes the plan left, shared by the shapes as their streamed layers are
+        let mut pools = Vec::new();
+        if !streamed.is_empty() {
+            let mut kinds: Vec<((GType, usize, usize), usize)> = Vec::new();
+            for &l in &streamed {
+                for w in ["gate_up", "down"] {
+                    if let Some(k) = shape(l, w) {
+                        match kinds.iter_mut().find(|x| x.0 == k) {
+                            Some(x) => x.1 += 1,
+                            None => kinds.push((k, 1)),
+                        }
+                    }
+                }
+            }
+            let per: u64 = kinds.iter().map(|&((t, r, c), n)| n as u64 * stream::Pool::bytes(t, r, c, 1) as u64).sum();
+            let unit = (pool_bytes / per.max(1)) as usize;
+            let (gpu, sl) = (&devs[cd].gpu, devs[cd].silo.ok_or_else(|| e("streamed experts need the silo"))?);
+            for &((t, r, c), n) in &kinds {
+                pools.push(stream::Pool::new(gpu, sl, t, r, c, (unit * n).max(MIN_SLOTS))?);
+            }
+            let slots: Vec<String> = pools.iter().map(|p| format!("{} {}x{} {}", p.ty.name(), p.rows, p.cols, p.slots)).collect();
+            let host: u64 = streamed.iter().map(|l| ew[*l]).sum();
+            log(format!("inkling2: one card - the experts of layers {streamed:?} ({:.1} GiB) in pinned host memory, pools of {} slots on {} ({:.1} GiB)",
+                        gib(host), slots.join(", "), gpu.name, gib(pool_bytes)));
+        }
         let ds = match (&dfile, devs[hd].silo) {
             // a drafter that does not load: the model without drafts
             (Some(dfl), Some(sl)) => match dspark::load(dfl, &g, &devs[hd].gpu, k, sl, &output, &devs[hd].arena) {
@@ -785,7 +883,8 @@ impl<'g> Inkling2<'g> {
                       prof: std::env::var("NS_INK2_PROFILE").is_ok_and(|v| v == "1" || v == "gpu").then(|| Mutex::new(Default::default())), load_s, load_bytes: loaded.get(),
                       gpu_stamps: std::env::var("NS_INK2_PROFILE").is_ok_and(|v| v == "gpu"), stamps: Mutex::new(Vec::new()),
                       fused_on: std::env::var("NS_INK2_FUSED").map_or(true, |v| v != "0"),
-                      union: std::env::var("NS_INK2_UNION").is_ok_and(|v| v == "1").then(|| Mutex::new(Default::default())), ds, drafts })
+                      union: std::env::var("NS_INK2_UNION").is_ok_and(|v| v == "1").then(|| Mutex::new(Default::default())), ds, drafts,
+                      pools: Mutex::new(pools) })
     }
 
     /// The GPU of physical layer `l`
@@ -853,6 +952,11 @@ impl<'g> Inkling2<'g> {
                 out.push(format!("[experts of a {rows}-row pass: {:.2} distinct a layer application on average, {max} at most ({n} applications; {} a row)]",
                                  *sum as f64 / (*n).max(1) as f64, self.g.used));
             }
+        }
+        for p in self.pools.lock().unwrap().iter() {
+            let asked = (p.hits + p.misses).max(1);
+            out.push(format!("[streamed experts {} {}x{}: {} slots, {:.1}% found there, {} copied in ({:.2} GB; {:.1} a token)]", p.ty.name(), p.rows, p.cols, p.slots,
+                             100.0 * p.hits as f64 / asked as f64, p.misses, p.bytes_in as f64 / 1e9, p.misses as f64 / (tokens + 1) as f64));
         }
         let Some(p) = &self.prof else { return out };
         let m = p.lock().unwrap();
@@ -1135,29 +1239,37 @@ impl<'g> Inkling2<'g> {
             if gu.packed && dn.packed {
                 // SAFETY: arithmetic only; then gate | up and SiTU into the act's quants, the down products weighted into out.
                 let aq = self.ab(d, unsafe { (s.xq_bytes)((t * kk) as i64, ff as i64) })?;
-                let sc = |x: &Experts| x.scale.as_ref().map_or(std::ptr::null(), |s| s.fp() as *const f32);
+                // each stack's weights, experts, scales and ids: its own, or (streamed) its pool's slots with the ids
+                // remapped to them
+                let (wg, eg, sg, ig) = self.stack_view(d, gu, &ids, t * kk)?;
+                let (wd, ed, sd, id_) = self.stack_view(d, dn, &ids, t * kk)?;
                 if t > 1 && union_on() {
                     // rows that share experts: each distinct expert's weights read once for all its pairs
                     let p = t * kk;
-                    let uni = self.ab(d, (1 + 2 * p + 16 * p) * 4)?;
+                    let ug = self.ab(d, (1 + 2 * p + 16 * p) * 4)?;
+                    let ud = self.ab(d, (1 + 2 * p + 16 * p) * 4)?;
                     let part = self.f32(d, p * dn.rows)?;
                     // SAFETY: ids [p] -> uni; then the products as silo.h names them.
                     unsafe {
-                        self.op(d, "experts union", || (s.moe_union)(d.raw(), ids.ptr().cast(), p as i64, uni.ptr().cast()))?;
-                        self.op(d, "experts gu silo", || (s.moe_gu_union)(d.raw(), gu.ty.code() as c_int, gu.buf.ptr(), g.experts as i64, sc(gu), uni.ptr().cast(), q.ptr(),
+                        self.op(d, "experts union", || (s.moe_union)(d.raw(), ig.ptr().cast(), p as i64, ug.ptr().cast()))?;
+                        if ig.ptr() != id_.ptr() {
+                            self.op(d, "experts union", || (s.moe_union)(d.raw(), id_.ptr().cast(), p as i64, ud.ptr().cast()))?;
+                        }
+                        let ud = if ig.ptr() != id_.ptr() { &ud } else { &ug };
+                        self.op(d, "experts gu silo", || (s.moe_gu_union)(d.raw(), gu.ty.code() as c_int, wg, eg, sg, ug.ptr().cast(), q.ptr(),
                                                                           aq.ptr(), t as i64, kk as i64, gu.cols as i64, ff as i64, g.situ_beta, g.situ_lb))?;
-                        self.op(d, "experts down silo", || (s.moe_down_union)(d.raw(), dn.ty.code() as c_int, dn.buf.ptr(), g.experts as i64, sc(dn), uni.ptr().cast(),
+                        self.op(d, "experts down silo", || (s.moe_down_union)(d.raw(), dn.ty.code() as c_int, wd, ed, sd, ud.ptr().cast(),
                                                                               wts.fp(), aq.ptr(), part.fp(), out.fp(), t as i64, kk as i64, ff as i64, dn.rows as i64))?;
                     }
                     d.arena.rewind(mark);
                     return Ok(out);
                 }
                 self.op(d, "experts gu silo", || unsafe {
-                    (s.moe_gu)(d.raw(), gu.ty.code() as c_int, gu.buf.ptr(), g.experts as i64, sc(gu), ids.ptr().cast(), q.ptr(), aq.ptr(), t as i64, kk as i64,
+                    (s.moe_gu)(d.raw(), gu.ty.code() as c_int, wg, eg, sg, ig.ptr().cast(), q.ptr(), aq.ptr(), t as i64, kk as i64,
                                gu.cols as i64, ff as i64, g.situ_beta, g.situ_lb)
                 })?;
                 self.op(d, "experts down silo", || unsafe {
-                    (s.moe_down)(d.raw(), dn.ty.code() as c_int, dn.buf.ptr(), g.experts as i64, sc(dn), ids.ptr().cast(), wts.fp(), aq.ptr(), out.fp(), t as i64,
+                    (s.moe_down)(d.raw(), dn.ty.code() as c_int, wd, ed, sd, id_.ptr().cast(), wts.fp(), aq.ptr(), out.fp(), t as i64,
                                  kk as i64, ff as i64, dn.rows as i64)
                 })?;
                 d.arena.rewind(mark);
@@ -1250,27 +1362,63 @@ impl<'g> Inkling2<'g> {
         let grouped = d.silo.filter(|s| prompt_silo("NS_INK2_PGEMM") && gu.packed && dn.packed && unsafe { (s.moe_prompt_supported)(gu.ty.code() as c_int, gn, gk) } != 0
                                      && unsafe { (s.moe_prompt_supported)(dn.ty.code() as c_int, dn_n, dn_k) } != 0);
         if let Some(s) = grouped {
-            let mut tiles: Vec<i32> = Vec::new();
-            for &(x, r0, n) in &runs {
-                for off in (0..n).step_by(64) {
-                    tiles.extend([x as i32, (r0 + off) as i32, (n - off).min(64) as i32]);
+            // a stack's grouped products over the runs: in one launch from its own weights, or (streamed) in batches of
+            // the experts its pool holds, each batch copied in after the last one's products are done
+            let grouped_on = |st: &Experts, n_out: i64, k_in: i64, x_in: &DevBuf, y_out: &DevBuf| -> Result<()> {
+                let tiles_of = |runs: &[(usize, usize, usize)], slot: &dyn Fn(usize) -> usize| -> Vec<i32> {
+                    let mut tiles = Vec::new();
+                    for &(x, r0, n) in runs {
+                        for off in (0..n).step_by(64) {
+                            tiles.extend([slot(x) as i32, (r0 + off) as i32, (n - off).min(64) as i32]);
+                        }
+                    }
+                    tiles
+                };
+                let Some(sm) = &st.streamed else {
+                    let tiles = tiles_of(&runs, &|x| x);
+                    let tl = up_i(&tiles)?;
+                    // SAFETY: the repacked stack, x [m, K] half, y [m, N], the tiles.
+                    return self.op(d, "experts prompt silo", || unsafe {
+                        (s.moe_prompt)(d.raw(), st.ty.code() as c_int, st.buf.ptr(), (g.experts * st.rows) as i64, n_out, k_in, x_in.ptr().cast(), y_out.fp(),
+                                       tl.ptr().cast(), (tiles.len() / 3) as i64)
+                    });
+                };
+                let cap = {
+                    let pools = self.pools.lock().unwrap();
+                    pools.iter().find(|p| p.ty == st.ty && p.rows == st.rows && p.cols == st.cols).map(|p| p.slots).ok_or_else(|| e("a streamed stack without its pool"))?
+                };
+                for batch in runs.chunks(cap) {
+                    // the last batch's products read the slots this one takes
+                    d.gpu.sync()?;
+                    let want: Vec<usize> = batch.iter().map(|r| r.0).collect();
+                    let mut pools = self.pools.lock().unwrap();
+                    let p = pools.iter_mut().find(|p| p.ty == st.ty && p.rows == st.rows && p.cols == st.cols).ok_or_else(|| e("a streamed stack without its pool"))?;
+                    let slots = p.ensure(&d.gpu, st.stack, sm, &st.scale_h, &want)?;
+                    let map: HashMap<usize, usize> = want.iter().copied().zip(slots.iter().copied()).collect();
+                    let tiles = tiles_of(batch, &|x| map[&x]);
+                    let tl = self.ab(d, tiles.len() * 4)?;
+                    tl.write(0, &tiles.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?;
+                    let (pw, prows) = (p.buf().ptr(), (p.slots * st.rows) as i64);
+                    drop(pools);
+                    // SAFETY: the pool's slots, x [m, K] half, y [m, N], the batch's tiles.
+                    self.op(d, "experts prompt silo", || unsafe {
+                        (s.moe_prompt)(d.raw(), st.ty.code() as c_int, pw, prows, n_out, k_in, x_in.ptr().cast(), y_out.fp(), tl.ptr().cast(), (tiles.len() / 3) as i64)
+                    })?;
                 }
-            }
-            let tl = up_i(&tiles)?;
-            let nt = (tiles.len() / 3) as i64;
-            let rows_gu = (g.experts * gu.rows) as i64;
-            let rows_dn = (g.experts * dn.rows) as i64;
-            // SAFETY: the repacked stacks, x / act half [m, K], y / dd [m, N], the tiles.
-            unsafe {
-                self.op(d, "experts prompt silo", || (s.moe_prompt)(d.raw(), gu.ty.code() as c_int, gu.buf.ptr(), rows_gu, gn, gk, xh.ptr().cast(), y.fp(), tl.ptr().cast(), nt))?;
-                self.op(d, "situ", || (k.situ)(d.raw(), y.fp(), rs_d.fp(), std::ptr::null_mut(), act.ptr().cast(), m as i64, ff as i64, g.situ_beta, g.situ_lb))?;
-                self.op(d, "experts prompt silo", || (s.moe_prompt)(d.raw(), dn.ty.code() as c_int, dn.buf.ptr(), rows_dn, dn_n, dn_k, act.ptr().cast(), dd.fp(), tl.ptr().cast(), nt))?;
-            }
+                Ok(())
+            };
+            grouped_on(gu, gn, gk, &xh, &y)?;
+            // SAFETY: [m, 2F] scaled by its expert's factor -> SiTU in half [m, F]
+            self.op(d, "situ", || unsafe { (k.situ)(d.raw(), y.fp(), rs_d.fp(), std::ptr::null_mut(), act.ptr().cast(), m as i64, ff as i64, g.situ_beta, g.situ_lb) })?;
+            grouped_on(dn, dn_n, dn_k, &act, &dd)?;
             out.fill(0)?;
             // SAFETY: each token's rows weighted into out [t, C]
             self.op(d, "combine", || unsafe { (k.combine_rows)(d.raw(), dd.fp(), tp_d.ptr().cast(), ent_d.ptr().cast(), cw_d.fp(), out.fp(), t as i64, c as i64) })?;
             d.arena.rewind(mark);
             return Ok(out);
+        }
+        if gu.streamed.is_some() || dn.streamed.is_some() {
+            return Err(e("streamed experts in a prompt pass need the silo's grouped products (NS_INK2_PGEMM on)"));
         }
         for &(x, r0, n) in &runs {
             // SAFETY: expert x's gate|up -> half in w16 (from its blocks, or the silo's repacked stack); its rows' product.
@@ -1293,6 +1441,26 @@ impl<'g> Inkling2<'g> {
         self.op(d, "combine", || unsafe { (k.combine_rows)(d.raw(), dd.fp(), tp_d.ptr().cast(), ent_d.ptr().cast(), cw_d.fp(), out.fp(), t as i64, c as i64) })?;
         d.arena.rewind(mark);
         Ok(out)
+    }
+
+    /// A stack's weights for the decode products: (the weights, their experts' count, the scales, the ids) - its own
+    /// with the pass's ids, or for a streamed stack its pool's slots (the experts `ids` [n] asks for copied in) and the
+    /// ids remapped to them (the stream is synced here: the ids are read back)
+    fn stack_view(&self, d: &Dev, x: &Experts, ids: &DevBuf, n: usize) -> Result<(*const std::ffi::c_void, i64, *const f32, DevBuf)> {
+        let Some(st) = &x.streamed else {
+            let sc = x.scale.as_ref().map_or(std::ptr::null(), |s| s.fp() as *const f32);
+            return Ok((x.buf.ptr() as *const _, self.g.experts as i64, sc, ids.view(0, n * 4)?));
+        };
+        let mut b = vec![0u8; n * 4];
+        ids.read(0, &mut b)?;
+        let want: Vec<usize> = b.chunks_exact(4).map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as usize).collect();
+        let mut pools = self.pools.lock().unwrap();
+        let p = pools.iter_mut().find(|p| p.ty == x.ty && p.rows == x.rows && p.cols == x.cols).ok_or_else(|| e("a streamed stack without its pool"))?;
+        let slots = p.ensure(&d.gpu, x.stack, st, &x.scale_h, &want)?;
+        let remapped = self.ab(d, n * 4)?;
+        // (the stream is idle: the ids were just read back)
+        remapped.write(0, &slots.iter().flat_map(|v| (*v as i32).to_le_bytes()).collect::<Vec<u8>>())?;
+        Ok((p.buf().ptr() as *const _, p.slots as i64, p.scale().fp() as *const f32, remapped))
     }
 
     /// One layer application (slot `slot` of physical layer `l`, at `ip` in its pass) on the stream `cur`, its result

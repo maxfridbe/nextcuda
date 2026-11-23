@@ -120,6 +120,7 @@ pub struct Silo {
     pub rms_xq_many: unsafe extern "C" fn(G, c_int, *const *const f32, *const *const f32, *const *mut f32, *const M, i64, i64, f32) -> c_int,
     pub supported: unsafe extern "C" fn(c_int, i64) -> c_int,
     pub packed_bytes: unsafe extern "C" fn(c_int, i64, i64) -> usize,
+    pub scales_at: unsafe extern "C" fn(c_int, i64, i64) -> usize,
     /// (type, raw, rows, n_in, dst)
     pub pack: unsafe extern "C" fn(G, c_int, P, i64, i64, M) -> c_int,
     /// (type, w, rows, row0, n, n_in, dst)
@@ -298,6 +299,7 @@ fn bind(path: &std::path::Path, symbol: impl Fn(&str) -> *mut c_void) -> std::re
             rms_xq_many: sym!("ns_ink2s_rms_xq_many"),
             supported: sym!("ns_ink2s_supported"),
             packed_bytes: sym!("ns_ink2s_packed_bytes"),
+            scales_at: sym!("ns_ink2s_scales_at"),
             pack: sym!("ns_ink2s_pack"),
             unpack_f16: sym!("ns_ink2s_unpack_f16"),
             mv: sym!("ns_ink2s_mv"),
