@@ -132,6 +132,14 @@ fn edited() -> String {
   "run": {{"type": "object", "properties": {{"took": {{"type": "number"}}, "seconds": {{"type": "number"}}}}}}}}}}"#)
 }
 
+/// audio.isolate's answer: the voice (as a sound) and the rest (the recording less the voice), float32 WAVs
+fn isolated() -> String {
+    format!(r#"{{"type": "object", "properties": {{"created": {{"type": "integer"}}, "data": {{"type": "array", "items": {SOUND_ITEM}, "description": "the voice"}},
+  "background": {{"allOf": [{SOUND_ITEM}], "description": "the rest: the recording less the voice (what was taken away); with the voice it gives the recording back"}},
+  "rate": {{"type": "integer", "description": "samples a second of both (the recording's, or the rate asked for)"}},
+  "run": {{"type": "object", "properties": {{"took": {{"type": "number"}}, "seconds": {{"type": "number"}}}}}}}}}}"#)
+}
+
 fn sound() -> String {
     format!(r#"{{"type": "object", "properties": {{"created": {{"type": "integer"}}, "data": {{"type": "array", "items": {SOUND_ITEM}}},
   "run": {{"type": "object", "description": "how it was made (the /v1 routes call this nextcuda; /rpc names it run)", "properties": {{"took": {{"type": "number"}}, "seconds": {{"type": "number"}}, "seed": {{"type": "integer"}}, "steps": {{"type": "integer"}},
@@ -440,6 +448,8 @@ pub fn result(method: &str) -> Option<String> {
   {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (audio.status {{label}} for the rest)"}}]}}"#, sound()),
         "audio.transcribe" => format!(r#"{{"oneOf": [{{"allOf": [{}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the transcript, and the job"}},
   {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (audio.status {{label}} for the rest)"}}]}}"#, transcript()),
+        "audio.isolate" => format!(r#"{{"oneOf": [{{"allOf": [{}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the voice and the rest, and the job"}},
+  {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (audio.status {{label}} for the rest)"}}]}}"#, isolated()),
         "audio.edit" => format!(r#"{{"oneOf": [{{"allOf": [{}, {{"type": "object", "properties": {{"job": {JOB_VIEW}}}}}], "description": "wait (default): the edited recording, and the job"}},
   {{"allOf": [{JOB_VIEW}], "description": "wait: false - the job at once (audio.status {{label}} for the rest)"}}]}}"#, edited()),
         "audio.voices.list" => format!(r#"{{"type": "object", "properties": {{"voices": {{"type": "array", "items": {VOICE}}}}}}}"#),
@@ -546,7 +556,7 @@ pub fn errors(method: &str) -> &'static [(u16, &'static str, &'static str)] {
                                   (503, "no_room", "no models folder has the room for it (with 1% of the drive, at least 4 GiB, kept free)")],
         "system.models.pull.cancel" => &[(409, "conflict", "no download of that model is under way")],
         "image.generate" | "image.edit" | "image.ocr" | "image.upscale" | "image.vectorize" | "image.svg_fit" | "image.svg_generate" | "image.remove_background" | "video.upscale" | "audio.generate" | "audio.speak" | "audio.transcribe"
-        | "audio.edit" | "audio.voices.design" | "model3d.generate" | "model3d.rig" =>
+        | "audio.edit" | "audio.isolate" | "audio.voices.design" | "model3d.generate" | "model3d.rig" =>
             &[(400, "invalid_params", "a value refused, when the job is submitted (wait false too): steps a few-step model does not run, a size, a sampler, a picture that does not decode, a voice or language the speech model does not have, a priority outside -9..9 ..."),
               (404, "not_found", "no such model; a continue_from or upload:<name> that is not here (error.field names which)"), (409, "conflict", "the model is disabled, or none that can do it is enabled (never retry as is)"),
               (409, "busy", "queue: false and the job would not start at once (retryable)"),

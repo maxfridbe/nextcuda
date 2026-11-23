@@ -667,9 +667,10 @@ mod tests {
     #[test]
     fn every_speech_and_song_card_says_what_its_text_may_carry() {
         let cat = repo_cards();
-        // (a recogniser reads none; nor does a live-conversation model - its speech list only realtime / lockstep: Haru)
+        // (a recogniser reads none, nor a voice isolator; nor does a live-conversation model - its speech list only realtime /
+        // lockstep: Haru)
         let talk_only = |m: &Value| m["speech"].as_array().is_some_and(|a| !a.is_empty() && a.iter().all(|x| x == "realtime" || x == "lockstep"));
-        for m in cat.models.iter().filter(|m| s(m, "kind") == "audio" && s(m, "arch") != "whisper" && !talk_only(m)) {
+        for m in cat.models.iter().filter(|m| s(m, "kind") == "audio" && !["whisper", "voiceisolator"].contains(&s(m, "arch").as_str()) && !talk_only(m)) {
             let a = m["annotations"].as_array().unwrap_or_else(|| panic!("{}: no annotations", s(m, "id")));
             assert!(!a.is_empty());
             for x in a {

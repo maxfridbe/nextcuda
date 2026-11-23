@@ -124,6 +124,28 @@ nextcuda audio check <dump dir> --model zonos3-mini --stages prompt,lm,forced,de
 - Accent adapters: Zyphra ships none (`edit/accents.gguf` is the speech-edit adapter); accents are the steering bundle's
   `accents_*` directions.
 
+## Voice isolation: Inworld's Voice Isolator
+
+`audio.isolate` (`/v1/audio/isolate` on the audio server, `nextcuda audio isolate FILE`): Inworld's Voice Isolator v1
+(the offline checkpoint, Apache-2.0) in Rust and CUDA (`audio/voiceisolator`, `kernels/audio/voiceisolator/vi.cu`; the
+port's record and its API for other runtimes: [ports/voice-isolator.md](ports/voice-isolator.md)). A recording at any
+rate in; its foreground voice and the rest (the recording less the voice) out, float32 WAVs at its rate and length. A
+band-split dual-path network over the 48 kHz STFT - 46 bands, seven blocks of time attention with band attention and of
+bidirectional Mamba along time and across the bands - and per-band heads giving a bounded complex mask and residual.
+
+```sh
+nextcuda models pull voice-isolator
+nextcuda audio isolate noisy.wav --out voice.wav --background rest.wav
+nextcuda audio check <dump dir> --model voice-isolator --stages spec,net,chunk,clips   # reference/voiceisolator/ref.py makes the dumps
+```
+
+- **Checked** (2026-11-23) against Inworld's own package (inworld-voice-isolation) in float32 on the CPU, stage by stage
+  from the reference's input: the STFT rel 1.6e-7, every block rel 6e-7 to 9e-7 (SNR 120-125 dB), the heads rel 3e-7;
+  whole recordings (8 s windows, the crossfade, the resampler) SNR 100-135 dB at 48 kHz, 92 dB from 44.1 kHz, 77 dB from
+  16 kHz. Float32 throughout (cuBLAS without TF32); the reference serves bfloat16 on a CUDA card.
+- **Speed** (RTX 5070): 7.5 s in 0.39 s, 24.7 s in 1.7 s (real-time factor 0.05-0.07); the RTX 3060 0.13-0.17. 0.24 GiB
+  of weights, 1.96 GiB planned for an 8 s window.
+
 ## Conversation: VibeVoice 1.5B
 
 `audio.speak` with `model: vibevoice-1.5b` (or `speakers` and no model): a script of `Speaker N: words` lines in up to

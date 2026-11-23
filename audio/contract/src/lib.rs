@@ -181,7 +181,21 @@ impl Audio {
 
     /// As a 16-bit PCM WAV file's bytes, `info` (name, text) pairs in a LIST INFO chunk (INAM, ICMT, ...)
     pub fn wav(&self, info: &[(&str, &str)]) -> Vec<u8> {
-        let data: Vec<u8> = self.samples.iter().flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes()).collect();
+        self.wav_as(info, false)
+    }
+
+    /// As a 32-bit float WAV file's bytes (the samples as they are: a peak over full scale kept, nothing rounded)
+    pub fn wav_float(&self, info: &[(&str, &str)]) -> Vec<u8> {
+        self.wav_as(info, true)
+    }
+
+    fn wav_as(&self, info: &[(&str, &str)], float: bool) -> Vec<u8> {
+        let data: Vec<u8> = if float {
+            self.samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+        } else {
+            self.samples.iter().flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes()).collect()
+        };
+        let (fmt, width): (u16, u16) = if float { (3, 4) } else { (1, 2) };
         let mut list = Vec::new();
         for (id, text) in info {
             let mut t = text.as_bytes().to_vec();
@@ -200,12 +214,12 @@ impl Audio {
         out.extend_from_slice(&(riff as u32).to_le_bytes());
         out.extend_from_slice(b"WAVEfmt ");
         out.extend_from_slice(&16u32.to_le_bytes());
-        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&fmt.to_le_bytes());
         out.extend_from_slice(&ch.to_le_bytes());
         out.extend_from_slice(&self.rate.to_le_bytes());
-        out.extend_from_slice(&(self.rate * ch as u32 * 2).to_le_bytes());
-        out.extend_from_slice(&(ch * 2).to_le_bytes());
-        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(&(self.rate * ch as u32 * width as u32).to_le_bytes());
+        out.extend_from_slice(&(ch * width).to_le_bytes());
+        out.extend_from_slice(&(8 * width).to_le_bytes());
         if !list.is_empty() {
             out.extend_from_slice(b"LIST");
             out.extend_from_slice(&((4 + list.len()) as u32).to_le_bytes());
@@ -435,6 +449,26 @@ pub struct EditedRegion {
     pub new_words: String,
 }
 
+/// A recording whose voice to isolate (an isolator: `AudioEngine::isolates`)
+#[derive(Clone, Debug, Default)]
+pub struct IsolateRequest {
+    /// mono samples at `rate` (any rate: the engine resamples to its own and back)
+    pub samples: Vec<f32>,
+    pub rate: u32,
+    /// the rate of the answer (None: the recording's)
+    pub out_rate: Option<u32>,
+    /// the engine's own options (as AudioRequest::extra)
+    pub extra: Given,
+}
+
+/// An isolation's answer: the voice, and the rest (the recording less the voice: what was taken away), mono at the
+/// same rate and length
+#[derive(Clone, Debug)]
+pub struct Isolated {
+    pub voice: Audio,
+    pub background: Audio,
+}
+
 // The realtime contract below is nextsycl's (audio/contract, 89b2dd1 and later), the user's own project, as it is.
 /// What a full-duplex speech model offers a live conversation (`AudioEngine::realtime`): the front door's
 /// /v1/realtime WebSocket (OpenAI Realtime's events, docs/api/realtime.md) drives it through `Conversation`
@@ -592,6 +626,14 @@ pub trait AudioEngine: Send + Sync {
     fn edit(&self, _req: &EditRequest, _progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Edited> {
         Err(Error(format!("{} does not edit speech", self.arch())))
     }
+    /// whether it isolates a recording's voice (`isolate`: a voice isolator)
+    fn isolates(&self) -> bool {
+        false
+    }
+    /// a recording's voice alone, and what was taken from it, reporting as it goes; an error from `progress` stops it
+    fn isolate(&self, _req: &IsolateRequest, _progress: &mut dyn FnMut(Step) -> Result<()>) -> Result<Isolated> {
+        Err(Error(format!("{} does not isolate voices (audio.isolate needs a voice isolator: voice-isolator)", self.arch())))
+    }
     /// a recogniser's languages and abilities (None: it makes sound, it does not listen)
     fn recogniser(&self) -> Option<Recogniser> {
         None
@@ -674,6 +716,9 @@ mod tests {
         assert_eq!(s.len(), 2);
         assert!((s[0] - 0.5).abs() < 1e-3 && (s[1] + 0.25).abs() < 1e-3);
         assert!((secs - 2.0 / 44100.0).abs() < 1e-9);
+        // float: as they are, past full scale too
+        let f = Audio { rate: 48000, channels: 1, samples: vec![0.25, -1.5] }.wav_float(&[]);
+        assert_eq!(read_wav(&f).unwrap().samples, vec![0.25, -1.5]);
         // or kept
         let k = read_audio(&w).unwrap();
         assert_eq!((k.rate, k.channels, k.samples.len()), (44100, 2, 4));

@@ -1,0 +1,24 @@
+# Voice Isolator v1 (Inworld: a recording's foreground voice kept and everything else taken away, at 48 kHz)
+# model card (model-cards/README.md): what `nextcuda models search | pull` offers and what the registry entry gets.
+# The file is Inworld's own release (inworld/voice-isolator, denoiser.safetensors pinned at 9b0285b3: the offline
+# checkpoint, 64.0M parameters, float32; its architecture in the file's metadata). Apache-2.0 (the weights and the
+# reference package inworld-voice-isolation this port follows).
+id: voice-isolator
+kind: audio
+arch: voiceisolator
+title: 'Voice Isolator v1 (a recording''s voice kept, noise, music and other sounds taken away; 48 kHz, Inworld)'
+about: 'Inworld''s Voice Isolator in Rust and CUDA: a band-split dual-path network over the 48 kHz STFT (n_fft 2048, hop 480; 46 bands, a token of 512 a band and frame) - seven blocks alternating time attention with rotary positions and exclusive self attention then attention across the bands, and bidirectional Mamba along time then across the bands - and per-band heads giving a bounded complex mask and a bounded residual a bin. audio.isolate: a recording at any rate in, its voice and the rest (the recording less the voice: what was taken away) out at the same rate and length; long recordings in 8 s windows crossfaded over 2 s. Offline (the whole window seen); float32 on the card'
+license: apache-2.0
+commercial: true
+gpus: '0'
+vram_gib: 2.0                   # measured on the 5070: 1.96 GiB at the card's peak (0.24 GiB of weights, an 8 s window's work)
+defaults: {}
+env: {}
+files:
+  model:
+    key: voice-isolator-v1
+    url: https://huggingface.co/inworld/voice-isolator/resolve/9b0285b3fe8403aa8e2f1dbb2165a80a4294c970/denoiser.safetensors
+    size: 256260128
+    sha256: 647335a6aeb4dc706b895532c209d51e0e84a4849d17b339f00d4392a050ae53
+    path: voice-isolator/denoiser.safetensors
+guide: guides/voice-isolator.md

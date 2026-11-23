@@ -221,6 +221,81 @@ export interface AudioInfoReq {
   [key: string]: unknown;
 }
 
+/** What audio.isolate takes. */
+export interface AudioIsolateReq {
+  /**
+   * a group inside the project
+   * @maxLength 60
+   */
+  batch?: string | null;
+  /**
+   * queue it held: it waits until <kind>.queue.resume names it (its label), its project or batch
+   * @default false
+   */
+  held?: boolean | null;
+  /**
+   * names the job for <kind>.status and <kind>.cancel (default: its id)
+   * @maxLength 120
+   */
+  label?: string | null;
+  /**
+   * what people call this job: free text, 120 characters, never matched on
+   * @maxLength 120
+   */
+  title?: string | null;
+  /**
+   * a waiting job goes ahead of every waiting job of a lower priority (same priority: first come first made)
+   * @minimum -9
+   * @maximum 9
+   * @default 0
+   */
+  priority?: number | null;
+  /**
+   * a group of jobs held or released together (<kind>.queue.pause / resume), listed with <kind>.jobs {project}
+   * @maxLength 60
+   */
+  project?: string | null;
+  /**
+   * false: refused at once (409 busy, retryable) when the job would not start now - a server free and no runnable job waiting before it; true (default): it waits its turn
+   * @default true
+   */
+  queue?: boolean | null;
+  /**
+   * idempotent submit: a job of this id queued, running or done is answered instead of a new one (failed / cancelled: made again)
+   * @maxLength 200
+   */
+  reentrant_id?: string | null;
+  /**
+   * true: answer when it ends (the job goes on if the call drops); false: answer at once with the job
+   * @default true
+   */
+  wait?: boolean | null;
+  /** the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono */
+  audio: string;
+  /** the model's id (a voice isolator: voice-isolator); none: the loaded or first enabled one */
+  model?: string | null;
+  /**
+   * samples a second of the answer; none: the recording's own
+   * @minimum 8000
+   * @maximum 192000
+   */
+  rate?: number | null;
+  /** wav (the voice's file) or url (JSON with the voice's and the rest's links, the default) */
+  response_format?: string | null;
+  /**
+   * the longest, in seconds, you will wait for this request to START (queue, making room, loading the model; its run time is not counted). If the ETA's wait_s (system.eta) is known and longer, the answer is at once error.code wait_too_long (eta, max_willing_to_wait_s) and nothing is queued, loaded or evicted - send it to another machine. If the ETA is unknown the request goes on but is withdrawn, with the same code (waited_s), when it has not started in time. Absent: the server's own waits
+   * @minimum 0
+   */
+  max_willing_to_wait_s?: number;
+  /**
+   * keep-alive: how many seconds after this request the model that serves it stays loaded (not unloaded when idle, not stopped for another model's room). Clamped to the server's NS_MAX_RSVP_S (default 24 h) - the answer's rsvp_granted_s says what was granted; a later, shorter value never shortens a hold. 0: release - the model goes as soon as it is idle. Absent: the model's normal idle time
+   * @minimum 0
+   */
+  rsvp_s?: number;
+  /** other keys */
+  [key: string]: unknown;
+}
+
 /** What audio.jobs takes. */
 export interface AudioJobsReq {
   /**
@@ -3199,6 +3274,12 @@ export interface Methods {
    */
   "audio.edit": { req: AudioEditReq; resp: any };
   /**
+   * A recording's voice isolated (a voice isolator: Inworld's Voice Isolator, voice-isolator): its foreground voice kept and noise, music and other sounds taken away. The answer is the voice and the rest (the recording less the voice: what was taken away), float32 WAVs at the recording's rate and length; long recordings go in 8 s windows. A job like audio.speak
+   * @tags audio
+   * @example {"audio":"upload:up_1792400000_take2.wav"}
+   */
+  "audio.isolate": { req: AudioIsolateReq; resp: any };
+  /**
    * The saved voices (cloned or designed): name, owner, what the sample says, its description, length, whether it can be spoken now (ready) and by which enabled models; sample: its WAV
    * @tags audio
    * @example {"owner":"film-app"}
@@ -3865,6 +3946,12 @@ export function client(post: Post, raw?: PostRaw) {
      * @example {"audio":"upload:up_1792400000_take2.wav","original_text":"It runs on weaker hardware.","target_text":"It runs on older laptops."}
      */
     "audio.edit": (req: AudioEditReq): Promise<any> => post("audio.edit", req),
+    /**
+     * A recording's voice isolated (a voice isolator: Inworld's Voice Isolator, voice-isolator): its foreground voice kept and noise, music and other sounds taken away. The answer is the voice and the rest (the recording less the voice: what was taken away), float32 WAVs at the recording's rate and length; long recordings go in 8 s windows. A job like audio.speak
+     * @tags audio
+     * @example {"audio":"upload:up_1792400000_take2.wav"}
+     */
+    "audio.isolate": (req: AudioIsolateReq): Promise<any> => post("audio.isolate", req),
     /**
      * The saved voices (cloned or designed): name, owner, what the sample says, its description, length, whether it can be spoken now (ready) and by which enabled models; sample: its WAV
      * @tags audio

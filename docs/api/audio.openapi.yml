@@ -329,6 +329,31 @@ paths:
                 format: binary
         default:
           description: 'an error: the body''s `error` says what'
+  /v1/audio/isolate:
+    post:
+      operationId: isolate
+      summary: 'A recording''s voice isolated (a voice isolator: voice-isolator): JSON with the voice''s and the rest''s links - the rest'
+      tags:
+      - audio
+      description: 'A recording''s voice isolated (a voice isolator: voice-isolator): JSON with the voice''s and the rest''s links - the rest is the recording less the voice - float32 WAVs (response_format wav: the voice''s file)'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AudioIsolateBody'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: {}
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: 'an error: the body''s `error` says what'
 components:
   schemas:
     AudioEditBody:
@@ -374,6 +399,33 @@ components:
       - target_text
       additionalProperties: true
       description: 'What audio.edit edits: the body its kind''s server takes.'
+    AudioIsolateBody:
+      type: object
+      properties:
+        audio:
+          type: string
+          description: 'the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono'
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'the model''s id (a voice isolator: voice-isolator); none: the loaded or first enabled one'
+        rate:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          minimum: 8000
+          maximum: 192000
+          description: 'samples a second of the answer; none: the recording''s own'
+        response_format:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: wav (the voice's file) or url (JSON with the voice's and the rest's links, the default)
+      required:
+      - audio
+      additionalProperties: true
+      description: 'What audio.isolate isolates: the body its kind''s server takes.'
     AudioSpeechBody:
       type: object
       properties:

@@ -826,6 +826,7 @@ dependencies = [
  "nextcuda-audio-minimaxmusic3",
  "nextcuda-audio-qwen3tts",
  "nextcuda-audio-vibevoice",
+ "nextcuda-audio-voiceisolator",
  "nextcuda-audio-voxcpm2",
  "nextcuda-audio-whisper",
  "nextcuda-audio-yue2",
@@ -954,6 +955,17 @@ dependencies = [
  "nextcuda-diffusion",
  "nextcuda-gguf",
  "nextcuda-tok",
+ "serde_json",
+]
+
+[[package]]
+name = "nextcuda-audio-voiceisolator"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-audio",
+ "nextcuda-core",
+ "nextcuda-diffusion",
+ "nextcuda-gguf",
  "serde_json",
 ]
 

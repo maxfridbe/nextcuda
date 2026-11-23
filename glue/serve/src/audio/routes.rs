@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use super::{err, AudioServer};
-use crate::home::methods::{AudioEditBody, AudioTranscribeBody, SongFields, SpeechFields};
+use crate::home::methods::{AudioEditBody, AudioIsolateBody, AudioTranscribeBody, SongFields, SpeechFields};
 use crate::page::{CancelReq, Cancelled, Cx, Fail, FileName, Gpu, Health, ModelList};
 
 /// The engine's own defaults (a request's absent fields)
@@ -562,8 +562,23 @@ fn edit(s: &AudioServer, cx: &mut Cx, req: AudioEditBody) -> Result<Sent<Value>,
     Ok(Sent::new())
 }
 
+/// A recording's voice isolated (a voice isolator: voice-isolator): JSON with the voice's and the rest's links - the rest
+/// is the recording less the voice - float32 WAVs (response_format wav: the voice's file)
+#[route(post = "/v1/audio/isolate", tags = "audio", produces = "application/json, audio/wav")]
+fn isolate(s: &AudioServer, cx: &mut Cx, req: AudioIsolateBody) -> Result<Sent<Value>, Fail> {
+    let b = serde_json::to_value(&req).map_err(|e| (500, e.to_string()))?;
+    let base = cx.base();
+    match s.isolate_voice(&b, &base) {
+        Ok((Some(v), _)) => cx.json(200, &v),
+        Ok((None, wav)) => cx.bytes(200, "audio/wav", &wav, ""),
+        Err((code, m)) => cx.json(code, &err(m)),
+    }
+    s.maybe_retire();
+    Ok(Sent::new())
+}
+
 routes![sync AudioServer, Cx, Fail; gpu, health, models, info, progress, history, cancel, file, voices, voice_sample, voice_add, voice_remove,
-        transcriptions, speech, edit];
+        transcriptions, speech, edit, isolate];
 
 /// The table, made once
 pub fn table() -> &'static [rpcgen::SyncRoute<AudioServer, Cx, Fail>] {

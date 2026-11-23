@@ -15,6 +15,10 @@
 //!                                 each word timed), translate (into English), prompt (text leading the first window),
 //!                                 options} -> {text, language, duration, segments [{start, end, text}], words [{start,
 //!                                 end, text, probability}], nextsycl: {took, wh}} (JSON only, no multipart form)
+//!   POST /v1/audio/isolate        a recording's voice isolated (a voice isolator: voice-isolator): {audio (base64 or a data
+//!                                 URL), rate (the answer's; none: the recording's), response_format: url (JSON: the voice
+//!                                 in data, the rest - the recording less the voice - in background) | wav (the voice)};
+//!                                 float32 WAVs, as long as the recording
 //!   GET  /v1/audio/files/<f>      a song made here (saved in the output directory; byte ranges for seeking)
 //!   GET  /v1/realtime             a live conversation with a full-duplex speech model (Haru-4B): the request upgraded
 //!                                 to a WebSocket of OpenAI Realtime's events (crate::realtime; /realtime too)
@@ -433,6 +437,80 @@ impl AudioServer {
             answer = Some(json!({"created": created, "data": [v], "regions": regions, "nextsycl": {"took": took, "seconds": e.audio.seconds(), "seed": seed}}));
         }
         Ok((answer, wav))
+    }
+
+    /// A recording's voice isolated (a voice isolator): JSON with the voice's and the rest's links (response_format
+    /// wav: the voice's file). Both are float32 WAVs at the recording's rate (or `rate`), as long as the recording
+    fn isolate_voice(&self, b: &Value, base: &str) -> Result<(Option<Value>, Vec<u8>), (u16, String)> {
+        let bad = |m: String| (400u16, m);
+        if let Some(m) = b["model"].as_str().filter(|m| !m.is_empty() && *m != self.model) {
+            return Err((404, format!("model {m} is not served here (this server: {})", self.model)));
+        }
+        let a = b["audio"].as_str().filter(|x| !x.trim().is_empty()).ok_or_else(|| bad("audio (the recording: base64 or a data URL): required".into()))?;
+        let bytes = http::unbase64(a).map_err(|e| bad(format!("audio: {e}")))?;
+        let (samples, rate) = nextcuda_audio::decode_audio(&bytes).map_err(|e| bad(format!("audio: {e}")))?;
+        let out_rate = match b["rate"].as_u64() {
+            Some(r) if !(8000..=192_000).contains(&r) => return Err(bad(format!("rate {r}: 8000 to 192000 Hz"))),
+            r => r.map(|r| r as u32),
+        };
+        self.waiting.fetch_add(1, Ordering::Relaxed);
+        let engine = self.engine.lock().unwrap_or_else(|p| p.into_inner());
+        self.waiting.fetch_sub(1, Ordering::Relaxed);
+        let Some(_running) = self.cancel.begin(b["request_id"].as_str()) else {
+            return Err((499, "cancelled".into()));
+        };
+        if !engine.isolates() {
+            return Err(bad(format!("{} does not isolate voices (audio.isolate needs a voice isolator: voice-isolator)", self.model)));
+        }
+        let secs = samples.len() as f64 / rate.max(1) as f64;
+        let req = nextcuda_audio::IsolateRequest { samples, rate, out_rate, extra: Default::default() };
+        let t0 = Instant::now();
+        let p = &self.progress;
+        let what = format!("{secs:.1} s of recording");
+        *p.lock().unwrap() = json!({"busy": true, "prompt": what, "phase": "isolate", "at": 0, "of": 1, "seconds": 0});
+        let out = engine.isolate(&req, &mut |st| {
+            *p.lock().unwrap() = json!({"busy": true, "prompt": what, "phase": st.phase, "at": st.at, "of": st.of, "seconds": st.seconds});
+            if self.cancel.stopping() {
+                return Err(nextcuda_core::Error("cancelled".into()));
+            }
+            Ok(())
+        });
+        *p.lock().unwrap() = json!({"busy": false});
+        drop(engine);
+        if let Err(e) = &out {
+            if gpu_failed(&e.0) {
+                eprintln!("nextcuda audio: a GPU error ({}) - ending after this answer", e.0);
+                self.retire.store(true, Ordering::Relaxed);
+            }
+        }
+        let iso = out.map_err(|e| (if e.0 == "cancelled" { 499 } else { 400 }, e.0))?;
+        let took = t0.elapsed().as_secs_f64();
+        let created = now();
+        let meta = |part: &str| json!({"model": self.model, "took": took, "created": created, "isolate": part}).to_string();
+        let voice = iso.voice.wav_float(&[("INAM", "the voice"), ("ICMT", &meta("voice"))]);
+        let mut answer = None;
+        if b["response_format"].as_str() != Some("wav") {
+            let dir = self.out_dir.as_ref().ok_or_else(|| bad("response_format url: this server keeps no files (response_format wav)".into()))?;
+            let stem = format!("{created}-{}-{}", self.model.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"), t0.elapsed().subsec_nanos() % 100_000);
+            let rest = iso.background.wav_float(&[("INAM", "the rest"), ("ICMT", &meta("background"))]);
+            let mut items = Vec::new();
+            for (part, bytes) in [("voice", &voice), ("background", &rest)] {
+                let name = format!("{stem}-{part}.wav");
+                let path = dir.join(&name);
+                std::fs::write(&path, bytes).map_err(|x| (500u16, format!("{}: {x}", dir.display())))?;
+                let mut v = entry(&path, created).unwrap_or_default();
+                v["url"] = json!(format!("{base}/v1/audio/files/{name}"));
+                items.push(v);
+            }
+            if let Some(e) = entry(&dir.join(format!("{stem}-voice.wav")), created) {
+                let mut h = self.history.lock().unwrap();
+                h.push_front(e);
+                h.truncate(200);
+            }
+            answer = Some(json!({"created": created, "data": [items[0].clone()], "background": items[1].clone(), "rate": iso.voice.rate,
+                                 "nextsycl": {"took": took, "seconds": iso.voice.seconds()}}));
+        }
+        Ok((answer, voice))
     }
 
     /// Runs a request: (JSON for response_format url, else none) and the WAV's bytes

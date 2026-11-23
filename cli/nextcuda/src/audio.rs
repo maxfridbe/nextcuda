@@ -30,15 +30,17 @@ nextcuda audio voice design NAME --instructions \"the voice\" [--text \"what the
 nextcuda audio voice rm NAME            (addvoice / clonevoice NAME ... = voice add; designvoice = voice design)
 nextcuda audio transcribe FILE [--model ID | --dir DIR] [--language L] [--translate] [--no-words] [--prompt TEXT] [--opt-NAME VALUE]...
                    [--json] [--gpu N]   (speech to text: a recogniser, whisper-large-v3-turbo; any rate, WAV, MP3, FLAC, Ogg, M4A)
+nextcuda audio isolate FILE [--model ID | --dir DIR] [--out VOICE.wav] [--background REST.wav] [--rate HZ] [--gpu N]
+                   (a recording's voice kept, the rest taken away: a voice isolator, voice-isolator; any rate, WAV, MP3, FLAC, Ogg, M4A)
 nextcuda audio check <dump dir> [--model ID | --dir DIR] [--stages ar,dit,voc,chunks | prompt,frames,codec | mel,encoder,logits,transcribe | text,te,enc,velocity,sample,vae,song | tokens,ar,neg,noise,vel,steps,solve,vae |
-                   wave,mel,encoder,decoder,generate,notation,transcribe (yue2's SheetSage2) | codec,prompt,frames,speed (haru)] [--gpu N]
+                   wave,mel,encoder,decoder,generate,notation,transcribe (yue2's SheetSage2) | codec,prompt,frames,speed (haru) | spec,net,chunk,clips (voiceisolator)] [--gpu N]
 nextcuda audio engines | selftest [--gpu N]";
 
 /// The audio engines this program has (audio/<arch>)
 pub fn engines() -> Vec<nextcuda_audio::AudioKind> {
     vec![nextcuda_audio_minimaxmusic3::kind(), nextcuda_audio_breezetts2::kind(), nextcuda_audio_qwen3tts::kind(), nextcuda_audio_voxcpm2::kind(),
          nextcuda_audio_whisper::kind(), nextcuda_audio_vibevoice::kind(), nextcuda_audio_acestep::kind(), nextcuda_audio_yue2::kind(),
-         nextcuda_audio_zonos3::kind(), nextcuda_audio_haru::kind()]
+         nextcuda_audio_zonos3::kind(), nextcuda_audio_haru::kind(), nextcuda_audio_voiceisolator::kind()]
 }
 
 /// Every `--speaker FILE` (a recording a speaker, Speaker 1 first: a multi-speaker script's voices)
@@ -69,7 +71,10 @@ fn model(cfg: &Config, args: &[String]) -> Result<(Value, ModelFiles), String> {
         let yue2 = std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| e.file_name().to_string_lossy().starts_with("yue2-lm-"));
         let haru = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|c| c.contains("\"model_type\": \"haru\""));
         let zonos3 = ["backbone-ptq-edit.gguf", "backbone-ptq.gguf", "backbone-f16.gguf"].iter().any(|f| dir.join(f).is_file());
-        let (arch, files) = if haru {
+        let isolator = dir.join("denoiser.safetensors").is_file() || dir.extension().is_some_and(|e| e == "safetensors");
+        let (arch, files) = if isolator {
+            (nextcuda_audio_voiceisolator::ARCH, nextcuda_audio_voiceisolator::files_in(dir).map_err(|e| e.0)?)
+        } else if haru {
             (nextcuda_audio_haru::ARCH, nextcuda_audio_haru::files_in(dir).map_err(|e| e.0)?)
         } else if zonos3 {
             (nextcuda_audio_zonos3::ARCH, nextcuda_audio_zonos3::files_in(dir).map_err(|e| e.0)?)
@@ -367,6 +372,49 @@ fn transcribe(cfg: &Config, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `nextcuda audio isolate FILE`: the recording's voice kept and the rest taken away, by a voice isolator in this process
+fn isolate(cfg: &Config, args: &[String]) -> Result<(), String> {
+    let file = args.first().filter(|p| !p.starts_with("--")).ok_or(USAGE)?.clone();
+    nextcuda_core::use_kind("audio");
+    let mut margs = args.to_vec();
+    if opt(args, "--model").is_none() && opt(args, "--dir").is_none() {
+        let all = models::all(cfg)?;
+        let m = all.iter().find(|m| m["arch"] == nextcuda_audio_voiceisolator::ARCH).ok_or("no voice isolator registered (nextcuda models pull voice-isolator)")?;
+        margs.extend(["--model".to_string(), m["id"].as_str().unwrap_or("").to_string()]);
+    }
+    let (m, files) = model(cfg, &margs)?;
+    let ks = engines();
+    let k = nextcuda_audio::kind_for(&ks, m["arch"].as_str().unwrap_or(""))?;
+    let gs = gpus(args)?;
+    let mut log = |s: String| eprintln!("{s}");
+    let e = (k.load)(&files, &gs, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
+    if !e.isolates() {
+        return Err(format!("{} does not isolate voices (--model voice-isolator)", m["id"].as_str().unwrap_or("?")));
+    }
+    let b = std::fs::read(&file).map_err(|e| format!("{file}: {e}"))?;
+    let (samples, rate) = nextcuda_audio::decode_audio(&b).map_err(|e| format!("{file}: {e}"))?;
+    let secs = samples.len() as f64 / rate.max(1) as f64;
+    let out_rate = opt(args, "--rate").map(|r| r.parse::<u32>().map_err(|_| format!("--rate {r}: a number of Hz"))).transpose()?;
+    let req = nextcuda_audio::IsolateRequest { samples, rate, out_rate, extra: Default::default() };
+    let t0 = std::time::Instant::now();
+    let out = e.isolate(&req, &mut |s| {
+        eprint!("\r{} {}/{} windows  {:.1} s   ", s.phase, s.at, s.of, s.seconds);
+        Ok(())
+    }).map_err(|e| e.0)?;
+    eprintln!();
+    let took = t0.elapsed().as_secs_f64();
+    let stem = Path::new(&file).with_extension("");
+    let voice = opt(args, "--out").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}.voice.wav", stem.display())));
+    out.voice.write_wav(&voice, &[("ICMT", "voice isolated by voice-isolator")])?;
+    println!("voice {}", voice.display());
+    if let Some(bg) = opt(args, "--background") {
+        out.background.write_wav(Path::new(bg), &[("ICMT", "the rest: the recording less its voice")])?;
+        println!("rest  {bg}");
+    }
+    eprintln!("{secs:.1} s of recording in {took:.2} s (real-time factor {:.3})", took / secs.max(1e-9));
+    Ok(())
+}
+
 fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
     let dir = Path::new(args.first().filter(|a| !a.starts_with("--")).ok_or(USAGE)?);
     nextcuda_core::use_kind("audio");
@@ -417,6 +465,10 @@ fn check(cfg: &Config, args: &[String]) -> Result<(), String> {
         let stages: Vec<&str> = opt(args, "--stages").unwrap_or("codec,prompt,frames").split(',').collect();
         let e = nextcuda_audio_haru::Haru::load(&files, std::slice::from_ref(&g), &options(&m, args)?, &mut log).map_err(|e| e.0)?;
         nextcuda_audio_haru::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
+    } else if m["arch"] == nextcuda_audio_voiceisolator::ARCH {
+        let stages: Vec<&str> = opt(args, "--stages").unwrap_or("spec,net,chunk,clips").split(',').collect();
+        let e = nextcuda_audio_voiceisolator::VoiceIsolator::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
+        nextcuda_audio_voiceisolator::check::run(&e, dir, &stages, &mut log).map_err(|e| e.0)?
     } else if m["arch"] == nextcuda_audio_zonos3::ARCH {
         let stages: Vec<String> = opt(args, "--stages").unwrap_or("lm,decoder").split(',').map(str::to_string).collect();
         let e = nextcuda_audio_zonos3::Zonos3::load(&files, &g, &options(&m, args)?, &mut log).map_err(|e| e.0)?;
@@ -629,6 +681,7 @@ pub fn cmd(cfg: &Config, args: &[String], selftest: impl Fn(&[String]) -> Result
         Some("selftest") => selftest(rest),
         Some("gen") => gen(cfg, rest),
         Some("transcribe" | "stt") => transcribe(cfg, rest),
+        Some("isolate") => isolate(cfg, rest),
         Some("check") => check(cfg, rest),
         Some("voice" | "voices") => voice(cfg, rest),
         Some("addvoice" | "clonevoice") => voice(cfg, &[&["add".to_string()], rest].concat()),

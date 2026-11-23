@@ -38,6 +38,7 @@ with its Download off (`system.models.pull` still fetches it, for bigger cards).
 | speech | `vibevoice-1.5b-int8` | VibeVoice, its language model in int8 | (the above's) | served |
 | speech | `zonos3-mini` | ZONOS3-Mini (Zyphra, Apache-2.0): 43 languages at 44.1 kHz, 27 preset voices, a voice cloned from a recording, steering of pace and emotion; ~15x real time | 2.5 GiB | served |
 | listening | `whisper-large-v3-turbo` | Whisper large-v3-turbo: speech to text in 99 languages, words timed, the language detected (MIT) | 1.5 GiB | served |
+| voice isolation | `voice-isolator` | Inworld's Voice Isolator v1 (Apache-2.0): a recording's voice kept, the rest taken away, 48 kHz; ~15x real time on the 5070 | 2.0 GiB | served |
 | songs | `minimax-music3-int8` | MiniMax Music 3, its language model in int8: songs from lyrics and a description, up to 6 minutes, 44.1 kHz stereo | (music3's) | served, both cards |
 | songs | `minimax-music3` | MiniMax Music 3 in half | 26.6 GiB | too big (23 GB a card) |
 | songs | `acestep-1.5` | ACE-Step 1.5 turbo: songs in 50 languages from a description and lyrics, covers, repaints, lyric edits; 48 kHz stereo | 9.4 GiB | served |
@@ -139,6 +140,7 @@ c989bf51: a turbo's 6 steps sent to the full 2.1). The rules leave all of that o
 | video | `minimax-h3` (the native daemon, `--span`), `ltx2` (LTX-2.5: Gemma-4 text stage, a 22B audio-video DiT, VAEs, vocoder, latent upsampler) and the video studio (scenes, plans, a film's clips joined) | the denoiser over both cards, nothing streamed: an H3 clip in ~62 s from the SSD; LTX-2.5's DiT resident, 32 blocks on the 5070 and 16 on the 3060, its text stage loaded for a clip and released |
 | 3D | TRELLIS.2, Hunyuan3D-2mini and 2.1 (its paint alone too), UniRig, SkinTokens, RigNet, AnimateAnyMesh, UniMate | one card each |
 | listening | `whisper` (large-v3-turbo) | one card |
+| voice isolation | `voiceisolator` (Inworld's Voice Isolator) | one card |
 | upscale | `realesrgan`, `waifu2x` (their ncnn graphs) | one card |
 | upscale | `flashvsr` (Rust + CUDA) | both cards, pipelined (one card up to about 1280 x 768 out) |
 | vectors | `starvector` (StarVector-1B im2svg) | one card |

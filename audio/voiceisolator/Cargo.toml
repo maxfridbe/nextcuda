@@ -1,0 +1,13 @@
+[package]
+name = "nextcuda-audio-voiceisolator"
+description = "Inworld's Voice Isolator on CUDA: a recording's foreground voice kept and the rest taken away at 48 kHz - a band-split dual-path network (time / band attention, bidirectional Mamba) over the STFT, the offline checkpoint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextcuda-core.workspace = true
+nextcuda-diffusion.workspace = true
+nextcuda-gguf.workspace = true
+nextcuda-audio.workspace = true
+serde_json.workspace = true

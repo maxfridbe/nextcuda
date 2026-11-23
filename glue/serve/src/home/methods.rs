@@ -1575,6 +1575,35 @@ pub struct AudioEditBody {
     pub rest: serde_json::Map<String, serde_json::Value>,
 }
 
+/// What audio.isolate takes.
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct AudioIsolateReq {
+    #[serde(flatten)]
+    pub job: JobOpts,
+    #[serde(flatten)]
+    pub body: AudioIsolateBody,
+}
+
+/// What audio.isolate isolates: the body its kind's server takes.
+#[derive(Deserialize, Serialize, Rpc)]
+pub struct AudioIsolateBody {
+    /// the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono
+    pub audio: String,
+    /// the model's id (a voice isolator: voice-isolator); none: the loaded or first enabled one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// samples a second of the answer; none: the recording's own
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "rpcgen::de::opt_int")]
+    #[schema(min = 8000, max = 192000)]
+    pub rate: Option<i64>,
+    /// wav (the voice's file) or url (JSON with the voice's and the rest's links, the default)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<String>,
+    /// what else the caller sent: passed on as it came
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
 /// What audio.transcribe takes.
 #[derive(Deserialize, Serialize, Rpc)]
 pub struct AudioTranscribeReq {
@@ -3004,6 +3033,14 @@ fn audio_transcribe(h: &Arc<Home>, req: AudioTranscribeReq) -> Answer {
     h.legacy("audio.transcribe", req)
 }
 
+/// A recording's voice isolated (a voice isolator: Inworld's Voice Isolator, voice-isolator): its foreground voice kept and
+/// noise, music and other sounds taken away. The answer is the voice and the rest (the recording less the voice: what was
+/// taken away), float32 WAVs at the recording's rate and length; long recordings go in 8 s windows. A job like audio.speak
+#[rpc(name = "audio.isolate", tags = "audio", example = r#"{"audio": "upload:up_1792400000_take2.wav"}"#)]
+fn audio_isolate(h: &Arc<Home>, req: AudioIsolateReq) -> Answer {
+    h.legacy("audio.isolate", req)
+}
+
 /// Speech editing (a speech model whose card says edit: ZONOS3-Mini): a recording, what it says and what it should
 /// say; the words that change are said anew in the recording's voice and the rest kept frame for frame. Clips of at
 /// most 30 s; the transcript is the caller's (audio.transcribe makes one). A job like audio.speak
@@ -3339,7 +3376,7 @@ rpcgen::rpc_methods![sync Arc<Home>, RpcFail;
     image_upscale, image_vectorize, image_svg_fit, image_svg_generate, image_remove_background, image_describe, image_describers, video_upscale, image_ocr, image_info, image_status,
     image_jobs, image_queue_list, image_queue_move, image_queue_pause, image_queue_resume, image_upload,
     image_cancel, image_canvases_list, image_progress, image_history, image_describe_prompt_guide_md, audio_generate,
-    audio_speak, audio_transcribe, audio_edit, audio_voices_list, audio_voices_add, audio_voices_design, audio_voices_remove,
+    audio_speak, audio_transcribe, audio_edit, audio_isolate, audio_voices_list, audio_voices_add, audio_voices_design, audio_voices_remove,
     audio_info, audio_progress, audio_history, audio_status, audio_jobs, audio_queue_list,
     audio_queue_move, audio_queue_pause, audio_queue_resume, audio_upload, audio_cancel, audio_describe_prompt_guide_md,
     model3d_generate, model3d_rig, model3d_tool, model3d_info, model3d_progress, model3d_history,

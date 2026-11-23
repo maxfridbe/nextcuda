@@ -324,6 +324,8 @@ pub(crate) fn capabilities(m: &Value) -> (Vec<&'static str>, Vec<&'static str>) 
             (c, vec!["image.generate", "image.edit"])
         }
         "audio" if arch == "whisper" => (vec!["transcribe", "speech_to_text", "word_timestamps", "language_detection", "translate_to_english"], vec!["audio.transcribe"]),
+        // a recording's voice kept, the rest taken away (Inworld's Voice Isolator): nothing spoken
+        "audio" if arch == "voiceisolator" => (vec!["voice_isolation"], vec!["audio.isolate"]),
         // a live conversation only (Haru-4B): /v1/realtime, nothing read aloud - no audio.speak; `lockstep` a frame in, a
         // frame out (after nextsycl's life.rs)
         "audio" if speech("realtime") && m["speech"].as_array().is_some_and(|a| a.iter().all(|x| x == "realtime" || x == "lockstep")) => {
@@ -2048,6 +2050,13 @@ mod tests {
         assert!(caps.contains(&"speech_edit") && methods.contains(&"audio.edit") && methods.contains(&"audio.speak"));
         let (caps, methods) = capabilities(&json!({"id": "voxcpm2", "kind": "audio", "arch": "voxcpm2", "speech": ["clone"]}));
         assert!(!caps.contains(&"speech_edit") && !methods.contains(&"audio.edit"));
+    }
+
+    #[test]
+    fn a_voice_isolator_isolates_and_speaks_nothing() {
+        let (caps, methods) = capabilities(&json!({"id": "voice-isolator", "kind": "audio", "arch": "voiceisolator"}));
+        assert_eq!(caps, vec!["voice_isolation"]);
+        assert_eq!(methods, vec!["audio.isolate"]);
     }
 
     #[test]

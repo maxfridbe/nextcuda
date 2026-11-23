@@ -24,6 +24,24 @@ export interface AudioEditBody {
   [key: string]: unknown;
 }
 
+/** What audio.isolate isolates: the body its kind's server takes. */
+export interface AudioIsolateBody {
+  /** the recording: WAV, MP3, FLAC, Ogg or M4A as base64, a data: URL, or upload:<name> (audio.upload); any rate, mixed to mono */
+  audio: string;
+  /** the model's id (a voice isolator: voice-isolator); none: the loaded or first enabled one */
+  model?: string | null;
+  /**
+   * samples a second of the answer; none: the recording's own
+   * @minimum 8000
+   * @maximum 192000
+   */
+  rate?: number | null;
+  /** wav (the voice's file) or url (JSON with the voice's and the rest's links, the default) */
+  response_format?: string | null;
+  /** other keys */
+  [key: string]: unknown;
+}
+
 /** What /v1/audio/speech takes: a song (a song model: input the lyrics, instructions the music) or speech (a speech model: input the text; voice, language, instructions, ref_audio, ref_text ...), as the model this server runs is */
 export interface AudioSpeechBody {
   /** a song: the lyrics ([verse] / [chorus] tags on lines of their own; empty: instrumental); speech: the text to say (required; also as text), or a list of texts said in turn as one stream (the same voice and seed, `gap` seconds between; not with url) */
@@ -641,5 +659,12 @@ export function routes(base = "", fetcher: typeof fetch = (u, i) => fetch(u, i))
      * @produces application/json, audio/wav
      */
     edit: (req: AudioEditBody): Promise<unknown | Blob> => r.blob("POST", r.url("/v1/audio/edit", req, false), JSON.stringify(req), "application/json"),
+    /**
+     * A recording's voice isolated (a voice isolator: voice-isolator): JSON with the voice's and the rest's links - the rest is the recording less the voice - float32 WAVs (response_format wav: the voice's file)
+     * @route POST /v1/audio/isolate
+     * @tags audio
+     * @produces application/json, audio/wav
+     */
+    isolate: (req: AudioIsolateBody): Promise<unknown | Blob> => r.blob("POST", r.url("/v1/audio/isolate", req, false), JSON.stringify(req), "application/json"),
   };
 }

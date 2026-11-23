@@ -46,6 +46,8 @@ const FEATURES: &[&str] = &[
     "system.drives", "system.move",
     // 2026-11-02: H3's `speed` (pika-flex); a job's `title`; YuE2: a plan-only run, `truncated` on the answer's run, seconds to 900
     "video.speed", "video.multi_guide", "jobs.title", "audio.yue2.plan_only", "audio.truncated",
+    // 2026-11-23: a recording's voice isolated (Inworld's Voice Isolator: the voice and the rest)
+    "audio.isolate",
     // 2026-11-11: video.control - a clip turned into a ControlNet control video (canny edges, gray), for control_video
     "video.control", "video.control.canny", "video.control.gray",
     // 2026-11-11: video.control's depth - a depth model's job in the image queue (Depth Anything V2 Small)
@@ -302,6 +304,21 @@ impl Home {
             && want.is_none_or(|a| s(m, "arch") == a)).collect();
         self.loaded_of("image").into_iter().find(|l| on.iter().any(|m| m["id"] == l.as_str())).or_else(|| on.first().map(|m| s(m, "id")))
             .ok_or_else(|| (409, format!("no upscaler{} is enabled (system.enable real-esrgan / waifu2x)", want.map(|a| format!(" ({a})")).unwrap_or_default())))
+    }
+
+    /// The voice isolator for audio.isolate: the one named (it must isolate), else the loaded or first enabled one
+    pub(super) fn isolator(&self, b: &Value, all: &[Value]) -> Result<String, Fail> {
+        let isolates = |m: &Value| s(m, "arch") == "voiceisolator";
+        if b["model"].as_str().is_some_and(|x| !x.is_empty()) {
+            let id = self.pick("audio", b, all)?;
+            if all.iter().any(|m| m["id"] == id.as_str() && !isolates(m)) {
+                return Err((400, format!("{id} does not isolate voices; audio.isolate needs a voice isolator (voice-isolator)")));
+            }
+            return Ok(id);
+        }
+        let on: Vec<&Value> = all.iter().filter(|m| registry::kind_of(m) == "audio" && m["enabled"] != false && isolates(m)).collect();
+        self.loaded_of("audio").into_iter().find(|l| on.iter().any(|m| m["id"] == l.as_str())).or_else(|| on.first().map(|m| s(m, "id")))
+            .ok_or_else(|| (409, "no voice isolator is enabled (nextcuda models pull voice-isolator; system.enable voice-isolator)".to_string()))
     }
 
     /// The recogniser for audio.transcribe: the one named (it must listen), else the loaded or first enabled one
@@ -1014,6 +1031,15 @@ impl Home {
                 body["model"] = json!(id);
                 relay(&t, "POST", "/v1/audio/transcriptions", Some(&body), 7200)
             }
+            ("audio", "isolate") => {
+                let id = self.isolator(b, &all)?;
+                let job = b["request_id"].as_str();
+                let t = self.ensure_for(&id, job)?;
+                self.sent(job);
+                let mut body = b.clone();
+                body["model"] = json!(id);
+                relay(&t, "POST", "/v1/audio/isolate", Some(&body), 7200)
+            }
             ("audio", "edit") => {
                 // a speech model that edits (its card's speech: edit): the one named, else the first enabled
                 let id = match b["model"].as_str().filter(|x| !x.is_empty()) {
@@ -1295,6 +1321,7 @@ impl Home {
             "audio.speak" => ("audio", &[("ref_audio", false), ("speakers", true)]),
             "audio.transcribe" => ("audio", &[("audio", false)]),
             "audio.edit" => ("audio", &[("audio", false)]),
+            "audio.isolate" => ("audio", &[("audio", false)]),
             "audio.generate" => ("audio", &[("audio", false)]),
             "audio.voices.add" => ("audio", &[("sample", false)]),
             "model3d.generate" => ("model3d", &[("image", false), ("images", true)]),

@@ -49,6 +49,7 @@ nextcuda-audio-qwen3tts.workspace = true
 nextcuda-audio-voxcpm2.workspace = true
 nextcuda-audio-breezetts2.workspace = true
 nextcuda-audio-whisper.workspace = true
+nextcuda-audio-voiceisolator.workspace = true
 nextcuda-audio-acestep.workspace = true
 nextcuda-audio-yue2.workspace = true
 nextcuda-audio-zonos3.workspace = true
