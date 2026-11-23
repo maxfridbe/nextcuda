@@ -66,6 +66,12 @@ fn pinned_ids(all: &[Value]) -> BTreeSet<String> {
     all.iter().filter(|m| registry::pinned(m)).map(|m| s(m, "id")).collect()
 }
 
+/// Whether the chat model's idle unload is due: `idle_minutes` gone without a request (else since it loaded), idle unload
+/// on, no request on it (its pins, holds and keeps are `chat_idle`'s)
+fn chat_unload_due(age: &ages::Age, now: f64, idle_minutes: u64, active: bool) -> bool {
+    ages::unload_in(age, now, idle_minutes, false, active) == Some(0)
+}
+
 /// The arguments that end a server after `idle_minutes` idle: none for a pinned model (or when idle exit is off)
 fn idle_exit_args(idle_minutes: u64, pinned: bool) -> Vec<String> {
     if idle_minutes > 0 && !pinned {
@@ -699,8 +705,14 @@ impl Home {
             v["gpus"] = json!(g);
             v["port"] = json!(self.o.ports.llm);
             v["busy"] = json!(active);
-            v["unload_in_s"] = Value::Null;
-            copies.entry(id.to_string()).or_default().0.push(v);
+            // its idle unload (chat_idle_unload, every 30 s): none while pinned, held (rsvp_s), kept by a request
+            // (keep_up_s) or answering
+            let held = kept.contains(id) || self.chat_keep.lock().unwrap().get(id).is_some_and(|until| *until > t);
+            let unload = ages::unload_in(&age, t, self.o.idle_minutes, held, active);
+            v["unload_in_s"] = json!(unload);
+            let e = copies.entry(id.to_string()).or_default();
+            e.0.push(v);
+            e.1 = match (e.1, unload) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) };
         } else if need("llm") {
             self.ages.gone(ages::CHAT);
         }
@@ -1643,6 +1655,10 @@ impl Home {
             if tick % 3 != 0 {
                 continue;
             }
+            // the chat model idle `idle_minutes`: unloaded (the image and audio servers end themselves: --idle-exit)
+            if let Some(id) = self.chat_idle_unload() {
+                eprintln!("{id}: idle for {} min - unloaded (the next request loads it again)", self.o.idle_minutes);
+            }
             let all = self.models();
             let enabled = video_enabled(&all);
             gone = if video_missing(&enabled, self.video_daemon().map(|d| d.0).as_deref()) { gone + 1 } else { 0 };
@@ -1659,6 +1675,37 @@ impl Home {
                     tried.insert(id.clone(), Instant::now());
                     let _ = self.load_async(&id);
                 }
+            }
+        }
+    }
+
+    /// The chat model's idle unload (the keeper's, every 30 s): the loaded chat model unloaded once it has gone
+    /// `idle_minutes` without a request - unless pinned or held (rsvp_s), kept by a request (keep_up_s, the switcher's
+    /// X-Keep-Up-S), answering, or its mode starting (`chat_idle`). Through `unload`: the studio's llm.mode none when the
+    /// studio runs the chat card (so its idle watchdog does not bring it back), else `llm stop`. The image and audio
+    /// servers end themselves (--idle-exit), the video daemon's workers let their card go; nothing else unloaded the
+    /// chat model (the switcher's own timer runs only in a `nextcuda switch --idle-minutes` process). The id unloaded.
+    pub(crate) fn chat_idle_unload(&self) -> Option<String> {
+        if self.o.idle_minutes == 0 {
+            return None;
+        }
+        let id = self.chat_idle()?;
+        let t = now();
+        let (active, last) = self.chat_requests();
+        self.ages.seen(ages::CHAT, &id, t, || self.chat_uptime().map(|u| t - u));
+        self.ages.last_was(ages::CHAT, last);
+        let age = self.ages.get(ages::CHAT)?;
+        if !chat_unload_due(&age, t, self.o.idle_minutes, active) {
+            return None;
+        }
+        match self.unload(&id) {
+            Ok(()) => {
+                self.ages.gone(ages::CHAT);
+                Some(id)
+            }
+            Err((_, e)) => {
+                eprintln!("{id}: the idle unload failed: {e}");
+                None
             }
         }
     }
@@ -1871,6 +1918,20 @@ pub(crate) fn job_of_proc(p: &Value, by_port: &std::collections::HashMap<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chat_model_unloads_after_idle_minutes_without_a_request() {
+        let age = ages::Age { model: "q".into(), loaded_at: 1000.0, last_request_at: Some(1100.0), active: 0 };
+        // 10 minutes after its last request, not before; none while it answers or with the idle unload off
+        assert!(!chat_unload_due(&age, 1100.0 + 599.0, 10, false));
+        assert!(chat_unload_due(&age, 1100.0 + 600.0, 10, false));
+        assert!(chat_unload_due(&age, 1100.0 + 10351.0, 10, false), "idle for hours: due (it stayed up 10351 s)");
+        assert!(!chat_unload_due(&age, 1100.0 + 10351.0, 10, true));
+        assert!(!chat_unload_due(&age, 1100.0 + 10351.0, 0, false));
+        // no request since it loaded: from when it loaded
+        let fresh = ages::Age { last_request_at: None, ..age };
+        assert!(!chat_unload_due(&fresh, 1000.0 + 599.0, 10, false) && chat_unload_due(&fresh, 1000.0 + 600.0, 10, false));
+    }
 
     /// Card sizes as their drivers report them, MiB: an RTX 5070 and an RTX 3060 (12 GB), and the fake ones below
     const C5070: u64 = 12227;

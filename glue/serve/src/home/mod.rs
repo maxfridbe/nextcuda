@@ -8,8 +8,10 @@
 //!   measured on demand - and moving a model's files to another one (copied, checked, the registry repointed, the old
 //!   files removed), one move at a time, never while the model is loaded.
 //! - **Enabled models** load on their first request (an API call here, its page, Open WebUI through the switcher) and
-//!   unload after `idle_minutes` without one (the image and audio servers exit, the switcher sets the chat mode to
-//!   none, the video daemon's workers let their card go); they stay enabled. Disabled: unloaded, gone from Open WebUI's
+//!   unload after `idle_minutes` without one (the image and audio servers exit: --idle-exit; the chat model is unloaded
+//!   by this front door's keeper - `Home::chat_idle_unload`, every 30 s, unless pinned, held, kept by a request or
+//!   answering: the studio's llm.mode none when the studio runs the chat card, else `llm stop`; the video daemon's
+//!   workers let their card go); they stay enabled. Disabled: unloaded, gone from Open WebUI's
 //!   list (the switcher lists enabled chat models) and from the API spec. The registry's `enabled` and `gpus` are the
 //!   state, so `nextcuda models enable|disable` and this page agree. Video: enabled models = the daemon's engines.
 //! - **The API** (`api.rs`): `POST /rpc/<kind>.<method>` (H3's rules: POST only, fixed routes, the JSON body carries

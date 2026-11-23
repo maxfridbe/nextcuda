@@ -15,8 +15,9 @@
 //! sound or clips meanwhile (`GET /keep` says which models are kept and for how long). A request without the header
 //! keeps nothing: once it is answered, the model may be preempted.
 //!
-//! With `idle`, the loaded model is unloaded (the studio's llm.mode "none") once nothing has asked for it that long
-//! and it is not answering; the next request loads it again.
+//! With `idle` (`nextcuda switch --idle-minutes N`, a switcher run as its own process), the loaded model is unloaded
+//! (the studio's llm.mode "none") once nothing has asked for it that long and it is not answering; the next request
+//! loads it again. Under the front door (`nextcuda serve`) its keeper does that instead (`Home::chat_idle_unload`).
 //!
 //! In maintenance (crate::maintenance: the front door's notice beside the registry), chat requests are answered with
 //! the notice (503, Retry-After) and no model is loaded; the list stays as it is.
