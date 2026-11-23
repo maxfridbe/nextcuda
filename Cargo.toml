@@ -4,7 +4,7 @@ resolver = "2"
 # crate an architecture (llm/, image/, video/) -, the glue that makes them a service (glue/), the program (cli/)
 members = [
     "crates/sys", "crates/core", "crates/scheduler", "crates/gguf", "crates/tok", "crates/diffusion", "crates/qwen3vl", "crates/qwen35", "crates/mesh", "crates/codec12hz", "crates/remover", "crates/h3", "crates/zimage",
-    "llm/contract", "llm/nemotronh", "llm/qwen35",
+    "llm/contract", "llm/nemotronh", "llm/qwen35", "llm/inkling2",
     "image/contract", "image/qwenimage21", "image/paddleocrvl", "image/unlimitedocr", "image/olmocr2", "image/mingimage", "image/mossimage", "image/upscale", "image/flashvsr", "image/rembg", "image/starvector", "image/ph3image", "image/zimage", "image/svgrender", "image/depthanything",
     "video/contract", "video/h3", "video/ltx2",
     "model3d/contract", "model3d/trellis2", "model3d/hunyuan3d", "model3d/unirig", "model3d/skintokens", "model3d/rignet", "model3d/animateanymesh", "model3d/unimate",
@@ -35,6 +35,7 @@ nextcuda-zimage = { path = "crates/zimage" }
 nextcuda-llm = { path = "llm/contract" }
 nextcuda-llm-nemotronh = { path = "llm/nemotronh" }
 nextcuda-llm-qwen35 = { path = "llm/qwen35" }
+nextcuda-llm-inkling2 = { path = "llm/inkling2" }
 nextcuda-image = { path = "image/contract" }
 nextcuda-image-qwenimage21 = { path = "image/qwenimage21" }
 nextcuda-image-paddleocrvl = { path = "image/paddleocrvl" }

@@ -68,6 +68,9 @@ pub enum GType {
     TQ1_0,
     TQ2_0,
     MXFP4,
+    /// NVFP4 (code 40; Inkling-2-Mini's experts): blocks of 64 - four UE4M3 scales (one a 16 values), then 32 bytes of
+    /// E2M1 codes
+    NVFP4,
     /// GSQ-RCO's 2-bit type (Qwen3.8-Flash-Next's files): 64 values, an f16 scale and 2-bit codes
     Q2_0,
 }
@@ -108,6 +111,7 @@ impl GType {
             34 => TQ1_0,
             35 => TQ2_0,
             39 => MXFP4,
+            40 => NVFP4,
             42 => Q2_0,
             _ => return None,
         })
@@ -149,6 +153,7 @@ impl GType {
             TQ1_0 => 34,
             TQ2_0 => 35,
             MXFP4 => 39,
+            NVFP4 => 40,
             Q2_0 => 42,
         }
     }
@@ -169,6 +174,7 @@ impl GType {
             Q8_1 => (32, 36),
             IQ4NL => (32, 18),
             MXFP4 => (32, 17),
+            NVFP4 => (64, 36),
             Q2_0 => (64, 18),
             Q2K => (256, 84),
             Q3K => (256, 110),
@@ -236,6 +242,7 @@ impl GType {
             TQ1_0 => "TQ1_0",
             TQ2_0 => "TQ2_0",
             MXFP4 => "MXFP4",
+            NVFP4 => "NVFP4",
             Q2_0 => "Q2_0",
         }
     }

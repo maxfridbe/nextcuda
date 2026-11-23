@@ -288,6 +288,22 @@ Qwen3.8-27B dense (`llm/qwen35`, its silo `kernels/llm/qwen35/silo`).
 | `NS_Q35_MTP` | the first .gguf in an MTP/ folder beside the model | the MTP draft block's GGUF (--opt-mtp) | llm qwen35 |
 | `NS_Q35_PROFILE` | off | Debug: 1 times every kernel on the device with its bytes and arithmetic (needs NS_PROFILE=gpu; one GPU only) | llm qwen35 |
 
+### inkling2
+
+Inkling-2-Mini (`llm/inkling2`, its silo `kernels/llm/inkling2/silo`; docs/ports/inkling2.md).
+
+| Variable | Default | What it does | Read by |
+|---|---|---|---|
+| `NS_INK2_CHUNK` | 2048 rows when they fit beside the weights and a session, else 1024 or 512 | a prompt pass's rows (more than 16) (--opt-chunk) | llm inkling2 |
+| `NS_INK2_FUSED` | on (with the silo) | Experiment: 0 runs decode rows through the silo's products only, each small step its own launch as for a prompt (A/B of the fused decode steps) | llm inkling2 |
+| `NS_INK2_PROFILE` | off | Debug: 1 times every kernel (the stream drained before and after each) and lists them after the run; gpu (with NS_PROFILE=gpu) its device time from timestamps, no drains | llm inkling2 |
+| `NS_INK2_DEQ_REF` | unset | Debug: a directory of ggml's dequantized rows (`reference/inkling2/deq-ref.cpp`, `<tensor>.f32`): `llm kernels` checks the expansions against them bit for bit | llm inkling2 |
+| `NS_INK2_DRAFT` | the smallest `dspark-*.gguf` beside the model | the DSpark drafter's GGUF (Unsloth's `dspark-Inkling-2-Mini-Q8_0.gguf`); loaded when drafts are asked for (`--no-mtp` / LoadOptions.draft off: not) | llm inkling2 |
+| `NS_INK2_DRAFTS` | 5 | tokens drafted a step (at most the drafter's block less one: 7; 0: no drafter) | llm inkling2 |
+| `NS_INK2_DRAFT_PMIN` | 0.8 | a draft (and those after it) dropped when the drafter gives it less than this probability (fewer rows to verify) | llm inkling2 |
+| `NS_INK2_EXPERT_UNION` | on | 0: a decode pass of several rows (a verify) reads an expert the rows share once a row instead of once (A/B) | llm inkling2 |
+| `NS_INK2_UNION` | off | Debug: 1 reads a pass's chosen experts back each layer application (a sync each) and reports the distinct experts a pass by its rows | llm inkling2 |
+
 ## Image
 
 Qwen-Image 2.1 (`image/qwenimage21`).
@@ -485,6 +501,9 @@ Inputs of the checks and unit tests that need files outside the repository (unse
 | `NS_CHECK_SAVE` | off | llm check: DIR gets this engine's tensors too (<name>.f32), beside the reference's | cli (llm check) |
 | `NS_DUMP_DIR` | ns-dump | Directory llama-ns-dump writes its float32 tensors and index.tsv to | reference/llama-dump (ns-dump.cpp, llama.cpp parity tool) |
 | `NS_DUMP_RE` | the GLM layer outputs (inp_embd, attn_norm-N, l_out-N, result_output, ...) | Regex of the llama.cpp graph tensor names llama-ns-dump writes | reference/llama-dump (ns-dump.cpp, llama.cpp parity tool) |
+| `NS_DUMP_PROMPT` | unset (-p) | a file whose bytes are the prompt as they are (special tokens parsed) | reference/inkling2 (ink-dump.cpp, llama.cpp parity tool) |
+| `NS_DUMP_GEN` | 0 | greedy tokens llama-ink-dump generates after the prompt (gen.txt: each with its top-1 / top-2 gap) | reference/inkling2 (ink-dump.cpp, llama.cpp parity tool) |
+| `NS_DEQ_ROWS` | 4096 | rows of each tensor deq-ref writes (ggml's dequantize_row_* output, for `llm kernels` with NS_INK2_DEQ_REF) | reference/inkling2 (deq-ref.cpp, ggml parity tool) |
 | `NS_MM3_CHECK_STEPS` | 3 | chunks check: flow steps a window | audio minimaxmusic3 (check) |
 | `NS_TEST_H3_TOKENIZER` | test skipped | the H3 tokenizer's directory (vocab.json, merges.txt, tokenizer_config.json) for its reference-match test | video h3 (cargo test) |
 | `NS_TEST_STARVECTOR_TOKENIZER` | test skipped | StarVector's tokenizer.json, for its prompt / stop tokens and decoding test | image starvector (cargo test) |

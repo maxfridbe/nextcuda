@@ -13,6 +13,7 @@ nextcuda-sys.workspace = true
 nextcuda-llm.workspace = true
 nextcuda-llm-nemotronh.workspace = true
 nextcuda-llm-qwen35.workspace = true
+nextcuda-llm-inkling2.workspace = true
 nextcuda-tok.workspace = true
 nextcuda-image.workspace = true
 nextcuda-image-qwenimage21.workspace = true

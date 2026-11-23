@@ -848,6 +848,7 @@ dependencies = [
  "nextcuda-image-upscale",
  "nextcuda-image-zimage",
  "nextcuda-llm",
+ "nextcuda-llm-inkling2",
  "nextcuda-llm-nemotronh",
  "nextcuda-llm-qwen35",
  "nextcuda-mesh",
@@ -1222,6 +1223,16 @@ version = "0.0.0"
 dependencies = [
  "nextcuda-core",
  "nextcuda-gguf",
+ "nextcuda-tok",
+]
+
+[[package]]
+name = "nextcuda-llm-inkling2"
+version = "0.0.0"
+dependencies = [
+ "nextcuda-core",
+ "nextcuda-gguf",
+ "nextcuda-llm",
  "nextcuda-tok",
 ]
 

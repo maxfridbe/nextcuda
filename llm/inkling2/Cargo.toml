@@ -1,0 +1,12 @@
+[package]
+name = "nextcuda-llm-inkling2"
+description = "Inkling-2-Mini (inkling2_loop): a looped MoE with depth attention, relative-bias attention with sinks, short convolutions and NVFP4 experts - over one CUDA card or two (the looped layers on the faster), the weights resident"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextcuda-core.workspace = true
+nextcuda-gguf.workspace = true
+nextcuda-llm.workspace = true
+nextcuda-tok.workspace = true

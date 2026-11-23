@@ -1186,6 +1186,8 @@ impl Server {
         let opens_thinking = text.trim_end().ends_with("<think>");
         // Muse Glimmer's channels: the answer after `<|start|>assistant` is a to=self message, then the to=user one
         let channels = text.ends_with("<|start|>assistant");
+        // Inkling 2's messages: the model opens its own turn, its thinking and answer each a message of its own kind
+        let ink = text.ends_with("<|end_message|>") && text.contains("<|message_system|><|content_text|>Thinking effort level: ");
         let ids = self.tok.encode(&text);
         // the pictures through the vision tower (before the prompt is queued: its time is not in read_seconds)
         let t_see = Instant::now();
@@ -1270,7 +1272,7 @@ impl Server {
             send(s, json!({"role": "assistant"}), None);
         }
         let (mut reasoning, mut content) = (String::new(), String::new());
-        let mut thinking = opens_thinking || channels;
+        let mut thinking = opens_thinking || channels || ink;
         // the channel model's text so far, and how much of each part has gone out
         let (mut raw, mut sent_r, mut sent_c) = (String::new(), 0usize, 0usize);
         let mut pending: Vec<u8> = Vec::new();
@@ -1313,9 +1315,9 @@ impl Server {
             let piece = String::from_utf8_lossy(&pending[..valid]).into_owned();
             pending.drain(..valid);
             let mut parts: Vec<(bool, String)> = Vec::new();
-            if channels {
+            if channels || ink {
                 raw.push_str(&piece);
-                let (r, c, answering) = nextcuda_tok::muse_channels(&raw);
+                let (r, c, answering) = if ink { nextcuda_tok::inkling_channels(&raw) } else { nextcuda_tok::muse_channels(&raw) };
                 if r.len() > sent_r && r.is_char_boundary(sent_r) {
                     parts.push((true, r[sent_r..].to_string()));
                     sent_r = r.len();

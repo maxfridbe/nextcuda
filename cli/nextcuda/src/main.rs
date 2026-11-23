@@ -102,7 +102,7 @@ language models (nextcuda llm ...; the names without `llm` still work):
                  [--cache-dir DIR [--cache-disk-gib G (32)] [--cache-ttl-hours H (24)]]
                                 the server itself (what start runs in its container)
   nextcuda llm generate <model.gguf> --prompt TEXT | --prompt-file PATH | --ids FILE [--ignore-eos] [--ctx N]
-                 [--effort low|high|max] [--max N] [--temp T] [--top-p P] [--seed S] [--gpu N[,M]] [--no-mtp] [--top N] [--rows-bench]
+                 [--effort low|high|max] [--max N] [--temp T] [--top-p P] [--seed S] [--gpu N[,M]] [--no-mtp] [--top N] [--rows-bench] [--ids-out FILE]
   nextcuda llm info <model.gguf>      the architecture and geometry, every tensor checked by role, bytes by group
   nextcuda llm tokenize <model.gguf> <text>
   nextcuda llm check <model.gguf> <dump dir> [--gpu N[,M]]    the forward pass against a reference dump
@@ -166,7 +166,7 @@ fn gib(b: u64) -> f64 {
 
 /// The llm engines this program has, one a model architecture (llm/<arch>)
 pub(crate) fn engines() -> Vec<EngineKind> {
-    vec![nextcuda_llm_nemotronh::engine::kind(), nextcuda_llm_qwen35::kind()]
+    vec![nextcuda_llm_nemotronh::engine::kind(), nextcuda_llm_qwen35::kind(), nextcuda_llm_inkling2::kind()]
 }
 
 /// The engine for `f`'s architecture, loaded on `gpus`
@@ -636,12 +636,15 @@ fn generate(args: &[String]) -> Result<(), String> {
     print!("<think>");
     let t1 = std::time::Instant::now();
     let mut n = 0;
+    // --ids-out FILE: the generated token ids, comma-separated (a reference's greedy tokens to compare with)
+    let mut gen_ids: Vec<u32> = Vec::new();
     'gen: while n < max {
         for next in eng.step(&mut sess, &mut dec, &mut draw, &mut none).map_err(e)? {
             if (!ignore_eos && tok.stop.contains(&next)) || n >= max {
                 break 'gen;
             }
             n += 1;
+            gen_ids.push(next);
             pending.extend(tok.decode_bytes(&[next]));
             // print what is valid UTF-8 so far; keep a cut character for the next token
             let valid = match std::str::from_utf8(&pending) {
@@ -655,6 +658,9 @@ fn generate(args: &[String]) -> Result<(), String> {
     }
     println!("{}", String::from_utf8_lossy(&pending));
     let dt = t1.elapsed().as_secs_f64();
+    if let Some(f) = opt("--ids-out") {
+        std::fs::write(&f, gen_ids.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")).map_err(|x| format!("{f}: {x}"))?;
+    }
     for line in eng.report(n) {
         eprintln!("{line}");
     }
